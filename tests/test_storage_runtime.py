@@ -8,7 +8,9 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 from unittest import mock
 
 from timecapsulesmb.core.config import AppConfig
@@ -36,6 +38,7 @@ from timecapsulesmb.device.storage import (
     ordered_payload_candidate_volumes,
     payload_candidate_checks_debug_summary,
     parse_mast_inventory,
+    parse_mast_xml_inventory,
     parse_mast_plist,
     probe_mast_diagnostics_conn,
     render_ensure_volume_root_mounted_script,
@@ -47,6 +50,31 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 from tests.storage_fixtures import MAST_FIXTURES, SHELL_MAST_FIXTURES
+
+
+def netbsd6_internal_and_usb_xml(smart_status: str = "verified") -> str:
+    """`acp MaSt` on the LAN NetBSD 6 unit (serials and UUIDs replaced), the
+    same disks as StorageRuntimeTests.NETBSD6_INTERNAL_AND_USB."""
+    return "MaSt=" + plistlib.dumps([
+        {
+            "blockSize": 512, "builtin": True, "deviceName": "wd0", "info": "Disk 1",
+            "partitions": [{
+                "deviceName": "dk2", "format": "hfs", "name": "AirPort Disk", "size": 1905681,
+                "sizeFree": 513501, "sizeUsed": 1392180, "users": 1, "uuid": bytes([10] + [0] * 14 + [2]),
+            }],
+            "product": "SERIAL6", "revision": "PA45", "size": 1907729, "smartStatus": smart_status,
+            "softDisconnected": False, "uuid": bytes([10] + [0] * 14 + [1]), "vendor": "PALP EDH DTS0200MD00 1",
+        },
+        {
+            "blockSize": 512, "deviceName": "sd0", "info": "Disk 2",
+            "partitions": [{
+                "deviceName": "dk4", "format": "hfs", "name": "4TB", "size": 3815086,
+                "sizeFree": 3741102, "sizeUsed": 73984, "users": 1, "uuid": bytes([11] + [0] * 14 + [2]),
+            }],
+            "product": "Elements 25A1", "revision": "1014", "size": 3815415,
+            "softDisconnected": False, "uuid": bytes([11] + [0] * 14 + [1]), "vendor": "WD",
+        },
+    ]).decode()
 
 
 class StorageRuntimeTests(unittest.TestCase):
@@ -262,7 +290,7 @@ MaSt = (
         ))
         self.assertEqual(parse_mast_inventory(self.APPLE_ALTERNATE_FORM), (
             MaStDiskSnapshot("wd0", "", "1907729", True, (
-                MaStPartitionSnapshot("dk2", first, "hfs"),
+                MaStPartitionSnapshot("dk2", first, "hfs", size_mib=1905681),
                 MaStPartitionSnapshot("dk3", "two\nlines", "hfs"),
             )),
         ))
@@ -292,6 +320,180 @@ MaSt = (
             MaStDiskSnapshot("wd0", "", None, True, (MaStPartitionSnapshot("dk2", "Data", "hfs"),)),
             MaStDiskSnapshot("sd0", "", None, False, (MaStPartitionSnapshot("dk3", "Untitled", "hfs"),)),
         ))
+
+    # `acp -A MaSt` on the LAN NetBSD 6 unit (serials and UUIDs replaced): the
+    # internal disk is wd0, a USB disk sd0 with no builtin key and no smartStatus.
+    NETBSD6_INTERNAL_AND_USB = (
+        '\n[\n'
+        '    {\n'
+        '        product="SERIAL6"\n'
+        '        blockSize=512\n'
+        '        deviceName="wd0"\n'
+        '        size=1907729\n'
+        '        vendor="PALP EDH DTS0200MD00 1"\n'
+        '        partitions=\n'
+        '        [\n'
+        '            {\n'
+        '                format="hfs"\n'
+        '                sizeUsed=1392180\n'
+        '                deviceName="dk2"\n'
+        '                size=1905681\n'
+        '                users=1\n'
+        '                name="AirPort Disk"\n'
+        '                sizeFree=513501\n'
+        '                uuid=0000000a 00000000 00000000 00000002 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
+        '            }\n'
+        '        ]\n'
+        '        builtin=true\n'
+        '        uuid=0000000a 00000000 00000000 00000001 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
+        '        smartStatus="verified"\n'
+        '        info="Disk 1"\n'
+        '        revision="PA45"\n'
+        '        softDisconnected=false\n'
+        '    }\n'
+        '    {\n'
+        '        product="Elements 25A1"\n'
+        '        blockSize=512\n'
+        '        deviceName="sd0"\n'
+        '        size=3815415\n'
+        '        vendor="WD"\n'
+        '        partitions=\n'
+        '        [\n'
+        '            {\n'
+        '                format="hfs"\n'
+        '                sizeUsed=73984\n'
+        '                deviceName="dk4"\n'
+        '                size=3815086\n'
+        '                users=1\n'
+        '                name="4TB"\n'
+        '                sizeFree=3741102\n'
+        '                uuid=0000000b 00000000 00000000 00000002 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
+        '            }\n'
+        '        ]\n'
+        '        uuid=0000000b 00000000 00000000 00000001 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
+        '        info="Disk 2"\n'
+        '        revision="1014"\n'
+        '        softDisconnected=false\n'
+        '    }\n'
+        ']\n'
+        '\n'
+        'MaSt='
+    )
+
+    def test_inventory_reads_smart_status_label_and_sizes_from_the_text_form(self) -> None:
+        self.assertEqual(parse_mast_inventory(self.NETBSD6_INTERNAL_AND_USB), (
+            MaStDiskSnapshot(
+                "wd0", "", "1907729", True,
+                (MaStPartitionSnapshot("dk2", "AirPort Disk", "hfs", 1905681, 1392180, 513501, users=1),),
+                label="Disk 1", smart_status="verified",
+                # wd0's model as Apple's NetBSD 6 kernel reports it: byte-swapped.
+                model="PALP EDH DTS0200MD00 1", revision="PA45", soft_disconnected=False,
+            ),
+            MaStDiskSnapshot(
+                "sd0", "", "3815415", False,
+                (MaStPartitionSnapshot("dk4", "4TB", "hfs", 3815086, 73984, 3741102, users=1),),
+                label="Disk 2", smart_status=None, model="WD", revision="1014", soft_disconnected=False,
+            ),
+        ))
+
+    def test_inventory_never_reads_the_serial_number(self) -> None:
+        for raw in (self.NETBSD6_INTERNAL_AND_USB, netbsd6_internal_and_usb_xml()):
+            with self.subTest(form="xml" if "<?xml" in raw else "text"):
+                self.assertNotIn("SERIAL6", repr(parse_mast_inventory(raw)))
+
+    def test_inventory_reads_softdisconnected_and_users_in_either_form(self) -> None:
+        # diskd's hang signature: the disk soft-disconnected, its volume held by no one.
+        text = (
+            '[\n    {\n        softDisconnected=true\n        partitions=\n        [\n            {\n'
+            '                users=0\n            }\n        ]\n    }\n    {\n        softDisconnected=maybe\n    }\n]\n'
+        )
+        xml = plistlib.dumps([
+            {"softDisconnected": True, "partitions": [{"users": 0}]}, {"softDisconnected": "maybe"},
+        ])
+        for raw in (text, xml):
+            with self.subTest(form="xml" if isinstance(raw, bytes) else "text"):
+                hung, odd = parse_mast_inventory(raw)
+                self.assertEqual((hung.soft_disconnected, hung.partitions[0].users), (True, 0))
+                self.assertIsNone(odd.soft_disconnected)
+
+    def test_both_forms_of_the_same_mast_give_the_same_disks(self) -> None:
+        text, xml = parse_mast_inventory(self.NETBSD6_INTERNAL_AND_USB), parse_mast_inventory(netbsd6_internal_and_usb_xml())
+        # Only the disk's own size keeps its form: digits in text, an integer in XML.
+        self.assertEqual([replace(disk, size=None) for disk in text], [replace(disk, size=None) for disk in xml])
+        self.assertEqual([disk.size for disk in xml], [1907729, 3815415])
+
+    def test_strict_xml_inventory_reads_what_the_lenient_one_does(self) -> None:
+        xml = netbsd6_internal_and_usb_xml()
+        self.assertEqual(parse_mast_xml_inventory(xml), parse_mast_inventory(xml))
+        # Behind lines the SSH client printed, too.
+        self.assertEqual(parse_mast_xml_inventory(f"Warning: added host key\n{xml}"), parse_mast_inventory(xml))
+        # A device without disks: an empty array is an answer.
+        self.assertEqual(parse_mast_xml_inventory("MaSt=" + plistlib.dumps([]).decode()), ())
+        self.assertEqual(parse_mast_xml_inventory("MaSt=" + plistlib.dumps([{"deviceName": "sd0"}]).decode())[0].partitions, ())
+
+    def test_strict_xml_inventory_refuses_what_is_not_an_array_of_disks(self) -> None:
+        def xml(root: object) -> str:
+            return "MaSt=" + plistlib.dumps(root).decode()
+
+        cases = {
+            # The lenient parse reads each of these as no disks.
+            "bare property name": ("MaSt=", ValueError, "acp printed no MaSt plist"),
+            "not a plist": ("MaSt=not a plist", ValueError, "acp printed no MaSt plist"),
+            "text form": (self.NETBSD6_INTERNAL_AND_USB, ValueError, "acp printed no MaSt plist"),
+            "a dictionary": (xml({"MaSt": []}), ValueError, "MaSt is not an array of disks"),
+            "a disk that is not a dictionary": (xml([{"deviceName": "wd0"}, "sd0"]), ValueError,
+                                                "MaSt is not an array of disks"),
+            "partitions not an array": (xml([{"deviceName": "wd0", "partitions": "dk2"}]), ValueError,
+                                        "MaSt lists wd0's partitions as something else"),
+            "a partition that is not a dictionary": (xml([{"partitions": [{"deviceName": "dk2"}, 3]}]), ValueError,
+                                                     "MaSt lists a disk's partitions as something else"),
+            "a plist cut off": ('MaSt=<?xml version="1.0"?><plist><array><dict>', ExpatError, None),
+        }
+        for case, (output, error, message) in cases.items():
+            with self.subTest(case):
+                with self.assertRaises(error) as raised:
+                    parse_mast_xml_inventory(output)
+                if message is not None:
+                    self.assertEqual(str(raised.exception), message)
+        # Why doctor needs the strict one: the lenient parse reads these as no disks.
+        for output in ("MaSt=", "MaSt=not a plist"):
+            self.assertEqual(parse_mast_inventory(output), ())
+
+    def test_inventory_reads_the_same_fields_from_xml(self) -> None:
+        # `acp MaSt` on the LAN NetBSD 4 unit, whose internal disk is sd0.
+        raw = plistlib.dumps([{
+            "blockSize": 512, "builtin": True, "deviceName": "sd0", "info": "Disk 1",
+            "partitions": [{
+                "deviceName": "dk2", "format": "hfs", "name": "Data", "size": 1905681,
+                "sizeFree": 1896704, "sizeUsed": 8977, "users": 1, "uuid": bytes(16),
+            }],
+            "product": "SERIAL4", "revision": "12.01D04", "size": 1907729, "smartStatus": "verified",
+            "softDisconnected": False, "uuid": bytes(16), "vendor": "WDC WD20EARS-42S0XB0",
+        }]).decode()
+        self.assertEqual(parse_mast_inventory(f"MaSt={raw}"), (
+            MaStDiskSnapshot(
+                "sd0", "", 1907729, True,
+                (MaStPartitionSnapshot("dk2", "Data", "hfs", 1905681, 8977, 1896704, users=1),),
+                label="Disk 1", smart_status="verified",
+                model="WDC WD20EARS-42S0XB0", revision="12.01D04", soft_disconnected=False,
+            ),
+        ))
+
+    def test_inventory_keeps_only_sizes_that_are_whole_non_negative_numbers(self) -> None:
+        raw = plistlib.dumps([{"deviceName": "sd0", "partitions": [
+            {"deviceName": "dk1", "format": "msdos", "size": 15000, "sizeUsed": 2.5, "sizeFree": -1},
+            {"deviceName": "dk2", "format": "msdos", "size": True, "sizeUsed": "12"},
+        ]}])
+        partitions = parse_mast_inventory(raw)[0].partitions
+        # Digits read as the text form gives them; a bool, a fraction or a negative never.
+        self.assertEqual([(p.size_mib, p.used_mib, p.free_mib) for p in partitions], [(15000, None, None), (None, 12, None)])
+        text = (
+            '[\n    {\n        partitions=\n        [\n            {\n                size=12x\n'
+            '                sizeUsed=7\n                sizeFree=²\n            }\n        ]\n    }\n]\n'
+        )
+        partition = parse_mast_inventory(text)[0].partitions[0]
+        # "²" passes isdigit() but not int(): it is no size, not an error.
+        self.assertEqual((partition.size_mib, partition.used_mib, partition.free_mib), (None, 7, None))
 
     def test_wait_for_mast_volumes_retries_until_available(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")

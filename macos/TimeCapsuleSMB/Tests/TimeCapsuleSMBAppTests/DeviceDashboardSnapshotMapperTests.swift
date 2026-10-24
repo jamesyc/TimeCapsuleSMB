@@ -242,6 +242,87 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(runtimeState?.state, .installedUnverified)
     }
 
+    // A disk whose SMART check says it is failing: Samba still serves.
+    private func smartFailing() -> JSONValue {
+        testDoctorCheck(status: "WARN", message: "Disk 1 (internal) reports that it is failing (SMART)",
+                        domain: "device", code: DoctorSummary.diskSmartFailingResultCode)
+    }
+
+    func testASmartWarningAloneKeepsTheRuntimeVerified() throws {
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device"),
+            smartFailing()
+        ])
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .warning, summary: summary)
+        let snapshot = DeviceDashboardSnapshotMapper.checkupSnapshot(
+            state: .warning, summary: summary, observedAt: Date(timeIntervalSince1970: 1))
+
+        XCTAssertEqual(runtimeState?.state, .installedVerified)
+        XCTAssertEqual(runtimeState?.verified, true)
+        // The Checkup still shows the warning.
+        XCTAssertEqual(snapshot.warnCount, 1)
+        XCTAssertEqual(snapshot.device?.status, .warn)
+    }
+
+    func testThisMacsWarningsDoNotStopASmartWarningKeepingTheRuntimeVerified() throws {
+        let summary = try makeDoctorSummary(checks: [
+            smartFailing(),
+            testDoctorCheck(status: "WARN", message: "Bonjour IPv6 not seen", domain: "computer")
+        ])
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .warning, summary: summary)
+
+        XCTAssertEqual(runtimeState?.state, .installedVerified)
+    }
+
+    func testASmartWarningBesideAnotherDeviceWarningIsInstalledUnverified() throws {
+        let others = [
+            testDoctorCheck(status: "WARN", message: "NBNS check skipped: timed out", domain: "device"),
+            // A disk row that only informs, sent as a warning, is not the SMART one.
+            testDoctorCheck(status: "WARN", message: "Disk 2 (USB): SMART not reported", domain: "device", code: "disk_info")
+        ]
+        for other in others {
+            let summary = try makeDoctorSummary(checks: [smartFailing(), other])
+
+            let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .warning, summary: summary)
+
+            XCTAssertEqual(runtimeState?.state, .installedUnverified)
+        }
+    }
+
+    func testASmartWarningDoesNotHideADeviceFailure() throws {
+        let summary = try makeDoctorSummary(checks: [
+            smartFailing(),
+            testDoctorCheck(status: "FAIL", message: "managed smbd is not running", domain: "device")
+        ])
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .failed, summary: summary)
+
+        XCTAssertEqual(runtimeState?.state, .unhealthy)
+    }
+
+    func testASmartWarningsStatusIsReadAsTheHelperMeansIt() throws {
+        var payload = try testDoctorPayload(checks: [
+            testDoctorCheck(status: " warn ", message: "Disk 1 (internal) reports that it is failing (SMART)",
+                            domain: "device", code: DoctorSummary.diskSmartFailingResultCode)
+        ]).decode(DoctorPayload.self)
+        payload.sections = [
+            "computer": DoctorSection(status: .pass, counts: [:]),
+            "device": DoctorSection(status: .warn, counts: ["WARN": 1])
+        ]
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .warning,
+            summary: DoctorSummary(payload: payload))
+
+        XCTAssertEqual(runtimeState?.state, .installedVerified)
+    }
+
     func testRuntimeNotStartedNeedsActivationOnlyOnNetBSD4() throws {
         let summary = try makeDoctorSummary(checks: [
             testDoctorCheck(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import plistlib
 import sys
 import socket
 import struct
@@ -47,7 +48,13 @@ from timecapsulesmb.checks.doctor_steps import (
     DOCTOR_CODE_HOSTNAME_UNMAPPED,
     DOCTOR_STARTUP_WINDOW_SECONDS,
     DISK_NOT_MOUNTING_MESSAGE,
+    DOCTOR_CODE_DISK_INFO,
+    DOCTOR_CODE_DISK_INFO_UNAVAILABLE,
     DOCTOR_CODE_DISK_NOT_MOUNTING,
+    DOCTOR_CODE_DISK_SMART_FAILING,
+    _decimal_size,
+    _disk_health_result,
+    _doctor_check_disk_health,
     DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK,
     _doctor_device_blocks,
     NATIVE_NBNS_NOT_READY,
@@ -123,7 +130,17 @@ from timecapsulesmb.device.probe import (
     SshAccessStatus,
     _parse_link_plan,
 )
-from timecapsulesmb.device.storage import MAST_PROBE_COMMAND, MaStProbeDiagnostics, MaStVolume
+from timecapsulesmb.device.acpd import APPLE_ACPD_BROKEN_CODE
+from timecapsulesmb.device.storage import (
+    MAST_ACP_COMMAND,
+    MAST_PROBE_COMMAND,
+    MAST_PROBE_TIMEOUT_SECONDS,
+    MaStDiskSnapshot,
+    MaStPartitionSnapshot,
+    MaStProbeDiagnostics,
+    MaStVolume,
+)
+from tests import test_storage_runtime
 from timecapsulesmb.discovery.models import _merge_snapshots
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
@@ -616,6 +633,12 @@ class CheckTests(unittest.TestCase):
         self._diskd_rpc_probe = self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.checks.doctor_steps.diskd_rpc_status_conn", return_value="answered")
         )
+        # MaSt lists no disks unless a case gives it some.
+        # The disk health step's own read is doctor_steps' only run_ssh.
+        self._mast_read = self._exit_stack.enter_context(mock.patch(
+            "timecapsulesmb.checks.doctor_steps.run_ssh",
+            return_value=subprocess.CompletedProcess(["ssh"], 0, "MaSt=" + plistlib.dumps([]).decode(), ""),
+        ))
         # A healthy device: the hostname is set and mapped for Samba.
         self._device_hostname_probe = self._exit_stack.enter_context(mock.patch(
             "timecapsulesmb.checks.doctor_steps.probe_device_hostname_conn",
@@ -9082,6 +9105,308 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
                 )
         self.assertEqual(len(results), 10)
         self.assertTrue(all(args[:5] == ["smbclient", "-s", "/dev/null", "-I", "fd00::217"] for args in captured_args))
+
+    # The disks MaSt lists: diskd's SMART verdict and each volume's space.
+
+    DISK_CODES = {DOCTOR_CODE_DISK_INFO, DOCTOR_CODE_DISK_SMART_FAILING, DOCTOR_CODE_DISK_INFO_UNAVAILABLE}
+
+    def give_mast(self, stdout: str, *, returncode: int = 0, stderr: str = "") -> None:
+        self._mast_read.side_effect = None
+        self._mast_read.return_value = subprocess.CompletedProcess(["ssh"], returncode, stdout, stderr)
+
+    def disk_rows(self, run) -> list[CheckResult]:
+        return [result for result in run.results if result.details.get("code") in self.DISK_CODES]
+
+    def run_healthy_doctor(self, **kwargs):
+        return self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"), skip_bonjour=True, skip_smb=True, **kwargs,
+        )
+
+    @staticmethod
+    def disk(*, builtin=True, smart_status="verified", label="Disk 1", partitions=None) -> MaStDiskSnapshot:
+        if partitions is None:
+            partitions = (MaStPartitionSnapshot("dk2", "Data", "hfs", 1905681, 8977, 1896704),)
+        return MaStDiskSnapshot("sd0", "", None, builtin, partitions, label=label, smart_status=smart_status)
+
+    def test_disk_row_says_smart_status_and_space(self) -> None:
+        cases = {
+            "internal, verified": (
+                self.disk(), "INFO", DOCTOR_CODE_DISK_INFO,
+                "Disk 1 (internal): SMART verified. Data: 9.4 GB used, 2.0 TB free of 2.0 TB",
+            ),
+            "internal, no status": (
+                self.disk(smart_status=None), "INFO", DOCTOR_CODE_DISK_INFO,
+                "Disk 1 (internal): SMART not reported. Data: 9.4 GB used, 2.0 TB free of 2.0 TB",
+            ),
+            # diskd checks only the built-in disk, so a USB disk says so too.
+            "USB, no status": (
+                self.disk(builtin=False, smart_status=None, label="Disk 2"), "INFO", DOCTOR_CODE_DISK_INFO,
+                "Disk 2 (USB): SMART not reported. Data: 9.4 GB used, 2.0 TB free of 2.0 TB",
+            ),
+            "USB that reports": (
+                self.disk(builtin=False, label="Disk 2"), "INFO", DOCTOR_CODE_DISK_INFO,
+                "Disk 2 (USB): SMART verified. Data: 9.4 GB used, 2.0 TB free of 2.0 TB",
+            ),
+            "a value diskd has not been seen to give": (
+                self.disk(smart_status="unknownStatus"), "INFO", DOCTOR_CODE_DISK_INFO,
+                "Disk 1 (internal): SMART unknownStatus. Data: 9.4 GB used, 2.0 TB free of 2.0 TB",
+            ),
+            "failing": (
+                self.disk(smart_status="failing"), "WARN", DOCTOR_CODE_DISK_SMART_FAILING,
+                "Disk 1 (internal) reports that it is failing (SMART); copy off the files you need and replace "
+                "the disk. Data: 9.4 GB used, 2.0 TB free of 2.0 TB",
+            ),
+            "USB failing": (
+                self.disk(builtin=False, smart_status="failing", label="Disk 2"), "WARN", DOCTOR_CODE_DISK_SMART_FAILING,
+                "Disk 2 (USB) reports that it is failing (SMART); copy off the files you need and replace "
+                "the disk. Data: 9.4 GB used, 2.0 TB free of 2.0 TB",
+            ),
+            "no label": (
+                self.disk(label=None), "INFO", DOCTOR_CODE_DISK_INFO,
+                "sd0 (internal): SMART verified. Data: 9.4 GB used, 2.0 TB free of 2.0 TB",
+            ),
+        }
+        for case, (disk, status, code, message) in cases.items():
+            with self.subTest(case):
+                result = _disk_health_result(disk)
+                self.assertEqual((result.status, result.details["code"], result.message), (status, code, message))
+                self.assertEqual(
+                    {key: result.details[key] for key in ("disk", "builtin", "smart_status")},
+                    {"disk": "sd0", "builtin": disk.builtin, "smart_status": disk.smart_status},
+                )
+
+    def test_disk_row_lists_every_volume_with_space_whatever_its_format(self) -> None:
+        partitions = (
+            MaStPartitionSnapshot("dk2", "Data", "hfs", 1905681, 1392180, 513501),
+            # FAT32 USB disks mount through mount_msdos.
+            MaStPartitionSnapshot("dk3", "", "msdos", 15000, 1000, 14000),
+            # Not mounted: diskd reports no space, or none at all.
+            MaStPartitionSnapshot("dk4", "Gone", "hfs", 1000, 0, 0),
+            MaStPartitionSnapshot("dk5", "No sizes", "hfs"),
+            MaStPartitionSnapshot("dk6", "No size", "hfs", None, 1, 1),
+            MaStPartitionSnapshot("dk7", "Zero size", "hfs", 0, 1, 1),
+        )
+        self.assertEqual(
+            _disk_health_result(self.disk(partitions=partitions)).message,
+            "Disk 1 (internal): SMART verified. Data: 1.5 TB used, 538.4 GB free of 2.0 TB; "
+            "dk3: 1.0 GB used, 14.7 GB free of 15.7 GB",
+        )
+
+    def test_disk_row_without_space_ends_at_its_smart_status(self) -> None:
+        for partitions in ((), (MaStPartitionSnapshot("dk2", "Data", "hfs", 1000, 0, 0),)):
+            with self.subTest(partitions=partitions):
+                self.assertEqual(_disk_health_result(self.disk(partitions=partitions)).message,
+                                 "Disk 1 (internal): SMART verified")
+
+    def test_decimal_size_picks_the_unit_finder_would(self) -> None:
+        self.assertEqual(
+            [_decimal_size(mib) for mib in (0, 1, 900, 953, 954, 953674, 953675, 1905681)],
+            # Just under a unit rounds up into it, never to "1000.0".
+            ["0.0 MB", "1.0 MB", "943.7 MB", "1.0 GB", "1.0 GB", "1.0 TB", "1.0 TB", "2.0 TB"],
+        )
+
+    def test_doctor_lists_each_disk_mast_reports(self) -> None:
+        self.give_mast(test_storage_runtime.netbsd6_internal_and_usb_xml())
+        debug_fields: dict[str, object] = {}
+        run = self.run_healthy_doctor(debug_fields=debug_fields)
+
+        rows = self.disk_rows(run)
+        self.assertEqual([(row.status, row.message) for row in rows], [
+            ("INFO", "Disk 1 (internal): SMART verified. AirPort Disk: 1.5 TB used, 538.4 GB free of 2.0 TB"),
+            ("INFO", "Disk 2 (USB): SMART not reported. 4TB: 77.6 GB used, 3.9 TB free of 4.0 TB"),
+        ])
+        self.assertTrue(all(row.domain == "device" for row in rows))
+        self.assertEqual([(row.details["disk"], row.details["builtin"]) for row in rows], [("wd0", True), ("sd0", False)])
+        # One bounded read of the XML form, whose strings are escaped, unlike
+        # acp's text form; it never asks ACPd anything else.
+        self._mast_read.assert_called_once_with(
+            mock.ANY, MAST_ACP_COMMAND, check=False, timeout=MAST_PROBE_TIMEOUT_SECONDS,
+        )
+        # Telemetry gets every disk whole: label, model, firmware, diskd's
+        # state, and each volume's name and sizes. Never the serial number.
+        health = debug_fields["disk_health"]
+        self.assertIsNone(health["error"])
+        self.assertEqual(
+            [(disk["device"], disk["label"], disk["builtin"], disk["smart_status"], disk["model"], disk["revision"],
+              disk["soft_disconnected"]) for disk in health["disks"]],
+            [("wd0", "Disk 1", True, "verified", "PALP EDH DTS0200MD00 1", "PA45", False),
+             ("sd0", "Disk 2", False, None, "WD", "1014", False)],
+        )
+        self.assertEqual(health["disks"][0]["partitions"][0], {
+            "device": "dk2", "name": "AirPort Disk", "format": "hfs",
+            "size_mib": 1905681, "used_mib": 1392180, "free_mib": 513501, "users": 1,
+        })
+        self.assertNotIn("SERIAL6", json.dumps(health))
+
+    def test_doctor_reads_mast_behind_lines_the_ssh_client_printed(self) -> None:
+        self.give_mast("Warning: Permanently added '10.0.0.2' (RSA) to the list of known hosts.\n"
+                       + test_storage_runtime.netbsd6_internal_and_usb_xml())
+        rows = self.disk_rows(self.run_healthy_doctor())
+        self.assertEqual([row.details["code"] for row in rows], [DOCTOR_CODE_DISK_INFO, DOCTOR_CODE_DISK_INFO])
+
+    def test_doctor_lists_no_disks_for_a_device_without_any(self) -> None:
+        # An AirPort Extreme with nothing plugged in: acp prints an empty array.
+        debug_fields: dict[str, object] = {}
+        run = self.run_healthy_doctor(debug_fields=debug_fields)
+        self.assertEqual(self.disk_rows(run), [])
+        self._mast_read.assert_called_once()
+        self.assertEqual(debug_fields["disk_health"], {"error": None, "disks": []})
+
+    def test_a_failing_disk_warns_without_failing_the_checkup(self) -> None:
+        baseline = self.run_healthy_doctor()
+        self.give_mast(test_storage_runtime.netbsd6_internal_and_usb_xml("failing"))
+        run = self.run_healthy_doctor()
+
+        self.assertEqual([row.status for row in self.disk_rows(run)], ["WARN", "INFO"])
+        self.assertEqual(run.fatal, baseline.fatal)
+        self.assertIn(DOCTOR_CODE_DISK_SMART_FAILING, doctor_report(run.results)["sections"]["device"]["warn_codes"])
+
+    def test_doctor_says_when_mast_cannot_be_read_and_goes_on(self) -> None:
+        prefix = "Attempt to read Apple ACPd's MaSt to get disk information failed: "
+        failed_get = "### get 'MaSt' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>"
+        ssh_warning = "Warning: Permanently added '10.0.0.2' (RSA) to the list of known hosts."
+        cases = {
+            "transport error": (dict(side_effect=SshError("connection reset")), "connection reset"),
+            "timeout": (dict(side_effect=SshCommandTimeout("Timed out waiting for ssh command")),
+                        "Timed out waiting for ssh command"),
+            # acp's own text for a failed get, on stderr with exit 0; run_ssh
+            # joins stderr into stdout, behind what the SSH client printed.
+            "failed get": (dict(stdout=f"{ssh_warning}\n{failed_get}\n"), failed_get),
+            "failed get on stderr": (dict(stdout="", stderr=f"{ssh_warning}\n{failed_get}\n"), failed_get),
+            "failed get beside a non-zero exit": (dict(stdout=f"{failed_get}\nlater\n", returncode=1), failed_get),
+            "exit status": (dict(stdout="", returncode=255), "exit 255: no output"),
+            "exit status with output": (
+                dict(stdout="ssh: connect to host 10.0.0.2 port 22: Connection refused\n", returncode=255),
+                "exit 255: ssh: connect to host 10.0.0.2 port 22: Connection refused",
+            ),
+            "nothing printed": (dict(stdout="  \n"), "no output"),
+            # Exit 0 without "MaSt=": acp printed no property.
+            "only the SSH client spoke": (dict(stdout=f"{ssh_warning}\n"), ssh_warning),
+        }
+        for case, (probe, reason) in cases.items():
+            with self.subTest(case):
+                if "side_effect" in probe:
+                    self._mast_read.side_effect = probe["side_effect"]
+                else:
+                    self.give_mast(**probe)
+                debug_fields: dict[str, object] = {}
+                run = self.run_healthy_doctor(debug_fields=debug_fields)
+
+                rows = self.disk_rows(run)
+                self.assertEqual([(row.status, row.details["code"], row.message) for row in rows],
+                                 [("INFO", DOCTOR_CODE_DISK_INFO_UNAVAILABLE, prefix + reason)])
+                self.assertEqual(debug_fields["disk_health"], {"error": reason, "disks": []})
+                # The checks after it still ran.
+                self.assertIn("diskd RPC: getVolumeCounts answered", [result.message for result in run.results])
+
+    def test_doctor_says_when_mast_is_not_a_plist_it_can_read(self) -> None:
+        prefix = "Attempt to read Apple ACPd's MaSt to get disk information failed: "
+        cases = {
+            # Each of these once read as a device without disks.
+            "bare property name": ("MaSt=\n", "acp printed no MaSt plist"),
+            "not a plist": ("MaSt=not a plist\n", "acp printed no MaSt plist"),
+            "a dictionary": ("MaSt=" + plistlib.dumps({"MaSt": []}).decode(), "MaSt is not an array of disks"),
+            "partitions not an array": ("MaSt=" + plistlib.dumps([{"deviceName": "wd0", "partitions": "dk2"}]).decode(),
+                                        "MaSt lists wd0's partitions as something else"),
+            "a plist cut off": ("MaSt=<?xml version=\"1.0\"?><plist><array><dict>", None),
+        }
+        for case, (output, reason) in cases.items():
+            with self.subTest(case):
+                self.give_mast(output)
+                debug_fields: dict[str, object] = {}
+                rows = self.disk_rows(self.run_healthy_doctor(debug_fields=debug_fields))
+
+                self.assertEqual([row.details["code"] for row in rows], [DOCTOR_CODE_DISK_INFO_UNAVAILABLE])
+                self.assertTrue(rows[0].message.startswith(prefix))
+                error = debug_fields["disk_health"]["error"]
+                self.assertEqual(rows[0].message, prefix + error)
+                self.assertEqual(debug_fields["disk_health"]["disks"], [])
+                if reason is not None:
+                    self.assertEqual(error, reason)
+
+    def test_disks_are_listed_ahead_of_checks_that_stop_doctor(self) -> None:
+        # Apple's diskd reports the disks whether or not the runtime is installed.
+        self.give_mast(test_storage_runtime.netbsd6_internal_and_usb_xml())
+        not_installed = self.run_healthy_doctor(deployed_config_present=False)
+        missing = next(problem for problem in DISK_PAYLOAD_PROBLEMS if problem.token == "payload=missing")
+        payload_missing, _ = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(12.0, "manager started 12s ago", payload_problems=(missing,)), (),
+        )
+        not_mounting, _ = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(14400.0, "manager started 14400s ago", unmounted_since=1260), (),
+        )
+        for name, run in (("not installed", not_installed), ("payload missing", payload_missing),
+                          ("disk not mounting", not_mounting)):
+            with self.subTest(name):
+                self.assertTrue(run.fatal)
+                rows = self.disk_rows(run)
+                self.assertEqual(len(rows), 2)
+                first_fail = next(i for i, result in enumerate(run.results) if result.status == "FAIL")
+                self.assertLess(run.results.index(rows[-1]), first_fail)
+
+    def test_doctor_reads_no_mast_when_acpd_is_gone_or_ssh_is_skipped(self) -> None:
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=self.QUIT_LISTING):
+            acpd_gone = self.run_doctor_with_process_snapshot(f"{self.HEALTHY_SMBD_ROW}\n{self.QUIT_LISTING}")
+        self.assertTrue(acpd_gone.fatal)
+        self._mast_read.assert_not_called()
+
+        self.run_doctor_with_mocks(skip_ssh=True, skip_bonjour=True, skip_smb=True)
+        self._mast_read.assert_not_called()
+
+    def test_doctor_does_not_ask_an_acpd_that_quit_while_samba_serves(self) -> None:
+        # Doctor goes on past it, but acp would only wait out its timeout.
+        serving = f"  107 1 15 S 0 select 0:00.32 sshd\n{self.HEALTHY_SMBD_ROW}\ntcapsule-ps: end"
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=serving):
+            run = self.run_doctor_with_process_snapshot(serving)
+
+        self.assertEqual([result.details["acpd_problem"] for result in self.apple_acpd_failures(run)], ["quit"])
+        self._mast_read.assert_not_called()
+        self.assertEqual(
+            [(row.details["code"], row.message) for row in self.disk_rows(run)],
+            [(DOCTOR_CODE_DISK_INFO_UNAVAILABLE,
+              "Attempt to read Apple ACPd's MaSt to get disk information failed: Apple ACPd is not answering")],
+        )
+        self.assertEqual(run.debug_fields["disk_health"], {"error": "Apple ACPd is not answering", "disks": []})
+
+    def test_disk_health_skips_only_an_acpd_that_cannot_answer_acp(self) -> None:
+        # Each problem as _doctor_check_apple_acpd records it, ahead of this step.
+        self.give_mast(test_storage_runtime.netbsd6_internal_and_usb_xml())
+        target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", ""))
+        remote = SimpleNamespace(remote_checks_enabled=True)
+        for problem, gone, asked in (("quit", True, False), ("restart_never_happened", True, False),
+                                     ("syut_silent", False, False), ("stuck_child", False, True),
+                                     ("network_silent", False, True)):
+            with self.subTest(problem):
+                self._mast_read.reset_mock()
+                sink = DoctorSink(on_result=None, debug_fields={})
+                sink.add(CheckResult("FAIL", "Apple ACPd is broken", {
+                    "code": APPLE_ACPD_BROKEN_CODE, "acpd_problem": problem, "acpd_gone": gone,
+                }))
+
+                _doctor_check_disk_health(target, remote, sink)
+
+                self.assertEqual(self._mast_read.called, asked)
+                codes = [result.details["code"] for result in sink.results[1:]]
+                self.assertEqual(codes, [DOCTOR_CODE_DISK_INFO] * 2 if asked else [DOCTOR_CODE_DISK_INFO_UNAVAILABLE])
+        # Another check's FAIL with the same details is not ACPd's.
+        sink = DoctorSink(on_result=None, debug_fields={})
+        sink.add(CheckResult("FAIL", "other", {"code": "other", "acpd_problem": "syut_silent", "acpd_gone": True}))
+        self._mast_read.reset_mock()
+        _doctor_check_disk_health(target, remote, sink)
+        self._mast_read.assert_called_once()
+
+    def test_disk_health_reads_nothing_without_remote_checks(self) -> None:
+        sink = DoctorSink(on_result=None, debug_fields={})
+        _doctor_check_disk_health(SimpleNamespace(connection=None), SimpleNamespace(remote_checks_enabled=False), sink)
+        self._mast_read.assert_not_called()
+        self.assertEqual((sink.results, sink.debug_fields), ([], {}))
+
+    def test_disk_health_keeps_no_telemetry_without_debug_fields(self) -> None:
+        self.give_mast(test_storage_runtime.netbsd6_internal_and_usb_xml())
+        sink = DoctorSink(on_result=None, debug_fields=None)
+        _doctor_check_disk_health(SimpleNamespace(connection=None), SimpleNamespace(remote_checks_enabled=True), sink)
+        self.assertEqual(len(sink.results), 2)
 
 if __name__ == "__main__":
     unittest.main()

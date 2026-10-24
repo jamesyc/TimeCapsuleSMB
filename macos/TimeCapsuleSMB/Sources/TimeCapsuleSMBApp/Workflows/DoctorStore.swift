@@ -61,6 +61,8 @@ struct DoctorSummary: Equatable {
     static let rsyncUnreadableOnDiskResultCode = "rsync_unreadable_on_disk"
     static let diskNotMountingResultCode = "disk_not_mounting"
     static let diskFailingResultCode = "disk_failing"
+    /// The disk's own SMART check says it is failing; Samba still serves.
+    static let diskSmartFailingResultCode = "disk_smart_failing"
     static let acpdBrokenResultCode = "apple_acpd_broken"
     /// The installed files are missing from every disk, as after an Erase in
     /// AirPort Utility, the disk's copy of Samba is damaged, or the disk could

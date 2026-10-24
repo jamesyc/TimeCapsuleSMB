@@ -80,6 +80,9 @@ def doctor_finished_fields(
         # The kinds of IPv4 address the device has (never the addresses), as
         # Apple's wcifsnd and discovery each see them, on passing runs too.
         "device_ipv4": debug_fields.get("device_ipv4"),
+        # Each disk MaSt lists, with its SMART status, label and volumes, or
+        # why MaSt could not be read, on passing runs too.
+        "disk_health": debug_fields.get("disk_health"),
         "doctor_status": report["status"],
         "doctor_sections": report["sections"],
     }

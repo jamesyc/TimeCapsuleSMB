@@ -59,6 +59,13 @@ class MaStPartitionSnapshot:
     device: str
     name: str
     format: str
+    # diskd's sizes, in MiB.
+    size_mib: int | None = None
+    used_mib: int | None = None
+    free_mib: int | None = None
+    # How many diskd.useVolume holds the volume has; 0 on a mounted volume
+    # is part of diskd's hang signature (with the disk's soft_disconnected).
+    users: int | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,15 @@ class MaStDiskSnapshot:
     size: object | None
     builtin: bool
     partitions: tuple[MaStPartitionSnapshot, ...]
+    # Apple's own name for the disk ("Disk 1"), and diskd's SMART verdict
+    # ("verified" or "failing"), which it reports for the built-in disk only.
+    label: str | None = None
+    smart_status: str | None = None
+    # The drive's model (MaSt's `vendor`; byte-swapped on NetBSD 6's wd0) and
+    # firmware (`revision`). `product`, the internal disk's serial, is never read.
+    model: str | None = None
+    revision: str | None = None
+    soft_disconnected: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -253,11 +269,36 @@ def _volumes_from_plist_root(root: object) -> tuple[MaStVolume, ...]:
     return tuple(volumes)
 
 
+def _whole_number(value: object) -> int | None:
+    """A count or size MaSt gave as an integer (XML) or its digits (acp's text form)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    # isdigit() alone takes "²", which int() refuses.
+    return int(value) if isinstance(value, str) and value.isascii() and value.isdigit() else None
+
+
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_bool(value: object) -> bool | None:
+    """A boolean MaSt gave as itself (XML) or as `true`/`false` (acp's text form)."""
+    if isinstance(value, bool):
+        return value
+    return {"true": True, "false": False}.get(value) if isinstance(value, str) else None
+
+
 def _partition_snapshot_from_mapping(partition: dict[str, object]) -> MaStPartitionSnapshot:
     return MaStPartitionSnapshot(
         device=str(partition.get("deviceName") or ""),
         name=str(partition.get("name") or ""),
         format=str(partition.get("format") or "").lower(),
+        size_mib=_whole_number(partition.get("size")),
+        used_mib=_whole_number(partition.get("sizeUsed")),
+        free_mib=_whole_number(partition.get("sizeFree")),
+        users=_whole_number(partition.get("users")),
     )
 
 
@@ -275,6 +316,11 @@ def _disk_snapshot_from_mapping(disk: dict[str, object]) -> MaStDiskSnapshot:
         )
         if isinstance(partitions, list)
         else (),
+        label=_optional_text(disk.get("info")),
+        smart_status=_optional_text(disk.get("smartStatus")),
+        model=_optional_text(disk.get("vendor")),
+        revision=_optional_text(disk.get("revision")),
+        soft_disconnected=_optional_bool(disk.get("softDisconnected")),
     )
 
 
@@ -388,6 +434,25 @@ def parse_mast_plist(content: str | bytes) -> tuple[MaStVolume, ...]:
 
 def parse_mast_inventory(content: str | bytes) -> tuple[MaStDiskSnapshot, ...]:
     return _disk_snapshots_from_plist_root(_mast_root(content))
+
+
+def parse_mast_xml_inventory(output: str) -> tuple[MaStDiskSnapshot, ...]:
+    """`acp MaSt`'s XML output, strictly: a plist whose root is an array of
+    disk dictionaries, each one's partitions (when listed) an array of
+    dictionaries. Anything else raises ValueError (ExpatError for XML that
+    does not parse), so a malformed read is never taken for a device without
+    disks; an empty array is one."""
+    start = output.find("<?xml")
+    if start < 0:
+        raise ValueError("acp printed no MaSt plist")
+    root = plistlib.loads(output[start:].encode("utf-8"))
+    if not isinstance(root, list) or not all(isinstance(disk, dict) for disk in root):
+        raise ValueError("MaSt is not an array of disks")
+    for disk in root:
+        partitions = disk.get("partitions", [])
+        if not isinstance(partitions, list) or not all(isinstance(partition, dict) for partition in partitions):
+            raise ValueError(f"MaSt lists {disk.get('deviceName') or 'a disk'}'s partitions as something else")
+    return tuple(_disk_snapshot_from_mapping(disk) for disk in root)
 
 
 def raise_if_acpd_silent(connection: SshConnection, *, after: SshCommandTimeout | None = None) -> None:

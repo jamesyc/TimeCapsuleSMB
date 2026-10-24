@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TypeVar
+from xml.parsers.expat import ExpatError
 
 from timecapsulesmb.checks.bonjour import (
     BONJOUR_INSTANCE_NOT_SEEN_CODE,
@@ -99,7 +101,14 @@ from timecapsulesmb.device.disk_errors import (
     disk_failing_message,
     read_disk_errors_conn,
 )
-from timecapsulesmb.device.storage import diskd_rpc_status_conn
+from timecapsulesmb.device.storage import (
+    MAST_ACP_COMMAND,
+    MAST_GET_FAILED_TEXT,
+    MAST_PROBE_TIMEOUT_SECONDS,
+    MaStDiskSnapshot,
+    diskd_rpc_status_conn,
+    parse_mast_xml_inventory,
+)
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device.processes import (
@@ -174,7 +183,7 @@ from timecapsulesmb.discovery.models import normalize_airport_mac
 from timecapsulesmb.transport.local import command_exists, find_command, find_free_local_port
 from timecapsulesmb.transport.local import scoped_tcp_connect_errors
 from timecapsulesmb.transport.errors import TransportError
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, ssh_local_forward
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_local_forward
 
 
 T = TypeVar("T")
@@ -275,6 +284,13 @@ DISK_NOT_MOUNTING_MESSAGE = (
     '"Disk Repair" in the macOS app, or tcapsule fsck from the command line; if this keeps happening, '
     "the disk may need replacing"
 )
+# A disk's own SMART check says it is failing. Samba still serves, so it is a
+# warning, as AirPort Utility's amber status is.
+DOCTOR_CODE_DISK_SMART_FAILING = "disk_smart_failing"
+# Any other disk: its SMART status, or that it reports none, and its space.
+DOCTOR_CODE_DISK_INFO = "disk_info"
+# INFO, not WARN: a WARN would mark the runtime unverified in the app.
+DOCTOR_CODE_DISK_INFO_UNAVAILABLE = "disk_info_unavailable"
 DOCTOR_CODE_HOSTNAME_WAITING = "hostname_waiting"
 DOCTOR_CODE_HOSTNAME_UNMAPPED = "hostname_unmapped"
 # This computer is only on networks where the device does not share its disks
@@ -2654,6 +2670,106 @@ def _doctor_check_disk_mounting(manager: ManagerStartupAgeProbeResult | None, si
         return StepDecision()
     sink.add(CheckResult("FAIL", DISK_NOT_MOUNTING_MESSAGE, details={"code": DOCTOR_CODE_DISK_NOT_MOUNTING}))
     return StepDecision(stop=True)
+
+
+def _decimal_size(mib: int) -> str:
+    """A MaSt size in decimal units, as Finder shows sizes."""
+    size = mib * 1024 * 1024
+    for unit, scale in (("TB", 10**12), ("GB", 10**9)):
+        # Rounded first, so 999.96 GB reads as 1.0 TB rather than 1000.0 GB.
+        if round(size / scale, 1) >= 1:
+            return f"{size / scale:.1f} {unit}"
+    return f"{size / 10**6:.1f} MB"
+
+
+def _disk_health_result(disk: MaStDiskSnapshot) -> CheckResult:
+    """One disk MaSt lists: diskd's SMART verdict (the "Disk status"
+    AirPort Utility shows) and the space on each of its volumes, whatever
+    their format. Only `builtin` marks the internal disk: it is sd0 on
+    NetBSD 4, where a USB disk is sd0 on NetBSD 6."""
+    name = f"{disk.label or disk.device} ({'internal' if disk.builtin else 'USB'})"
+    volumes = "; ".join(
+        f"{partition.name or partition.device}: {_decimal_size(partition.used_mib)} used, "
+        f"{_decimal_size(partition.free_mib)} free of {_decimal_size(partition.size_mib)}"
+        for partition in disk.partitions
+        # A volume diskd has not mounted reports no space, or none at all.
+        if partition.size_mib and partition.used_mib is not None and partition.free_mib is not None
+        and partition.used_mib + partition.free_mib
+    )
+    space = f". {volumes}" if volumes else ""
+    details: dict[str, object] = {"disk": disk.device, "builtin": disk.builtin, "smart_status": disk.smart_status}
+    if disk.smart_status == "failing":
+        return CheckResult(
+            "WARN",
+            f"{name} reports that it is failing (SMART); copy off the files you need and replace the disk{space}",
+            details={"code": DOCTOR_CODE_DISK_SMART_FAILING, **details},
+        )
+    return CheckResult(
+        "INFO", f"{name}: SMART {disk.smart_status or 'not reported'}{space}",
+        details={"code": DOCTOR_CODE_DISK_INFO, **details},
+    )
+
+
+def _mast_read_failure(proc: subprocess.CompletedProcess[str]) -> str | None:
+    """Why acp gave no MaSt, or None when it did. acp prints a failed get on
+    stderr and exits 0, and run_ssh joins stderr into stdout behind any line
+    the SSH client printed, so the failed get's own line is the reason. A
+    device without disks prints an empty array."""
+    lines = [line.strip() for line in f"{proc.stdout or ''}\n{proc.stderr or ''}".splitlines() if line.strip()]
+    failed_get = next((line for line in lines if MAST_GET_FAILED_TEXT in line), None)
+    if failed_get is not None:
+        return failed_get
+    # acp names the property it printed ("MaSt=") in both its forms.
+    if proc.returncode == 0 and any(line.startswith("MaSt=") for line in lines):
+        return None
+    last = lines[-1] if lines else "no output"
+    return f"exit {proc.returncode}: {last}" if proc.returncode else last
+
+
+ACPD_SILENT_REASON = "Apple ACPd is not answering"
+
+
+def _acpd_silent(sink: DoctorSink) -> bool:
+    """Whether the ACPd check found ACPd unable to answer acp on the device
+    itself: gone (it quit, or a restart tore it down), or silent to syUT."""
+    return any(
+        result.details.get("code") == acpd.APPLE_ACPD_BROKEN_CODE
+        and (result.details.get("acpd_gone") is True or result.details.get("acpd_problem") == "syut_silent")
+        for result in sink.results
+    )
+
+
+def _doctor_check_disk_health(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    """Each disk's SMART verdict and space from MaSt, which never wakes a
+    sleeping disk, so it runs on every check, even when what follows stops
+    early. An ACPd the check before found silent is not asked: acp would
+    wait out the read's timeout to say the same."""
+    if not remote.remote_checks_enabled:
+        return
+    disks: tuple[MaStDiskSnapshot, ...] = ()
+    if _acpd_silent(sink):
+        reason: str | None = ACPD_SILENT_REASON
+    else:
+        try:
+            # The XML form: the text form prints names unescaped, so a volume
+            # name with a line break could pass for another key.
+            proc = run_ssh(target.connection, MAST_ACP_COMMAND, check=False, timeout=MAST_PROBE_TIMEOUT_SECONDS)
+            reason = _mast_read_failure(proc)
+            if reason is None:
+                # Strictly: a lenient parse reads a bare "MaSt=" as no disks.
+                disks = parse_mast_xml_inventory(proc.stdout)
+        except (TransportError, ValueError, ExpatError) as e:
+            reason = str(e) or type(e).__name__
+    if sink.debug_fields is not None:
+        # Every run's disks reach telemetry (services.doctor.doctor_finished_fields).
+        sink.debug_fields["disk_health"] = {"error": reason, "disks": [asdict(disk) for disk in disks]}
+    if reason is not None:
+        sink.add(CheckResult(
+            "INFO", f"Attempt to read Apple ACPd's MaSt to get disk information failed: {reason}",
+            details={"code": DOCTOR_CODE_DISK_INFO_UNAVAILABLE},
+        ))
+    for disk in disks:
+        sink.add(_disk_health_result(disk))
 
 
 def _doctor_check_runtime_naming_identity(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> RuntimeNamingState:

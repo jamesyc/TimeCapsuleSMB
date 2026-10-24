@@ -244,6 +244,28 @@ class CliDoctorTests(CliTestCase):
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["acpd_problems"], [])
 
+    def test_doctor_telemetry_reports_the_disks_on_passing_and_failing_runs(self) -> None:
+        disks = {"error": None, "disks": [{"device": "wd0", "label": "Disk 1", "smart_status": "verified"}]}
+        unreadable = {"error": "exit 255", "disks": []}
+        for health, fatal in ((disks, False), (unreadable, True), (None, False)):
+            with self.subTest(health=health, fatal=fatal):
+                def fake_run_doctor_checks(*_args, **kwargs):
+                    if health is not None:
+                        kwargs["debug_fields"]["disk_health"] = health
+                    return [doctor.CheckResult("FAIL" if fatal else "PASS", "check", domain="device")], fatal
+
+                with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \
+                     mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks), \
+                     redirect_stdout(io.StringIO()):
+                    doctor.main([])
+
+                finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                if health is None:
+                    # Doctor never reached the device's disks: telemetry leaves out empty fields.
+                    self.assertNotIn("disk_health", finished)
+                else:
+                    self.assertEqual(finished["disk_health"], health)
+
     def test_doctor_json_names_each_results_section(self) -> None:
         output = io.StringIO()
         with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \

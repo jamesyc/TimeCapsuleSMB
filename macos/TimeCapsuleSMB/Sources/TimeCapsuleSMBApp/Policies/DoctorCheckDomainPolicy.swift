@@ -90,7 +90,7 @@ enum DoctorCheckDomainPolicy {
         )
     }
 
-    private static func normalizedStatus(_ status: String) -> String {
+    static func normalizedStatus(_ status: String) -> String {
         status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     }
 }

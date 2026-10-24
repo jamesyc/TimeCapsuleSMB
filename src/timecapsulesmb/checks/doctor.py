@@ -36,6 +36,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_device_hostname,
     _doctor_check_disk_errors_after_failure,
     _doctor_check_disk_errors_under_verdict,
+    _doctor_check_disk_health,
     _doctor_check_disk_mounting,
     _doctor_check_disk_payload,
     _doctor_manager_starting,
@@ -116,6 +117,9 @@ def run_doctor_checks(
         # The manager's log shows what it could not read without ACPd.
         _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
         return sink.results, sink.fatal()
+    # Apple's diskd reports the disks with or without our runtime, so ahead of
+    # every check that can stop on it.
+    _doctor_check_disk_health(target, remote, sink)
 
     if _doctor_check_running_migration(target, remote, sink).stop:
         return sink.results, sink.fatal()
