@@ -86,10 +86,10 @@ class ConfigureFlowRequest:
     ssh_opts: str
     configure_id: str
     persist_password: bool
-    discovered_airport_syap: str | None = None
-    # The syAP of the Bonjour record the host came from. Unlike
-    # discovered_airport_syap, it is unset when the user typed another host, so
-    # it can reject this device before ACP enables SSH and reboots it.
+    # syAP of the Bonjour record the host came from. resolve_configure_target
+    # leaves this empty for an explicit or saved host. It rejects an unsupported
+    # model before ACP enables SSH, and it supplies identity when the probe has
+    # no ACP identity.
     selected_record_airport_syap: str | None = None
     # The Bonjour record the host came from, for ACP probe telemetry.
     selected_record: BonjourResolvedService | None = None
@@ -217,17 +217,17 @@ def enable_ssh_and_reprobe(
 def observed_device_identity(
     compatibility: DeviceCompatibility | None,
     *,
-    discovered_airport_syap: str | None = None,
+    record_airport_syap: str | None = None,
 ) -> ObservedDeviceIdentity:
     syap_source: str | None = "probed"
     syap = None if compatibility is None else compatibility.exact_syap
     if syap is None:
         syap = validated_value_or_empty(
             "TC_AIRPORT_SYAP",
-            discovered_airport_syap or "",
+            record_airport_syap or "",
             "Airport Utility syAP code",
         ) or None
-        syap_source = "discovered" if syap is not None else None
+        syap_source = "selected_record" if syap is not None else None
 
     model = None if compatibility is None else compatibility.exact_model
     if model is None and syap is not None:
@@ -390,9 +390,10 @@ def run_configure_flow(
         callbacks.debug(configure_failure_reason="unsupported_device")
         raise ConfigureFlowError(render_compatibility_message(compatibility), code=ErrorCode.UNSUPPORTED_DEVICE)
 
+    # selected_record_airport_syap is empty unless the host came from that record.
     identity = observed_device_identity(
         compatibility,
-        discovered_airport_syap=request.discovered_airport_syap,
+        record_airport_syap=request.selected_record_airport_syap,
     )
     airport_mac = probe.airport_mac if probe.ssh_authenticated else None
     gone = acpd.acpd_quit(connection, acpd.read_processes(connection)) if probe.ssh_authenticated and airport_mac is None else None
