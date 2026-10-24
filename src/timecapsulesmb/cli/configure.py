@@ -283,8 +283,8 @@ def prompt_valid_config_value(key: str, label: str, current: str, secret: bool =
 def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None:
     if choice.source == "saved":
         print(f"Using {key} from .env: {choice.value}")
-    elif choice.source == "discovered":
-        print(f"Using discovered {key}: {choice.value}")
+    elif choice.source == "selected_record":
+        print(f"Using {key} from the selected device: {choice.value}")
     elif choice.source == "probed":
         print(f"Using probed {key}: {choice.value}")
     elif choice.source == "derived":
@@ -618,7 +618,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                         ssh_opts=ssh_opts,
                         configure_id=configure_id,
                         persist_password=True,
-                        discovered_airport_syap=target.discovered_airport_syap,
                         selected_record_airport_syap=target.selected_record_airport_syap,
                         selected_record=target.target_record,
                         enable_ssh=True,

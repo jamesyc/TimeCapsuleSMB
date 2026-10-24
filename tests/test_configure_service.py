@@ -1157,7 +1157,7 @@ class ConfigureServiceTests(unittest.TestCase):
                     ssh_opts="-o foo",
                     configure_id="config-id",
                     persist_password=True,
-                    discovered_airport_syap="119",
+                    selected_record_airport_syap="119",
                     probe=mock.Mock(return_value=probe_state),
                     write_env=lambda _path, values: written.update(values),
                 ),
@@ -1636,15 +1636,14 @@ class ConfigureServiceTests(unittest.TestCase):
                 self.assertEqual(result.identity.syap, "119")
 
     def test_run_configure_flow_ignores_unsupported_syap_from_record_the_host_did_not_come_from(self) -> None:
-        # The record's syAP is still the identity fallback, but a typed host may be
-        # another device, so only selected_record_airport_syap may reject it.
+        # A typed host leaves selected_record_airport_syap empty, so discovery
+        # cannot reject the target.
         probe = mock.Mock(return_value=self.make_probe_state())
         with tempfile.TemporaryDirectory() as tmp:
             result = run_configure_flow(
                 self.configure_request(
                     Path(tmp) / ".env",
                     probe,
-                    discovered_airport_syap="115",
                     selected_record_airport_syap=None,
                     write_env=lambda _path, _values: None,
                 )
