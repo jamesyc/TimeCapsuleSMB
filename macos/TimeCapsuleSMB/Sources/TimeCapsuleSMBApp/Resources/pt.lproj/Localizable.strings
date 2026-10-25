@@ -782,10 +782,10 @@
 "backend.recovery.deploy.deploy_no_usb_disk_detected.message" = "O AirPort Extreme não tem disco interno, e o dispositivo não informou nenhum disco USB.";
 "backend.recovery.deploy.deploy_no_usb_disk_detected.action.1" = "Conecte um disco USB formatado para Mac (HFS+).";
 "backend.recovery.deploy.deploy_no_usb_disk_detected.action.2" = "Se houver um disco conectado, verifique a alimentação e o cabo dele e tente novamente.";
-"backend.recovery.deploy.deploy_no_hfs_partition.title" = "Nenhuma partição HFS válida";
-"backend.recovery.deploy.deploy_no_hfs_partition.message" = "Um disco foi encontrado, mas ele não apresenta uma partição HFS válida onde o TimeCapsuleSMB possa ser instalado.";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.1" = "Execute “Instalar/atualizar Samba” novamente.";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Apague o disco no Utilitário AirPort usando “Apagar Disco”.";
+"backend.recovery.deploy.deploy_no_hfs_partition.title" = "O disco não está pronto para a instalação";
+"backend.recovery.deploy.deploy_no_hfs_partition.message" = "Um disco foi encontrado, mas ele não tem uma partição HFS utilizável pelo TimeCapsuleSMB. O disco pode precisar de formatação, as informações das partições podem estar danificadas ou o próprio disco pode estar falhando.";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.1" = "Tente executar “Instalar/atualizar Samba” novamente.";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Se o problema persistir, apague o disco no Utilitário AirPort usando “Apagar Disco”.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "Execute “Instalar/atualizar Samba” novamente depois que o Time Capsule formatar o disco.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "Alguns dispositivos não detectam certas partições maiores que 2 TB.";
 "backend.recovery.deploy.deploy_disk_not_writable.title" = "Nenhum volume gravável para os arquivos de instalação";

@@ -782,10 +782,10 @@
 "backend.recovery.deploy.deploy_no_usb_disk_detected.message" = "An AirPort Extreme has no internal disk, and the device reported no USB disk.";
 "backend.recovery.deploy.deploy_no_usb_disk_detected.action.1" = "Connect a USB disk formatted for Mac (HFS+).";
 "backend.recovery.deploy.deploy_no_usb_disk_detected.action.2" = "If a disk is connected, check its power and cable, then retry.";
-"backend.recovery.deploy.deploy_no_hfs_partition.title" = "No valid HFS partition";
-"backend.recovery.deploy.deploy_no_hfs_partition.message" = "A disk was found, but it does not expose a valid HFS partition that TimeCapsuleSMB can install to.";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.1" = "Run “Install / Update Samba” again.";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Erase the disk with AirPort Utility using Erase Disk.";
+"backend.recovery.deploy.deploy_no_hfs_partition.title" = "The disk is not ready for installation";
+"backend.recovery.deploy.deploy_no_hfs_partition.message" = "A disk was found, but it has no usable HFS partition for TimeCapsuleSMB. The disk may need formatting, its partition information may be damaged, or the disk itself may be failing.";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.1" = "Try running “Install / Update Samba” again.";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "If the problem persists, erase the disk with AirPort Utility using “Erase Disk”.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "Run “Install / Update Samba” again after the Time Capsule formats the disk.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "Some devices cannot detect some partitions larger than 2 TB.";
 "backend.recovery.deploy.deploy_disk_not_writable.title" = "No writable volume for the installation files";

@@ -849,8 +849,8 @@ class CliDeployTests(CliTestCase):
             str(result.exception),
             "A disk was found, but no valid HFS partition was detected.\n\n"
             "Next steps:\n"
-            "  1. Run `tcapsule deploy` again.\n"
-            "  2. Erase the disk with AirPort Utility using Erase Disk.\n"
+            "  1. Try running `tcapsule deploy` again.\n"
+            "  2. If the problem persists, erase the disk with AirPort Utility using \"Erase Disk\".\n"
             "  3. Run `tcapsule deploy` again after the Time Capsule formats the disk.\n"
             "  4. Some devices cannot detect some partitions larger than 2 TB.",
         )

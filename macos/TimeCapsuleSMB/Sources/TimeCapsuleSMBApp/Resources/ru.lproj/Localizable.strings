@@ -782,10 +782,10 @@
 "backend.recovery.deploy.deploy_no_usb_disk_detected.message" = "У AirPort Extreme нет внутреннего диска, а устройство не сообщило ни об одном USB-диске.";
 "backend.recovery.deploy.deploy_no_usb_disk_detected.action.1" = "Подключите USB-диск, отформатированный для Mac (HFS+).";
 "backend.recovery.deploy.deploy_no_usb_disk_detected.action.2" = "Если диск подключен, проверьте его питание и кабель, затем повторите попытку.";
-"backend.recovery.deploy.deploy_no_hfs_partition.title" = "Нет корректного раздела HFS";
-"backend.recovery.deploy.deploy_no_hfs_partition.message" = "Диск найден, но на нем нет корректного раздела HFS, на который TimeCapsuleSMB может выполнить установку.";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.1" = "Снова запустите «Установить/обновить Samba».";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Сотрите диск в Утилите AirPort с помощью команды «Стереть диск».";
+"backend.recovery.deploy.deploy_no_hfs_partition.title" = "Диск не готов к установке";
+"backend.recovery.deploy.deploy_no_hfs_partition.message" = "Диск найден, но на нем нет пригодного для TimeCapsuleSMB раздела HFS. Возможно, диск нужно отформатировать, информация о его разделах повреждена или сам диск неисправен.";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.1" = "Попробуйте снова запустить «Установить/обновить Samba».";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Если проблема сохраняется, сотрите диск в Утилите AirPort с помощью команды «Стереть диск».";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "Когда Time Capsule отформатирует диск, снова запустите «Установить/обновить Samba».";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "Некоторые устройства не распознают отдельные разделы размером более 2 ТБ.";
 "backend.recovery.deploy.deploy_disk_not_writable.title" = "Нет тома для записи файлов установки";

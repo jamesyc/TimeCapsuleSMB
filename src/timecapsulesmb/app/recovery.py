@@ -659,11 +659,12 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         suggested_operation="deploy",
     ),
     ("deploy", ErrorCode.DEPLOY_NO_HFS_PARTITION): RecoveryInfo(
-        "No valid HFS partition",
-        "A disk was found, but it does not expose a valid HFS partition that TimeCapsuleSMB can install to.",
+        "The disk is not ready for installation",
+        "A disk was found, but it has no usable HFS partition for TimeCapsuleSMB. "
+        "The disk may need formatting, its partition information may be damaged, or the disk itself may be failing.",
         (
-            "Run “Install / Update Samba” again.",
-            "Erase the disk with AirPort Utility using Erase Disk.",
+            "Try running “Install / Update Samba” again.",
+            "If the problem persists, erase the disk with AirPort Utility using “Erase Disk”.",
             "Run “Install / Update Samba” again after the Time Capsule formats the disk.",
             "Some devices cannot detect some partitions larger than 2 TB.",
         ),
@@ -1106,6 +1107,7 @@ _CLI_WORDS = (
     ("Select a specific HFS volume.", "Name the volume with `tcapsule fsck --volume`."),
     ("Select the volume to repair.", "Name the volume with `tcapsule fsck --volume`."),
     ("“Install / Update Samba”", "`tcapsule deploy`"),
+    ("“Erase Disk”", '"Erase Disk"'),
     ("“Disk Repair”", "`tcapsule fsck`"),
     ("“Checkup”", "`tcapsule doctor`"),
     ("“Uninstall”", "`tcapsule uninstall`"),

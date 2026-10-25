@@ -119,7 +119,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertEqual(
             [noHFS, writeTest, managerStop, upload].map(\.message),
             [
-                "No valid HFS partition",
+                "The disk is not ready for installation",
                 "The disk did not respond",
                 "A service on the device is stuck",
                 "Copying the installation files timed out",
@@ -129,7 +129,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         L10n.apply(language: .simplifiedChinese)
         XCTAssertEqual(
             [noHFS, writeTest, managerStop, upload].map(\.message),
-            ["没有有效的 HFS 分区", "磁盘没有响应", "设备上的某项服务卡住了", "复制安装文件超时"]
+            ["磁盘尚未准备好用于安装", "磁盘没有响应", "设备上的某项服务卡住了", "复制安装文件超时"]
         )
     }
 

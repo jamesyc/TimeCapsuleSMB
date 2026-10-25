@@ -782,11 +782,11 @@
 "backend.recovery.deploy.deploy_no_usb_disk_detected.message" = "AirPort Extreme no tiene disco interno y el dispositivo no informó de ningún disco USB.";
 "backend.recovery.deploy.deploy_no_usb_disk_detected.action.1" = "Conecte un disco USB formateado para Mac (HFS+).";
 "backend.recovery.deploy.deploy_no_usb_disk_detected.action.2" = "Si hay un disco conectado, compruebe su alimentación y su cable, y vuelva a intentarlo.";
-"backend.recovery.deploy.deploy_no_hfs_partition.title" = "No hay ninguna partición HFS válida";
-"backend.recovery.deploy.deploy_no_hfs_partition.message" = "Se encontró un disco, pero no presenta ninguna partición HFS válida en la que TimeCapsuleSMB pueda instalarse.";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.1" = "Vuelva a ejecutar «Instalar / actualizar Samba».";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Borre el disco en Utilidad AirPort con la opción «Borrar disco».";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "Vuelva a ejecutar «Instalar / actualizar Samba» cuando Time Capsule haya formateado el disco.";
+"backend.recovery.deploy.deploy_no_hfs_partition.title" = "El disco no está listo para la instalación";
+"backend.recovery.deploy.deploy_no_hfs_partition.message" = "Se encontró un disco, pero no tiene ninguna partición HFS utilizable por TimeCapsuleSMB. Es posible que el disco necesite formatearse, que la información de sus particiones esté dañada o que el propio disco esté fallando.";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.1" = "Pruebe a ejecutar «Instalar / actualizar Samba» de nuevo.";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Si el problema persiste, borre el disco en Utilidad AirPort con la opción «Borrar disco».";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "Vuelva a ejecutar «Instalar / actualizar Samba» cuando el dispositivo Time Capsule haya formateado el disco.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "Algunos dispositivos no pueden detectar ciertas particiones de más de 2 TB.";
 "backend.recovery.deploy.deploy_disk_not_writable.title" = "No hay ningún volumen de instalación con permiso de escritura";
 "backend.recovery.deploy.deploy_disk_not_writable.message" = "El dispositivo encontró volúmenes HFS, pero ninguno admitió la carpeta de instalación de TimeCapsuleSMB.";

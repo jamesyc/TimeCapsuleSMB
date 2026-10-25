@@ -6207,9 +6207,19 @@ MaSt = (
         self.assertEqual(rc, 1)
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "deploy_no_hfs_partition")
-        self.assertEqual(error["recovery"]["title"], "No valid HFS partition")
+        self.assertEqual(error["recovery"]["title"], "The disk is not ready for installation")
+        self.assertEqual(
+            error["recovery"]["message"],
+            "A disk was found, but it has no usable HFS partition for TimeCapsuleSMB. "
+            "The disk may need formatting, its partition information may be damaged, or the disk itself may be failing.",
+        )
         self.assertTrue(error["recovery"]["retryable"])
-        self.assertEqual(error["recovery"]["actions"][0], "Run “Install / Update Samba” again.")
+        self.assertEqual(error["recovery"]["actions"], [
+            "Try running “Install / Update Samba” again.",
+            "If the problem persists, erase the disk with AirPort Utility using “Erase Disk”.",
+            "Run “Install / Update Samba” again after the Time Capsule formats the disk.",
+            "Some devices cannot detect some partitions larger than 2 TB.",
+        ])
         self.assertEqual(error["recovery"]["action_ids"], [])
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")

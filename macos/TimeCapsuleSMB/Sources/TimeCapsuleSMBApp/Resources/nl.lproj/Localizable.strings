@@ -782,10 +782,10 @@
 "backend.recovery.deploy.deploy_no_usb_disk_detected.message" = "Een AirPort Extreme heeft geen interne schijf en het apparaat heeft geen USB-schijf gemeld.";
 "backend.recovery.deploy.deploy_no_usb_disk_detected.action.1" = "Sluit een voor de Mac (HFS+) geformatteerde USB-schijf aan.";
 "backend.recovery.deploy.deploy_no_usb_disk_detected.action.2" = "Als er een schijf is aangesloten, controleer dan de voeding en de kabel en probeer het opnieuw.";
-"backend.recovery.deploy.deploy_no_hfs_partition.title" = "Geen geldige HFS-partitie";
-"backend.recovery.deploy.deploy_no_hfs_partition.message" = "Er is een schijf gevonden, maar deze heeft geen geldige HFS-partitie waarop TimeCapsuleSMB kan worden geïnstalleerd.";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.1" = "Voer ‘Samba installeren / bijwerken’ opnieuw uit.";
-"backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Wis de schijf in AirPort-configuratieprogramma met ‘Wis schijf’.";
+"backend.recovery.deploy.deploy_no_hfs_partition.title" = "De schijf is niet klaar voor de installatie";
+"backend.recovery.deploy.deploy_no_hfs_partition.message" = "Er is een schijf gevonden, maar deze heeft geen bruikbare HFS-partitie voor TimeCapsuleSMB. De schijf moet mogelijk worden geformatteerd, de partitiegegevens zijn mogelijk beschadigd of de schijf zelf is mogelijk defect.";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.1" = "Probeer ‘Samba installeren / bijwerken’ opnieuw uit te voeren.";
+"backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Als het probleem aanhoudt, wis de schijf dan in AirPort-configuratieprogramma met ‘Wis schijf’.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "Voer ‘Samba installeren / bijwerken’ opnieuw uit nadat de Time Capsule de schijf heeft geformatteerd.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "Sommige apparaten herkennen bepaalde partities groter dan 2 TB niet.";
 "backend.recovery.deploy.deploy_disk_not_writable.title" = "Geen schrijfbaar volume voor installatiebestanden";
