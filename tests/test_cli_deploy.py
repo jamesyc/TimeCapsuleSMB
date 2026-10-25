@@ -802,8 +802,7 @@ class CliDeployTests(CliTestCase):
             "No internal disk was detected.\nAfter 10 MaSt queries spaced 3 seconds apart.\n\n"
             "Next steps:\n"
             "  1. Check that the disk is connected and seated.\n"
-            "  2. Power-cycle the device and retry after the disk spins up.\n"
-            "  3. Some devices cannot fully detect some disks larger than 2TB.",
+            "  2. Power-cycle the device and retry after the disk spins up.",
         )
         result.mocks.wait_for_mast_volumes_conn.assert_called_once()
         result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()
@@ -851,8 +850,7 @@ class CliDeployTests(CliTestCase):
             "Next steps:\n"
             "  1. Try running `tcapsule deploy` again.\n"
             "  2. If the problem persists, erase the disk with AirPort Utility using \"Erase Disk\".\n"
-            "  3. Run `tcapsule deploy` again after the Time Capsule formats the disk.\n"
-            "  4. Some devices cannot detect some partitions larger than 2 TB.",
+            "  3. Run `tcapsule deploy` again after the Time Capsule formats the disk.",
         )
         result.mocks.wait_for_mast_volumes_conn.assert_called_once()
         result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()

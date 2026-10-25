@@ -29,7 +29,7 @@ Contents:
 
 ## Names and tokens that stay as they are
 
-Keep `TimeCapsuleSMB`, `Samba`, `Netatalk`, `Bonjour`, `NetBSD`, `macOS`, `AirPort`, `AirPort Extreme`, `AirPort Express`, `SMB`, `SMB1`, `SMB2/3`, `AFP`, `SSH`, `ACP`, `NBNS`, `NetBIOS`, `DNS`, `DHCP`, `TCP`, `UDP`, `IPv4`, `IPv6`, `HFS`, `APFS`, `ACL`, `ATA`, `API`, `URL`, `UUID` and `SHA-256` recognizable and correctly capitalized. `VPN`, `WAN` and `LAN` stay as they are.
+Keep `TimeCapsuleSMB`, `Samba`, `Netatalk`, `Bonjour`, `NetBSD`, `macOS`, `AirPort`, `AirPort Extreme`, `AirPort Express`, `SMB`, `SMB1`, `SMB2/3`, `AFP`, `SSH`, `ACP`, `NBNS`, `NetBIOS`, `DNS`, `DHCP`, `TCP`, `UDP`, `IPv4`, `IPv6`, `HFS`, `APFS`, `exFAT`, `FAT32`, `NTFS`, `ACL`, `ATA`, `API`, `URL`, `UUID` and `SHA-256` recognizable and correctly capitalized. `VPN`, `WAN` and `LAN` stay as they are.
 
 Keep literal `ACPd`, `rsync`, `fsck`, `smbd`, `wcifsnd`, `mDNSResponder`, `vfs_aio_fork`, `ShareRoot`, `rc.local`, `xattr.tdb`, `.env` and command and parameter spellings unchanged, and translate the verbs around them: Dutch `fsck uitvoeren`, French `Exécuter fsck`, Chinese `运行 fsck`. `Doctor` in prose is this project's diagnostic checks, the Checkup; the CLI command `doctor` stays literal.
 

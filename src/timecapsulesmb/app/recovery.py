@@ -643,7 +643,6 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         (
             "Check that the disk is connected and seated.",
             "Power-cycle the device and retry after the disk spins up.",
-            "Some devices cannot fully detect some disks larger than 2TB.",
         ),
         retryable=True,
         suggested_operation="deploy",
@@ -661,12 +660,12 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ("deploy", ErrorCode.DEPLOY_NO_HFS_PARTITION): RecoveryInfo(
         "The disk is not ready for installation",
         "A disk was found, but it has no usable HFS partition for TimeCapsuleSMB. "
-        "The disk may need formatting, its partition information may be damaged, or the disk itself may be failing.",
+        "The disk may need formatting (for example, if it is formatted as APFS, exFAT, FAT32 or NTFS), "
+        "its partition information may be damaged, or the disk itself may be failing.",
         (
             "Try running “Install / Update Samba” again.",
             "If the problem persists, erase the disk with AirPort Utility using “Erase Disk”.",
             "Run “Install / Update Samba” again after the Time Capsule formats the disk.",
-            "Some devices cannot detect some partitions larger than 2 TB.",
         ),
         retryable=True,
         suggested_operation="deploy",
