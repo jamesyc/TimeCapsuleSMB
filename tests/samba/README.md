@@ -361,11 +361,37 @@ other answer; every handle still lives 300 s. `timemachine` asks for the
 timeouts Time Machine has macOS set (30, 60, 120 and 180 s) as macOS does and
 requires each back unchanged. `expiry` checks that a handle granted 30 s still
 reconnects 60 s after server teardown.
-`short-write` sends a WRITE 4 KiB short with the next
-request inside it, as macOS did in issue 221: 0072 must write nothing, log
-`tc_desync:` and keep the connection open answering nothing, and the handle
-must reconnect after a reset. `smb-in-data` writes data holding SMB2 headers
-0072 must not match. The `rst+ipc-tdis` and
+`short-write` sends a WRITE whose data is cut short, as macOS
+does (issue 221), with CREATEs, an ECHO, a CLOSE and a rename behind it, the last
+CREATE straddling the end of the WRITE's frame, and a CHANGE_NOTIFY pending: 0072
+must write nothing and never answer the WRITE, answer every request after it,
+log `tc_desync:`, and end the connection no sooner than 0.4 s and within 4 s of its
+last reply: it waits until nothing has been read or written for 500 ms, so
+that a request the client sends in answer to it is read and answered, not cut
+off by the FIN. The handle must then reconnect and a full write land. The CLOSE and the rename
+are among the requests macOS refuses to reconnect with unanswered.
+`short-write+twice` cuts a second WRITE that straddles the end of
+the first, read partly from the first's data and partly from the socket.
+`short-write+lost` puts plain data after the next request's header, so where
+the client's next request starts is unknown: everything is discarded and the
+connection still ends; after the reconnect the client writes data holding the
+old session's header, which must land (a false catch costs one reconnect).
+`short-write+lock` leaves a blocking LOCK pending behind another client's
+lock: the connection ends only at 0072's 60 s limit, which logs the LOCK.
+`short-write+stall` sends fewer bytes after the cut than the WRITE is missing,
+so its frame never completes, as when the Mac stops to wait for replies: smbd
+checks a WRITE as it arrives and must answer what follows at once, long before
+macOS's 10 s ECHO. These cases need the device's smbd swapped for the
+build under test, which restarts every client connection on the device.
+`smb-in-data` writes data holding SMB2 headers that are not the client's next
+request (a far message ID, a wrong structure size, a response, another
+session, an old message ID); they must be written as sent. `smb-in-data+pause`
+sends the same WRITE with a 5 s pause before its last 512 bytes, which smbd must
+not take for a short WRITE that stopped arriving. `smb-in-data+compound` sends
+a WRITE and a CLOSE as one compound, the WRITE's data ending in what looks like
+an NBT header right before the CLOSE's: both must be answered and the data
+written. All use unencrypted sessions, as macOS does: 0072 does not check
+encrypted PDUs. The `rst+ipc-tdis` and
 `rst+second-session` cases drop the connection after another tree or session
 has closed, and the `doc:` cases end a session holding a delete-on-close file
 without a CLOSE (by reset or a bare LOGOFF); without 0062 smbd closes those
@@ -417,6 +443,64 @@ a replacement file at the reused old path alone; failed destination stats also
 leave the open untouched.
 Expiry deadlines start after server teardown; a simulated server retaining
 handles for only 30 seconds must fail even when teardown takes 100 seconds.
+
+### Short WRITEs (patch 0072)
+
+`tc_short_write_test` runs 0072's own check, frame walk and end decision,
+extracted from the patched `smb2_server.c`, on WRITEs built the way macOS
+cuts them. `whole` holds the line for correct clients: data holding SMB2
+headers of another session, responses, wrong structure sizes, message IDs
+outside the credit window or the WRITE's own is a whole WRITE, and so is
+anything that is not an unencrypted WRITE. `short` finds the next request
+where the cut is; `several` reads on through requests with message IDs out of
+order and a CANCEL repeating an old one, the last cut off at every length;
+`keepalive` skips NBT keepalives between them. `false_match` skips a matching
+header that no requests follow, and with no real cut after it refuses the
+WRITE without knowing where to read on. `ids_and_offset` gives a multi-credit
+WRITE the message IDs it charges for and looks for requests only after its
+data offset. `partial_tail` checks a last request cut off inside its header as
+far as it goes, its session ID too. `arriving` checks PDUs a chunk at a time,
+as smbd checks a WRITE on each read while it arrives: in any chunks a real cut
+is found where the whole PDU shows it and a correct WRITE is never taken for
+one; a cut WRITE that never completes is found once a request after the cut has
+wholly arrived; and it pins the one case acting early costs, a read ending
+exactly where a matching frame inside the data ends. `compound` checks that a
+WRITE with a CLOSE chained after it is never taken for a short one, over
+thousands of random data blocks and data ending in what looks like an NBT
+header. `cap` stops the search after 8 matching headers that no requests
+follow, counted across reads, and below that still finds a real cut after
+them. `read_idle` covers when no request is half read. `end_now` covers when smbd ends the connection after a catch: nothing
+pending, unread, still to feed, queued or half read, and nothing read or
+written for 500 ms, or the 60 s cap, whose budget against macOS's 120 s wait it
+checks.
+
+The `short-write` cases of `durable_device.py` build what macOS sends;
+`cut_device.py` makes a real Mac send it. It mounts the share through a proxy on the Mac's
+127.0.0.1, runs dd writers into a sparse bundle there (`--direct` and `--small`
+add other traffic on the same connection), and once per connection forwards
+only the first part of one WRITE of 64 KiB or more, then the Mac's next
+requests: what macOS's send bug puts on the wire. The Mac reconnects through
+the proxy and the next connection gets the next cut:
+
+```sh
+.venv/bin/python -m tests.samba.cut_device --env .env.backup6 --share 4TB --out DIR
+.venv/bin/python -m tests.samba.cut_device --analyse DIR
+```
+
+For every cut connection it reports who ended it and when, what the Mac sent
+after the cut and what was never answered (before the cut too), and it fails
+when a cut connection never ended, when the Mac gave up before smbd ended it,
+when smbd logged ending one at its 60 s cap, or when a lone CREATE, CLOSE,
+LOCK, SET_INFO or IOCTL was left unanswered (macOS will not reconnect a Time
+Machine mount with one); the Mac's smbfs kernel lines are kept in
+`mac_kernel.log`. Cleanup ignores Ctrl-C so that no mount is left on a dead
+proxy; it prints the `kill -9` and `umount -f` to use if `hdiutil` hangs. It
+found the WRITE that never completes (the Mac sent less after the cut than was missing, then waited) and
+requests that crossed smbd's FIN. Run it with the build under test swapped in
+(`swap_smbd.py`; `run.log` records which smbd ran and warns when it is the
+deployed one), one run at a time on an otherwise idle device: smbd's log
+holds every connection's `tc_desync` lines. About 6 minutes for 8 cuts, more with `--direct`. A run that did not
+finish leaves `__tc_cut_device__` on the share; the next run removes it.
 
 ### Directory operations: the *at emulation (patch 0002) and directory opens (0063)
 
@@ -584,7 +668,10 @@ and each device then runs the regression drivers from RAM, doctor,
 `dir_device.py`, `growth_device.py` (both with `--quick` in the quick
 tier), in the full tier also `durable_device.py` and `links_device.py`, and
 `torture.py`, which runs smbtorture in Docker and reports only failures
-missing from `smbtorture/known_failures.txt`. On a device that serves several
+missing from `smbtorture/known_failures.txt`. Every `*_device.py` tool runs on a Mac against
+a device and needs that device's lock row; `cut_device.py` is the one
+`check.py` does not run, since it mounts the share on the Mac itself, through
+its own proxy: run it by hand after a change to 0072. On a device that serves several
 shares, `--share6 NAME` or `--share4le NAME` picks the share those suites
 test; the drivers and `swap_smbd.py` need no share and use the disk the
 runtime runs smbd from. `locks.py` claims and releases

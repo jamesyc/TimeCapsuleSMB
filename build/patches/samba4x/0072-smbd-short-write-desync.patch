@@ -1,81 +1,630 @@
 diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
 --- a/source3/smbd/smb2_server.c
 +++ b/source3/smbd/smb2_server.c
-@@ -5057,6 +5057,57 @@ static NTSTATUS smbd_smb2_flush_send_queue(struct smbXsrv_connection *xconn)
+@@ -294,11 +294,14 @@ bool smbd_smb2_is_last_in_compound(const struct smbd_smb2_request *req)
+ 		req->in.vector_count);
+ }
+ 
++static void tc_desync_start(void);
++
+ static NTSTATUS smbd_initialize_smb2(struct smbXsrv_connection *xconn,
+ 				     uint64_t expected_seq_low)
+ {
+ 	int rc;
+ 
++	tc_desync_start();
+ 	xconn->smb2.credits.seq_low = expected_seq_low;
+ 	xconn->smb2.credits.seq_range = 1;
+ 	xconn->smb2.credits.granted = 1;
+@@ -4695,6 +4698,9 @@ static bool is_smb2_recvfile_write(struct smbd_smb2_request_read_state *state)
+ 	return true;
+ }
+ 
++static void tc_desync_kick(struct smbXsrv_connection *xconn);
++static void tc_desync_replied(void);
++
+ static NTSTATUS smbd_smb2_request_next_incoming(struct smbXsrv_connection *xconn)
+ {
+ 	struct smbd_smb2_request_read_state *state = &xconn->smb2.request_read_state;
+@@ -4748,6 +4754,7 @@ static NTSTATUS smbd_smb2_request_next_incoming(struct smbXsrv_connection *xconn
+ 	};
+ 
+ 	TEVENT_FD_READABLE(xconn->transport.fde);
++	tc_desync_kick(xconn);
+ 
+ 	return NT_STATUS_OK;
+ }
+@@ -5023,6 +5030,7 @@ static NTSTATUS smbd_smb2_flush_with_sendmsg(struct smbXsrv_connection *xconn)
+ 			return status;
+ 		}
+ 
++		tc_desync_replied();
+ 		status = smbd_smb2_advance_send_queue(xconn, &e, ret);
+ 		if (NT_STATUS_EQUAL(status, NT_STATUS_RETRY)) {
+ 			/* retry later */
+@@ -5057,12 +5065,516 @@ static NTSTATUS smbd_smb2_flush_send_queue(struct smbXsrv_connection *xconn)
  	return status;
  }
  
 +/*
-+ * Workaround for a macOS bug (issue 221): after the server's TCP window has
-+ * stayed shut for about 5 s, macOS can send an SMB2 WRITE whose NBT length is
-+ * right but whose data is short, so the next request's header lands inside
-+ * the data. Without this check smbd writes that request into the file and
-+ * answers success. Refuse such a WRITE, then read and discard everything and
-+ * answer nothing, so that macOS's 35 s reply timer reconnects and resends
-+ * every request. macOS fails the request in flight if we drop the connection
-+ * or stop reading, and treats any error reply to a WRITE as fatal. One smbd
-+ * serves one client (multichannel is off), so one flag is enough.
++ * Workaround for a macOS bug (issue 221). macOS sends each request through
++ * a kernel call with a 5 s send timeout that reports success when the
++ * timeout cuts the send short, and drops the rest. Once the server's TCP
++ * window has stayed shut long enough, a WRITE can arrive with its NBT
++ * length right but its data short, and the client's next requests start
++ * inside that data. Without this check smbd writes them into the file and
++ * answers success.
++ *
++ * Such a WRITE is never written or answered: the client still waits for
++ * its reply and sends it again in full after a reconnect. An error reply
++ * to a WRITE fails Time Machine, and so does not reading (the client's
++ * next send times out and that request fails). smbd parses on from where
++ * the next request starts, answers everything the client sent after the
++ * WRITE and, once nothing else is outstanding, ends the connection with a
++ * FIN, long before the client's 120 s wait for the WRITE's reply runs
++ * out. On a Time Machine mount macOS refuses to reconnect while a CREATE,
++ * CLOSE, LOCK, or a delete, rename or security SET_INFO still waits for
++ * its reply, so those are answered rather than discarded.
++ *
++ * A WRITE counts as short only when its data holds the header of a
++ * request the client could send next: the same session, a message ID
++ * inside the credit window that is not the WRITE's own, and then nothing
++ * but such requests up to the end of the PDU. A correct client never
++ * sends that, so its WRITEs, data holding SMB2 headers included, are
++ * written as sent.
++ *
++ * One smbd serves one client (multichannel is off), so process-local
++ * state is enough.
 + */
-+static bool tc_out_of_step;
++#define TC_DESYNC_TICK_MS 250
++/*
++ * Nothing read or written for this long before the FIN: the client often
++ * sends its next request as soon as a reply arrives, and one still on its
++ * way when the FIN leaves is never answered.
++ */
++#define TC_DESYNC_IDLE_MS 500
++/*
++ * Send the FIN anyway this long after the catch. macOS fails a request it
++ * has waited 120 s for while other replies keep arriving (SMB_SEND_WAIT_TIMO,
++ * fixed), counted from when it began sending the WRITE: that is before the
++ * 5 s send timeout that cut it, any stall before smbd read it, and up to
++ * 10 s before the WRITE's data shows the next request (when the client
++ * sends nothing else, its ECHO after 10 s without a reply). 60 s leaves
++ * about 40 s for the stall; the old disks behind these devices can need
++ * much of the 60 s to finish what was in flight.
++ */
++#define TC_DESYNC_CLOSE_SECS 60
++/* After the FIN, wait this long for the client's before terminating. */
++#define TC_DESYNC_EOF_SECS 60
++/*
++ * Each header in a WRITE's data that matches the client's session starts a
++ * walk to the end of the PDU. After this many that no requests follow, stop
++ * and refuse the WRITE: only a hostile client puts so many in its data, and
++ * the walks would otherwise cost time quadratic in its size.
++ */
++#define TC_SCAN_MAX_MISSES 8
 +
-+static bool tc_write_holds_next_request(const uint8_t *pdu, size_t len)
++enum tc_short_write {
++	TC_WRITE_WHOLE,		/* not a short WRITE: dispatch it */
++	TC_WRITE_SHORT,		/* short; the next request starts at *resume */
++	TC_WRITE_SHORT_LOST,	/* short; where the next request starts is unknown */
++};
++
++/*
++ * Whether hdr (at least SMB2_HDR_BODY bytes) can be a request the client
++ * sent after the WRITE. macOS puts the session ID on every request but
++ * NEGOTIATE, and its message IDs are not in wire order (internal requests
++ * go to the head of its queue), so no order is required.
++ */
++static bool tc_next_request_header(const uint8_t *hdr, uint64_t session_id,
++				   uint64_t write_mid, uint16_t write_charge,
++				   uint64_t seq_low, uint32_t seq_range)
 +{
-+	/*
-+	 * A WRITE's data starts after its 0x30-byte fixed body at the
-+	 * earliest, so a next request's "\xfeSMB" can only follow that and
-+	 * its own 4-byte NBT header.
-+	 */
-+	size_t ofs = SMB2_HDR_BODY + 0x30 + NBT_HDR_SIZE;
-+	uint64_t mid;
++	uint64_t mid = BVAL(hdr, SMB2_HDR_MESSAGE_ID);
 +
-+	/* An encrypted PDU is not checked: decryption catches a short one. */
-+	if (len < ofs + SMB2_HDR_BODY || IVAL(pdu, 0) != SMB2_MAGIC ||
-+	    SVAL(pdu, SMB2_HDR_OPCODE) != SMB2_OP_WRITE) {
++	if (IVAL(hdr, 0) != SMB2_MAGIC ||
++	    SVAL(hdr, SMB2_HDR_LENGTH) != SMB2_HDR_BODY ||
++	    (IVAL(hdr, SMB2_HDR_FLAGS) & SMB2_HDR_FLAG_REDIRECT) ||
++	    BVAL(hdr, SMB2_HDR_SESSION_ID) != session_id) {
 +		return false;
 +	}
-+	mid = BVAL(pdu, SMB2_HDR_MESSAGE_ID);
-+	while (ofs + SMB2_HDR_BODY <= len) {
-+		const uint8_t *p = memmem(pdu + ofs, len - ofs, "\xfeSMB", 4);
++	if (SVAL(hdr, SMB2_HDR_OPCODE) == SMB2_OP_CANCEL) {
++		/* A CANCEL repeats the message ID of the request it cancels. */
++		return true;
++	}
++	return mid - seq_low < seq_range && mid - write_mid >= write_charge;
++}
 +
-+		if (p == NULL || p + SMB2_HDR_BODY > pdu + len) {
++/*
++ * Whether only such requests follow from the NBT header at ofs to the end
++ * of the PDU. The last may be cut off: the rest of it is still in the
++ * socket. Only what of it is there is checked; requiring all of it would
++ * miss every cut that leaves less than one whole request in the data.
++ */
++static bool tc_requests_follow(const uint8_t *pdu, size_t len, size_t ofs,
++			       uint64_t session_id, uint64_t write_mid,
++			       uint16_t write_charge, uint64_t seq_low,
++			       uint32_t seq_range)
++{
++	while (ofs < len) {
++		const uint8_t *nbt = pdu + ofs;
++		size_t left = len - ofs;
++
++		if (left < NBT_HDR_SIZE) {
++			return nbt[0] == 0x00 || nbt[0] == 0x85;
++		}
++		if (nbt[0] == 0x85 && smb2_len(nbt) == 0) {
++			/* An NBT keepalive, which smbd ignores. */
++			ofs += NBT_HDR_SIZE;
++			continue;
++		}
++		if (nbt[0] != 0x00 || smb2_len(nbt) < SMB2_HDR_BODY) {
 +			return false;
 +		}
-+		/*
-+		 * A backed-up capture of SMB2 traffic could match; the message
-+		 * ID window makes that unlikely. Compare more fields if it ever
-+		 * happens.
-+		 */
-+		if (p[-4] == 0x00 && smb2_len(p - 4) >= SMB2_HDR_BODY &&
-+		    SVAL(p, SMB2_HDR_LENGTH) == SMB2_HDR_BODY &&
-+		    !(IVAL(p, SMB2_HDR_FLAGS) & SMB2_HDR_FLAG_REDIRECT) &&
-+		    BVAL(p, SMB2_HDR_MESSAGE_ID) - mid - 1 < 8192) {
++		if (left < NBT_HDR_SIZE + SMB2_HDR_BODY) {
++			const uint8_t *hdr = nbt + NBT_HDR_SIZE;
++
++			/* Check what of the header is there. */
++			return (left < NBT_HDR_SIZE + 4 ||
++				memcmp(hdr, "\xfeSMB", 4) == 0) &&
++			       (left < NBT_HDR_SIZE + SMB2_HDR_SESSION_ID + 8 ||
++				BVAL(hdr, SMB2_HDR_SESSION_ID) == session_id);
++		}
++		if (!tc_next_request_header(nbt + NBT_HDR_SIZE, session_id,
++					    write_mid, write_charge, seq_low,
++					    seq_range)) {
++			return false;
++		}
++		if (left <= NBT_HDR_SIZE + smb2_len(nbt)) {
 +			return true;
 +		}
-+		ofs = p - pdu + 1;
++		ofs += NBT_HDR_SIZE + smb2_len(nbt);
 +	}
-+	return false;
++	return true;
++}
++
++/* How far the search for the next request's header in a WRITE has got. */
++struct tc_scan {
++	size_t from;	/* the next offset to look at */
++	bool lost;	/* a header matched that no requests follow */
++	unsigned misses;	/* how many such headers */
++};
++
++/*
++ * pdu holds len bytes of one SMB2 PDU without its NBT header: all of it
++ * (complete), or what has arrived so far. scan is where earlier calls for
++ * the same PDU got and is moved on, so each byte is searched once; seq_low
++ * and seq_range are the connection's credit window. A cut inside the
++ * WRITE's fixed part, or one leaving less than a header of the next request
++ * in its data, is not found here. A WRITE with a request chained after it
++ * is not checked: the chained request carries the session's ID and follows
++ * the data in the same PDU, so it would pass for a cut, and macOS cuts
++ * only WRITEs sent alone. Nor is one read by receivefile (min receivefile
++ * size), whose data goes straight from the socket to the file.
++ */
++static enum tc_short_write tc_short_write_check(const uint8_t *pdu,
++						size_t len, bool complete,
++						uint64_t seq_low,
++						uint32_t seq_range,
++						struct tc_scan *scan,
++						size_t *resume)
++{
++	size_t ofs = SMB2_HDR_BODY + 0x30;
++	uint64_t session_id, mid;
++	uint16_t charge;
++
++	/* An encrypted PDU is not checked: decryption catches a short one. */
++	if (len < ofs + NBT_HDR_SIZE + SMB2_HDR_BODY ||
++	    IVAL(pdu, 0) != SMB2_MAGIC ||
++	    SVAL(pdu, SMB2_HDR_OPCODE) != SMB2_OP_WRITE ||
++	    IVAL(pdu, SMB2_HDR_NEXT_COMMAND) != 0) {
++		return TC_WRITE_WHOLE;
++	}
++	if (scan->misses >= TC_SCAN_MAX_MISSES) {
++		return complete ? TC_WRITE_SHORT_LOST : TC_WRITE_WHOLE;
++	}
++	/* The next request can only follow the start of the WRITE's data. */
++	ofs = MAX(MAX(ofs, SVAL(pdu, SMB2_HDR_BODY + 0x02)), scan->from);
++	session_id = BVAL(pdu, SMB2_HDR_SESSION_ID);
++	mid = BVAL(pdu, SMB2_HDR_MESSAGE_ID);
++	charge = MAX(SVAL(pdu, SMB2_HDR_CREDIT_CHARGE), 1);
++	while (ofs + NBT_HDR_SIZE + SMB2_HDR_BODY <= len) {
++		const uint8_t *p = memmem(pdu + ofs + NBT_HDR_SIZE,
++					  len - ofs - NBT_HDR_SIZE,
++					  "\xfeSMB", 4);
++		size_t at;
++
++		if (p == NULL) {
++			/* A header's magic may start in the last 3 bytes. */
++			ofs = len - NBT_HDR_SIZE - 3;
++			break;
++		}
++		at = p - NBT_HDR_SIZE - pdu;
++		if (p + SMB2_HDR_BODY > pdu + len) {
++			ofs = at;	/* the rest of its header is still to come */
++			break;
++		}
++		if (p[-NBT_HDR_SIZE] == 0x00 &&
++		    smb2_len(p - NBT_HDR_SIZE) >= SMB2_HDR_BODY &&
++		    tc_next_request_header(p, session_id, mid, charge,
++					   seq_low, seq_range)) {
++			/* On a WRITE still arriving, a next request counts
++			 * only once all of it is here. */
++			if (!complete && at + NBT_HDR_SIZE +
++			    smb2_len(p - NBT_HDR_SIZE) > len) {
++				ofs = at;
++				break;
++			}
++			if (tc_requests_follow(pdu, len, at, session_id, mid,
++					       charge, seq_low, seq_range)) {
++				*resume = at;
++				return TC_WRITE_SHORT;
++			}
++			/* Try a later header; if none passes, the WRITE is
++			 * still short, but where the next request starts is
++			 * unknown. It is refused all the same: writing it
++			 * would put the client's requests into the file and
++			 * answer success. A correct WRITE whose data holds
++			 * such a header costs one reconnect: the client sends
++			 * it again on a new session, whose ID it does not
++			 * hold. */
++			scan->lost = true;
++			if (++scan->misses >= TC_SCAN_MAX_MISSES) {
++				break;
++			}
++		}
++		ofs = at + 1;
++	}
++	scan->from = ofs;
++	return complete && scan->lost ? TC_WRITE_SHORT_LOST : TC_WRITE_WHOLE;
++}
++
++/*
++ * Whether no request is half read: none at all, or nothing of the next one's
++ * NBT header read yet (no length known, all of its 4 bytes still to come in
++ * the state's one iovec).
++ */
++static bool tc_desync_read_idle(const struct smbd_smb2_request_read_state *state)
++{
++	return state->req == NULL ||
++	       (state->pktlen == 0 && state->count == 1 &&
++		state->vector[0].iov_len == NBT_HDR_SIZE);
++}
++
++/*
++ * Whether to end the connection now, after a short WRITE: once nothing the
++ * client sent is waiting to be read or answered and nothing has been read
++ * or written for a moment, or at the deadline whatever is still pending
++ * (*capped).
++ */
++static bool tc_desync_end_now(unsigned pending, int unread, bool feed_left,
++			      bool replies_queued, bool reader_idle,
++			      double idle_secs, double waited_secs, bool *capped)
++{
++	*capped = false;
++	if (pending == 0 && unread == 0 && !feed_left && !replies_queued &&
++	    reader_idle && idle_secs * 1000 >= TC_DESYNC_IDLE_MS) {
++		return true;
++	}
++	*capped = waited_secs >= TC_DESYNC_CLOSE_SECS;
++	return *capped;
++}
++
++static struct {
++	bool lost;		/* the next request's start is unknown: discard */
++	bool closing;		/* FIN sent: discard, wait for the client's */
++	uint8_t *feed;		/* rest of a short WRITE, read before the socket */
++	size_t feed_len;
++	size_t feed_ofs;
++	struct tevent_timer *te;
++	struct tevent_immediate *im;
++	struct timeval caught;
++	struct timeval closed;
++	struct timeval last_io;		/* last read or reply */
++	unsigned catches;	/* short WRITEs on this connection */
++	unsigned served;	/* requests read after the first, until the FIN */
++	struct tc_scan scan;	/* the request being read */
++	bool off;		/* multichannel: one state cannot serve two */
++} tc_desync;
++
++/*
++ * The state above is one per process: right while one smbd serves one
++ * connection. With multichannel Samba can pass a client's further
++ * connections to its smbd, so the check is off for that process.
++ */
++static void tc_desync_start(void)
++{
++	if (smbXsrv_server_multi_channel_enabled() && !tc_desync.off) {
++		tc_desync.off = true;
++		DBG_ERR("tc_desync: multichannel is on, so short macOS WRITEs "
++			"are not checked\n");
++	}
++	if (lp_min_receive_file_size() != 0) {
++		DBG_ERR("tc_desync: WRITEs over %zu bytes are read by "
++			"receivefile and not checked for being short\n",
++			(size_t)lp_min_receive_file_size());
++	}
++}
++
++static NTSTATUS smbd_smb2_io_handler(struct smbXsrv_connection *xconn,
++				     uint16_t fde_flags);
++
++/* smbd wrote a reply to the socket. */
++static void tc_desync_replied(void)
++{
++	if (tc_desync.te != NULL && !tc_desync.closing) {
++		tc_desync.last_io = timeval_current();
++	}
++}
++
++static void tc_desync_feed_handler(struct tevent_context *ev,
++				   struct tevent_immediate *im,
++				   void *private_data)
++{
++	struct smbXsrv_connection *xconn = talloc_get_type_abort(
++		private_data, struct smbXsrv_connection);
++	NTSTATUS status = smbd_smb2_io_handler(xconn, TEVENT_FD_READ);
++
++	if (!NT_STATUS_IS_OK(status)) {
++		smbd_server_connection_terminate(xconn, nt_errstr(status));
++	}
++}
++
++/*
++ * The rest of a short WRITE is read before the socket, which may have
++ * nothing more to wake the reader: read once more from the event loop.
++ */
++static void tc_desync_kick(struct smbXsrv_connection *xconn)
++{
++	if (tc_desync.feed == NULL) {
++		return;
++	}
++	if (tc_desync.im == NULL) {
++		tc_desync.im = tevent_create_immediate(xconn);
++		if (tc_desync.im == NULL) {
++			smbd_server_connection_terminate(xconn,
++				"tc_desync: no memory");
++			return;
++		}
++	}
++	tevent_schedule_immediate(tc_desync.im, xconn->client->raw_ev_ctx,
++				  tc_desync_feed_handler, xconn);
++}
++
++static void tc_desync_tick(struct tevent_context *ev, struct tevent_timer *te,
++			   struct timeval now, void *private_data)
++{
++	struct smbXsrv_connection *xconn = talloc_get_type_abort(
++		private_data, struct smbXsrv_connection);
++	struct smbd_smb2_request *req = NULL;
++	unsigned pending = 0;
++	char names[128] = "";
++	int unread = 0;
++	double waited;
++	bool capped;
++
++	tc_desync.te = NULL;
++	if (tc_desync.closing) {
++		/* TC_DESYNC_EOF_SECS after the FIN, with no FIN back. */
++		smbd_server_connection_terminate(xconn,
++			"tc_desync: the client kept the connection open after its end");
++		return;
++	}
++
++	for (req = xconn->smb2.requests; req != NULL; req = req->next) {
++		uint16_t opcode = SVAL(SMBD_SMB2_IN_HDR_PTR(req),
++				       SMB2_HDR_OPCODE);
++
++		/* A CHANGE_NOTIFY waits until something changes, and
++		 * the client sends it again after a reconnect. */
++		if (opcode == SMB2_OP_NOTIFY) {
++			continue;
++		}
++		pending += 1;
++		if (strlen(names) + 24 < sizeof(names)) {
++			strlcat(names, " ", sizeof(names));
++			strlcat(names, smb2_opcode_name(opcode), sizeof(names));
++		}
++	}
++	if (ioctl(xconn->transport.sock, FIONREAD, &unread) != 0) {
++		unread = 1;
++	}
++	/*
++	 * Requests not read yet (in the socket, or in the rest of a short
++	 * WRITE) would go unanswered. When discarding, frame boundaries mean
++	 * nothing, so a half-read frame does not count.
++	 */
++	waited = timeval_elapsed2(&tc_desync.caught, &now);
++	if (!tc_desync_end_now(pending, unread, tc_desync.feed != NULL,
++			       xconn->smb2.send_queue != NULL,
++			       tc_desync.lost ||
++			       tc_desync_read_idle(&xconn->smb2.request_read_state),
++			       timeval_elapsed2(&tc_desync.last_io, &now),
++			       waited, &capped)) {
++		goto again;
++	}
++	if (!capped) {
++		DBG_ERR("tc_desync: ending the connection %.1f s after the "
++			"short WRITE: nothing else outstanding (%s, %u short "
++			"WRITEs, %u requests read after the first)\n",
++			waited, tc_desync.lost ? "rest discarded" : "rest answered",
++			tc_desync.catches, tc_desync.served);
++	} else {
++		DBG_ERR("tc_desync: ending the connection %.1f s after the "
++			"short WRITE with %u requests pending:%s, %d bytes "
++			"unread (%s, %u short WRITEs, %u requests read after the "
++			"first)\n", waited, pending, names, unread,
++			tc_desync.lost ? "rest discarded" : "rest answered",
++			tc_desync.catches, tc_desync.served);
++	}
++	/*
++	 * Replies already queued in the socket go out first, then the FIN.
++	 * close() with input still unread would send a reset instead, and
++	 * the client could lose replies it has not read.
++	 */
++	if (shutdown(xconn->transport.sock, SHUT_WR) != 0) {
++		smbd_server_connection_terminate(xconn,
++			"tc_desync: shutdown failed");
++		return;
++	}
++	tc_desync.closing = true;
++	tc_desync.closed = now;
++	tc_desync.te = tevent_add_timer(ev, xconn,
++		timeval_current_ofs(TC_DESYNC_EOF_SECS, 0), tc_desync_tick, xconn);
++	if (tc_desync.te == NULL) {
++		smbd_server_connection_terminate(xconn, "tc_desync: no memory");
++	}
++	return;
++again:
++	tc_desync.te = tevent_add_timer(ev, xconn,
++		timeval_current_ofs_msec(TC_DESYNC_TICK_MS),
++		tc_desync_tick, xconn);
++	if (tc_desync.te == NULL) {
++		smbd_server_connection_terminate(xconn, "tc_desync: no memory");
++	}
++}
++
++/* Refuse a short WRITE and set up reading on after it. */
++static NTSTATUS tc_desync_refuse(struct smbXsrv_connection *xconn,
++				 const uint8_t *pdu, size_t len, size_t full,
++				 enum tc_short_write found, size_t resume)
++{
++	uint64_t mid = BVAL(pdu, SMB2_HDR_MESSAGE_ID);
++
++	tc_desync.catches += 1;
++	/*
++	 * Count the WRITE's message IDs as used, or the credit window stays
++	 * at the lowest of them and its grants shrink to nothing. The WRITE
++	 * is refused whether or not that succeeds.
++	 */
++	(void)smb2_validate_message_id(xconn, pdu);
++
++	if (found == TC_WRITE_SHORT) {
++		const uint8_t *next = pdu + resume + NBT_HDR_SIZE;
++		size_t tail = len - resume;
++		size_t left = tc_desync.feed_len - tc_desync.feed_ofs;
++		uint8_t *feed = talloc_array(xconn, uint8_t, tail + left);
++
++		if (feed == NULL) {
++			return NT_STATUS_NO_MEMORY;
++		}
++		/* A WRITE read from the feed comes before what it still holds. */
++		memcpy(feed, pdu + resume, tail);
++		if (left != 0) {
++			memcpy(feed + tail, tc_desync.feed + tc_desync.feed_ofs,
++			       left);
++		}
++		TALLOC_FREE(tc_desync.feed);
++		tc_desync.feed = feed;
++		tc_desync.feed_len = tail + left;
++		tc_desync.feed_ofs = 0;
++		DBG_ERR("tc_desync: WRITE mid %" PRIu64 " is %zu bytes short: "
++			"the client's next request, %s mid %" PRIu64 ", starts "
++			"inside its data. Not writing or answering it; reading "
++			"on from that request\n",
++			mid, full - resume,
++			smb2_opcode_name(SVAL(next, SMB2_HDR_OPCODE)),
++			BVAL(next, SMB2_HDR_MESSAGE_ID));
++	} else {
++		tc_desync.lost = true;
++		TALLOC_FREE(tc_desync.feed);
++		tc_desync.feed_len = 0;
++		tc_desync.feed_ofs = 0;
++		DBG_ERR("tc_desync: WRITE mid %" PRIu64 " holds the header of "
++			"a later request but not where it starts: not writing "
++			"or answering it, discarding the rest of this "
++			"connection\n", mid);
++	}
++	if (tc_desync.te == NULL && !tc_desync.closing) {
++		tc_desync.caught = timeval_current();
++		tc_desync.last_io = tc_desync.caught;
++		tc_desync.te = tevent_add_timer(xconn->client->raw_ev_ctx, xconn,
++			timeval_current_ofs_msec(TC_DESYNC_TICK_MS),
++			tc_desync_tick, xconn);
++		if (tc_desync.te == NULL) {
++			return NT_STATUS_NO_MEMORY;
++		}
++	}
++	return NT_STATUS_OK;
 +}
 +
  static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, size_t n)
  {
  	struct smbd_server_connection *sconn = xconn->client->sconn;
-@@ -5166,11 +5217,25 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
+ 	struct smbd_smb2_request_read_state *state = &xconn->smb2.request_read_state;
+ 	struct smbd_smb2_request *req = NULL;
+ 	size_t min_recvfile_size = UINT32_MAX;
++	enum tc_short_write found = TC_WRITE_WHOLE;
++	size_t resume = 0;
+ 	NTSTATUS status;
+ 	NTTIME now;
+ 	bool ok;
+@@ -5073,6 +5585,27 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
+ 	}
+ 
+ 	if (state->count > 0) {
++		/*
++		 * A WRITE is checked as its data arrives: the client can
++		 * send fewer bytes after the cut than are missing and then
++		 * wait for replies, so a short WRITE may never complete.
++		 */
++		if (state->pktlen > 0 && !state->doing_receivefile &&
++		    state->hdr.nbt[0] == 0x00 && !tc_desync.lost &&
++		    !tc_desync.closing && !tc_desync.off) {
++			size_t got = state->pktlen -
++				     iov_buflen(state->vector, state->count);
++
++			found = tc_short_write_check(state->pktbuf, got, false,
++						     xconn->smb2.credits.seq_low,
++						     xconn->smb2.credits.seq_range,
++						     &tc_desync.scan, &resume);
++			if (found == TC_WRITE_SHORT) {
++				/* Read it as complete at what arrived. */
++				state->pktlen = got;
++				goto got_full;
++			}
++		}
+ 		return NT_STATUS_PENDING;
+ 	}
+ 
+@@ -5154,6 +5687,7 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
+ 	if (state->pktbuf == NULL) {
+ 		return NT_STATUS_NO_MEMORY;
+ 	}
++	tc_desync.scan = (struct tc_scan) { .from = 0 };
+ 
+ 	state->_vector[0] = (struct iovec) {
+ 		.iov_base = (void *)state->pktbuf,
+@@ -5166,11 +5700,36 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
  
  got_full:
  
 -	if (state->hdr.nbt[0] != 0x00) {
-+	if (state->hdr.nbt[0] == 0x00 && !tc_out_of_step &&
-+	    tc_write_holds_next_request(state->pktbuf, state->pktlen)) {
-+		DBG_ERR("tc_desync: WRITE mid %" PRIu64 " holds the next "
-+			"request's header: not writing it, reading and "
-+			"answering nothing more on this connection\n",
-+			BVAL(state->pktbuf, SMB2_HDR_MESSAGE_ID));
-+		tc_out_of_step = true;
+-		DEBUG(1,("ignore NBT[0x%02X] msg\n",
+-			 state->hdr.nbt[0]));
++	/* The rest of the WRITE, unless it was found short already. */
++	if (found == TC_WRITE_WHOLE && state->hdr.nbt[0] == 0x00 &&
++	    !tc_desync.lost && !tc_desync.closing && !tc_desync.off) {
++		found = tc_short_write_check(state->pktbuf, state->pktlen, true,
++					     xconn->smb2.credits.seq_low,
++					     xconn->smb2.credits.seq_range,
++					     &tc_desync.scan, &resume);
++	}
++	if (found != TC_WRITE_WHOLE) {
++		status = tc_desync_refuse(xconn, state->pktbuf, state->pktlen,
++					  state->pktfull, found, resume);
++		if (!NT_STATUS_IS_OK(status)) {
++			return status;
++		}
 +	}
 +
-+	if (state->hdr.nbt[0] != 0x00 || tc_out_of_step) {
- 		DEBUG(1,("ignore NBT[0x%02X] msg\n",
- 			 state->hdr.nbt[0]));
++	if (state->hdr.nbt[0] != 0x00 || found != TC_WRITE_WHOLE ||
++	    tc_desync.lost || tc_desync.closing) {
++		/* A refused or discarded SMB2 frame is tc_desync's to log. */
++		if (state->hdr.nbt[0] != 0x00) {
++			DEBUG(1,("ignore NBT[0x%02X] msg\n",
++				 state->hdr.nbt[0]));
++		}
  
  		req = state->req;
 +		/*
@@ -86,3 +635,64 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  		*state = (struct smbd_smb2_request_read_state) {
  			.req = req,
  			.min_recv_size = lp_min_receive_file_size(),
+@@ -5229,6 +5788,9 @@ got_full:
+ 		return status;
+ 	}
+ 
++	if (tc_desync.te != NULL && !tc_desync.closing) {
++		tc_desync.served += 1;
++	}
+ 	status = smbd_smb2_request_dispatch(req);
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		return status;
+@@ -5307,6 +5869,22 @@ static NTSTATUS smbd_smb2_io_handler(struct smbXsrv_connection *xconn,
+ 
+ again:
+ 
++	if (tc_desync.feed != NULL) {
++		/* The rest of a short WRITE comes before the socket; the read
++		 * vector is the state's one iovec. */
++		ret = MIN(state->vector[0].iov_len,
++			  tc_desync.feed_len - tc_desync.feed_ofs);
++		memcpy(state->vector[0].iov_base,
++		       tc_desync.feed + tc_desync.feed_ofs, ret);
++		tc_desync.feed_ofs += ret;
++		if (tc_desync.feed_ofs == tc_desync.feed_len) {
++			TALLOC_FREE(tc_desync.feed);
++			tc_desync.feed_len = 0;
++			tc_desync.feed_ofs = 0;
++		}
++		goto advance;
++	}
++
+ 	state->msg = (struct msghdr) {
+ 		.msg_iov = state->vector,
+ 		.msg_iovlen = state->count,
+@@ -5321,6 +5899,15 @@ again:
+ 
+ 	ret = recvmsg(xconn->transport.sock, &state->msg, recvmsg_flags);
+ 	if (ret == 0) {
++		if (tc_desync.closing) {
++			DBG_ERR("tc_desync: the client ended the connection "
++				"%.1f s after smbd did\n",
++				timeval_elapsed(&tc_desync.closed));
++		} else if (tc_desync.te != NULL) {
++			DBG_ERR("tc_desync: the client ended the connection "
++				"%.1f s after the short WRITE, before smbd did\n",
++				timeval_elapsed(&tc_desync.caught));
++		}
+ 		/* propagate end of file */
+ 		status = NT_STATUS_END_OF_FILE;
+ 		smbXsrv_connection_disconnect_transport(xconn,
+@@ -5339,7 +5926,11 @@ again:
+ 							status);
+ 		return status;
+ 	}
++	if (tc_desync.te != NULL && !tc_desync.closing) {
++		tc_desync.last_io = timeval_current();
++	}
+ 
++advance:
+ 	status = smbd_smb2_advance_incoming(xconn, ret);
+ 	if (NT_STATUS_EQUAL(status, NT_STATUS_PENDING)) {
+ 		/* we have more to read */

@@ -143,13 +143,16 @@ def payload_disk(conf: str) -> str:
     raise RuntimeError("the running smb.conf has no log file on a /Volumes disk")
 
 
-def mount(url_scheme: str, device: Device, mountpoint: Path) -> None:
+def mount(url_scheme: str, device: Device, mountpoint: Path, server: str | None = None,
+          options: str = "nobrowse,forcenewsession,nomdatacache,nodatacache") -> None:
+    """Mount device's share at mountpoint; server (host[:port]) replaces the
+    device's address, and options are mount_smbfs's."""
     user = device.env.get("TC_SAMBA_USER") or "root"
     creds = urllib.parse.quote(user, safe="") + ":" + urllib.parse.quote(device.env["TC_PASSWORD"], safe="")
-    url = f"//{creds}@{device.host}/{urllib.parse.quote(device.share)}"
+    url = f"//{creds}@{server or device.host}/{urllib.parse.quote(device.share)}"
     mountpoint.mkdir(parents=True, exist_ok=True)
     if url_scheme == "smb":
-        cmd = ["mount_smbfs", "-o", "nobrowse,forcenewsession,nomdatacache,nodatacache", url, str(mountpoint)]
+        cmd = ["mount_smbfs", "-o", options, url, str(mountpoint)]
     else:
         cmd = ["mount_afp", "-o", "nobrowse", "afp:" + url, str(mountpoint)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)

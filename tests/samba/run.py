@@ -21,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 TARGETS = ("tc_pthreadpool_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
            "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test", "tc_storage_reload_test",
            "tc_native_links_test", "tc_catia_links_test", "tc_at_emulation_test", "tc_file_growth_test",
-           "tc_fork_repair_test")
+           "tc_fork_repair_test", "tc_short_write_test")
 MIGRATOR_TARGET = "tc_xattr_hfs_migrate"
 SMBD_TARGET = "smbd/smbd"
 # Compile the production accept/fork call site as well as the extracted helper.
@@ -79,6 +79,9 @@ FILE_GROWTH_CASES = ("unchecked", "stale_size", "fits", "exceeds", "boundary", "
 # Skipped where the build does not link it.
 FORK_REPAIR_CASES = ("kernel", "bounds", "registry", "regions", "read_after_repair", "nested", "fallback",
                      "stack_below", "stack_deep", "needscopy")
+# Patch 0072's check for a short macOS WRITE, its frame walk and end decision.
+SHORT_WRITE_CASES = ("whole", "short", "several", "keepalive", "false_match", "ids_and_offset",
+                     "partial_tail", "end_now", "arriving", "compound", "cap", "read_idle")
 STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks",
                         "root", "root_widen", "root_rename", "root_no_fds", "root_aio", "root_failed", "root_unchanged")
 
@@ -165,6 +168,12 @@ def stage(source: Path) -> None:
                  if line.startswith("#define TIME_FIXUP_CONSTANT_INT "))
     head = "struct timespec nt_time_to_unix_timespec_raw("
     (modules / "tc_time_conversion.inc").write_text(epoch + "\n" + cut(time_source, head, head) + "\n")
+    # Patch 0072's limits, short-WRITE check, frame walk and end decision,
+    # with the NBT length macro they use, for tc_short_write_test.
+    server = (source / "source3/smbd/smb2_server.c").read_text()
+    length = next(line for line in server.splitlines() if line.startswith("#define smb2_len("))
+    (modules / "tc_short_write.inc").write_text(
+        length + "\n\n" + cut(server, "#define TC_DESYNC_TICK_MS", "static bool tc_desync_end_now(") + "\n")
     script.write_text(original + marker + (HERE / "targets.py").read_text())
 
 
@@ -201,6 +210,8 @@ def cases():
         yield TARGETS[10], (case,)
     for case in FORK_REPAIR_CASES:
         yield TARGETS[11], (case,)
+    for case in SHORT_WRITE_CASES:
+        yield TARGETS[12], (case,)
 
 
 def execution_cases(cross_exec: bool):

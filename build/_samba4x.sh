@@ -993,7 +993,7 @@ if [ "$SAMBA4X_RUN_REGRESSION_TESTS" = "1" ]; then
     SAMBA4X_BUILD_REGRESSION_TESTS=1
 fi
 # The drivers staged from tests/samba (tests/samba/run.py TARGETS).
-SAMBA4X_REGRESSION_TARGETS=tc_pthreadpool_sync_test,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test,tc_at_emulation_test,tc_file_growth_test,tc_fork_repair_test
+SAMBA4X_REGRESSION_TARGETS=tc_pthreadpool_sync_test,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test,tc_at_emulation_test,tc_file_growth_test,tc_fork_repair_test,tc_short_write_test
 # Link flags for the static binaries other than smbd: the shipped metadata
 # migrator and the regression drivers. Unlike smbd's, they write no link map.
 TC_STATIC_LINKFLAGS=

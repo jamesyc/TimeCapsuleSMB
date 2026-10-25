@@ -42,13 +42,20 @@ which smbd serves without changing into any share. With +ipc-tdis the IPC$
 tree disconnect first leaves the working directory at "/", so without 0062
 the delete finds no parent directory and the file survives.
 
-The short-write case sends what macOS was seen sending in issue 221: a WRITE
-whose data is 4 KiB short, so the next request (an ECHO) sits inside it. 0072
-must write nothing, log the refusal, and keep the connection open while
-answering nothing; after a reset the durable handle reconnects and a full write
-lands. The smb-in-data case writes data holding SMB2 headers that must not
-match (a far message ID, a wrong structure size, a response) and must be
-written as sent.
+The short-write cases send what macOS sends after the server's window has
+stayed shut (issue 221): a WRITE whose data is cut short, so the client's next
+requests start inside it. 0072 must write nothing and never answer the WRITE,
+answer every request sent after it, and end the connection once nothing else
+is outstanding (at the latest 60 s after the catch); after that the durable
+handle reconnects and a full write lands. The smb-in-data case writes data
+holding SMB2 headers that are not the client's next request (a far message ID,
+a wrong structure size, a response, another session, an old message ID); it
+must be written as sent. short-write+stall sends fewer bytes after the cut than
+the WRITE is missing, so its frame never completes: smbd, which checks a WRITE
+as it arrives, must answer what follows at once. smb-in-data+pause pauses that
+data mid-WRITE for 5 s; it must still be written. smb-in-data+compound chains
+a CLOSE after a WRITE whose data ends in what looks like an NBT header; both
+must be answered and the data written.
 
 Every durable-v2 grant must carry the timeout the client asked for, up to
 300 s (60 s for none): macOS fails Time Machine's reconnect timeout setting
@@ -132,7 +139,8 @@ LIVE_WAIT_SLACK_SECONDS = 3
 DEVICE_CLOCK_SLEW = 0.005
 DROP_MODES = ("fin", "rst", "half-open", "half-open+reset", "half-open+previous", "rst+ipc-tdis",
               "rst+second-session")
-WRITE_MODES = ("short-write", "smb-in-data")
+WRITE_MODES = ("short-write", "short-write+twice", "short-write+lost", "short-write+lock", "short-write+stall",
+               "smb-in-data", "smb-in-data+pause", "smb-in-data+compound")
 DELETE_ON_CLOSE_MODES = ("drop", "drop+ipc-tdis", "logoff", "logoff+ipc-tdis")
 SETTIME_MODES = ("data", "attributes")
 RENAME_MODES = ("same", "unicode", "case", "other-client", "other-client-case")
@@ -183,7 +191,9 @@ class DurableClient:
         self.lease_key = uuid.uuid4().bytes
         self.create_guid = uuid.uuid4()
 
-    def connect(self, previous_session_id: int = 0):
+    def connect(self, previous_session_id: int = 0, encrypt: bool = True):
+        """A connection, session and tree. smbprotocol encrypts an SMB3
+        session unless told not to; macOS does not by default."""
         from smbprotocol.connection import Connection
         from smbprotocol.session import Session
         from smbprotocol.tree import TreeConnect
@@ -192,7 +202,7 @@ class DurableClient:
         conn.connect()
         with _previous_session(previous_session_id):
             sess = Session(conn, self.device.env.get("TC_SAMBA_USER") or "root",
-                           self.device.env["TC_PASSWORD"])
+                           self.device.env["TC_PASSWORD"], require_encryption=encrypt)
             sess.connect()
         tree = TreeConnect(sess, rf"\\{self.device.host}\{self.device.share}")
         tree.connect()
@@ -817,14 +827,6 @@ def orphan_case(r: Results, device: Device, mode: str) -> None:
                 c.disconnect()
 
 
-def _take_message_ids(conn, count: int) -> int:
-    """Reserve count message IDs in smbprotocol's window for raw requests."""
-    with conn.sequence_lock:
-        first = conn.sequence_window["low"]
-        conn.sequence_window["low"] += count
-    return first
-
-
 def _smb2_frame(conn, session_id: int, tree_id: int, message, mid: int) -> bytes:
     """One request as it goes on the wire: NBT session header, then the PDU."""
     from smbprotocol.header import SMB2HeaderRequest
@@ -865,77 +867,399 @@ def _smbd_log_since(device: Device, log: str, start: int) -> str:
     return device.sh(f"{tail.format(shlex.quote(log + '.old'))}; cat {shlex.quote(log)}", check=False)
 
 
-def write_case(r: Results, device: Device, mode: str) -> None:
+# 0072 checks every 250 ms and ends the connection once nothing has been read
+# or written for 500 ms, so the client's answer to its last reply is read
+# first: about 0.75 s after that reply. Allow over 5x that.
+SHORT_WRITE_END_SECONDS = 4.0
+# Before 0072 waited after its last reply it ended at the next check, at most
+# about 0.35 s after; waiting until nothing has been read or written for 500 ms
+# ends no sooner than 0.5 s, less the time the replies took to reach this
+# client.
+SHORT_WRITE_REPLY_WAIT_SECONDS = 0.4
+# With a request it cannot finish, it ends the connection 60 s after the catch.
+SHORT_WRITE_CAP_SECONDS = 60.0
+# smbd checks a WRITE on each read while it arrives, so one that never
+# completes is refused once a request after the cut has wholly arrived, about
+# 0.3 s here; over 5x that, and well before macOS's ECHO after 10 s without a
+# reply.
+SHORT_WRITE_PROMPT_SECONDS = 2.0
+# How long smb-in-data+pause stops mid-WRITE, its headers already sent.
+PAUSE_SECONDS = 5.0
+# Missing from the WRITE in short-write+stall: more than the client sends after it.
+STALL_CUT = 32768
+
+
+def _capture(conn, send):
+    """Run send() through smbprotocol, so that its requests are registered for
+    their replies, but keep their bytes instead of sending them."""
+    sent: list[bytes] = []
+    real = conn.transport.send
+    conn.transport.send = lambda data: sent.append(struct.pack(">I", len(data)) + data)
+    try:
+        result = send()
+    finally:
+        conn.transport.send = real
+    return result, b"".join(sent)
+
+
+def _short_stream(write_frame: bytes, following: bytes, cut: int) -> bytes:
+    """What macOS puts on the wire when a WRITE's send is cut short: the
+    WRITE's frame, its NBT length unchanged, missing its last cut bytes, then
+    the requests after it. A server reading the WRITE's length takes the first
+    cut bytes of those requests as the end of its data."""
+    if not 0 < cut <= len(following) or cut > len(write_frame) - 116:
+        raise ValueError(f"cut {cut} does not fit")
+    return write_frame[:-cut] + following
+
+
+def _send_raw(conn, data: bytes) -> None:
+    with conn.transport._sock_lock:
+        conn.transport._sock.sendall(data)
+
+
+def _ended_within(conn, start: float, seconds: float) -> float | None:
+    """Seconds from start until the server ended the connection
+    (smbprotocol's reader saw the end of the stream), or None if it had not
+    by start + seconds."""
+    while time.monotonic() - start < seconds:
+        if not conn._t_worker.is_alive():
+            return time.monotonic() - start
+        time.sleep(0.1)
+    return None
+
+
+def _status(conn, request, timeout: float = 15) -> int:
+    return conn.receive(request, timeout=timeout)["status"].get_value()
+
+
+def _plain_open(tree, path: str, send: bool = True, delete: bool = False):
+    """An Open of path, created now; with send=False, the Open and its CREATE
+    request, not sent."""
+    from smbprotocol.open import (CreateDisposition, CreateOptions, FilePipePrinterAccessMask,
+                                  ImpersonationLevel, Open, ShareAccess)
+
+    handle = Open(tree, path)
+    access = FilePipePrinterAccessMask.GENERIC_READ | FilePipePrinterAccessMask.GENERIC_WRITE
+    if delete:
+        access |= FilePipePrinterAccessMask.DELETE
+    created = handle.create(ImpersonationLevel.Impersonation, access, 0x80,
+                            ShareAccess.FILE_SHARE_READ | ShareAccess.FILE_SHARE_WRITE
+                            | ShareAccess.FILE_SHARE_DELETE,
+                            CreateDisposition.FILE_OVERWRITE_IF, CreateOptions.FILE_NON_DIRECTORY_FILE,
+                            send=send)
+    return handle if send else (handle, created[0])
+
+
+def _rename_request(handle, new_path: str):
+    """A SET_INFO renaming handle's file to new_path, not sent."""
+    from smbprotocol.file_info import FileRenameInformation
+    from smbprotocol.open import SMB2SetInfoRequest
+
+    info = FileRenameInformation()
+    info["replace_if_exists"] = False
+    info["file_name"] = new_path
+    request = SMB2SetInfoRequest()
+    request["info_type"] = info.INFO_TYPE
+    request["file_info_class"] = info.INFO_CLASS
+    request["file_id"] = handle.file_id
+    request["buffer"] = info
+    return request
+
+
+def _directory_notify(conn, sess, tree, path: str):
+    """Leave a CHANGE_NOTIFY pending on path, a directory nothing changes in."""
+    from smbprotocol.change_notify import CompletionFilter, SMB2ChangeNotifyRequest
+    from smbprotocol.open import (CreateDisposition, CreateOptions, DirectoryAccessMask,
+                                  ImpersonationLevel, Open, ShareAccess)
+
+    directory = Open(tree, path)
+    directory.create(ImpersonationLevel.Impersonation, DirectoryAccessMask.FILE_LIST_DIRECTORY, 0x10,
+                     ShareAccess.FILE_SHARE_READ | ShareAccess.FILE_SHARE_WRITE | ShareAccess.FILE_SHARE_DELETE,
+                     CreateDisposition.FILE_OPEN_IF, CreateOptions.FILE_DIRECTORY_FILE)
+    notify = SMB2ChangeNotifyRequest()
+    notify["output_buffer_length"] = 4096
+    notify["file_id"] = directory.file_id
+    notify["completion_filter"] = CompletionFilter.FILE_NOTIFY_CHANGE_FILE_NAME
+    return conn.send(notify, sess.session_id, tree.tree_connect_id)
+
+
+def _blocked_lock(device: Device, conn, sess, tree, path: str):
+    """A blocking LOCK from conn on a range another client holds; returns that
+    client's connection, which keeps holding it. The other client has its own
+    client GUID: a second connection with the same one would be taken for the
+    first one's replacement."""
+    from smbprotocol.open import LockFlags, SMB2LockElement
+
+    holder_conn, _, holder_tree = DurableClient(device).connect(encrypt=False)
+    element = SMB2LockElement()
+    element["offset"] = 0
+    element["length"] = 1
+    element["flags"] = LockFlags.SMB2_LOCKFLAG_EXCLUSIVE_LOCK | LockFlags.SMB2_LOCKFLAG_FAIL_IMMEDIATELY
+    _plain_open(holder_tree, path).lock([element])
+    mine = _plain_open(tree, path)
+    element["flags"] = LockFlags.SMB2_LOCKFLAG_EXCLUSIVE_LOCK
+    lock, _ = mine.lock([element], send=False)
+    conn.send(lock, sess.session_id, tree.tree_connect_id)
+    return holder_conn
+
+
+def short_write_case(r: Results, device: Device, mode: str) -> None:
+    """A WRITE whose data is cut short, the way macOS sends one, with the
+    client's next requests inside the data and after it. 0072 must write
+    nothing and never answer the WRITE, answer every request sent after it
+    (macOS refuses a Time Machine reconnect while a CREATE, CLOSE or rename
+    waits for its reply), then end the connection; the reconnect restores the
+    durable open and the WRITE sent again lands in full."""
     from smbprotocol.connection import SMB2Echo
-    from smbprotocol.open import SMB2WriteRequest
 
     client = DurableClient(device)
     name = f"{mode}.bin"
     path = f"{TEST_DIR}\\{name}"
     before = set(_smbd_children(device))
-    conn1, sess1, tree1 = client.connect()
+    # Unencrypted, as macOS sends by default: 0072 does not check encrypted
+    # sessions.
+    conn1, sess1, tree1 = client.connect(encrypt=False)
+    sid, tid = sess1.session_id, tree1.tree_connect_id
+    others = []
     try:
         handle, granted = client.open_durable(tree1, path)
         r.check(f"{mode}: durable handle granted the requested timeout", lambda: granted)
-        if mode == "smb-in-data":
-            # SMB2 headers inside ordinary data that 0072 must not take for the
-            # next request: a far message ID, a wrong structure size, a response.
-            mid = conn1.sequence_window["low"]
-            echo = SMB2Echo()
-            far = _smb2_frame(conn1, sess1.session_id, 0, echo, mid + 100000)
-            near = bytearray(_smb2_frame(conn1, sess1.session_id, 0, echo, mid + 1))
-            size65 = bytes(near[:8]) + struct.pack("<H", 65) + bytes(near[10:])
-            as_response = bytes(near[:20]) + bytes([near[20] | 0x01]) + bytes(near[21:])
-            data = b"".join(b"A" * 1024 + frame for frame in (far, size65, as_response)) + b"A" * 1024
-            write, _ = handle.write(data, 0, send=False)
-
-            def written() -> bool:
-                # A refused WRITE is never answered: time out instead of hanging.
-                request = conn1.send(write, sess1.session_id, tree1.tree_connect_id)
-                response = conn1.receive(request, timeout=30)
-                return response["status"].get_value() == 0 and handle.read(0, len(data)) == data
-
-            r.check(f"{mode}: the data is written as sent", written)
-            handle.close()
-            return
         mine = sorted(set(_smbd_children(device)) - before)
         r.check(f"{mode}: the connection has its own smbd", lambda: len(mine) == 1)
         if len(mine) != 1 or not granted:
             return
+        created = (f"{mode}-1.bin", f"{mode}-2.bin")
+        closed = renamed = None
+        if mode == "short-write":
+            device.sh(f"mkdir -p {shlex.quote(device.root + '/' + TEST_DIR + '/watched')}")
+            _directory_notify(conn1, sess1, tree1, f"{TEST_DIR}\\watched")
+            closed = _plain_open(tree1, f"{TEST_DIR}\\{mode}-closed.bin")
+            renamed = _plain_open(tree1, f"{TEST_DIR}\\{mode}-old.bin", delete=True)
+        if mode == "short-write+lock":
+            others.append(_blocked_lock(device, conn1, sess1, tree1, f"{TEST_DIR}\\locked.bin"))
         log, log_start = _smbd_log(device)
         data = b"A" * 65536
-        write = SMB2WriteRequest()
-        write["length"] = len(data)
-        write["offset"] = 0
-        write["file_id"] = handle.file_id
-        write["buffer"] = data
-        mid = _take_message_ids(conn1, 2)
-        frame = _smb2_frame(conn1, sess1.session_id, tree1.tree_connect_id, write, mid)
-        echo = _smb2_frame(conn1, sess1.session_id, 0, SMB2Echo(), mid + 1)
-        cut = 4096
-        # The WRITE's NBT length is right but its data is 4 KiB short, so the
-        # ECHO and filler complete it, and more traffic follows out of step.
-        conn1.transport._sock.sendall(frame[:-cut] + echo + b"B" * (cut - len(echo)) + b"C" * 8192)
-        time.sleep(5)
+
+        def capture_write(offset: int, size: int):
+            message, _ = handle.write(data[:size], offset, send=False)
+            return _capture(conn1, lambda: conn1.send(message, sid, tid))
+
+        write, write_bytes = capture_write(0, len(data))
+        writes = [write]
+        # What the client writes after the reconnect.
+        replayed = data
+        answered = []
+
+        def capture(message, tree_id=tid):
+            answered.append(_capture(conn1, lambda: conn1.send(message, sid, tree_id)))
+            return answered[-1][1]
+
+        if mode == "short-write+lost":
+            # The data holds the next request's header, but what follows it
+            # is no request: where the client's next request starts is unknown.
+            _, echo = _capture(conn1, lambda: conn1.send(SMB2Echo(), sid))
+            cuts = [4096]
+            # A correct WRITE holding that header is refused the same way,
+            # once: sent again on the new session, whose ID the header does
+            # not carry, it is written.
+            replayed = data[:1024] + echo + data[1024 + len(echo):]
+            stream = _short_stream(write_bytes, echo + b"B" * (4096 - len(echo)) + b"C" * 8192, 4096)
+        elif mode == "short-write+twice":
+            # A second short WRITE straddling the end of the first: smbd reads it
+            # partly from the rest of the first and partly from the socket, and
+            # finds it short too. (One wholly inside the first's data would end
+            # the first's frame walk mid-request, so smbd discards from there.)
+            second, second_bytes = capture_write(len(data), 8192)
+            writes.append(second)
+            echo = capture(SMB2Echo(), 0)
+            following = echo + capture(_plain_open(tree1, f"{TEST_DIR}\\{created[0]}", send=False)[1])
+            cuts = [2000, len(echo) + 10]
+            stream = _short_stream(write_bytes, _short_stream(second_bytes, following, cuts[1]), cuts[0])
+            created = created[:1]
+        elif mode == "short-write+stall":
+            # Fewer bytes follow the cut than the WRITE is missing, and the
+            # client then waits: the WRITE's frame never completes.
+            following = capture(_plain_open(tree1, f"{TEST_DIR}\\{created[0]}", send=False)[1])
+            following += capture(SMB2Echo(), 0)
+            cuts = [STALL_CUT]
+            stream = write_bytes[:-STALL_CUT] + following
+            created = created[:1]
+        else:
+            first = capture(_plain_open(tree1, f"{TEST_DIR}\\{created[0]}", send=False)[1])
+            following = first + capture(SMB2Echo(), 0)
+            if closed is not None:
+                close, _ = closed.close(send=False)
+                following += capture(close)
+                following += capture(_rename_request(renamed, f"{TEST_DIR}\\{mode}-new.bin"))
+            last = capture(_plain_open(tree1, f"{TEST_DIR}\\{created[1]}", send=False)[1])
+            following += last
+            # The last CREATE straddles the end of the WRITE's frame: its first
+            # 10 bytes are in the WRITE's data, the rest after it.
+            cuts = [len(following) - len(last) + 10]
+            stream = _short_stream(write_bytes, following, cuts[0])
+        sent = time.monotonic()
+        _send_raw(conn1, stream)
+        for request, _ in answered:
+            r.check(f"{mode}: the request after the WRITE, command {request.message['command'].get_value():#x} "
+                    f"mid {request.message['message_id'].get_value()}, is answered",
+                    lambda request=request: _status(conn1, request) == 0)
+        if mode == "short-write+stall":
+            waited = time.monotonic() - sent
+            r.check(f"{mode}: answered without waiting for the rest of the WRITE ({waited:.1f} s)",
+                    lambda: waited < SHORT_WRITE_PROMPT_SECONDS)
+        if mode == "short-write+lock":
+            ended = _ended_within(conn1, sent, SHORT_WRITE_CAP_SECONDS + 6)
+            r.check(f"{mode}: smbd ended the connection only after its 60 s limit ({ended} s)",
+                    lambda: ended is not None and ended >= SHORT_WRITE_CAP_SECONDS - 1)
+        else:
+            ended = _ended_within(conn1, time.monotonic(), SHORT_WRITE_END_SECONDS)
+            r.check(f"{mode}: smbd ended the connection after its last reply ({ended} s)",
+                    lambda: ended is not None)
+            if answered:
+                r.check(f"{mode}: smbd waited after its last reply before ending the connection",
+                        lambda: ended is None or ended >= SHORT_WRITE_REPLY_WAIT_SECONDS)
+        for request in writes:
+            r.check(f"{mode}: WRITE mid {request.message['message_id'].get_value()} was never answered",
+                    lambda request=request: request.response is None)
         r.check(f"{mode}: nothing was written", lambda: _file_size(device, name) == 0)
-        r.check(f"{mode}: smbd logged the refusal",
-                lambda: f"tc_desync: WRITE mid {mid} " in _smbd_log_since(device, log, log_start))
-        r.check(f"{mode}: smbd kept the connection, answering nothing",
-                lambda: mine[0] in _smbd_children(device))
-        _reset(conn1)
-        conn2, _, tree2 = client.connect()
+        logged = _smbd_log_since(device, log, log_start)
+        mids = [request.message["message_id"].get_value() for request in writes]
+        if mode == "short-write+lost":
+            expected = [f"tc_desync: WRITE mid {mids[0]} holds the header of a later request",
+                        "(rest discarded, 1 short WRITEs"]
+        else:
+            expected = [f"tc_desync: WRITE mid {mid} is {cut} bytes short" for mid, cut in zip(mids, cuts)]
+            expected.append(f"(rest answered, {len(writes)} short WRITEs, {len(answered)} requests read")
+        if mode == "short-write+lock":
+            expected.append("pending: SMB2_OP_LOCK")
+        for line in expected:
+            r.check(f"{mode}: smbd logged {line!r}", lambda line=line: line in logged)
+        for done in (() if mode == "short-write+lost" else created):
+            r.check(f"{mode}: {done} was created", lambda done=done: _file_size(device, done) == 0)
+        if renamed is not None:
+            r.check(f"{mode}: the rename after the WRITE was done",
+                    lambda: _file_size(device, f"{mode}-new.bin") == 0
+                    and device.sh(f"ls {shlex.quote(device.root + '/' + TEST_DIR + '/' + mode + '-old.bin')} "
+                                  "2>/dev/null", check=False).strip() == "")
+        # smbprotocol closes its socket when it reads the end of the stream,
+        # which ends the connection on the device as the Mac does.
+        with contextlib.suppress(OSError):
+            _reset(conn1)
+        if ended is not None:
+            r.check(f"{mode}: smbd logged that the client then ended the connection",
+                    lambda: "tc_desync: the client ended the connection" in _smbd_log_since(device, log, log_start))
+        conn2, _, tree2 = client.connect(encrypt=False)
         try:
             def full_write() -> bool:
                 again = client.reconnect(tree2, path, handle.file_id)
-                again.write(data, 0)
-                back = again.read(0, len(data))
+                again.write(replayed, 0)
+                back = again.read(0, len(replayed))
                 again.close()
-                return back == data
+                return back == replayed
 
-            r.check(f"{mode}: the reconnect restores the open and a full write lands", full_write)
+            what = "the old session's header inside" if replayed != data else "a full write"
+            r.check(f"{mode}: the reconnect restores the open and {what} lands", full_write)
         finally:
             with contextlib.suppress(Exception):
                 conn2.disconnect()
+    finally:
+        for other in others:
+            with contextlib.suppress(Exception):
+                other.disconnect()
+        with contextlib.suppress(Exception):
+            conn1.disconnect()
+
+
+def write_case(r: Results, device: Device, mode: str) -> None:
+    """Data holding SMB2 headers that are not the client's next request must
+    be written as sent: a far message ID, a wrong structure size, a response,
+    another session and a message ID the client used long ago. With +pause
+    the client stops mid-WRITE with those headers already sent: smbd checks
+    each partial read and must not take it for a short WRITE."""
+    from smbprotocol.connection import SMB2Echo
+
+    if mode.startswith("short-write"):
+        short_write_case(r, device, mode)
+        return
+    if mode == "smb-in-data+compound":
+        compound_write_case(r, device, mode)
+        return
+    client = DurableClient(device)
+    path = f"{TEST_DIR}\\{mode}.bin"
+    # Unencrypted: 0072 does not check encrypted PDUs.
+    conn1, sess1, tree1 = client.connect(encrypt=False)
+    try:
+        handle, granted = client.open_durable(tree1, path)
+        r.check(f"{mode}: durable handle granted the requested timeout", lambda: granted)
+        mid = conn1.sequence_window["low"]
+        echo = SMB2Echo()
+        far = _smb2_frame(conn1, sess1.session_id, 0, echo, mid + 100000)
+        near = bytearray(_smb2_frame(conn1, sess1.session_id, 0, echo, mid + 1))
+        size65 = bytes(near[:8]) + struct.pack("<H", 65) + bytes(near[10:])
+        as_response = bytes(near[:20]) + bytes([near[20] | 0x01]) + bytes(near[21:])
+        other_session = _smb2_frame(conn1, sess1.session_id + 1, 0, echo, mid + 1)
+        stale = _smb2_frame(conn1, sess1.session_id, 0, echo, 1)
+        data = b"".join(b"A" * 1024 + frame
+                        for frame in (far, size65, as_response, other_session, stale)) + b"A" * 1024
+        write, _ = handle.write(data, 0, send=False)
+
+        def written() -> bool:
+            if mode == "smb-in-data+pause":
+                request, frame = _capture(conn1, lambda: conn1.send(write, sess1.session_id,
+                                                                    tree1.tree_connect_id))
+                # Every header is sent before the pause; the last 512 bytes after it.
+                _send_raw(conn1, frame[:-512])
+                time.sleep(PAUSE_SECONDS)
+                _send_raw(conn1, frame[-512:])
+            else:
+                request = conn1.send(write, sess1.session_id, tree1.tree_connect_id)
+            # A refused WRITE is never answered: time out instead of hanging.
+            response = conn1.receive(request, timeout=30)
+            return response["status"].get_value() == 0 and handle.read(0, len(data)) == data
+
+        r.check(f"{mode}: the data is written as sent", written)
+        handle.close()
+    finally:
+        with contextlib.suppress(Exception):
+            conn1.disconnect()
+
+
+def compound_write_case(r: Results, device: Device, mode: str) -> None:
+    """A WRITE with a CLOSE chained after it in one compound, its data ending
+    in what looks like an NBT header (a 0x00 byte, then a length of 128): the
+    CLOSE's header, with the session's ID, follows the data in the same PDU.
+    0072 must not take the WRITE for a short one; both are answered and the
+    data is written."""
+    from smbprotocol.open import CreateDisposition
+
+    client = DurableClient(device)
+    path = f"{TEST_DIR}\\{mode}.bin"
+    # 4096 bytes: the WRITE needs no padding, so those 4 bytes sit right
+    # before the CLOSE's header.
+    data = b"A" * 4092 + b"\x00\x00\x00\x80"
+    # Unencrypted: 0072 does not check encrypted PDUs.
+    conn1, sess1, tree1 = client.connect(encrypt=False)
+    try:
+        handle = _plain_open(tree1, path)
+        write, _ = handle.write(data, 0, send=False)
+        close, _ = handle.close(send=False)
+        requests = conn1.send_compound([write, close], sess1.session_id, tree1.tree_connect_id)
+        r.check(f"{mode}: the WRITE and the CLOSE are both answered with success",
+                lambda: [_status(conn1, request, timeout=30) for request in requests] == [0, 0])
+
+        def written() -> bool:
+            from smbprotocol.open import (CreateOptions, FilePipePrinterAccessMask, ImpersonationLevel,
+                                          Open, ShareAccess)
+
+            again = Open(tree1, path)
+            again.create(ImpersonationLevel.Impersonation, FilePipePrinterAccessMask.GENERIC_READ, 0x80,
+                         ShareAccess.FILE_SHARE_READ, CreateDisposition.FILE_OPEN,
+                         CreateOptions.FILE_NON_DIRECTORY_FILE)
+            back = again.read(0, len(data))
+            again.close()
+            return back == data
+
+        r.check(f"{mode}: the data is written as sent", written)
     finally:
         with contextlib.suppress(Exception):
             conn1.disconnect()

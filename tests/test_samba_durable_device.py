@@ -722,5 +722,70 @@ class OrphanCaseTest(unittest.TestCase):
         self.assertGreaterEqual(clock.now - 1000, DURABLE_TIMEOUT_SECONDS)
 
 
+
+class ShortWriteHelpersTest(unittest.TestCase):
+    """The pieces the short-WRITE cases build their streams and checks from."""
+
+    @staticmethod
+    def frame(payload: bytes) -> bytes:
+        return len(payload).to_bytes(4, "big") + payload
+
+    def test_a_server_reading_the_writes_length_takes_the_cut_bytes_from_what_follows(self) -> None:
+        write = self.frame(b"W" * 64 + b"B" * 48 + b"D" * 1000)
+        following = self.frame(b"E" * 70) + self.frame(b"C" * 200)
+        for cut in (1, 74, 75, len(following)):
+            stream = durable_device._short_stream(write, following, cut)
+            length = int.from_bytes(stream[:4], "big")
+            self.assertEqual(stream[4:4 + length], write[4:-cut] + following[:cut])
+            self.assertEqual(stream[4 + length:], following[cut:])
+
+    def test_a_cut_beyond_what_follows_or_into_the_writes_fixed_part_is_refused(self) -> None:
+        write = self.frame(b"W" * 64 + b"B" * 48 + b"D" * 100)
+        following = self.frame(b"E" * 70)
+        for cut in (0, len(following) + 1):
+            with self.assertRaises(ValueError):
+                durable_device._short_stream(write, following, cut)
+        with self.assertRaises(ValueError):
+            durable_device._short_stream(write, b"X" * 500, 101)
+        durable_device._short_stream(write, b"X" * 500, 100)
+
+    def test_capture_keeps_the_frames_and_restores_the_transport(self) -> None:
+        sent = []
+        conn = mock.Mock()
+        conn.transport.send = sent.append
+        real = conn.transport.send
+
+        def send():
+            conn.transport.send(b"abc")
+            conn.transport.send(b"de")
+            return "request"
+
+        self.assertEqual(durable_device._capture(conn, send), ("request", b"\0\0\0\x03abc\0\0\0\x02de"))
+        self.assertEqual(sent, [])
+        self.assertIs(conn.transport.send, real)
+
+        def fails():
+            raise RuntimeError("no")
+
+        with self.assertRaises(RuntimeError):
+            durable_device._capture(conn, fails)
+        self.assertIs(conn.transport.send, real)
+
+    def test_the_end_is_timed_from_start_and_missing_after_the_limit(self) -> None:
+        clock = [100.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        conn = mock.Mock()
+        conn._t_worker.is_alive.side_effect = [True, True, True, False]
+        with mock.patch.object(durable_device.time, "monotonic", lambda: clock[0]), \
+                mock.patch.object(durable_device.time, "sleep", sleep):
+            self.assertAlmostEqual(durable_device._ended_within(conn, 99.5, 2.0), 0.8)
+            conn._t_worker.is_alive.side_effect = None
+            conn._t_worker.is_alive.return_value = True
+            self.assertIsNone(durable_device._ended_within(conn, clock[0], 2.0))
+
+
 if __name__ == "__main__":
     unittest.main()

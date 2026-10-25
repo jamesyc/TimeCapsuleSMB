@@ -312,18 +312,43 @@
 # unless the grant matches its request, and never uses the grant to decide a
 # reconnect.
 0024-durable-open-live-retry.patch|defer live durable-open reconnects for up to 90 seconds
-# Workaround for a macOS bug (issue 221): after the server's TCP window has
-# stayed shut for about 5 seconds, macOS can send an SMB2 WRITE whose data is
-# short, so the next request's header sits inside the data, and smbd writes
-# that request into the file and answers success. Refuse such a WRITE before
-# dispatch: the data holds an NBT session header and a complete SMB2 request
-# header, not a response, whose message ID is at most 8192 above the WRITE's.
-# Then read and discard everything and answer nothing, so that macOS's 35 s
-# reply timer reconnects and resends every request. macOS fails a request if
-# we drop the connection, stop reading or send any error reply, and Time
-# Machine treats that as fatal. Also fixes a Samba bug: the path that ignores
-# frames kept each frame's buffer until the connection ended.
-0072-smbd-short-write-desync.patch|refuse a WRITE that holds the next request, then answer nothing
+# Workaround for a macOS bug (issue 221): macOS sends each request through a
+# kernel call with a 5 s send timeout that reports success when the timeout
+# cuts the send short, so after the server's TCP window has stayed shut a WRITE
+# can arrive with its data short and the client's next requests inside the
+# data; smbd would write them into the file and answer success. Refuse such a
+# WRITE before dispatch, without writing or answering it: the client resends
+# it after a reconnect, an error reply to a WRITE fails Time Machine, and not
+# reading makes the client's next send time out. Parse on from where the next
+# request starts, answer everything sent after the WRITE, and once nothing else
+# is outstanding and nothing has been read or written for 500 ms (so a request
+# sent in answer to the last reply is read, not cut off by the FIN) end the
+# connection with a FIN, at most 60 s after the catch: macOS fails the WRITE
+# 120 s after it began sending it, which was before the stall that cut it.
+# A request the client sends unprompted in the last moment before the FIN
+# can still cross it unanswered.
+# On a Time Machine mount macOS refuses to reconnect while a CREATE, CLOSE,
+# LOCK, or a delete, rename or security SET_INFO waits for its reply, so those
+# must not be discarded. A WRITE counts as short only when its data holds a
+# request header with the WRITE's session ID and a message ID inside the credit
+# window that is not the WRITE's own, followed only by such requests to the end
+# of the PDU; a correct client never sends that, so its WRITEs are written as
+# sent. The client can send fewer bytes after the cut than the WRITE is
+# missing and then wait for replies, so a WRITE is checked as it arrives, on
+# each read, acting once a request after the cut has wholly arrived. Where the
+# next request starts cannot be found, or after 8 matching headers that no
+# requests follow (only a hostile client sends those), discard everything and
+# end the connection the same way. Only sends over macOS's 2 KiB send
+# low-water mark can be cut. Not checked: encrypted sessions (a cut encrypted
+# WRITE fails decryption and smbd drops the connection), WRITEs with a request
+# chained after them (the chained request would pass for a cut; macOS cuts
+# only WRITEs sent alone), compounds such as the CREATE/WRITE/CLOSE macOS uses
+# for extended attributes, WRITEs read by receivefile (logged at startup if
+# min receivefile size is set), and every WRITE when multichannel is on
+# (0072's state is one per smbd; logged at startup). Also fixes a Samba bug:
+# the path that ignores frames kept each frame's buffer until the connection
+# ended.
+0072-smbd-short-write-desync.patch|refuse a short macOS WRITE, answer what follows, then end the connection
 # A Mac reconnecting names its lost session in the new session setup and
 # gives that request 60 seconds. Upstream answers only once the old session's
 # smbd has closed it, with no time limit, so an smbd that cannot run (a long

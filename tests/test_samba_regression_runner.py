@@ -201,8 +201,16 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     conversion = ("struct timespec nt_time_to_unix_timespec_raw(NTTIME nt)\n{\n"
                   "\tstruct timespec ts = { nt, 0 };\n\treturn ts;\n}")
     (util / "time.c").write_text("#define TIME_FIXUP_CONSTANT_INT INT64_C(11644473600)\n" + conversion)
+    # 0072's limits, check, walk and decision come with the NBT length macro,
+    # which sits far above them; the cut ends at the decision's column-0 brace.
+    length = "#define smb2_len(buf) (PVAL(buf,3)|(PVAL(buf,2)<<8)|(PVAL(buf,1)<<16))"
+    short_write = ("#define TC_DESYNC_TICK_MS 250\n\nenum tc_short_write {\n\tTC_WRITE_WHOLE,\n};\n\n"
+                   "static bool tc_desync_end_now(void)\n{\n\tif (1) {\n\t\treturn 0;\n\t}\n\treturn 1;\n}")
+    (smbd / "smb2_server.c").write_text("static int before;\n" + length + "\n\nstatic int between;\n\n"
+                                        + short_write + "\n\nstatic void after(void)\n{\n}\n")
     run.stage(tmp_path)
     run.stage(tmp_path)
+    assert (modules / "tc_short_write.inc").read_text() == length + "\n\n" + short_write + "\n"
     assert (modules / "tc_file_growth_callers.inc").read_text() == "\n\n".join(regions) + "\n"
     assert (modules / "tc_scavenger_hello.inc").read_text() == hello + "\n"
     assert (modules / "tc_scavenger_rescan.inc").read_text() == message + "\n\n" + rescan + "\n"

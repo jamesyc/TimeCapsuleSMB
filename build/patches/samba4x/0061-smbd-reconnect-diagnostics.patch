@@ -66,7 +66,7 @@ diff --git a/source3/smbd/smb2_negprot.c b/source3/smbd/smb2_negprot.c
 diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
 --- a/source3/smbd/smb2_server.c
 +++ b/source3/smbd/smb2_server.c
-@@ -1797,6 +1797,9 @@ void smbd_server_connection_terminate_ex(struct smbXsrv_connection *xconn,
+@@ -1800,6 +1800,9 @@ void smbd_server_connection_terminate_ex(struct smbXsrv_connection *xconn,
  	}
  	xconn->transport.terminating = true;
  
