@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-import argparse
 import sys
+
+# Installed console scripts import this module before calling main(), so the
+# check runs before any command module loads.
+if sys.platform == "win32":
+    print("TimeCapsuleSMB supports only macOS and Linux. Run this command on a Mac or Linux computer.", file=sys.stderr)
+    raise SystemExit(1)
+
+import argparse
 from contextlib import nullcontext
 from typing import Optional
 

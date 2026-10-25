@@ -29,6 +29,9 @@ def _running_in_target_venv() -> bool:
 def _handoff_to_bootstrapped_launcher() -> None:
     if _is_bootstrap_command() or _is_top_level_help_request():
         return
+    # Native Windows skips the venv paths below; the CLI module turns it away.
+    if sys.platform == "win32":
+        return
     if _running_in_target_venv():
         return
     if VENV_LAUNCHER.is_file() and os.access(VENV_LAUNCHER, os.X_OK):
