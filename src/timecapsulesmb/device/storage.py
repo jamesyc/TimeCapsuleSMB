@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 import plistlib
 import re
@@ -599,10 +599,50 @@ def diskd_rpc_status_conn(connection: SshConnection) -> str:
     return proc.stdout.strip() or "?"
 
 
-def render_ensure_volume_root_mounted_script(volume_root: str, _device_path: str, wait_seconds: int) -> str:
+@dataclass
+class VolumeClaims:
+    """The volume roots one operation holds a diskd.useVolume claim on.
+
+    diskd counts the claims on each volume without recording who made them,
+    unmounts the volume when diskd.unuseVolume takes the count to 0 (and on
+    erase, archive or unplug), and forgets every count at a reboot. One claim
+    pins the volume against another client's release (afpserver claims and
+    releases around each AFP session), so an operation claims a volume once
+    and then only checks that it is still mounted: still mounted means the
+    count has not reached 0 since our claim. One found unmounted lost its
+    claim and is claimed again.
+
+    Known gap: diskd also mounts a disk by itself, with no claim, when it is
+    attached. A USB disk unplugged and plugged back in during an operation can
+    return at the same root (NetBSD reuses the lowest free dkN), and the
+    operation then skips the claim on a volume nothing pins, so an AFP session
+    ending before the operation stops afpserver can unmount it.
+
+    Valid for one boot: a flow that reboots and then mounts volumes again needs
+    a new one."""
+
+    roots: set[str] = field(default_factory=set)
+
+    def holds(self, volume_root: str) -> bool:
+        return volume_root in self.roots
+
+    def record(self, volume_root: str) -> None:
+        self.roots.add(volume_root)
+
+
+def render_ensure_volume_root_mounted_script(
+    volume_root: str, _device_path: str, wait_seconds: int, *, held: bool = False,
+) -> str:
     root = shlex.quote(volume_root)
     mounted_test = shlex.quote(_remote_mounted_test(volume_root))
     attempts = DISKD_USE_VOLUME_GUARD_ATTEMPTS
+    # A volume this operation already claimed needs no second claim while it
+    # stays mounted (VolumeClaims); the report then lists no calls.
+    held_check = (
+        f'if /bin/sh -c {mounted_test}; then '
+        'echo "use_volume_rcs= mounted=yes use_volume_errors= claim=held"; exit 0; fi; '
+        if held else ""
+    )
     # The last line reports each diskd.useVolume exit status, whether the
     # volume was mounted in the end, and the error acp printed for each call
     # (0 on success, ? when it printed no code; see VolumeMountResult).
@@ -613,6 +653,7 @@ def render_ensure_volume_root_mounted_script(volume_root: str, _device_path: str
     report = '"use_volume_rcs=$use_volume_rcs mounted=%s use_volume_errors=$use_volume_errors"'
     return (
         f"mkdir -p {root}; "
+        f"{held_check}"
         "use_volume_rcs=; use_volume_errors=; "
         "diskd_attempt=1; "
         f"while [ \"$diskd_attempt\" -le {attempts} ]; do "
@@ -645,7 +686,8 @@ class VolumeMountResult:
 
     `detail` is the script's last line: each diskd.useVolume exit status,
     whether the volume was mounted in the end, and acp's error per call, e.g.
-    "use_volume_rcs=22,22 mounted=no use_volume_errors=-6727,-6727". Success
+    "use_volume_rcs=22,22 mounted=no use_volume_errors=-6727,-6727", with no
+    calls and `claim=held` for a mounted volume already claimed. Success
     is a claimed volume, or a mounted one whose claim failed with -6727 (diskd
     cannot unmount it). Any other failed request can still end with the volume
     mounted (`present`): diskd refused it, or mounted it after the wait.
@@ -668,8 +710,11 @@ def ensure_volume_root_mounted_conn(
     device_path: str,
     *,
     wait_seconds: int,
+    claims: VolumeClaims,
 ) -> VolumeMountResult:
-    script = render_ensure_volume_root_mounted_script(volume_root, device_path, wait_seconds)
+    script = render_ensure_volume_root_mounted_script(
+        volume_root, device_path, wait_seconds, held=claims.holds(volume_root),
+    )
     timeout = max(30, wait_seconds * DISKD_USE_VOLUME_GUARD_ATTEMPTS + 45)
     try:
         proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=timeout)
@@ -680,7 +725,12 @@ def ensure_volume_root_mounted_conn(
         # diskd.useVolume goes through ACPd; diskd's own refusals leave syUT answering.
         raise_if_acpd_silent(connection)
     lines = (proc.stdout or "").strip().splitlines()
-    return VolumeMountResult(proc.returncode == 0, lines[-1].strip() if lines else "")
+    result = VolumeMountResult(proc.returncode == 0, lines[-1].strip() if lines else "")
+    # Any call diskd accepted added a claim, even if the volume never appeared.
+    fields = dict(token.split("=", 1) for token in result.detail.split() if "=" in token)
+    if "0" in fields.get("use_volume_rcs", "").split(","):
+        claims.record(volume_root)
+    return result
 
 
 def verify_payload_home_conn(
@@ -688,12 +738,14 @@ def verify_payload_home_conn(
     payload_home: PayloadHome,
     *,
     wait_seconds: int,
+    claims: VolumeClaims,
 ) -> PayloadVerificationResult:
     if not ensure_volume_root_mounted_conn(
         connection,
         payload_home.volume_root,
         payload_home.device_path,
         wait_seconds=wait_seconds,
+        claims=claims,
     ):
         return PayloadVerificationResult(False, f"volume {payload_home.volume_root} is not mounted")
 
@@ -719,6 +771,7 @@ def mounted_mast_volumes_conn(
     volumes: tuple[MaStVolume, ...],
     *,
     wait_seconds: int,
+    claims: VolumeClaims,
 ) -> tuple[MaStVolume, ...]:
     mounted: list[MaStVolume] = []
     for volume in volumes:
@@ -727,6 +780,7 @@ def mounted_mast_volumes_conn(
             volume.volume_root,
             volume.device_path,
             wait_seconds=wait_seconds,
+            claims=claims,
         ):
             mounted.append(volume)
     return tuple(mounted)
@@ -792,6 +846,7 @@ def select_payload_home_with_diagnostics_conn(
     payload_dir_name: str,
     *,
     wait_seconds: int,
+    claims: VolumeClaims,
 ) -> PayloadHomeSelection:
     checks: list[PayloadCandidateCheck] = []
     for volume in ordered_payload_candidate_volumes(volumes):
@@ -800,6 +855,7 @@ def select_payload_home_with_diagnostics_conn(
             volume.volume_root,
             volume.device_path,
             wait_seconds=wait_seconds,
+            claims=claims,
         )
         mounted = bool(mount)
         writable = volume_root_is_writable_conn(connection, volume.volume_root) if mounted else None

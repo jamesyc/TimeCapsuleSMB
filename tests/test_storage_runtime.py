@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 import plistlib
 import shlex
 import subprocess
-import sys
 import tempfile
 import textwrap
 import unittest
@@ -22,6 +20,7 @@ from timecapsulesmb.deploy.planner import (
     build_deployment_plan,
 )
 from timecapsulesmb.device.storage import (
+    VolumeClaims,
     MaStDiskSnapshot,
     MaStPartitionSnapshot,
     MAST_PROBE_COMMAND,
@@ -49,7 +48,7 @@ from timecapsulesmb.device.storage import (
     wait_for_mast_volumes_conn,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
-from tests.storage_fixtures import MAST_FIXTURES, SHELL_MAST_FIXTURES
+from tests.storage_fixtures import MAST_FIXTURES, SHELL_MAST_FIXTURES, FakeDiskd
 
 
 def netbsd6_internal_and_usb_xml(smart_status: str = "verified") -> str:
@@ -684,10 +683,10 @@ MaSt = (
 
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)) as mount_mock:
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", side_effect=[True]) as writable_mock:
-                selection = select_payload_home_with_diagnostics_conn(connection, (external, internal), ".samba4", wait_seconds=30)
+                selection = select_payload_home_with_diagnostics_conn(connection, (external, internal), ".samba4", wait_seconds=30, claims=VolumeClaims())
 
         self.assertEqual(selection.payload_home, PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"))
-        mount_mock.assert_called_once_with(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=30)
+        mount_mock.assert_called_once_with(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=30, claims=mock.ANY)
         writable_mock.assert_called_once_with(connection, "/Volumes/dk2")
 
     def test_ensure_volume_root_mounted_conn_claims_diskd_without_mount_hfs_fallback(self) -> None:
@@ -696,7 +695,7 @@ MaSt = (
             "timecapsulesmb.device.storage.run_ssh",
             return_value=mock.Mock(returncode=0, stdout="use_volume_rcs=0 mounted=yes\n"),
         ) as run_ssh_mock:
-            self.assertTrue(ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=12))
+            self.assertTrue(ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=12, claims=VolumeClaims()))
 
         run_ssh_mock.assert_called_once()
         remote_command = run_ssh_mock.call_args.args[1]
@@ -717,7 +716,7 @@ MaSt = (
             "timecapsulesmb.device.storage.run_ssh",
             return_value=mock.Mock(returncode=1, stdout="use_volume_rcs=1,1 mounted=no\n"),
         ):
-            result = ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=0)
+            result = ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=0, claims=VolumeClaims())
         self.assertFalse(result)
         self.assertEqual(result.detail, "use_volume_rcs=1,1 mounted=no")
 
@@ -725,55 +724,28 @@ MaSt = (
         # An SSH failure produces no script output; the result is still usable.
         connection = SshConnection("root@10.0.0.2", "pw", "")
         with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=mock.Mock(returncode=255, stdout="")):
-            result = ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=0)
+            result = ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=0, claims=VolumeClaims())
         self.assertFalse(result)
         self.assertEqual(result.detail, "")
 
     def _run_mount_script(
         self, tmp: Path, *, use_volume_rcs: list[int], mounted_after_claim: bool, mounted_at_start: bool = False,
-        errors: list[int | None] | None = None,
+        errors: list[int | None] | None = None, held: bool = False,
     ):
-        """Run the real mount script with fake acp, df, tail and sleep.
+        """Run the real mount script on a FakeDiskd.
 
-        The fake acp answers with the given exit codes in order, printing a
-        plist on stdout like acp and, for a failure with an error code, acp's
-        `### RPC function ... failed: CODE` line on stderr. The volume appears
-        in df once a claim succeeds (if mounted_after_claim) or is mounted from
-        the start (mounted_at_start)."""
-        state = tmp / "state.json"
+        The fake acp answers with the given exit codes in order and, for a
+        failure with an error code, prints acp's `### RPC function ... failed:
+        CODE` line. The volume appears in df once a claim succeeds (if
+        mounted_after_claim) or is mounted from the start (mounted_at_start)."""
         errors = errors or [None] * len(use_volume_rcs)
-        state.write_text(json.dumps({"rcs": use_volume_rcs, "errors": errors, "calls": 0, "mounted": mounted_at_start}))
-        tool = tmp / "tool.py"
-        tool.write_text(f"""
-import json, sys
-from pathlib import Path
-state = Path({str(state)!r})
-d = json.loads(state.read_text())
-if sys.argv[1] == "acp":
-    rc = d["rcs"][d["calls"]]
-    error = d["errors"][d["calls"]]
-    d["calls"] += 1
-    print("<plist>status</plist>")
-    if error is not None:
-        print(f'### RPC function "diskd.useVolume" failed: {{error}}', file=sys.stderr)
-    if rc == 0 and {mounted_after_claim!r}:
-        d["mounted"] = True
-    state.write_text(json.dumps(d))
-    sys.exit(rc)
-if sys.argv[1] == "df":
-    print("Filesystem 1K-blocks Used Avail Capacity Mounted on")
-    if d["mounted"]:
-        print("/dev/dk2 100 1 99 1% /Volumes/dk2")
-""")
-        script = render_ensure_volume_root_mounted_script("/Volumes/dk2", "/dev/dk2", 1)
-        fake = lambda name: f"{sys.executable} {tool} {name}"
-        script = script.replace("mkdir -p /Volumes/dk2", ":")
-        script = script.replace("/usr/bin/acp rpc diskd.useVolume", fake("acp"))
-        script = script.replace("/bin/df -k", fake("df"))
-        script = script.replace("/usr/bin/tail -n +2", "sed 1d")
-        script = script.replace("sleep 1", ":")
-        result = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True)
-        return result, json.loads(state.read_text())
+        diskd = FakeDiskd(
+            tmp, mounted=mounted_at_start, answers=zip(use_volume_rcs, errors), default=None,
+            mounts=mounted_after_claim,
+        )
+        script = render_ensure_volume_root_mounted_script("/Volumes/dk2", "/dev/dk2", 1, held=held)
+        result = diskd.run_ssh(None, f"/bin/sh -c {shlex.quote(script)}")
+        return result, {"calls": diskd.calls}
 
     def test_mount_script_reports_a_successful_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -854,6 +826,102 @@ if sys.argv[1] == "df":
         self.assertEqual(state["calls"], 2)
         self.assertTrue(VolumeMountResult(False, result.stdout.strip()).present)
 
+    def test_mount_script_skips_the_claim_for_a_held_volume_that_is_still_mounted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, state = self._run_mount_script(
+                Path(tmp), use_volume_rcs=[], mounted_after_claim=True, mounted_at_start=True, held=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs= mounted=yes use_volume_errors= claim=held")
+        self.assertEqual(state["calls"], 0)
+
+    def test_mount_script_claims_a_held_volume_again_once_it_is_unmounted(self) -> None:
+        # diskd unmounts only when the count reaches 0, so the claim is gone.
+        with tempfile.TemporaryDirectory() as tmp:
+            result, state = self._run_mount_script(
+                Path(tmp), use_volume_rcs=[0], mounted_after_claim=True, mounted_at_start=False, held=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=0 mounted=yes use_volume_errors=0")
+        self.assertEqual(state["calls"], 1)
+
+    def test_mount_script_claims_a_mounted_volume_it_does_not_hold(self) -> None:
+        # Mounted without our claim, another client's release could unmount it.
+        with tempfile.TemporaryDirectory() as tmp:
+            result, state = self._run_mount_script(
+                Path(tmp), use_volume_rcs=[0], mounted_after_claim=True, mounted_at_start=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(state["calls"], 1)
+
+    def _guard(self, diskd: FakeDiskd, claims: VolumeClaims) -> VolumeMountResult:
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", side_effect=diskd.run_ssh), \
+                mock.patch("timecapsulesmb.device.storage.raise_if_acpd_silent"):
+            return ensure_volume_root_mounted_conn(
+                SshConnection("root@10.0.0.2", "pw", ""), "/Volumes/dk2", "/dev/dk2", wait_seconds=1, claims=claims,
+            )
+
+    def test_fake_diskd_fails_a_call_it_has_no_answer_for(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            diskd = FakeDiskd(Path(tmp), answers=[(0, None)], default=None)
+            self.assertTrue(self._guard(diskd, VolumeClaims()))
+            with self.assertRaisesRegex(AssertionError, "more often than answered"):
+                self._guard(diskd, VolumeClaims())
+
+    def test_an_operation_claims_a_volume_once_however_often_it_checks_it(self) -> None:
+        claims = VolumeClaims()
+        with tempfile.TemporaryDirectory() as tmp:
+            diskd = FakeDiskd(Path(tmp))
+            results = [self._guard(diskd, claims) for _ in range(5)]
+            self.assertEqual(diskd.calls, 1)
+        self.assertTrue(all(results))
+        self.assertEqual(claims.roots, {"/Volumes/dk2"})
+
+    def test_a_held_volume_that_diskd_unmounted_is_claimed_again(self) -> None:
+        claims = VolumeClaims()
+        with tempfile.TemporaryDirectory() as tmp:
+            diskd = FakeDiskd(Path(tmp))
+            self.assertTrue(self._guard(diskd, claims))
+            diskd.unmount()
+            self.assertTrue(self._guard(diskd, claims))
+            self.assertEqual(diskd.calls, 2)
+
+    def test_each_operation_makes_its_own_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            diskd = FakeDiskd(Path(tmp), mounted=True)
+            self.assertTrue(self._guard(diskd, VolumeClaims()))
+            self.assertTrue(self._guard(diskd, VolumeClaims()))
+            self.assertEqual(diskd.calls, 2)
+
+    def test_a_refused_claim_is_not_remembered(self) -> None:
+        claims = VolumeClaims()
+        with tempfile.TemporaryDirectory() as tmp:
+            diskd = FakeDiskd(Path(tmp), answers=[(22, -6723), (22, -6723)])
+            self.assertFalse(self._guard(diskd, claims))
+            self.assertEqual(claims.roots, set())
+            self.assertTrue(self._guard(diskd, claims))
+            self.assertEqual(diskd.calls, 3)
+        self.assertEqual(claims.roots, {"/Volumes/dk2"})
+
+    def test_a_mounted_volume_kept_after_lost_rpc_names_is_not_remembered(self) -> None:
+        # -6727 on a mounted volume succeeds without a claim: the next check asks again.
+        claims = VolumeClaims()
+        with tempfile.TemporaryDirectory() as tmp:
+            diskd = FakeDiskd(Path(tmp), mounted=True, default=(22, -6727))
+            self.assertTrue(self._guard(diskd, claims))
+            self.assertTrue(self._guard(diskd, claims))
+            self.assertEqual(diskd.calls, 2)
+        self.assertEqual(claims.roots, set())
+
+    def test_an_accepted_claim_is_remembered_even_when_the_volume_never_appears(self) -> None:
+        claims = VolumeClaims()
+        with tempfile.TemporaryDirectory() as tmp:
+            diskd = FakeDiskd(Path(tmp), mounts=False)
+            result = self._guard(diskd, claims)
+            self.assertEqual(diskd.calls, 2)
+        self.assertFalse(result)
+        self.assertEqual(claims.roots, {"/Volumes/dk2"})
+
     def test_diskd_rpc_status_reports_acpd_answer_or_error_code(self) -> None:
         cases = [
             ("echo '<plist/>'", "answered"),
@@ -883,10 +951,10 @@ if sys.argv[1] == "df":
         payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)) as mount_mock:
             with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=mock.Mock(returncode=0, stdout="ok\n")) as run_ssh_mock:
-                result = verify_payload_home_conn(connection, payload_home, wait_seconds=5)
+                result = verify_payload_home_conn(connection, payload_home, wait_seconds=5, claims=VolumeClaims())
 
         self.assertEqual(result, PayloadVerificationResult(True, "ok"))
-        mount_mock.assert_called_once_with(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=5)
+        mount_mock.assert_called_once_with(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=5, claims=mock.ANY)
         remote_command = run_ssh_mock.call_args.args[1]
         self.assertIn("[ -d /Volumes/dk2/.samba4 ]", remote_command)
         self.assertIn("[ -x /Volumes/dk2/.samba4/smbd ]", remote_command)
@@ -897,7 +965,7 @@ if sys.argv[1] == "df":
         connection = SshConnection("root@10.0.0.2", "pw", "")
         payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(False)):
-            result = verify_payload_home_conn(connection, payload_home, wait_seconds=5)
+            result = verify_payload_home_conn(connection, payload_home, wait_seconds=5, claims=VolumeClaims())
         self.assertEqual(result, PayloadVerificationResult(False, "volume /Volumes/dk2 is not mounted"))
 
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)):
@@ -905,7 +973,7 @@ if sys.argv[1] == "df":
                 "timecapsulesmb.device.storage.run_ssh",
                 return_value=mock.Mock(returncode=1, stdout="missing smbd; missing private directory\n"),
             ):
-                result = verify_payload_home_conn(connection, payload_home, wait_seconds=5)
+                result = verify_payload_home_conn(connection, payload_home, wait_seconds=5, claims=VolumeClaims())
         self.assertEqual(result, PayloadVerificationResult(False, "missing smbd; missing private directory"))
 
     def test_select_payload_home_skips_unmountable_internal_before_external(self) -> None:
@@ -915,14 +983,14 @@ if sys.argv[1] == "df":
 
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", side_effect=[VolumeMountResult(False), VolumeMountResult(True)]) as mount_mock:
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=True) as writable_mock:
-                selection = select_payload_home_with_diagnostics_conn(connection, (external, internal), ".samba4", wait_seconds=9)
+                selection = select_payload_home_with_diagnostics_conn(connection, (external, internal), ".samba4", wait_seconds=9, claims=VolumeClaims())
 
         self.assertEqual(selection.payload_home, PayloadHome("/Volumes/dk3", "/dev/dk3", ".samba4"))
         self.assertEqual(
             mount_mock.call_args_list,
             [
-                mock.call(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=9),
-                mock.call(connection, "/Volumes/dk3", "/dev/dk3", wait_seconds=9),
+                mock.call(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=9, claims=mock.ANY),
+                mock.call(connection, "/Volumes/dk3", "/dev/dk3", wait_seconds=9, claims=mock.ANY),
             ],
         )
         writable_mock.assert_called_once_with(connection, "/Volumes/dk3")
@@ -945,6 +1013,7 @@ if sys.argv[1] == "df":
                     (external, internal),
                     ".samba4",
                     wait_seconds=9,
+                    claims=VolumeClaims(),
                 )
 
         self.assertEqual(selection.payload_home, PayloadHome("/Volumes/dk3", "/dev/dk3", ".samba4"))
@@ -996,6 +1065,7 @@ if sys.argv[1] == "df":
                     (internal, external),
                     ".samba4",
                     wait_seconds=30,
+                    claims=VolumeClaims(),
                 )
 
         self.assertIsNone(selection.payload_home)
@@ -1022,7 +1092,7 @@ if sys.argv[1] == "df":
 
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(False)):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn") as writable_mock:
-                selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
+                selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30, claims=VolumeClaims())
 
         self.assertIsNone(selection.payload_home)
         self.assertEqual([check.mounted for check in selection.checks], [False, False])
@@ -1035,12 +1105,12 @@ if sys.argv[1] == "df":
 
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", side_effect=[False, True]):
-                selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
+                selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30, claims=VolumeClaims())
         self.assertEqual(selection.payload_home, PayloadHome("/Volumes/dk3", "/dev/dk3", ".samba4"))
 
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=False):
-                selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
+                selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30, claims=VolumeClaims())
         self.assertIsNone(selection.payload_home)
         self.assertEqual([check.writable for check in selection.checks], [False, False])
 
@@ -1511,7 +1581,7 @@ class AcpdDiskReadTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.device.storage.run_ssh", run), \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as answer:
             try:
-                return ensure_volume_root_mounted_conn(self.CONNECTION, "/Volumes/dk2", "/dev/dk2", wait_seconds=1), answer
+                return ensure_volume_root_mounted_conn(self.CONNECTION, "/Volumes/dk2", "/dev/dk2", wait_seconds=1, claims=VolumeClaims()), answer
             except Exception as exc:  # noqa: BLE001 - the test inspects what was raised
                 return exc, answer
 

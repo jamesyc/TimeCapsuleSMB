@@ -303,7 +303,7 @@ class AppApiTests(unittest.TestCase):
         )
 
         from tests.test_xattr_migration import fake_inventory
-        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a: fake_inventory()))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a, **_k: fake_inventory()))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.probe_migration_activity", return_value=MigrationActivity(())))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inspect_sources"))
 
@@ -5651,7 +5651,7 @@ class AppApiTests(unittest.TestCase):
             },
         )
 
-        def fake_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             for transfer in plan.uploads:
                 if on_uploading is not None:
                     on_uploading(transfer)
@@ -5746,7 +5746,7 @@ class AppApiTests(unittest.TestCase):
 
                 from tests.test_xattr_migration import fake_inventory
 
-                def inventory(*_args):
+                def inventory(*_args, **_kwargs):
                     fail_in_stage()
                     return fake_inventory()
 
@@ -6326,7 +6326,7 @@ MaSt = (
             "hfs",
         )
 
-        def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def timeout_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             if plan.uploads == [plan.migration_upload]:
                 return
             if on_uploading is not None:
@@ -6362,7 +6362,7 @@ MaSt = (
         )
         captured: dict[str, str] = {}
 
-        def capture_then_timeout(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def capture_then_timeout(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
             raise SshCommandTimeout("Timed out copying deployment payload")
 

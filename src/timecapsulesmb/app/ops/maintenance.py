@@ -29,6 +29,7 @@ from timecapsulesmb.deploy.planner import (
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
 from timecapsulesmb.device.disk_errors import read_disk_failing_evidence_conn
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.storage import VolumeClaims
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -255,6 +256,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         connection,
         callbacks=context.to_operation_callbacks(),
         wait_seconds=mount_wait,
+        claims=VolumeClaims(),
         mount_stage="mount_hfs_volumes",
     )
     targets = tuple(fsck_target_from_volume(volume) for volume in mounted_volumes)

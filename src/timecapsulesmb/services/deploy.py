@@ -98,6 +98,7 @@ from timecapsulesmb.device.storage import (
     PayloadHome,
     PayloadHomeSelection,
     PayloadVerificationResult,
+    VolumeClaims,
     build_dry_run_payload_home,
     payload_candidate_checks_debug_summary,
     parse_mast_inventory,
@@ -397,6 +398,10 @@ class PreparedDeployPlan:
     artifacts: DeployArtifactPaths
     payload_home: PayloadHome
     plan: DeploymentPlan
+    # The volumes this deploy claimed from diskd, from choosing the payload
+    # home through the upload and verification; the plan's mount actions skip
+    # their claim when payload_home's volume is among them.
+    volume_claims: VolumeClaims
 
 
 @dataclass(frozen=True)
@@ -854,6 +859,7 @@ def select_deploy_payload_home(
     dry_run: bool,
     payload_dir_name: str,
     mount_wait_seconds: int,
+    claims: VolumeClaims,
     callbacks: OperationCallbacks | None = None,
     wait_for_mast_volumes: Callable[..., MaStDiscoveryResult] | None = None,
     select_payload_home: Callable[..., PayloadHomeSelection] | None = None,
@@ -886,6 +892,7 @@ def select_deploy_payload_home(
         mast_discovery.volumes,
         payload_dir_name,
         wait_seconds=mount_wait_seconds,
+        claims=claims,
     )
     callbacks.debug(
         mast_candidate_checks=_best_effort_debug_summary(
@@ -929,6 +936,7 @@ def prepare_deployment_plan(
             payload_context.payload_family,
             resolver=resolver,
         )
+    claims = VolumeClaims()
     payload_home = select_deploy_payload_home(
         connection,
         dry_run=dry_run,
@@ -938,6 +946,7 @@ def prepare_deployment_plan(
         wait_for_mast_volumes=wait_for_mast_volumes or storage_service.wait_for_mast_volumes_conn,
         select_payload_home=select_payload_home or select_payload_home_with_diagnostics_conn,
         no_internal_disk=device_has_no_internal_disk(payload_context.compatibility),
+        claims=claims,
     )
     if callbacks is not None:
         callbacks.stage("build_deployment_plan")
@@ -954,6 +963,7 @@ def prepare_deployment_plan(
         startup_mode=payload_context.startup_mode,
         apple_mount_wait_seconds=mount_wait_seconds,
         wait_after_reboot=wait_after_reboot,
+        payload_held=claims.holds(payload_home.volume_root),
     )
     if callbacks is not None:
         callbacks.debug(
@@ -966,6 +976,7 @@ def prepare_deployment_plan(
         artifacts=artifacts,
         payload_home=payload_home,
         plan=plan,
+        volume_claims=claims,
     )
 
 
@@ -1003,13 +1014,14 @@ def _verify_deployed_payload(
     *,
     wait_seconds: int,
     post_sync: bool,
+    claims: VolumeClaims,
     verify_payload_home=None,
     on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
 ) -> None:
     if verify_payload_home is None:
         verify_payload_home = verify_payload_home_conn
     callbacks.stage("verify_payload_upload_after_sync" if post_sync else "verify_payload_upload")
-    verification = verify_payload_home(connection, payload_home, wait_seconds=wait_seconds)
+    verification = verify_payload_home(connection, payload_home, wait_seconds=wait_seconds, claims=claims)
     callbacks.debug(
         **{"payload_post_sync_verification" if post_sync else "payload_upload_verification": verification.detail}
     )
@@ -1121,10 +1133,11 @@ def upload_and_verify_deployment_payload(
         probe_flash_capacity_func = _probe_flash_capacity
     plan = prepared_plan.plan
     payload_home = prepared_plan.payload_home
+    claims = prepared_plan.volume_claims
     # Before the inventory, so it sees what that migration left behind.
     wait_for_previous_migration(connection, callbacks=callbacks)
     callbacks.stage("inventory_legacy_metadata")
-    inventory = inventory_metadata(connection, plan)
+    inventory = inventory_metadata(connection, plan, claims=claims)
     callbacks.debug(legacy_tdb_paths=[item["path"] for item in inventory.candidates],
                     legacy_unavailable_roots=inventory.unavailable)
     # Kept and skipped paths are shown inside their shares, as a Mac sees them.
@@ -1225,6 +1238,7 @@ def upload_and_verify_deployment_payload(
                     plan,
                     phase=phase,
                     inventory=inventory,
+                    claims=claims,
                 )
         except Exception as exc:
             raise_migration_failure(phase, migration_started, migration_log, exc)
@@ -1305,7 +1319,7 @@ def upload_and_verify_deployment_payload(
         # A legacy writer could create its first TDB between the initial
         # inventory and shutdown. Probe again now that writers are stopped;
         # old configuration and payload software are still available.
-        inventory = inventory_metadata(connection, plan)
+        inventory = inventory_metadata(connection, plan, claims=claims)
         callbacks.debug(legacy_tdb_paths=[item["path"] for item in inventory.candidates],
                         legacy_unavailable_roots=inventory.unavailable)
 
@@ -1350,6 +1364,7 @@ def upload_and_verify_deployment_payload(
                 migration_upload_kwargs: dict[str, object] = {
                     "connection": connection,
                     "source_resolver": upload_sources,
+                    "claims": claims,
                 }
                 upload_payload_func(migration_plan, **migration_upload_kwargs)
             except Exception as exc:
@@ -1416,7 +1431,11 @@ def upload_and_verify_deployment_payload(
                 continue
             volume = next(v for v in inventory.volumes if directory.startswith(v.volume_root + "/"))
             run_remote_actions_func(connection, [
-                EnsureVolumeMountedAction(volume.volume_root, volume.device_path, plan.apple_mount_wait_seconds),
+                # The inventory claimed every volume it found a payload on.
+                EnsureVolumeMountedAction(
+                    volume.volume_root, volume.device_path, plan.apple_mount_wait_seconds,
+                    held=claims.holds(volume.volume_root),
+                ),
                 RemovePathsAction(tuple(directory + path[len(plan.payload_dir):] for path in payload_software)),
             ])
         callbacks.stage("check_flash_capacity")
@@ -1447,6 +1466,7 @@ def upload_and_verify_deployment_payload(
         upload_kwargs: dict[str, object] = {
             "connection": connection,
             "source_resolver": upload_sources,
+            "claims": claims,
             "on_uploaded": record_uploaded,
             "on_uploading": record_uploading,
         }
@@ -1492,6 +1512,7 @@ def upload_and_verify_deployment_payload(
             payload_home,
             wait_seconds=plan.apple_mount_wait_seconds,
             post_sync=False,
+            claims=claims,
             verify_payload_home=verify_payload_home,
             on_verified=on_verified,
         )
@@ -1507,6 +1528,7 @@ def upload_and_verify_deployment_payload(
             payload_home,
             wait_seconds=plan.apple_mount_wait_seconds,
             post_sync=True,
+            claims=claims,
             verify_payload_home=verify_payload_home,
             on_verified=on_verified,
         )

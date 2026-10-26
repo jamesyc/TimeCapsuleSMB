@@ -203,12 +203,17 @@ def build_deployment_plan(
     startup_mode: DeploymentStartupMode = DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     wait_after_reboot: bool = True,
+    payload_held: bool = False,
 ) -> DeploymentPlan:
     payload_dir = payload_home.payload_dir
+    # `payload_held`: this deploy already claimed the payload volume from diskd
+    # (choosing the payload home does), so these actions only remount it if
+    # diskd unmounted it. Without it, each action claims the volume.
     ensure_payload_volume = EnsureVolumeMountedAction(
         payload_home.volume_root,
         payload_home.device_path,
         apple_mount_wait_seconds,
+        held=payload_held,
     )
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",

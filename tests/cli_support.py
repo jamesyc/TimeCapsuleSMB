@@ -313,7 +313,7 @@ class CliTestCase(unittest.TestCase):
         )
 
         from tests.test_xattr_migration import fake_inventory
-        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a: fake_inventory()))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a, **_k: fake_inventory()))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.probe_migration_activity", return_value=MigrationActivity(())))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inspect_sources"))
 

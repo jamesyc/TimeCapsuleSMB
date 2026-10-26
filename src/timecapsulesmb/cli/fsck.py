@@ -17,6 +17,7 @@ from timecapsulesmb.cli.runtime import (
     read_terminal_line,
 )
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
+from timecapsulesmb.device.storage import VolumeClaims
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import installed_netbsd4_autostart
@@ -154,6 +155,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             connection,
             callbacks=command_context.to_operation_callbacks(),
             wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+            claims=VolumeClaims(),
             mount_stage="mount_hfs_volumes",
         )
         command_context.set_stage("select_fsck_volume")

@@ -14,7 +14,7 @@ from timecapsulesmb.deploy.verify import render_post_uninstall_verification, ver
 from timecapsulesmb.device.disk_errors import DiskFailingError
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, DiskPayloadError, RsyncNotRunningError
 from timecapsulesmb.device.processes import render_process_present_by_ucomm
-from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume
+from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume, VolumeClaims
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import (
     MANUAL_START_AFTER_REBOOT_MESSAGE,
@@ -482,6 +482,7 @@ def prepare_uninstall(
             connection,
             callbacks=callbacks,
             wait_seconds=mount_wait,
+            claims=VolumeClaims(),
         )
         volume_roots = [volume.volume_root for volume in mounted_volumes]
     payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]

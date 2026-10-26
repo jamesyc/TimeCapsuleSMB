@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from timecapsulesmb.deploy import migration as m
-from timecapsulesmb.device.storage import MaStVolume
+from timecapsulesmb.device.storage import MaStVolume, VolumeClaims
 from timecapsulesmb.transport.errors import SshCommandTimeout
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -164,9 +164,11 @@ def device(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "_native", native)
     state.connection = SshConnection("test", "", "")
     state.plan = SimpleNamespace(payload_dir=str(source.parent.parent), apple_mount_wait_seconds=1)
-    state.inventory = lambda: m.inventory_metadata(state.connection, state.plan)
+    # One deploy's claims, shared by its inventory and both phases.
+    state.claims = VolumeClaims()
+    state.inventory = lambda: m.inventory_metadata(state.connection, state.plan, claims=state.claims)
     state.inspect = lambda inv: m.inspect_sources(state.connection, inv)
-    state.phase = lambda inv, phase: m.migrate_phase(state.connection, state.plan, inv, phase)
+    state.phase = lambda inv, phase: m.migrate_phase(state.connection, state.plan, inv, phase, claims=state.claims)
     state.scan_calls = lambda: [call for call in state.calls if call[0] in [["multi", "copy"], ["multi", "cleanup"]]]
     return state
 

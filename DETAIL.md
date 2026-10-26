@@ -1379,7 +1379,7 @@ Use this only when the disk needs repair before deploy or when doctor/troublesho
 
 Arguments:
 - `--config PATH`: use a non-default config
-- `--mount-wait SECONDS`: wait for `diskd.useVolume` mount guards before manual fallback; default is `30`
+- `--mount-wait SECONDS`: per-attempt wait for each `diskd.useVolume` mount guard to see the volume mounted; default is `30`
 - `--no-wait`: request reboot and return without waiting for post-uninstall verification
 - `--yes`: do not prompt before reboot
 - `--no-input`: fail instead of prompting; non-dry-run rebooting uninstalls require `--yes` unless `--no-reboot` is used
@@ -1579,6 +1579,7 @@ Current deploy flow:
   - else first writable external HFS volume
   - else fails with `Deploy could not write to any deployable HFS volume.` (code `deploy_disk_not_writable`), and `MaSt found N deployable HFS volume(s).` as its detail
 - computes the device-specific runtime and payload paths from that payload home
+- claims each volume it uses from diskd (`diskd.useVolume`) once: choosing the payload home claims it, and every later mount check in the same deploy (metadata inventory, migration, uploads, plan actions, payload verification) only confirms the volume is still mounted, claiming it again only if diskd unmounted it (`device.storage.VolumeClaims`). diskd counts claims per volume and only a reboot clears them, so a deploy that stops before its reboot leaves one claim per volume, where it used to leave one per uploaded file. fsck and uninstall claim each volume once the same way
 - builds the plan and renders configuration locally before stopping services
 - confirms installation and reboot before stopping or replacing managed software (unless `--yes` is used)
 - stops current and historical supervisors before their workers and verifies they have stopped

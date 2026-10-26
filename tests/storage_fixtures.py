@@ -1,9 +1,87 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
 import plistlib
+import re
+import shlex
+import subprocess
+import sys
 
 from timecapsulesmb.device.storage import MaStVolume
+from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
+
+
+class FakeDiskd:
+    """A device for the real diskd.useVolume mount guard: patch it in as
+    device.storage.run_ssh and it runs each guard script against a fake acp
+    and df, counting the diskd.useVolume calls.
+
+    acp answers the calls with `answers` in turn, (exit status, acp's error
+    code or None), then with `default`; with no default, a call past the
+    answers fails the test. An accepted call mounts every volume when
+    `mounts`.
+
+    One device-wide mounted flag stands for every volume: df reports any root
+    it is asked about as mounted once one is, so it fits single-volume tests
+    only. Commands must be `/bin/sh -c SCRIPT`, as the guard is run."""
+
+    def __init__(self, tmp: Path, *, mounted: bool = False, answers=(), default=(0, None), mounts: bool = True):
+        self._state = tmp / "diskd.json"
+        self._state.write_text(json.dumps({
+            "mounted": mounted, "calls": 0, "answers": [list(answer) for answer in answers],
+            "default": None if default is None else list(default), "mounts": mounts, "unexpected": 0,
+        }))
+        self._tool = tmp / "diskd.py"
+        self._tool.write_text(f"""
+import json, sys
+from pathlib import Path
+state = Path({str(self._state)!r})
+d = json.loads(state.read_text())
+if sys.argv[1] == "acp":
+    d["calls"] += 1
+    if not d["answers"] and d["default"] is None:
+        d["unexpected"] += 1
+        state.write_text(json.dumps(d))
+        sys.exit(1)
+    rc, error = d["answers"].pop(0) if d["answers"] else d["default"]
+    print("<plist>status</plist>")
+    if error is not None:
+        print(f'### RPC function "diskd.useVolume" failed: {{error}}', file=sys.stderr)
+    if rc == 0 and d["mounts"]:
+        d["mounted"] = True
+    state.write_text(json.dumps(d))
+    sys.exit(rc)
+print("Filesystem 1K-blocks Used Avail Capacity Mounted on")
+if d["mounted"]:
+    print(f"/dev/dk2 100 1 99 1% {{sys.argv[-1]}}")
+""")
+
+    def _read(self) -> dict:
+        return json.loads(self._state.read_text())
+
+    @property
+    def calls(self) -> int:
+        return self._read()["calls"]
+
+    def unmount(self) -> None:
+        d = self._read()
+        d["mounted"] = False
+        self._state.write_text(json.dumps(d))
+
+    def run_ssh(self, _connection, command: str, **_kwargs) -> subprocess.CompletedProcess:
+        fake = lambda name: f"{sys.executable} {self._tool} {name}"
+        script = shlex.split(command)[2]
+        script = re.sub(r"mkdir -p [^;]+;", ":;", script, count=1)
+        script = script.replace(f"{DEVICE_ACP_PATH} rpc diskd.useVolume", fake("acp"))
+        script = script.replace("/bin/df -k", fake("df"))
+        script = script.replace("/usr/bin/tail -n +2", "sed 1d")
+        script = script.replace("sleep 1", ":")
+        result = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True)
+        if self._read()["unexpected"]:
+            raise AssertionError(f"diskd.useVolume called more often than answered ({self.calls} calls)")
+        return result
 
 
 @dataclass(frozen=True)

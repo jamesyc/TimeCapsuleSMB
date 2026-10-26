@@ -130,9 +130,12 @@ from timecapsulesmb.device.storage import (
     MaStDiscoveryResult,
     MaStVolume,
     PayloadHome,
+    PayloadHomeSelection,
     PayloadVerificationResult,
+    VolumeClaims,
     mounted_mast_volumes_conn,
 )
+from tests.storage_fixtures import FakeDiskd
 from timecapsulesmb.services.activation import activate_runtime, decide_manual_activation
 from timecapsulesmb.device.disk_errors import DiskFailingError
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, DiskPayloadError, RsyncNotRunningError
@@ -152,6 +155,7 @@ from timecapsulesmb.services.deploy import (
     complete_deployment_after_upload,
     device_has_no_internal_disk,
     mast_no_volume_error,
+    prepare_deployment_plan,
     upload_and_verify_deployment_payload,
 )
 from timecapsulesmb.services.runtime_verification import (
@@ -188,7 +192,7 @@ class DeployModuleTests(unittest.TestCase):
     def setUp(self):
         from tests.test_xattr_migration import fake_inventory
         for target, kwargs in (
-            ("inventory_metadata", {"side_effect": lambda *_a: fake_inventory()}),
+            ("inventory_metadata", {"side_effect": lambda *_a, **_k: fake_inventory()}),
             ("probe_migration_activity", {"return_value": MigrationActivity(())}),
             ("inspect_sources", {}),
             # Reads the migration log over SSH after a failed walk.
@@ -276,6 +280,7 @@ class DeployModuleTests(unittest.TestCase):
              service=Path("bin/service")),
             payload_home=payload_home,
             plan=plan,
+            volume_claims=VolumeClaims(),
         )
 
     def _operation_callbacks(self):
@@ -613,15 +618,16 @@ class DeployModuleTests(unittest.TestCase):
         internal = self._mast_volume("dk2", name="Internal", builtin=True)
         external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
 
+        claims = VolumeClaims()
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", side_effect=[True, False]) as mount_mock:
-            mounted = mounted_mast_volumes_conn(connection, (internal, external), wait_seconds=17)
+            mounted = mounted_mast_volumes_conn(connection, (internal, external), wait_seconds=17, claims=claims)
 
         self.assertEqual(mounted, (internal,))
         self.assertEqual(
             mount_mock.call_args_list,
             [
-                mock.call(connection, internal.volume_root, internal.device_path, wait_seconds=17),
-                mock.call(connection, external.volume_root, external.device_path, wait_seconds=17),
+                mock.call(connection, internal.volume_root, internal.device_path, wait_seconds=17, claims=claims),
+                mock.call(connection, external.volume_root, external.device_path, wait_seconds=17, claims=claims),
             ],
         )
 
@@ -631,7 +637,7 @@ class DeployModuleTests(unittest.TestCase):
         external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
 
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=False):
-            mounted = mounted_mast_volumes_conn(connection, (internal, external), wait_seconds=30)
+            mounted = mounted_mast_volumes_conn(connection, (internal, external), wait_seconds=30, claims=VolumeClaims())
 
         self.assertEqual(mounted, ())
 
@@ -670,6 +676,7 @@ class DeployModuleTests(unittest.TestCase):
                     source_resolver={
                         BINARY_XATTR_MIGRATOR_SOURCE: Path("bin/xattr-migrate/xattr-hfs-migrate")
                     },
+                    claims=VolumeClaims(),
                 )
 
         mount_mock.assert_not_called()  # The helper executes directly from RAM.
@@ -686,7 +693,7 @@ class DeployModuleTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "migration phase"):
             migrate_xattr_tdb_to_hfs(
-                connection, plan, phase="remove", inventory=None
+                connection, plan, phase="remove", inventory=None, claims=VolumeClaims()
             )
 
     def test_upload_and_verify_deployment_payload_records_upload_measurements(self) -> None:
@@ -702,7 +709,7 @@ class DeployModuleTests(unittest.TestCase):
         prepared_plan = replace(prepared_plan, plan=replace(prepared_plan.plan, smbd_path=smbd, rsync_path=rsync))
         measurements: list[tuple[str, dict[str, object]]] = []
 
-        def fake_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             for transfer in plan.uploads[:2]:
                 if on_uploading is not None:
                     on_uploading(transfer)
@@ -809,7 +816,7 @@ class DeployModuleTests(unittest.TestCase):
         measurements: list[tuple[str, dict[str, object]]] = []
         root = self._mast_volume()
 
-        def migrate(_connection, _plan, *, phase, inventory):
+        def migrate(_connection, _plan, *, phase, inventory, claims):
             # Only cleanup's retirement can drop verified rows.
             rows = dropped if phase == "cleanup" else 0
             return XattrMigrationResult(f"phase={phase}", (root,), (), summaries[phase], rows, bool(rows),
@@ -837,7 +844,7 @@ class DeployModuleTests(unittest.TestCase):
         debug: dict[str, object] = {}
         unavailable = {"copy": ("/Volumes/dk3",), "cleanup": ()}
 
-        def migrate(_connection, _plan, *, phase, inventory):
+        def migrate(_connection, _plan, *, phase, inventory, claims):
             return XattrMigrationResult(f"\nmigration={phase}\n", (self._mast_volume(),), unavailable[phase])
 
         upload_and_verify_deployment_payload(
@@ -1048,7 +1055,7 @@ class DeployModuleTests(unittest.TestCase):
                                  [SkippedEntry("malformed", "/Volumes/dk2/ShareRoot/Photos/._x.jpg")])
         kept = OversizedSummary(appledouble=1, values=[
             OversizedValue("appledouble", "/Volumes/dk4/Music/song", "com.apple.big", 5000)])
-        with mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a: inventory):
+        with mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a, **_k: inventory):
             messages, _ = self._run_migration_reporting({"copy": kept, "cleanup": kept},
                                                         skipped={"copy": skipped, "cleanup": skipped})
         self.assertIn("  AirPort Disk/Photos/._x.jpg", messages)
@@ -1120,7 +1127,7 @@ class DeployModuleTests(unittest.TestCase):
             with self.subTest(phase=phase):
                 messages, measurements = [], []
 
-                def migrate(_connection, _plan, *, phase: str, inventory, failing=phase):
+                def migrate(_connection, _plan, *, phase: str, inventory, claims, failing=phase):
                     inventory.skipped[phase] = finished
                     if phase == failing:
                         raise RuntimeError("opendir failed path=/Volumes/dk3/x")
@@ -1275,7 +1282,7 @@ class DeployModuleTests(unittest.TestCase):
         summaries: list[Summary] = []
         prepared = self._prepared_deploy_plan()
 
-        def migrate(_connection, _plan, *, phase: str, inventory, failing=phase):
+        def migrate(_connection, _plan, *, phase: str, inventory, claims, failing=phase):
             if phase == failing:
                 raise error
             return XattrMigrationResult(f"phase={phase}", (volume,), (), None, 0, False, None)
@@ -1413,7 +1420,7 @@ class DeployModuleTests(unittest.TestCase):
         migrated_root = self._mast_volume()
         remote_actions = mock.Mock()
 
-        def migrate(_connection, _plan, *, phase, inventory):
+        def migrate(_connection, _plan, *, phase, inventory, claims):
             events.append(f"migrate:{phase}")
             return XattrMigrationResult(f"phase={phase}", (migrated_root,))
 
@@ -1471,7 +1478,7 @@ class DeployModuleTests(unittest.TestCase):
             if StopProcessAction("afpserver") in actions:
                 afp_running = False
 
-        def migrate(_connection, _plan, *, phase, inventory):
+        def migrate(_connection, _plan, *, phase, inventory, claims):
             migration_states.append((phase, afp_running))
             return XattrMigrationResult("migration=complete", ())
 
@@ -1621,7 +1628,7 @@ class DeployModuleTests(unittest.TestCase):
             events.append("probe")
             return next(answers)
 
-        def inventory(*_args):
+        def inventory(*_args, **_kwargs):
             events.append("inventory")
             return fake_inventory()
 
@@ -1684,7 +1691,7 @@ class DeployModuleTests(unittest.TestCase):
                 prepared_plan = self._prepared_deploy_plan()
                 measurements: list[tuple[str, dict[str, object]]] = []
 
-                def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+                def timeout_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
                     if plan.uploads == [plan.migration_upload]:
                         return
                     if on_uploading is not None:
@@ -1727,17 +1734,63 @@ class DeployModuleTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn", return_value=False) as mount_mock:
             with mock.patch("timecapsulesmb.deploy.executor.upload_file") as upload_mock:
                 with self.assertRaisesRegex(RuntimeError, "payload volume /Volumes/dk2 is not mounted before upload"):
-                    upload_deployment_payload(plan, connection=connection, source_resolver=source_resolver)
+                    upload_deployment_payload(plan, connection=connection, source_resolver=source_resolver, claims=VolumeClaims())
 
-        mount_mock.assert_called_once_with(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
+        mount_mock.assert_called_once_with(
+            connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS, claims=mock.ANY,
+        )
         upload_mock.assert_not_called()
+
+    def test_upload_deployment_payload_claims_the_payload_volume_once(self) -> None:
+        paths = self._payload_home("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
+        payload = [item for item in plan.uploads if item.destination.startswith(f"{plan.payload_dir}/")]
+        self.assertGreater(len(payload), 1)
+        connection = SshConnection("host", "pw", "-o foo")
+        source_resolver = {item.source_id: Path("/tmp") / item.source_id for item in plan.uploads}
+        claims = VolumeClaims()
+        with tempfile.TemporaryDirectory() as tmp:
+            diskd = FakeDiskd(Path(tmp))
+            with mock.patch("timecapsulesmb.device.storage.run_ssh", side_effect=diskd.run_ssh), \
+                    mock.patch("timecapsulesmb.deploy.executor.upload_file") as upload_mock:
+                upload_deployment_payload(plan, connection=connection, source_resolver=source_resolver, claims=claims)
+                # A later upload in the same deploy only checks the mount.
+                upload_deployment_payload(
+                    replace(plan, uploads=payload[:1]), connection=connection, source_resolver=source_resolver,
+                    claims=claims,
+                )
+                calls = diskd.calls
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(claims.roots, {"/Volumes/dk2"})
+        self.assertEqual(upload_mock.call_count, len(plan.uploads) + 1)
+
+    def test_upload_deployment_payload_claims_nothing_for_files_outside_the_payload(self) -> None:
+        paths = self._payload_home("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
+        elsewhere = [item for item in plan.uploads if not item.destination.startswith(f"{plan.payload_dir}/")]
+        self.assertTrue(elsewhere)
+        source_resolver = {item.source_id: Path("/tmp") / item.source_id for item in elsewhere}
+        claims = VolumeClaims()
+        with tempfile.TemporaryDirectory() as tmp:
+            diskd = FakeDiskd(Path(tmp))
+            with mock.patch("timecapsulesmb.device.storage.run_ssh", side_effect=diskd.run_ssh), \
+                    mock.patch("timecapsulesmb.deploy.executor.upload_file"):
+                upload_deployment_payload(
+                    replace(plan, uploads=elsewhere), connection=SshConnection("host", "pw", ""),
+                    source_resolver=source_resolver, claims=claims,
+                )
+                calls = diskd.calls
+
+        self.assertEqual(calls, 0)
+        self.assertEqual(claims.roots, set())
 
     def test_upload_deployment_payload_fails_for_missing_planned_source(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
         connection = SshConnection("host", "pw", "-o foo")
         with self.assertRaisesRegex(KeyError, "No local source for planned transfer 'binary:smbd'"):
-            upload_deployment_payload(plan, connection=connection, source_resolver={})
+            upload_deployment_payload(plan, connection=connection, source_resolver={}, claims=VolumeClaims())
 
     def test_render_managed_runtime_verification_passes_when_runtime_probe_succeeds(self) -> None:
         verification = ManagedRuntimeProbeResult(
@@ -4236,14 +4289,28 @@ describe_managed_smbd_status "" ""
             {"kind": "stop_service_runtime", "args": []},
         )
         self.assertEqual(
-            remote_action_to_jsonable(EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", 30)),
+            remote_action_to_jsonable(EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", 30, held=True)),
             {
                 "kind": "ensure_volume_mounted",
                 "volume_root": "/Volumes/dk2",
                 "device_path": "/dev/dk2",
                 "wait_seconds": 30,
+                "held": True,
             },
         )
+
+    def test_held_mount_action_claims_only_a_volume_diskd_unmounted(self) -> None:
+        held = render_remote_action(EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", 1, held=True))
+        unheld = render_remote_action(EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", 1))
+        with tempfile.TemporaryDirectory() as tmp:
+            diskd = FakeDiskd(Path(tmp), mounted=True)
+            self.assertEqual(diskd.run_ssh(None, held).returncode, 0)
+            self.assertEqual(diskd.calls, 0)
+            self.assertEqual(diskd.run_ssh(None, unheld).returncode, 0)
+            self.assertEqual(diskd.calls, 1)
+            diskd.unmount()
+            self.assertEqual(diskd.run_ssh(None, held).returncode, 0)
+            self.assertEqual(diskd.calls, 2)
 
     def test_render_remote_action_rejects_unknown_action_object(self) -> None:
         with self.assertRaises(TypeError):
@@ -4252,13 +4319,57 @@ describe_managed_smbd_status "" ""
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "Time Capsule Samba 4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
-        self.assertEqual(plan.post_upload_actions[0], EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS))
+        # Built without a claim of this deploy, each guard claims the volume.
+        self.assertEqual(
+            plan.post_upload_actions[0],
+            EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS),
+        )
         self.assertIn(InstallPermissionsAction(tuple(plan.permissions)), plan.post_upload_actions)
+
+    def _plan_after_selection(self, *, claim: bool):
+        """prepare_deployment_plan with a payload home chosen with or without a
+        diskd claim (diskd refuses one with -6727 when ACPd lost its names)."""
+        home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
+
+        def select(_connection, _volumes, _name, *, wait_seconds, claims):
+            if claim:
+                claims.record(home.volume_root)
+            return PayloadHomeSelection(home, ())
+
+        return prepare_deployment_plan(
+            SshConnection("host", "pw", ""),
+            None,
+            DeployPayloadContext(None, "netbsd6_samba4", False, DEPLOY_STARTUP_REBOOT_THEN_VERIFY, False),
+            dry_run=False,
+            payload_dir_name=".samba4",
+            mount_wait_seconds=30,
+            wait_for_mast_volumes=mock.Mock(return_value=MaStDiscoveryResult((mock.Mock(),), 1, "")),
+            select_payload_home=select,
+            artifacts=DeployArtifactPaths(Path("bin/smbd"), Path("bin/xattr-hfs-migrate"), Path("bin/rsync"), Path("bin/service")),
+        )
+
+    def test_deployment_plan_guards_reuse_the_claim_that_chose_the_payload_home(self) -> None:
+        prepared = self._plan_after_selection(claim=True)
+        guards = [action for action in prepared.plan.pre_upload_actions + prepared.plan.replace_software_actions
+                  + prepared.plan.post_upload_actions if isinstance(action, EnsureVolumeMountedAction)]
+        self.assertTrue(guards)
+        self.assertTrue(all(guard.held for guard in guards))
+        self.assertEqual(prepared.volume_claims.roots, {"/Volumes/dk2"})
+
+    def test_deployment_plan_guards_claim_when_choosing_the_home_made_no_claim(self) -> None:
+        prepared = self._plan_after_selection(claim=False)
+        guards = [action for action in prepared.plan.pre_upload_actions + prepared.plan.replace_software_actions
+                  + prepared.plan.post_upload_actions if isinstance(action, EnsureVolumeMountedAction)]
+        self.assertTrue(guards)
+        self.assertFalse(any(guard.held for guard in guards))
 
     def test_deployment_plan_guards_each_payload_write_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
-        expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
+        plan = build_deployment_plan(
+            "host", paths, Path("bin/smbd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
+            rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), payload_held=True,
+        )
+        expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS, held=True)
 
         for index, action in enumerate(plan.replace_software_actions):
             if isinstance(action, RemovePathsAction) and any(path.startswith("/Volumes/") for path in action.paths):

@@ -42,6 +42,9 @@ class EnsureVolumeMountedAction:
     volume_root: str
     device_path: str
     wait_seconds: int
+    # The operation already claimed this volume from diskd: while it stays
+    # mounted, the action makes no second claim (device.storage.VolumeClaims).
+    held: bool = False
 
 
 @dataclass(frozen=True)
@@ -166,7 +169,9 @@ def render_remote_action(action: RemoteAction) -> str:
     if isinstance(action, StopIdleJobsAction):
         return f"/bin/sh -c {shlex.quote(render_stop_idle_jobs())}"
     if isinstance(action, EnsureVolumeMountedAction):
-        script = render_ensure_volume_root_mounted_script(action.volume_root, action.device_path, action.wait_seconds)
+        script = render_ensure_volume_root_mounted_script(
+            action.volume_root, action.device_path, action.wait_seconds, held=action.held,
+        )
         return f"/bin/sh -c {shlex.quote(script)}"
     if isinstance(action, StopProcessAction):
         return render_pkill_wait_pkill9_by_ucomm(action.name, attempts=5)
@@ -202,6 +207,7 @@ def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
             "volume_root": action.volume_root,
             "device_path": action.device_path,
             "wait_seconds": action.wait_seconds,
+            "held": action.held,
         }
     if isinstance(action, StopProcessAction):
         return {"kind": "stop_process", "args": [action.name]}

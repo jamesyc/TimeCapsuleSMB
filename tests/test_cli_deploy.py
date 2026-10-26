@@ -315,13 +315,21 @@ class CliDeployTests(CliTestCase):
             self._mast_volume("dk3", disk_device="sd0", name="USB", builtin=False),
             self._mast_volume("dk2", disk_device="wd0", name="Data", builtin=True),
         )
-        result = self.run_deploy_cli(
-            ["--yes", "--mount-wait", "7"],
-            mast_volumes=volumes,
-            mount_root="/Volumes/dk2",
-            patch_actions=True,
-            patch_upload=True,
-        )
+        from tests.test_xattr_migration import fake_inventory
+        inventory_claims = []
+
+        def inventory(_connection, _plan, *, claims):
+            inventory_claims.append(claims)
+            return fake_inventory()
+
+        with mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=inventory):
+            result = self.run_deploy_cli(
+                ["--yes", "--mount-wait", "7"],
+                mast_volumes=volumes,
+                mount_root="/Volumes/dk2",
+                patch_actions=True,
+                patch_upload=True,
+            )
 
         self.assertEqual(result.rc, 0)
         result.mocks.wait_for_mast_volumes_conn.assert_called_once()
@@ -332,14 +340,22 @@ class CliDeployTests(CliTestCase):
             volumes,
             ".samba4",
             wait_seconds=7,
+            claims=mock.ANY,
         )
         self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
         self.assertEqual(result.mocks.upload_deployment_payload.call_count, 4)
-        payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
+        # Every later mount in this deploy shares the claims that chose the home.
+        claims = result.mocks.select_payload_home_with_diagnostics_conn.call_args.kwargs["claims"]
+        for upload_call in result.mocks.upload_deployment_payload.call_args_list:
+            self.assertIs(upload_call.kwargs["claims"], claims)
+        # Both legacy-metadata inventories, before and after the stop.
+        self.assertEqual(len(inventory_claims), 2)
+        self.assertTrue(all(inventory_claim is claims for inventory_claim in inventory_claims))
+        payload_home =PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
         result.mocks.verify_payload_home_conn.assert_has_calls(
             [
-                mock.call(result.mocks.wait_for_mast_volumes_conn.call_args.args[0], payload_home, wait_seconds=7),
-                mock.call(result.mocks.wait_for_mast_volumes_conn.call_args.args[0], payload_home, wait_seconds=7),
+                mock.call(result.mocks.wait_for_mast_volumes_conn.call_args.args[0], payload_home, wait_seconds=7, claims=claims),
+                mock.call(result.mocks.wait_for_mast_volumes_conn.call_args.args[0], payload_home, wait_seconds=7, claims=claims),
             ]
         )
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
@@ -360,7 +376,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_upload_source_resolver_contains_flash_config_and_no_legacy_generated_files(self) -> None:
         captured: dict[str, object] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["host"] = connection.host
             captured["source_ids"] = set(source_resolver)
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
@@ -406,7 +422,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_writes_disabled_install_telemetry_preference_to_flash_config(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -430,7 +446,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_enable_rsync_writes_flag_and_always_uploads_daemon_config(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
             captured["rsync_config"] = source_resolver[GENERATED_RSYNC_CONFIG_SOURCE].read_text()
 
@@ -451,7 +467,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_debug_logging_arg_writes_enabled_flash_config(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -469,7 +485,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_uses_configured_smb_browse_compatibility(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -486,7 +502,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_uses_configured_mdns_advertise_afp(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -503,7 +519,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_mdns_advertise_afp_arg_overrides_config(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -520,7 +536,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_require_smb_encryption_arg_overrides_config(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -545,7 +561,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_uses_configured_netatalk_metadata(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -562,7 +578,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_vfs_aio_fork_args_override_config(self) -> None:
         captured: list[str] = []
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             if _plan.uploads != [_plan.config_upload]:
                 return
             captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
@@ -590,7 +606,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_preserves_configured_debug_logging_without_arg(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -608,7 +624,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_profile_boolean_override_pairs_enable_and_disable_values(self) -> None:
         captured: list[str] = []
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             if _plan.uploads != [_plan.config_upload]:
                 return
             captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
@@ -1141,7 +1157,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_ssh_timeout_shows_red_slow_device_guidance_and_keeps_telemetry_detail(self) -> None:
         timeout = "Timed out waiting for ssh command to finish: /bin/sh -c 'wc -c < /mnt/Flash/service'"
 
-        def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def timeout_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             if plan.uploads == [plan.migration_upload]:
                 return
             if on_uploading is not None:
@@ -1169,7 +1185,7 @@ class CliDeployTests(CliTestCase):
     def test_deploy_payload_upload_timeout_shows_disk_guidance(self) -> None:
         timeout = "Timed out waiting for ssh command to finish: runtime probe"
 
-        def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+        def timeout_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
             if plan.uploads == [plan.migration_upload]:
                 return
             if on_uploading is not None:

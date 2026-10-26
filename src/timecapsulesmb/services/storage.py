@@ -7,6 +7,7 @@ from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_DELAY_SECONDS,
     MaStDiscoveryResult,
     MaStVolume,
+    VolumeClaims,
     mast_volumes_debug_summary,
     mounted_mast_volumes_conn,
     read_mast_volumes_conn,
@@ -65,6 +66,7 @@ def mount_mast_volumes_with_diagnostics(
     *,
     callbacks: OperationCallbacks,
     wait_seconds: int,
+    claims: VolumeClaims,
     read_stage: str = "read_mast",
     mount_stage: str = "mount_mast_volumes",
     read_mast_volumes: Callable[[SshConnection], tuple[MaStVolume, ...]] | None = None,
@@ -86,6 +88,7 @@ def mount_mast_volumes_with_diagnostics(
         connection,
         mast_volumes,
         wait_seconds=wait_seconds,
+        claims=claims,
     )
     callbacks.debug(
         mast_mounted_volume_count=len(mounted_volumes),

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 
 from timecapsulesmb.deploy.commands import RemoteAction, RemovePathsAction, render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, FileTransfer, UninstallPlan
-from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn
+from timecapsulesmb.device.storage import MaStVolume, VolumeClaims, ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, upload_file
 
 if TYPE_CHECKING:
@@ -40,9 +40,11 @@ class XattrMigrationResult:
     skipped: SkippedSummary | None = None
 
 
-def migrate_xattr_tdb_to_hfs(connection: SshConnection, plan: DeploymentPlan, *, phase: str, inventory) -> XattrMigrationResult:
+def migrate_xattr_tdb_to_hfs(
+    connection: SshConnection, plan: DeploymentPlan, *, phase: str, inventory, claims: VolumeClaims,
+) -> XattrMigrationResult:
     from timecapsulesmb.deploy.migration import migrate_phase
-    output = migrate_phase(connection, plan, inventory, phase)
+    output = migrate_phase(connection, plan, inventory, phase, claims=claims)
     return XattrMigrationResult(output, inventory.volumes, tuple(inventory.unavailable), inventory.oversized.get(phase),
                                 inventory.dropped_rows, inventory.backup is not None, inventory.skipped.get(phase))
 
@@ -67,14 +69,20 @@ def _destination_is_under(path: str, root: str) -> bool:
     return normalized_path == normalized_root or normalized_path.startswith(f"{normalized_root}/")
 
 
-def _ensure_payload_volume_before_transfer(connection: SshConnection, plan: DeploymentPlan, transfer: FileTransfer) -> None:
+def _ensure_payload_volume_before_transfer(
+    connection: SshConnection, plan: DeploymentPlan, transfer: FileTransfer, claims: VolumeClaims,
+) -> None:
     if not _destination_is_under(transfer.destination, plan.payload_dir):
         return
+    # Choosing the payload home claimed the volume, so a transfer only checks
+    # that it is still mounted and claims it again if diskd unmounted it
+    # (VolumeClaims).
     if ensure_volume_root_mounted_conn(
         connection,
         plan.volume_root,
         plan.device_path,
         wait_seconds=plan.apple_mount_wait_seconds,
+        claims=claims,
     ):
         return
     raise RuntimeError(f"payload volume {plan.volume_root} is not mounted before upload to {transfer.destination}")
@@ -85,6 +93,7 @@ def upload_deployment_payload(
     *,
     connection: SshConnection,
     source_resolver: Mapping[str, Path],
+    claims: VolumeClaims,
     on_uploading: Callable[[FileTransfer], None] | None = None,
     on_uploaded: Callable[[FileTransfer], None] | None = None,
 ) -> None:
@@ -92,7 +101,7 @@ def upload_deployment_payload(
         source = _resolve_transfer_source(source_resolver, transfer)
         if on_uploading is not None:
             on_uploading(transfer)
-        _ensure_payload_volume_before_transfer(connection, plan, transfer)
+        _ensure_payload_volume_before_transfer(connection, plan, transfer, claims)
         _upload_transfer(connection, source, transfer)
         # upload_file checks the written size in the same command.
         # HDD permissions belong to the later mount-guarded action: Apple's

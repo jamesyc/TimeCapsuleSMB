@@ -17,7 +17,7 @@ from timecapsulesmb.deploy.commands import (
     WaitForIdleJobsAction, render_remote_action,
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan
-from timecapsulesmb.device.storage import PayloadHome, PayloadVerificationResult
+from timecapsulesmb.device.storage import PayloadHome, PayloadVerificationResult, VolumeClaims
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import (
     FLASH_CAPACITY_MARGIN_BYTES, DeployDeviceError, DeployRuntimeConfig,
@@ -29,7 +29,7 @@ from timecapsulesmb.transport.ssh import SshConnection, SshError, upload_file
 class Device:
     def __init__(self, root, monkeypatch):
         from tests.test_xattr_migration import fake_inventory
-        monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a: fake_inventory())
+        monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a, **_k: fake_inventory())
         monkeypatch.setattr('timecapsulesmb.services.deploy.probe_migration_activity', lambda *_a: MigrationActivity(()))
         monkeypatch.setattr('timecapsulesmb.services.deploy.inspect_sources', lambda *_a: None)
         self.root = root
@@ -42,7 +42,7 @@ class Device:
         )
         self.connection = SshConnection('host', 'unused', '')
         self.prepared = SimpleNamespace(
-            plan=self.plan, payload_home=self.home,
+            plan=self.plan, payload_home=self.home, volume_claims=VolumeClaims(),
             payload_context=SimpleNamespace(payload_family="netbsd6_samba4", is_netbsd4=False,
                                             startup_mode="reboot_then_verify"),
         )
@@ -288,7 +288,7 @@ def test_no_legacy_tdb_skips_migrator_upload_and_both_phases(tmp_path, monkeypat
     device = Device(tmp_path, monkeypatch)
     tdb = '/Volumes/dk2/.samba4/private/xattr.tdb'
     device.path(tdb).unlink(); device.protected.pop(tdb)
-    monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a: MigrationInventory((), [], [], [], ''))
+    monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a, **_k: MigrationInventory((), [], [], [], ''))
     device.install()
     assert '/mnt/Memory/tc-xattr-hfs-migrate' not in device.transfers
     assert 'copy' not in device.events and 'cleanup' not in device.events
@@ -336,7 +336,7 @@ def test_known_software_removed_from_every_detected_payload_only(tmp_path, monke
     inv = fake_inventory()
     inv.volumes = (SimpleNamespace(volume_root='/Volumes/dk3', device_path='/dev/dk3'),)
     inv.payload_dirs = [secondary]
-    monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a: inv)
+    monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a, **_k: inv)
     device.install()
     for name in ('sbin/telemetry', 'sbin/service', 'manager.sh', 'mdns-advertiser'):
         assert not device.path(secondary + '/' + name).exists()
@@ -344,7 +344,38 @@ def test_known_software_removed_from_every_detected_payload_only(tmp_path, monke
         assert device.path(secondary + '/' + name).read_bytes() == b'preserve'
 
 
-FLASH_SOFTWARE = ('/mnt/Flash/service', '/mnt/Flash/boot.sh', '/mnt/Flash/dfree.sh', '/mnt/Flash/tcapsulesmb.conf')
+@pytest.mark.parametrize('claimed', [True, False])
+def test_other_payload_guard_reuses_only_a_claim_the_inventory_made(tmp_path, monkeypatch, claimed):
+    from tests.test_xattr_migration import fake_inventory
+    device = Device(tmp_path, monkeypatch)
+    secondary = '/Volumes/dk3/.samba4'
+    device.write(secondary + '/manager.sh', b'old program')
+    inv = fake_inventory()
+    inv.volumes = (SimpleNamespace(volume_root='/Volumes/dk3', device_path='/dev/dk3'),)
+    inv.payload_dirs = [secondary]
+
+    def inventory(_connection, _plan, *, claims):
+        # The real inventory claims each volume it mounts; diskd may refuse.
+        if claimed:
+            claims.record('/Volumes/dk3')
+        return inv
+
+    monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', inventory)
+    guards = []
+    run_actions = device.actions
+
+    def record(connection, actions, on_action_done=None):
+        guards.extend(action for action in actions
+                      if isinstance(action, EnsureVolumeMountedAction) and action.volume_root == '/Volumes/dk3')
+        return run_actions(connection, actions, on_action_done)
+
+    device.actions = record
+    device.install()
+    assert guards
+    assert all(guard.held is claimed for guard in guards)
+
+
+FLASH_SOFTWARE =('/mnt/Flash/service', '/mnt/Flash/boot.sh', '/mnt/Flash/dfree.sh', '/mnt/Flash/tcapsulesmb.conf')
 
 
 def test_rerun_keeps_flash_files_that_hold_their_new_bytes(tmp_path, monkeypatch):

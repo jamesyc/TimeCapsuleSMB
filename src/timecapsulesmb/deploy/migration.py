@@ -16,7 +16,7 @@ import time
 import uuid
 
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
-from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn, read_mast_volumes_conn
+from timecapsulesmb.device.storage import MaStVolume, VolumeClaims, ensure_volume_root_mounted_conn, read_mast_volumes_conn
 from timecapsulesmb.transport.errors import SshError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_input
 
@@ -341,7 +341,7 @@ def _read(connection: SshConnection, path: str, *, limit: int = 65536) -> bytes:
     return run_ssh_input(connection, command).stdout
 
 
-def inventory_metadata(connection: SshConnection, plan) -> MigrationInventory:
+def inventory_metadata(connection: SshConnection, plan, *, claims: VolumeClaims) -> MigrationInventory:
     volumes = tuple(read_mast_volumes_conn(connection))
     candidates, payload_dirs, unavailable = [], [], []
     old_config = _read(connection, "/mnt/Flash/tcapsulesmb.conf").decode("utf-8", "replace")
@@ -357,7 +357,9 @@ def inventory_metadata(connection: SshConnection, plan) -> MigrationInventory:
             names.add(fields[0])
     seen_uuids = set()
     for volume in volumes:
-        if not ensure_volume_root_mounted_conn(connection, volume.volume_root, volume.device_path, wait_seconds=plan.apple_mount_wait_seconds):
+        if not ensure_volume_root_mounted_conn(
+            connection, volume.volume_root, volume.device_path, wait_seconds=plan.apple_mount_wait_seconds, claims=claims,
+        ):
             unavailable.append(volume.volume_root)
             continue
         volume_uuid = normalized_uuid(volume.adisk_uuid)
@@ -689,7 +691,9 @@ def forget_dropped_rows(connection: SshConnection, inventory: MigrationInventory
                             f"count={dropped} backup={backup}")
 
 
-def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory, phase: str) -> str:
+def migrate_phase(
+    connection: SshConnection, plan, inventory: MigrationInventory, phase: str, *, claims: VolumeClaims,
+) -> str:
     if phase not in {"copy", "cleanup"}:
         raise ValueError("unsupported migration phase")
     if not inventory.sources:
@@ -712,7 +716,9 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
         if key in inventory.completed or (phase == "cleanup" and key not in inventory.copied):
             continue
         volume = available.get(key)
-        if volume is None or not ensure_volume_root_mounted_conn(connection, volume.volume_root, volume.device_path, wait_seconds=plan.apple_mount_wait_seconds):
+        if volume is None or not ensure_volume_root_mounted_conn(
+            connection, volume.volume_root, volume.device_path, wait_seconds=plan.apple_mount_wait_seconds, claims=claims,
+        ):
             inventory.output.append(f"phase={phase} uuid={key} unavailable")
             continue
         stat = _native(connection, ["inspect-root", volume.volume_root], log=log)

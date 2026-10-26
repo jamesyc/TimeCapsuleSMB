@@ -12,7 +12,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.device.storage import MaStDiscoveryResult, MaStVolume
+from timecapsulesmb.device.storage import MaStDiscoveryResult, MaStVolume, VolumeClaims
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.storage import (
     mount_mast_volumes_with_diagnostics,
@@ -78,11 +78,13 @@ class MaStStorageServiceTests(unittest.TestCase):
         mounted_volume = self.make_volume("dk3")
         read_mock = mock.Mock(return_value=(read_volume,))
         mount_mock = mock.Mock(return_value=(mounted_volume,))
+        claims = VolumeClaims()
 
         result = mount_mast_volumes_with_diagnostics(
             connection,
             callbacks=recorder.callbacks(),
             wait_seconds=12,
+            claims=claims,
             mount_stage="mount_hfs_volumes",
             read_mast_volumes=read_mock,
             mounted_mast_volumes=mount_mock,
@@ -90,7 +92,7 @@ class MaStStorageServiceTests(unittest.TestCase):
 
         self.assertEqual(result, (mounted_volume,))
         read_mock.assert_called_once_with(connection)
-        mount_mock.assert_called_once_with(connection, (read_volume,), wait_seconds=12)
+        mount_mock.assert_called_once_with(connection, (read_volume,), wait_seconds=12, claims=claims)
         self.assertEqual(recorder.stages, ["read_mast", "mount_hfs_volumes"])
         self.assertEqual(recorder.debug_fields["mast_volume_count"], 1)
         self.assertEqual(recorder.debug_fields["mast_mounted_volume_count"], 1)
@@ -128,6 +130,7 @@ class MaStStorageServiceTests(unittest.TestCase):
             connection,
             callbacks=recorder.callbacks(),
             wait_seconds=12,
+            claims=VolumeClaims(),
             read_mast_volumes=mock.Mock(return_value=(volume,)),
             mounted_mast_volumes=mock.Mock(return_value=mounted),
         )

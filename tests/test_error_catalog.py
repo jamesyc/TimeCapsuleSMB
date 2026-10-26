@@ -20,6 +20,7 @@ from timecapsulesmb.core.error_codes import GENERIC_CODES, ErrorCode
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device.probe import DISK_PAYLOAD_PROBLEMS, DISK_UNREADABLE_PROBLEMS, DeployedVersionProbeResult
 from timecapsulesmb.device.storage import (
+    VolumeClaims,
     MaStDiscoveryResult,
     MaStVolume,
     PayloadCandidateCheck,
@@ -182,6 +183,7 @@ class ErrorCodeCatalogTests(unittest.TestCase):
                 payload_dir_name=".samba4",
                 mount_wait_seconds=1,
                 callbacks=OperationCallbacks(),
+                claims=VolumeClaims(),
                 wait_for_mast_volumes=mock.Mock(return_value=MaStDiscoveryResult((self.VOLUME,), 1, "")),
                 select_payload_home=mock.Mock(return_value=PayloadHomeSelection(None, (check,))),
             )

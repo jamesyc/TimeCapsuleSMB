@@ -152,7 +152,7 @@ def add_mount_wait_argument(parser: argparse.ArgumentParser) -> None:
         type=non_negative_int_arg,
         default=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
         metavar="SECONDS",
-        help=f"Seconds for diskd.useVolume mount guards to wait before their manual fallback (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
+        help=f"Seconds each diskd.useVolume mount guard attempt waits for the volume to mount (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
     )
 
 
