@@ -4718,7 +4718,6 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("syAP 115", error["message"])
         self.assertEqual(error["recovery"]["localization_key"], "configure.unsupported_device")
         self.assertFalse(error["recovery"]["retryable"])
-        self.assertEqual(error["debug"]["discovered_airport_syap"], "115")
         self.assertEqual(error["debug"]["stage"], "check_device_model")
 
     def test_configure_rejects_airport_express_found_by_probe(self) -> None:

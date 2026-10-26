@@ -534,8 +534,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     flush=True,
                 )
         command_context.add_debug_fields(discovered_host=discovered_host)
-        if discovered_record is not None:
-            command_context.add_debug_fields(discovered_airport_syap=discovered_record.properties.get("syAP") or None)
         command_context.set_stage("prompt_host_password")
         if no_input_enabled(args):
             try:
@@ -618,7 +616,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                         ssh_opts=ssh_opts,
                         configure_id=configure_id,
                         persist_password=True,
-                        selected_record_airport_syap=target.selected_record_airport_syap,
                         selected_record=target.target_record,
                         enable_ssh=True,
                         internal_share_use_disk_root=args.internal_share_use_disk_root,

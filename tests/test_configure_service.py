@@ -71,6 +71,12 @@ SELECTED_RECORD = BonjourResolvedService(
 )
 
 
+def record_advertising_syap(syap: str | None) -> BonjourResolvedService:
+    return BonjourResolvedService(
+        "Office", "office.local", "_airport._tcp.local.", properties={} if syap is None else {"syAP": syap},
+    )
+
+
 class ConfigureServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         context = mock.patch(
@@ -1157,7 +1163,7 @@ class ConfigureServiceTests(unittest.TestCase):
                     ssh_opts="-o foo",
                     configure_id="config-id",
                     persist_password=True,
-                    selected_record_airport_syap="119",
+                    selected_record=record_advertising_syap("119"),
                     probe=mock.Mock(return_value=probe_state),
                     write_env=lambda _path, values: written.update(values),
                 ),
@@ -1601,7 +1607,7 @@ class ConfigureServiceTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable_ssh:
                 with self.assertRaises(ConfigureFlowError) as raised:
                     run_configure_flow(
-                        self.configure_request(env_path, probe, selected_record_airport_syap="115"),
+                        self.configure_request(env_path, probe, selected_record=record_advertising_syap("115")),
                         callbacks=callbacks,
                         hooks=ConfigureFlowHooks(before_enable_ssh=before_enable_ssh),
                     )
@@ -1615,7 +1621,7 @@ class ConfigureServiceTests(unittest.TestCase):
         before_enable_ssh.assert_not_called()
         self.assertEqual(stages, ["check_device_model"])
         self.assertIn(
-            {"configure_failure_reason": "unsupported_device", "discovered_airport_syap": "115"},
+            {"configure_failure_reason": "unsupported_device"},
             debug_fields,
         )
 
@@ -1628,7 +1634,7 @@ class ConfigureServiceTests(unittest.TestCase):
                         self.configure_request(
                             Path(tmp) / ".env",
                             probe,
-                            selected_record_airport_syap=syap,
+                            selected_record=record_advertising_syap(syap),
                             write_env=lambda _path, _values: None,
                         )
                     )
