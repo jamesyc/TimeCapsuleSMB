@@ -5194,11 +5194,16 @@ class CheckTests(unittest.TestCase):
         smbd_mock = mock.Mock(return_value=self._smbd_not_staged_probe())
         debug_fields: dict[str, object] = {}
 
-        run, sleeps = self._run_doctor_nbns(
-            mock.Mock(return_value=self._nbns_ready_probe()),
-            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
-            startup_age=150.0, smbd_mock=smbd_mock, debug_fields=debug_fields,
-        )
+        # An unmounted share volume is a disk failure, so its MaSt is read too.
+        with mock.patch("timecapsulesmb.checks.doctor_debug.probe_mast_diagnostics_conn",
+                        return_value=self.mast_probe_diagnostics()) as mast:
+            run, sleeps = self._run_doctor_nbns(
+                mock.Mock(return_value=self._nbns_ready_probe()),
+                mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+                startup_age=150.0, smbd_mock=smbd_mock, debug_fields=debug_fields,
+            )
+
+        mast.assert_called_once()
 
         self.assertEqual(sleeps, [10, 10, 10])
         self.assertEqual(smbd_mock.call_count, 4)

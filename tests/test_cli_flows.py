@@ -112,10 +112,16 @@ class CliFlowTests(unittest.TestCase):
             extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 200s"),),
         )
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=result):
+        # A runtime that never got ready sends the device's logs with its error.
+        logs = {"remote_runtime_log_tail": "runtime: waiting for the disk"}
+        with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=result), \
+                mock.patch("timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
+                           return_value=logs) as read_logs:
             with redirect_stdout(output):
                 with self.assertRaises(DeviceError) as raised:
                     self.verify_runtime(command_context, timeout_seconds=200, failure_message="NetBSD4 activation failed.")
+
+        read_logs.assert_called_once()
 
         self.assertEqual(
             str(raised.exception),

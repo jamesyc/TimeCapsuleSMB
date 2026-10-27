@@ -25,6 +25,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.device.migration_jobs import MigrationActivity
+from timecapsulesmb.device.wipe import GptVerdict
 from timecapsulesmb.checks.network import LocalInterfaceNetwork
 from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
@@ -273,6 +274,10 @@ class AppApiTests(unittest.TestCase):
         self._telemetry_urlopen = self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.telemetry.http_post_json", side_effect=AssertionError("tests must not send telemetry"))
         )
+        # Every operation that restarts the device runs the restart guard,
+        # which has its own tests (tests/test_wipe_disk.py): here it finds
+        # nothing, without an SSH read of the tests' made-up address.
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.storage.require_no_in_memory_volumes"))
         # activate first checks the device holds an install of this version;
         # tests that model a missing or other install set these return values.
         self._installed_config_present = self._exit_stack.enter_context(
@@ -6207,11 +6212,14 @@ MaSt = (
     }
 );
 """
-        rc, collector = self.run_confirmed_deploy_with_mast(
-            MaStDiscoveryResult((), 1, raw_mast_output)
-        )
+        # gpt finds no partition table on the disk itself either.
+        with mock.patch("timecapsulesmb.services.deploy.read_gpt_verdict_conn", return_value=GptVerdict("blank")) as gpt:
+            rc, collector = self.run_confirmed_deploy_with_mast(
+                MaStDiscoveryResult((), 1, raw_mast_output)
+            )
 
         self.assertEqual(rc, 1)
+        self.assertEqual(gpt.call_args.args[1], "wd0")
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "deploy_no_hfs_partition")
         self.assertEqual(error["recovery"]["title"], "The disk is not ready for installation")

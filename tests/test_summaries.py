@@ -331,7 +331,9 @@ class SummaryProducerTests(unittest.TestCase):
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         open_ssh = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=True)
         closed_ssh = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=False)
-        with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable:
+        # The restart guard has its own tests (tests/test_wipe_disk.py).
+        with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable, \
+                mock.patch("timecapsulesmb.services.storage.require_no_in_memory_volumes"):
             noop = disable_set_ssh(connection, no_wait=False, initial=closed_ssh)
             with FakeAcpDevice().patched():
                 requested = disable_set_ssh(connection, no_wait=True, initial=open_ssh)

@@ -16,6 +16,7 @@ from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.deploy.executor import XattrMigrationResult
 from timecapsulesmb.device.probe import (
+    AirportIdentityProbeResult,
     DeployedVersionProbeResult,
     ManagedRuntimeProbeResult,
     ProbeResult,
@@ -267,6 +268,18 @@ class CliTestCase(unittest.TestCase):
         ):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
+        # A command's background read of the device's model (CommandContext)
+        # answers nothing, as from a device without ACP. Tests that read a
+        # model patch it themselves.
+        self._exit_stack.enter_context(mock.patch(
+            "timecapsulesmb.cli.context.probe_remote_airport_identity_conn",
+            return_value=AirportIdentityProbeResult(model=None, syap=None, detail="not read in tests"),
+        ))
+        # Every command that restarts the device runs the restart guard, which
+        # has its own tests (tests/test_wipe_disk.py): here it finds nothing,
+        # without an SSH read of the tests' made-up address. Tests of a
+        # refusal patch it themselves.
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.storage.require_no_in_memory_volumes"))
         # activate first checks the device holds an install of this version;
         # tests that model a missing or other install set these return values.
         self._installed_config_present = self._exit_stack.enter_context(

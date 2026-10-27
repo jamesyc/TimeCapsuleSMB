@@ -10,6 +10,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 from unittest import mock
 from timecapsulesmb.cli import deploy
+from timecapsulesmb.device.wipe import GptVerdict
 from timecapsulesmb.services.deploy import (
     DEPLOY_ACPD_STOPPED_ACTIVATE_MESSAGE,
     DEPLOY_ACPD_STOPPED_MESSAGE,
@@ -851,18 +852,22 @@ class CliDeployTests(CliTestCase):
                 }
             ]
         ).decode()
-        result = self.run_deploy_cli(
-            ["--yes"],
-            mast_volumes=(),
-            mast_discovery=MaStDiscoveryResult((), 1, raw_mast_output),
-            patch_actions=True,
-            patch_upload=True,
-            raises=SystemExit,
-        )
+        # gpt finds the FAT partition MaSt listed, and no Apple HFS one.
+        verdict = GptVerdict("foreign", ("fat32",))
+        with mock.patch("timecapsulesmb.services.deploy.read_gpt_verdict_conn", return_value=verdict) as gpt:
+            result = self.run_deploy_cli(
+                ["--yes"],
+                mast_volumes=(),
+                mast_discovery=MaStDiscoveryResult((), 1, raw_mast_output),
+                patch_actions=True,
+                patch_upload=True,
+                raises=SystemExit,
+            )
 
+        self.assertEqual(gpt.call_args.args[1], "wd0")
         self.assertEqual(
             str(result.exception),
-            "A disk was found, but no valid HFS partition was detected.\n\n"
+            "A disk was found, but no valid HFS partition was detected. This disk is formatted as FAT32.\n\n"
             "Next steps:\n"
             "  1. Try running `tcapsule deploy` again in a few minutes.\n"
             "  2. If it still fails, restart the device and try again after the disk spins up.\n"

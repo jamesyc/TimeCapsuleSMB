@@ -99,6 +99,7 @@ addopts = "-ra"
 markers = [
   "real_keep_awake: may start a real caffeinate child instead of the no-op that tests get by default",
   "real_adisk_recheck: may re-check this Mac's cached Bonjour records instead of the no-op that tests get by default",
+  "real_ssh: may run the real ssh, which the guard otherwise refuses (tests/conftest.py)",
 ]
 
 [tool.ruff]

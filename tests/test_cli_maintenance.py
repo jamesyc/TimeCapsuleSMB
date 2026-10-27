@@ -297,11 +297,15 @@ class CliMaintenanceTests(CliTestCase):
             with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=self.make_logged_in_probe_state(self.make_supported_netbsd4_compatibility())):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions"):
-                        with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
+                        with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)), \
+                                mock.patch("timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
+                                           return_value={}) as read_logs:
                             with mock.patch("time.sleep") as sleep_mock:
                                 with redirect_stdout(output):
                                     rc = activate.main(["--yes"])
         self.assertEqual(rc, 1)
+        # The failure sends the device's logs with it.
+        read_logs.assert_called_once()
         # Only the verification's own polling sleeps; nothing waits a fixed time first.
         self.assertTrue(all(call.args[0] < 20 for call in sleep_mock.call_args_list))
         self.assertIn("NetBSD4 activation failed.", output.getvalue())

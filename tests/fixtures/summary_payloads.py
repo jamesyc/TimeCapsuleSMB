@@ -55,6 +55,10 @@ def _set_ssh_results() -> list[tuple[str, SetSshResult]]:
     with (
         mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host),
         mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh"),
+        # Disabling restarts the device, so it runs the restart guard (its own
+        # tests are in tests/test_wipe_disk.py): here it finds nothing, without
+        # an SSH read of the made-up address.
+        mock.patch("timecapsulesmb.services.storage.require_no_in_memory_volumes"),
     ):
         results = [
             ("ssh_already_enabled", enable_set_ssh(connection, no_wait=False, initial=ssh_open)),

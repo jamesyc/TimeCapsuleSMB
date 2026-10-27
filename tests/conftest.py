@@ -234,3 +234,44 @@ def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(socket.socket, "connect_ex", guard(socket.socket.connect_ex))
     yield
     assert not attempts, f"tests must not reach the real network: {attempts}"
+
+
+# ssh's queries that never leave this computer: its version, its options,
+# and a running master's state.
+LOCAL_SSH_QUERIES = frozenset({"-V", "-G", "-Q", "-O"})
+
+
+@pytest.fixture(autouse=True)
+def block_real_ssh_connections(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    # Tests use made-up device addresses such as 10.0.0.2. A real ssh to one
+    # waits on whatever the user's network does with that address, seconds or
+    # minutes per test, so starting it raises at once, and fails the test:
+    # code under test may take the error for a device that is down and pass
+    # by accident, as the network guard above says. A test's own fake ssh
+    # (another file) runs. Tests marked real_ssh get the real one. The fixture
+    # yields the attempts, for the guard's own tests.
+    import os
+    import shutil
+    import subprocess
+
+    real = shutil.which("ssh")
+    attempts: list[str] = []
+    if real is None or request.node.get_closest_marker("real_ssh") is not None:
+        yield attempts
+        return
+    real = os.path.realpath(real)
+    real_init = subprocess.Popen.__init__
+
+    def init(self, args, *more, **kwargs):
+        argv = [str(arg) for arg in args] if isinstance(args, (list, tuple)) else [str(args)]
+        path = (kwargs.get("env") or os.environ).get("PATH")
+        program = shutil.which(argv[0], path=path) if argv else None
+        if program and os.path.realpath(program) == real and not LOCAL_SSH_QUERIES.intersection(argv[1:]):
+            attempts.append(" ".join(argv))
+            raise AssertionError("tests must not run ssh to a device; mock the call")
+        real_init(self, args, *more, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", init)
+    yield attempts
+    # The host and the remote command come last, after ssh's options.
+    assert not attempts, f"tests must not run ssh to a device; mock the call: {[a[-400:] for a in attempts]}"
