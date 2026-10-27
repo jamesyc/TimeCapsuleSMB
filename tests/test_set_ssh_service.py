@@ -11,7 +11,9 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.summaries import Summary
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, ACPStuckError
 from timecapsulesmb.services.reboot import RebootFlowError
@@ -138,15 +140,34 @@ class SetSshServiceTests(unittest.TestCase):
 
         self.assertEqual(result.code, "reboot_not_started")
 
-    def disable(self, device: FakeAcpDevice, *, no_wait: bool = False):
+    def disable(self, device: FakeAcpDevice, *, no_wait: bool = False, in_memory: BaseException | None = None):
         recorder = RecordingCallbacks()
-        with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as remove_dbug:
+        # The restart guard has its own tests (tests/test_wipe_disk.py).
+        with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as remove_dbug, \
+                mock.patch("timecapsulesmb.services.storage.require_no_in_memory_volumes",
+                           side_effect=in_memory) as self.guard:
             with device.patched():
                 try:
                     result = disable_set_ssh(CONNECTION, no_wait=no_wait, callbacks=recorder.callbacks(), initial=SSH_OPEN)
                 except RebootFlowError as exc:
                     result = exc
         return result, recorder, remove_dbug
+
+    def test_disable_stops_before_changing_anything_while_a_volume_is_in_memory(self) -> None:
+        # Its restart would take the volume and what is saved on it.
+        device = FakeAcpDevice()
+        refused = DeviceError("in memory", code=ErrorCode.DISK_VOLUMES_IN_MEMORY)
+        with self.assertRaises(DeviceError) as raised:
+            self.disable(device, in_memory=refused)
+        self.assertIs(raised.exception, refused)
+        self.assertEqual(self.guard.call_args.args[0], CONNECTION)
+        self.assertNotIn("request", device.calls)
+
+    def test_disable_that_finds_nothing_in_memory_removes_ssh_then_restarts(self) -> None:
+        device = FakeAcpDevice(ssh_up_after_boot=None)
+        _result, _recorder, remove_dbug = self.disable(device)
+        self.guard.assert_called_once()
+        remove_dbug.assert_called_once()
 
     def test_disable_noops_when_ssh_is_already_closed(self) -> None:
         with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as remove_dbug:
@@ -165,7 +186,8 @@ class SetSshServiceTests(unittest.TestCase):
         # Port 22 is checked twice, a poll apart, after sshd would have started.
         self.assertEqual(device.calls.count("tcp 22"), 2)
         self.assertGreaterEqual(device.device_uptime(), 60)
-        self.assertEqual(recorder.stages, ["disable_ssh", "reboot", "wait_for_reboot_down", "wait_for_reboot_up"])
+        self.assertEqual(recorder.stages, ["check_in_memory_volumes", "disable_ssh", "reboot", "wait_for_reboot_down",
+                                           "wait_for_reboot_up"])
         self.assertFalse(recorder.measurement("reboot_cycle")["expect_ssh"])
         self.assertEqual(result.action, "disable_ssh")
         self.assertFalse(result.ssh_final_reachable)

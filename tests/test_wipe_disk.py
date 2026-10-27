@@ -4,6 +4,9 @@ a fake device whose MaSt, process list and diskd answers each step changes."""
 from __future__ import annotations
 
 from dataclasses import replace
+import functools
+import plistlib
+import re
 import shlex
 import subprocess
 import tempfile
@@ -22,13 +25,21 @@ from timecapsulesmb.device.storage import (
     MaStDiscoveryResult,
     MaStPartitionSnapshot,
     MaStReadResult,
+    MaStVolume,
+    PayloadHome,
+    PayloadHomeSelection,
+    VolumeClaims,
     disk_size_misreported,
+    parse_mast_inventory,
 )
+from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services import wipe_disk
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.deploy import DeployDeviceError, mast_no_volume_error
+from timecapsulesmb.services.deploy import DeployDeviceError, mast_no_volume_error, select_deploy_payload_home
 from timecapsulesmb.services.maintenance import SharingRestart, reboot_and_restart_sharing
 from timecapsulesmb.services.reboot import RebootFlowError
+from timecapsulesmb.transport.errors import SshNetworkError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 
 
@@ -332,6 +343,466 @@ class PayloadHomeProbeTests(unittest.TestCase):
         # Nothing claims or mounts a volume.
         self.assertNotIn("useVolume", command)
         self.assertNotIn("mount_hfs", command)
+
+
+# a2397abe's log (TC8,119): AirPort Utility's erase of a disk whose table
+# Apple's gpt rejects. gpt runs before each newfs_hfs, fails, and exits 0.
+REJECTED = "gpt: error: bogus map\ngpt: unable to open device 'rwd0c': Undefined error: 0\n"
+REJECTED_ERASE = (
+    "2026-10-24 21:40:02 manager: diskd started\n"
+    + REJECTED * 4
+    + "Initialized /dev/rdk0 as a 1024 MB HFS Plus volume with a 8192k journal\n"
+    + REJECTED * 2
+    + "Initialized /dev/rdk1 as a 1024 MB HFS Plus volume with a 8192k journal\n"
+    + REJECTED * 2
+    + "Initialized /dev/rdk2 as a 464 GB HFS Plus volume with a 40960k journal\n"
+    "** /dev/rdk2\n"
+    "storage: claim /Volumes/dk2 attempt=1/2\n"
+)
+# The LAN NetBSD 4 device erased with a legacy MBR whose one partition runs to
+# the last sector: `gpt create` finds no room for the backup header, so every
+# add finds no GPT, and nothing is written.
+NO_GPT = "gpt: rsd0c: error: no primary GPT header; run create or recover\n"
+MBR_TO_END_ERASE = (
+    "gpt: rsd0c: error: device doesn't contain a GPT\n"
+    "gpt: rsd0c: error: no room for the backup header\n"
+    + NO_GPT * 2
+    + "Initialized /dev/rdk0 as a 1024 MB HFS Plus volume with a 8192k journal\n"
+    + NO_GPT * 2
+    + "Initialized /dev/rdk1 as a 1024 MB HFS Plus volume with a 8192k journal\n"
+    + NO_GPT * 2
+    + "Initialized /dev/rdk2 as a 1861 GB HFS Plus volume with a 155648k journal\n"
+)
+# 7d09cf7f's log: an erase that worked prints no gpt line once the old table is gone.
+CLEAN_ERASE = (
+    "gpt: rsd0c: error: device doesn't contain a GPT\n"
+    "Initialized /dev/rdk0 as a 1024 MB HFS Plus volume with a 8192k journal\n"
+    "Initialized /dev/rdk1 as a 1024 MB HFS Plus volume with a 8192k journal\n"
+    "Initialized /dev/rdk2 as a 1861 GB HFS Plus volume with a 155648k journal\n"
+)
+
+
+def rejected_wedges(log: str) -> list[tuple[str, str | None]]:
+    return [(fmt.wedge, fmt.rejected_disk) for fmt in wipe.wedge_formats(log)]
+
+
+class EraseLogTests(unittest.TestCase):
+    def test_every_wedge_of_a_rejected_erase_is_tied_to_its_disk(self) -> None:
+        self.assertEqual(rejected_wedges(REJECTED_ERASE), [("dk0", "wd0"), ("dk1", "wd0"), ("dk2", "wd0")])
+
+    def test_an_erase_that_worked_rejects_nothing(self) -> None:
+        self.assertEqual(rejected_wedges(CLEAN_ERASE), [("dk0", None), ("dk1", None), ("dk2", None)])
+
+    def test_an_mbr_partition_to_the_last_sector_leaves_every_wedge_in_memory(self) -> None:
+        self.assertEqual(rejected_wedges(MBR_TO_END_ERASE), [("dk0", "sd0"), ("dk1", "sd0"), ("dk2", "sd0")])
+
+    def test_a_blank_disk_erase_that_worked_is_not_rejected(self) -> None:
+        # destroy finds no table; create writes one, so add and label print nothing.
+        log = ("gpt: rsd0c: error: device doesn't contain a GPT\n"
+               "Initialized /dev/rdk0 as a 1024 MB HFS Plus volume with a 8192k journal\n")
+        self.assertEqual(rejected_wedges(log), [("dk0", None)])
+
+    def test_another_disks_rejection_does_not_carry_into_this_erase(self) -> None:
+        # sd1's table was rejected outside an erase; wd0's erase then worked.
+        log = (REJECTED.replace("rwd0c", "rsd1c")
+               + "gpt: rwd0c: error: device doesn't contain a GPT\n"
+               + "Initialized /dev/rdk0 as a 1024 MB HFS Plus volume with a 8192k journal\n")
+        self.assertEqual(rejected_wedges(log), [("dk0", None)])
+
+    def test_another_disks_line_before_an_unnamed_rejection_does_not_hide_this_erase(self) -> None:
+        # A line about sd1 from before, then wd0's erase: its first gpt run's
+        # unnamed "bogus map" counts for sd1 and its "unable to open" line
+        # starts over, but every later run prints the pair again.
+        log = ("gpt: rsd1c: error: device doesn't contain a GPT\n" + REJECTED * 2
+               + "Initialized /dev/rdk2 as a 464 GB HFS Plus volume with a 40960k journal\n")
+        self.assertEqual(rejected_wedges(log), [("dk2", "wd0")])
+
+    def test_a_rejection_without_its_disk_line_gives_no_verdict(self) -> None:
+        log = "gpt: error: bogus map\nInitialized /dev/rdk2 as a 464 GB HFS Plus volume\n"
+        self.assertEqual(rejected_wedges(log), [("dk2", None)])
+
+    def test_a_failure_that_is_not_a_rejected_table_gives_no_verdict(self) -> None:
+        log = "gpt: unable to open device 'rwd0c': Input/output error\nInitialized /dev/rdk2 as a 464 GB HFS Plus volume\n"
+        self.assertEqual(rejected_wedges(log), [("dk2", None)])
+
+    def test_lines_that_only_quote_gpt_do_not_count(self) -> None:
+        log = ("manager: diskd said gpt: error: bogus map\n"
+               "manager: gpt: unable to open device 'rwd0c'\n"
+               "Initialized /dev/rdk2 as a 464 GB HFS Plus volume\n")
+        self.assertEqual(rejected_wedges(log), [("dk2", None)])
+
+    def test_a_later_erase_that_worked_clears_the_wedges(self) -> None:
+        formats = wipe.wedge_formats(REJECTED_ERASE + CLEAN_ERASE.replace("rsd0c", "rwd0c"))
+        self.assertEqual(wipe.in_memory_volumes((self.wd0(),), formats), ())
+
+    def test_a_log_trimmed_after_the_first_format_still_finds_the_rest(self) -> None:
+        trimmed = REJECTED_ERASE[REJECTED_ERASE.index("Initialized /dev/rdk0") + 10:]
+        self.assertEqual(rejected_wedges(trimmed), [("dk1", "wd0"), ("dk2", "wd0")])
+
+    def test_two_disks_erased_one_after_the_other_keep_their_own_verdicts(self) -> None:
+        usb = CLEAN_ERASE.replace("rdk0", "rdk3").replace("rdk1", "rdk4").replace("rdk2", "rdk5")
+        self.assertEqual(rejected_wedges(REJECTED_ERASE + usb)[2:],
+                         [("dk2", "wd0"), ("dk3", None), ("dk4", None), ("dk5", None)])
+
+    @staticmethod
+    def wd0(*partitions: MaStPartitionSnapshot) -> MaStDiskSnapshot:
+        return disk(device="wd0", partitions=partitions or (MaStPartitionSnapshot("dk2", "Data", "hfs"),))
+
+    def test_the_volume_on_a_rejected_wedge_of_its_own_disk_is_in_memory(self) -> None:
+        wd0 = self.wd0()
+        self.assertEqual(wipe.in_memory_volumes((wd0,), wipe.wedge_formats(REJECTED_ERASE)),
+                         ((wd0, wd0.partitions[0]),))
+
+    def test_the_same_wedge_name_on_another_disk_is_not(self) -> None:
+        # A USB disk that later took dk2 after a replug.
+        usb = disk(device="sd1", builtin=False, partitions=(MaStPartitionSnapshot("dk2", "USB", "hfs"),))
+        self.assertEqual(wipe.in_memory_volumes((usb,), wipe.wedge_formats(REJECTED_ERASE)), ())
+
+    def test_a_volume_the_log_does_not_show_is_not_flagged(self) -> None:
+        self.assertEqual(wipe.in_memory_volumes((self.wd0(MaStPartitionSnapshot("dk7", "Data", "hfs")),),
+                                                wipe.wedge_formats(REJECTED_ERASE)), ())
+        self.assertEqual(wipe.in_memory_volumes((self.wd0(),), ()), ())
+
+    def run_reader(self, **outcome: object) -> wipe.EraseLog:
+        with mock.patch.object(wipe, "run_ssh", **outcome) as run_ssh:
+            log = wipe.read_erase_log_conn(CONNECTION)
+        self.assertEqual(run_ssh.call_args.args[1], "/bin/cat /mnt/Memory/samba4/var/runtime.log 2>/dev/null; true")
+        return log
+
+    def test_the_reader_reads_only_the_ram_log(self) -> None:
+        log = self.run_reader(return_value=subprocess.CompletedProcess([], 0, REJECTED_ERASE, ""))
+        self.assertEqual(log.debug(), {"error": None, "log_bytes": len(REJECTED_ERASE),
+                                       "formats": [["dk0", "wd0"], ["dk1", "wd0"], ["dk2", "wd0"]]})
+
+    def test_no_log_reads_as_no_erases_and_an_ssh_failure_as_unknown(self) -> None:
+        self.assertEqual(self.run_reader(return_value=subprocess.CompletedProcess([], 0, "", "")), wipe.EraseLog())
+        log = self.run_reader(side_effect=SshCommandTimeout("timed out"))
+        self.assertEqual((log.formats, log.error), ((), "timed out"))
+
+    def test_a_dropped_session_is_unknown_not_a_log_without_erases(self) -> None:
+        # The log's own lines must not be parsed out of an SSH error.
+        output = REJECTED_ERASE + "Connection to 10.0.0.2 closed by remote host.\n"
+        log = self.run_reader(return_value=subprocess.CompletedProcess([], 255, output, ""))
+        self.assertEqual((log.formats, log.error), ((), "exit 255: Connection to 10.0.0.2 closed by remote host."))
+
+
+# The internal disk wd0 (its data volume dk2) and a USB disk sd1 (dk5).
+MAST_DISKS = [
+    {"deviceName": "wd0", "info": "Disk 1", "builtin": True,
+     "partitions": [{"deviceName": "dk2", "name": "AirPort Disk", "format": "hfs"}]},
+    {"deviceName": "sd1", "info": "Disk 2", "builtin": False,
+     "partitions": [{"deviceName": "dk5", "name": "Backups", "format": "hfs"}]},
+]
+# sd1's erase, rejected the same way, formatted dk3..dk5.
+REJECTED_USB_ERASE = (REJECTED_ERASE.replace("rwd0c", "rsd1c").replace("rdk2", "rdk5")
+                      .replace("rdk1", "rdk4").replace("rdk0", "rdk3"))
+
+
+# What `gpt show` prints on each kind of disk.
+APPLE_SHOW = (  # the NetBSD 6 device's USB disk, its volumes mounted
+    "       start        size  index  contents\n"
+    "           0           1         PMBR\n"
+    "           1           1         Pri GPT header\n"
+    "           2          32         Pri GPT table\n"
+    "          40      409600      1  GPT part - EFI System\n"
+    "      409640  7813298096      2  GPT part - Apple HFS\n"
+    "  7813969887          32         Sec GPT table\n"
+    "  7813969919           1         Sec GPT header\n"
+)
+FOREIGN_SHOW = APPLE_SHOW.replace("Apple HFS", "Linux/Windows")
+# Only the protective MBR `gpt create` writes before it finds no room for the
+# backup header.
+PMBR_SHOW = (
+    "       start        size  index  contents\n"
+    "           0           1         PMBR\n"
+    "           1  3907029167         \n"
+)
+
+
+class InMemoryVolumeTests(unittest.TestCase):
+    """Doctor and the commands that restart the device flag the volumes the
+    manager's log shows were formatted on a rejected table, each confirmed by
+    its disk's own table; a disk is read only when the log flags it."""
+
+    def setUp(self) -> None:
+        self.log = ""
+        # What `gpt show` finds per disk: output, or an error to raise.
+        self.tables: dict[str, object] = {"wd0": REJECTED, "sd1": REJECTED}
+        self.device_commands: list[str] = []
+        patcher = mock.patch.object(wipe, "run_ssh", side_effect=self.device)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def device(self, connection, command, **kwargs):
+        self.device_commands.append(command)
+        if command.startswith("/bin/cat "):
+            return subprocess.CompletedProcess([], 0, self.log, "")
+        table = self.tables[re.search(r"/sbin/gpt show (\w+) ", command).group(1)]
+        if isinstance(table, BaseException):
+            raise table
+        return subprocess.CompletedProcess([], 0, table, "")
+
+    def disks_read(self) -> list[str]:
+        return [re.search(r"/sbin/gpt show (\w+) ", command).group(1)
+                for command in self.device_commands if "/sbin/gpt show" in command]
+
+    def doctor(self, log: str, mast=MAST_DISKS):
+        from types import SimpleNamespace
+        from timecapsulesmb.checks import doctor_steps
+        from timecapsulesmb.checks.doctor_state import DoctorSink
+        self.log = log
+        mast = subprocess.CompletedProcess([], 0, "MaSt=" + plistlib.dumps(mast).decode(), "")
+        sink = DoctorSink(on_result=None, debug_fields={})
+        with mock.patch.object(doctor_steps, "run_ssh", return_value=mast) as mast_read:
+            doctor_steps._doctor_check_disk_health(SimpleNamespace(connection=CONNECTION),
+                                                   SimpleNamespace(remote_checks_enabled=True), sink)
+        self.device_commands[:0] = [call.args[1] for call in mast_read.call_args_list]
+        return [result for result in sink.results if result.status == "FAIL"], sink.debug_fields
+
+    def test_doctor_fails_each_in_memory_volume_and_offers_the_wipe_only_for_the_internal_disk(self) -> None:
+        fails, debug = self.doctor(REJECTED_ERASE + REJECTED_USB_ERASE)
+        self.assertEqual([(r.details["code"], r.details["disk"], r.details["volume"]) for r in fails],
+                         [("disk_volumes_in_memory", "wd0", "dk2"), ("disk_volumes_in_memory", "sd1", "dk5")])
+        internal, usb = (result.message for result in fails)
+        self.assertTrue(internal.startswith(
+            "The volume “AirPort Disk” on the internal disk exists only until the next restart: "), internal)
+        self.assertTrue(usb.startswith("The volume “Backups” on the USB disk exists only until the next restart: "), usb)
+        self.assertIn("Time Machine backups included", internal)
+        for message in (internal, usb):
+            self.assertIn("Copy off anything you need before the device restarts.", message)
+        self.assertIn("Wipe Internal Disk", internal)
+        self.assertNotIn("Wipe Internal Disk", usb)
+        self.assertIn("Then disconnect the disk from the device.", usb)
+        self.assertIn("Disk Utility", usb)
+        self.assertEqual([r.details["volume_name"] for r in fails], ["AirPort Disk", "Backups"])
+        self.assertEqual((debug["erase_log"]["in_memory"], debug["erase_log"]["tables"]),
+                         (["dk2", "dk5"], {"wd0": "bogus_map", "sd1": "bogus_map"}))
+        # MaSt and the manager's log, then only the two flagged disks' tables.
+        self.assertEqual(self.device_commands[:2],
+                         ["/usr/bin/acp MaSt", "/bin/cat /mnt/Memory/samba4/var/runtime.log 2>/dev/null; true"])
+        self.assertEqual(self.disks_read(), ["wd0", "sd1"])
+
+    def test_doctor_passes_a_clean_erase_and_a_log_without_erases_without_reading_a_disk(self) -> None:
+        for log in (CLEAN_ERASE.replace("rsd0c", "rwd0c"), "2026-10-24 21:40:02 manager: started\n", ""):
+            with self.subTest(log=log[:20]):
+                self.device_commands.clear()
+                fails, debug = self.doctor(log)
+                self.assertEqual(fails, [])
+                self.assertEqual((debug["erase_log"]["in_memory"], debug["erase_log"]["tables"]), ([], {}))
+                self.assertEqual(self.disks_read(), [])
+
+    def test_doctor_reads_no_log_when_no_disk_has_an_hfs_volume(self) -> None:
+        from types import SimpleNamespace
+        from timecapsulesmb.checks import doctor_steps
+        from timecapsulesmb.checks.doctor_state import DoctorSink
+        bare = [{"deviceName": "wd0", "info": "Disk 1", "builtin": True, "partitions": []}]
+        mast = subprocess.CompletedProcess([], 0, "MaSt=" + plistlib.dumps(bare).decode(), "")
+        with mock.patch.object(doctor_steps, "run_ssh", return_value=mast), \
+                mock.patch.object(doctor_steps, "_doctor_check_disks_without_hfs") as without_hfs:
+            doctor_steps._doctor_check_disk_health(SimpleNamespace(connection=CONNECTION),
+                                                   SimpleNamespace(remote_checks_enabled=True),
+                                                   DoctorSink(on_result=None, debug_fields={}))
+        without_hfs.assert_called_once()
+        self.assertEqual(self.device_commands, [])
+
+    def test_a_disk_that_now_holds_a_table_gpt_reads_is_not_in_memory(self) -> None:
+        # The log is this boot's history: sd1 was erased and rejected, then
+        # plugged back in after a Mac erase, or another disk took its names.
+        # A rejected erase never leaves a readable table, so the log is stale.
+        for table, kind in ((APPLE_SHOW, "apple_hfs"), (FOREIGN_SHOW, "foreign")):
+            with self.subTest(kind=kind):
+                self.tables["sd1"] = table
+                fails, debug = self.doctor(REJECTED_USB_ERASE)
+                self.assertEqual(fails, [])
+                self.assertEqual((debug["erase_log"]["tables"], debug["erase_log"]["in_memory"]), ({"sd1": kind}, []))
+                self.assertEqual(self.deploy(REJECTED_USB_ERASE, "sd1", "dk5").volume_root, "/Volumes/dk5")
+
+    def test_a_rejected_table_left_on_the_disk_keeps_the_volume_in_memory(self) -> None:
+        disks = parse_mast_inventory("MaSt=" + plistlib.dumps(MAST_DISKS).decode())
+        cases = (
+            (REJECTED, "bogus_map"),
+            # The MBR-to-end case: only the protective MBR is on the disk.
+            (PMBR_SHOW, "blank"),
+            # The log's evidence stands.
+            (SshNetworkError("ssh: connect to host 10.0.0.2 port 22: Operation timed out"), "unreadable"),
+        )
+        for table, kind in cases:
+            with self.subTest(kind=kind):
+                self.tables["sd1"] = table
+                self.log = REJECTED_USB_ERASE
+                check = wipe.read_in_memory_volumes_conn(CONNECTION, disks)
+                self.assertEqual([(d.device, p.device) for d, p in check.flagged], [("sd1", "dk5")])
+                self.assertEqual(check.tables, {"sd1": kind})
+
+    def test_rejection_lines_left_by_an_unfinished_erase_do_not_flag_a_later_clean_one(self) -> None:
+        # An erase that never reached newfs (the disk pulled, diskd killed),
+        # then one that worked: a clean gpt prints nothing to start over at,
+        # so the log alone ties the old rejection to the new format.
+        log = REJECTED + "Initialized /dev/rdk2 as a 464 GB HFS Plus volume with a 40960k journal\n"
+        disks = parse_mast_inventory("MaSt=" + plistlib.dumps(MAST_DISKS).decode())
+        self.assertEqual([(d.device, p.device) for d, p in wipe.in_memory_volumes(disks, wipe.wedge_formats(log))],
+                         [("wd0", "dk2")])
+        self.tables["wd0"] = APPLE_SHOW.replace("EFI System", "Apple HFS")
+        self.log = log
+        self.assertEqual(wipe.read_in_memory_volumes_conn(CONNECTION, disks).flagged, ())
+
+    def test_each_flagged_disk_is_read_once(self) -> None:
+        two = [dict(MAST_DISKS[0], partitions=[{"deviceName": "dk1", "name": "Spare", "format": "hfs"},
+                                               {"deviceName": "dk2", "name": "AirPort Disk", "format": "hfs"}])]
+        fails, _debug = self.doctor(REJECTED_ERASE, mast=two)
+        self.assertEqual([r.details["volume"] for r in fails], ["dk1", "dk2"])
+        self.assertEqual(self.disks_read(), ["wd0"])
+
+    def deploy(self, log: str, payload_disk: str = "wd0", payload_wedge: str = "dk2", *, mounted: bool = True):
+        self.log = log
+        volume = MaStVolume(payload_disk, payload_wedge, f"/Volumes/{payload_wedge}", "Data", "", payload_disk == "wd0",
+                            "hfs")
+        home = PayloadHome(volume.volume_root, volume.device_path, ".samba4")
+        fields: dict[str, object] = {}
+        self.fields = fields
+        self.select = mock.Mock(return_value=PayloadHomeSelection(home, ()))
+        return select_deploy_payload_home(
+            CONNECTION,
+            dry_run=False,
+            payload_dir_name=".samba4",
+            mount_wait_seconds=1,
+            callbacks=OperationCallbacks(update_fields=fields.update),
+            claims=VolumeClaims(),
+            wait_for_mast_volumes=mock.Mock(return_value=MaStDiscoveryResult(
+                (volume,) if mounted else (), 1, "MaSt=" + plistlib.dumps(MAST_DISKS).decode())),
+            select_payload_home=self.select,
+        )
+
+    def test_deploy_stops_before_choosing_a_volume_while_any_volume_is_in_memory(self) -> None:
+        # Deploy ends with a restart, which would take the volume and what is
+        # on it even when the install goes to another disk.
+        cases = (
+            (REJECTED_ERASE, "wd0", "dk2", ErrorCode.DISK_VOLUMES_IN_MEMORY, "“AirPort Disk” on the internal",
+             "dk2 on wd0"),
+            (REJECTED_USB_ERASE, "sd1", "dk5", ErrorCode.USB_DISK_VOLUMES_IN_MEMORY, "“Backups” on the USB",
+             "dk5 on sd1"),
+            (REJECTED_USB_ERASE, "wd0", "dk2", ErrorCode.USB_DISK_VOLUMES_IN_MEMORY, "“Backups” on the USB",
+             "dk5 on sd1"),
+            # Both: the internal disk's, whose recovery is the Wipe button.
+            (REJECTED_USB_ERASE + REJECTED_ERASE, "sd1", "dk5", ErrorCode.DISK_VOLUMES_IN_MEMORY,
+             "“AirPort Disk” on the internal", "dk2 on wd0"),
+        )
+        for log, disk_name, wedge, code, volume, where in cases:
+            with self.subTest(code=code, payload=wedge), self.assertRaises(DeployDeviceError) as raised:
+                self.deploy(log, disk_name, wedge)
+            self.assertEqual((raised.exception.code, raised.exception.detail), (code, where))
+            self.assertTrue(raised.exception.message.startswith(f"The volume {volume} disk exists only until the "
+                                                                "next restart"), raised.exception.message)
+            self.assertTrue(raised.exception.message.endswith(
+                "This restarts the device, so it stopped before changing anything."))
+            # Nothing claimed from diskd, waited for or written.
+            self.select.assert_not_called()
+
+    def test_a_volume_without_a_name_is_named_by_its_wedge(self) -> None:
+        # diskd may list a volume it has not mounted yet without its name.
+        unnamed = [dict(MAST_DISKS[0], partitions=[{"deviceName": "dk2", "name": "", "format": "hfs"}])]
+        fails, _debug = self.doctor(REJECTED_ERASE, mast=unnamed)
+        self.assertTrue(fails[0].message.startswith("The volume “dk2” on the internal disk "), fails[0].message)
+
+    def test_deploy_stops_on_an_in_memory_volume_that_is_not_mounted_yet(self) -> None:
+        with self.assertRaises(DeployDeviceError) as raised:
+            self.deploy(REJECTED_ERASE, mounted=False)
+        self.assertEqual(raised.exception.code, ErrorCode.DISK_VOLUMES_IN_MEMORY)
+
+    def test_deploy_goes_on_after_a_clean_erase_or_none_and_reports_what_it_read(self) -> None:
+        for log, formats in ((CLEAN_ERASE.replace("rsd0c", "rwd0c"), 3), ("", 0)):
+            with self.subTest(log=log[:20]):
+                home = self.deploy(log)
+                self.assertEqual(home.volume_root, "/Volumes/dk2")
+                self.select.assert_called_once()
+                # On the finished event, which a deploy that goes on also sends.
+                erase_log = self.fields["erase_log"]
+                self.assertEqual((len(erase_log["formats"]), erase_log["in_memory"], erase_log["error"],
+                                  erase_log["tables"]), (formats, [], None, {}))
+
+    def test_deploy_goes_on_when_mast_cannot_be_parsed_and_says_so(self) -> None:
+        volume = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "", True, "hfs")
+        fields: dict[str, object] = {}
+        home = select_deploy_payload_home(
+            CONNECTION, dry_run=False, payload_dir_name=".samba4", mount_wait_seconds=1,
+            callbacks=OperationCallbacks(update_fields=fields.update), claims=VolumeClaims(),
+            wait_for_mast_volumes=mock.Mock(
+                return_value=MaStDiscoveryResult((volume,), 1, 'MaSt=<?xml version="1.0"?><plist><array>')),
+            select_payload_home=mock.Mock(return_value=PayloadHomeSelection(
+                PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ())),
+        )
+        self.assertEqual(home.volume_root, "/Volumes/dk2")
+        self.assertTrue(str(fields["erase_log"]["error"]).startswith("MaSt: "))
+        self.assertEqual(self.device_commands, [])
+
+    def guard(self, **kwargs):
+        fields: dict[str, object] = {}
+        self.fields = fields
+        return storage_service.require_no_in_memory_volumes(
+            CONNECTION, OperationCallbacks(update_fields=fields.update), **kwargs)
+
+    def test_the_restart_guard_reads_mast_itself_and_goes_on_without_it(self) -> None:
+        raw = "MaSt=" + plistlib.dumps(MAST_DISKS).decode()
+        self.log = REJECTED_ERASE
+        with mock.patch.object(storage_service, "read_mast_volumes_with_output_conn",
+                               return_value=MaStReadResult((), raw)), self.assertRaises(DeviceError) as raised:
+            self.guard()
+        self.assertEqual(raised.exception.code, ErrorCode.DISK_VOLUMES_IN_MEMORY)
+        self.assertEqual(self.fields["erase_log"]["in_memory"], ["dk2"])
+        self.device_commands.clear()
+        with mock.patch.object(storage_service, "read_mast_volumes_with_output_conn",
+                               side_effect=SshNetworkError("ssh: connect to host 10.0.0.2: No route to host")):
+            self.guard()
+        self.assertTrue(str(self.fields["erase_log"]["error"]).startswith("MaSt: ssh: connect"))
+        self.assertEqual(self.device_commands, [])
+
+    def test_the_restart_guard_reads_nothing_when_no_disk_has_a_volume(self) -> None:
+        self.log = REJECTED_ERASE
+        bare = parse_mast_inventory("MaSt=" + plistlib.dumps([dict(MAST_DISKS[0], partitions=[])]).decode())
+        self.guard(disks=bare)
+        self.assertEqual(self.device_commands, [])
+
+    def test_the_wipe_refuses_only_usb_volumes_in_memory(self) -> None:
+        disks = parse_mast_inventory("MaSt=" + plistlib.dumps(MAST_DISKS).decode())
+        error = functools.partial(wipe_disk.WipeDiskError, reason="volumes_in_memory")
+        self.log = REJECTED_ERASE
+        self.guard(disks=disks, usb_only=True, error=error)
+        self.log = REJECTED_ERASE + REJECTED_USB_ERASE
+        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+            self.guard(disks=disks, usb_only=True, error=error)
+        self.assertEqual((raised.exception.code, raised.exception.reason, raised.exception.detail),
+                         (ErrorCode.USB_DISK_VOLUMES_IN_MEMORY, "volumes_in_memory", "dk5 on sd1"))
+
+    def test_doctor_leaves_out_the_install_advice_beside_an_in_memory_volume(self) -> None:
+        from types import SimpleNamespace
+        from timecapsulesmb.checks import doctor_steps
+        from timecapsulesmb.checks.doctor_state import DoctorSink
+        from timecapsulesmb.device.probe import DISK_PAYLOAD_PROBLEMS
+        from timecapsulesmb.checks.doctor import CheckResult
+        missing = next(problem for problem in DISK_PAYLOAD_PROBLEMS if problem.token == "payload=missing")
+        damaged = next(problem for problem in DISK_PAYLOAD_PROBLEMS if problem.token == "payload=damaged")
+        in_memory = CheckResult("FAIL", "in memory", {"code": "disk_volumes_in_memory"})
+        for problem, others, shown in ((missing, [in_memory], False), (missing, [], True), (damaged, [in_memory], True)):
+            with self.subTest(problem=problem.code, in_memory=bool(others)):
+                sink = DoctorSink(on_result=None, debug_fields={})
+                for result in others:
+                    sink.add(result)
+                manager = SimpleNamespace(payload_problems=(problem,))
+                self.assertTrue(doctor_steps._doctor_check_disk_payload(manager, sink).stop)
+                self.assertEqual(any(r.details.get("code") == problem.code for r in sink.results), shown)
+
+    def test_every_restarting_command_gets_the_same_recovery_with_the_wipe_only_for_the_internal_disk(self) -> None:
+        from timecapsulesmb.app.recovery import cli_steps, recovery_for
+        for operation in ("deploy", "fsck", "uninstall", "wipe_disk"):
+            with self.subTest(operation=operation):
+                internal = recovery_for(operation, ErrorCode.DISK_VOLUMES_IN_MEMORY)
+                usb = recovery_for(operation, ErrorCode.USB_DISK_VOLUMES_IN_MEMORY)
+                self.assertEqual((internal["action_ids"], usb["action_ids"]), (["wipe_disk"], []))
+                self.assertIn("This restarts the device", internal["message"])
+                self.assertIn("disconnect the disk from the device", " ".join(usb["actions"]))
+                self.assertIn("Disk Utility", " ".join(usb["actions"]))
+                self.assertIn("`tcapsule wipe-internal-disk`",
+                              " ".join(cli_steps(operation, ErrorCode.DISK_VOLUMES_IN_MEMORY)))
 
 
 class FakeDevice:
@@ -714,7 +1185,7 @@ class RunWipeTests(unittest.TestCase):
 
 class PrepareWipeTests(unittest.TestCase):
     def prepare(self, target: MaStDiskSnapshot, *, drvctl: str | None = None, payload: str = "", jobs=(), others=(),
-                labelled=None):
+                labelled=None, in_memory: BaseException | None = None):
         commands: list[str] = []
         # Kept even when prepare_wipe raises, to show what it ran first.
         self.commands = commands
@@ -738,8 +1209,11 @@ class PrepareWipeTests(unittest.TestCase):
             mock.patch.object(wipe_disk, "disks_with_apple_labels",
                               return_value=wipe_disk.OtherDisks(tuple(item.device for item in others), labelled or {}))
             as label_check,
+            # Its own tests are InMemoryVolumeTests'.
+            mock.patch.object(storage_service, "require_no_in_memory_volumes", side_effect=in_memory) as guard,
         ):
             self.label_check = label_check
+            self.guard = guard
             self.callbacks = mock.MagicMock(wraps=OperationCallbacks())
             plan = wipe_disk.prepare_wipe(CONNECTION, callbacks=self.callbacks)
         self.commands = commands
@@ -753,6 +1227,20 @@ class PrepareWipeTests(unittest.TestCase):
                 self.assertNotIn("useVolume", command)
                 self.assertNotIn("eraseDisk", command)
                 self.assertNotIn("/bin/dd", command)
+
+    def test_a_usb_volume_in_memory_stops_the_wipe_before_it_reads_the_disk(self) -> None:
+        usb = disk(device="sd1", builtin=False, uuid=USB_UUID)
+        self.prepare(disk(), payload="/Volumes/dk2 no\n", others=(usb,))
+        # The wipe's restart would take a USB volume; the internal disk's is
+        # what it fixes.
+        self.assertEqual(self.guard.call_args.kwargs["usb_only"], True)
+        self.assertEqual([item.device for item in self.guard.call_args.kwargs["disks"]], ["sd0", "sd1"])
+        refused = wipe_disk.WipeDiskError("in memory", code=ErrorCode.USB_DISK_VOLUMES_IN_MEMORY,
+                                          reason="volumes_in_memory")
+        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+            self.prepare(disk(), payload="/Volumes/dk2 no\n", others=(usb,), in_memory=refused)
+        self.assertIs(raised.exception, refused)
+        self.assertFalse(any("drvctl" in command for command in self.commands), self.commands)
 
     def test_install_comes_next_unless_samba_lives_on_another_disk(self) -> None:
         self.assertTrue(self.prepare(disk(), payload="/Volumes/dk2 yes\n").offer_install)

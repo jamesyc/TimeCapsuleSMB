@@ -155,6 +155,32 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(otherState?.errorCode, "doctor_failed")
     }
 
+    func testVolumesInMemoryAreUnhealthyWithTheirOwnCodeBehindAFailingDisk() throws {
+        // An erase left a volume only in memory: the dashboard says so, even
+        // beside the payload's own FAIL; a failing disk still comes first.
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let inMemory = testDoctorCheck(status: "FAIL", message: "“Data” exists only until the next restart",
+                                       domain: "device", code: "disk_volumes_in_memory")
+        let alone = try makeDoctorSummary(checks: [
+            inMemory,
+            testDoctorCheck(status: "FAIL", message: "managed smbd parent process is not running", domain: "device")
+        ])
+        let failing = try makeDoctorSummary(checks: [
+            inMemory,
+            testDoctorCheck(status: "FAIL", message: "the disk is failing", domain: "device", code: "disk_failing")
+        ])
+
+        let aloneState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: alone)
+        let failingState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: failing)
+
+        XCTAssertTrue(alone.diskVolumesInMemory)
+        XCTAssertEqual(aloneState?.state, .unhealthy)
+        XCTAssertEqual(aloneState?.errorCode, DoctorSummary.diskVolumesInMemoryResultCode)
+        XCTAssertEqual(failingState?.errorCode, DoctorSummary.diskFailingResultCode)
+    }
+
     func testAnACPdThatIsGoneIsUnhealthyWithItsOwnCode() throws {
         // ACPd quit, or a restart tore it down: unplugging is the one fix. It
         // takes diskd with it, so it explains a disk that will not mount; a

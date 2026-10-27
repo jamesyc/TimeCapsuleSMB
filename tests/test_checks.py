@@ -131,6 +131,7 @@ from timecapsulesmb.device.probe import (
     _parse_link_plan,
 )
 from timecapsulesmb.device.acpd import APPLE_ACPD_BROKEN_CODE
+from timecapsulesmb.device.wipe import EraseLog, InMemoryCheck
 from timecapsulesmb.device.storage import (
     MAST_ACP_COMMAND,
     MAST_PROBE_COMMAND,
@@ -638,6 +639,10 @@ class CheckTests(unittest.TestCase):
         self._mast_read = self._exit_stack.enter_context(mock.patch(
             "timecapsulesmb.checks.doctor_steps.run_ssh",
             return_value=subprocess.CompletedProcess(["ssh"], 0, "MaSt=" + plistlib.dumps([]).decode(), ""),
+        ))
+        # The manager's log shows no erase unless a case gives it one.
+        self._erase_log = self._exit_stack.enter_context(mock.patch(
+            "timecapsulesmb.checks.doctor_steps.read_in_memory_volumes_conn", return_value=InMemoryCheck(EraseLog()),
         ))
         # A healthy device: the hostname is set and mapped for Samba.
         self._device_hostname_probe = self._exit_stack.enter_context(mock.patch(

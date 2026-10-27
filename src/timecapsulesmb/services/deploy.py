@@ -907,11 +907,19 @@ def select_deploy_payload_home(
         delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
         wait_for_mast_volumes=wait_for_mast_volumes,
     )
+    try:
+        disks = parse_mast_inventory(mast_discovery.raw_output)
+    except Exception as e:
+        disks = ()
+        callbacks.update(erase_log={"error": f"MaSt: {e or type(e).__name__}"})
+    else:
+        # Deploy ends by restarting the device: stop before anything is
+        # claimed, written or stopped while a volume exists only until then,
+        # mounted or not, the install's or another's.
+        storage_service.require_no_in_memory_volumes(
+            connection, callbacks, disks=disks, error=DeployDeviceError,
+        )
     if not mast_discovery.volumes:
-        try:
-            disks = parse_mast_inventory(mast_discovery.raw_output)
-        except Exception:
-            disks = ()
         callbacks.debug(mast_disk_inventory=mast_disk_inventory_debug_summary(disks))
         raise mast_no_volume_error(
             mast_discovery, no_internal_disk=no_internal_disk, connection=connection, callbacks=callbacks,

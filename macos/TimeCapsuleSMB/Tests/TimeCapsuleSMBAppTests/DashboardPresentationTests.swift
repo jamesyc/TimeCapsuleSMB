@@ -1115,6 +1115,20 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(stuckRow.status, .failed)
         XCTAssertEqual(stuckRow.action, .viewCheckup)
         XCTAssertEqual(stuckRow.detail, L10n.string("doctor.check.disk_not_mounting"))
+        // A volume only in memory: say what the next restart takes.
+        stuckProfile.runtimeState?.errorCode = DoctorSummary.diskVolumesInMemoryResultCode
+        let inMemory = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: stuckProfile,
+            passwordState: .available,
+            displayStatus: .failed,
+            primaryAction: .viewCheckup,
+            hostWarning: nil
+        ))
+        let inMemoryRow = try row(.runtime, in: inMemory)
+        XCTAssertEqual(inMemoryRow.id, "runtime-disk-volumes-in-memory")
+        XCTAssertEqual(inMemoryRow.status, .failed)
+        XCTAssertEqual(inMemoryRow.action, .viewCheckup)
+        XCTAssertEqual(inMemoryRow.detail, L10n.string("doctor.check.disk_volumes_in_memory"))
         stuckProfile.runtimeState?.errorCode = "doctor_failed"
         let other = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
             profile: stuckProfile,

@@ -254,6 +254,10 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.disk_size_misreported")
         case "disk_no_hfs_partition":
             return L10n.string("doctor.check.disk_no_hfs_partition")
+        // A volume AirPort Utility's erase left only in memory: the helper's
+        // line names it and its disk; the catalog's says what is lost and why.
+        case "disk_volumes_in_memory":
+            return L10n.string("doctor.check.disk_volumes_in_memory")
         // The helper's line quotes the kernel's; the catalog's says what it means.
         case "disk_failing":
             return L10n.string("doctor.check.disk_failing")

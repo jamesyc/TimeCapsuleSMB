@@ -532,6 +532,14 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 status: .failed,
                 action: .viewCheckup
             )
+        case .unhealthy where runtimeState.errorCode == DoctorSummary.diskVolumesInMemoryResultCode:
+            return DashboardHealthRow(
+                id: "runtime-disk-volumes-in-memory",
+                title: DashboardHealthDomain.runtime.title,
+                detail: L10n.string("doctor.check.disk_volumes_in_memory"),
+                status: .failed,
+                action: .viewCheckup
+            )
         case .unhealthy where runtimeState.errorCode == DoctorSummary.diskNotMountingResultCode:
             return DashboardHealthRow(
                 id: "runtime-disk-not-mounting",

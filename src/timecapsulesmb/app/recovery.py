@@ -405,6 +405,39 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         retryable=True,
     ),
+    # AirPort Utility's erase formatted volumes on a partition table Apple's
+    # gpt could not replace, and Install, Disk Repair, Uninstall or Wipe
+    # Internal Disk (USB volumes only) stopped because its restart would take
+    # them and anything saved there (services.storage.require_no_in_memory_volumes).
+    ErrorCode.DISK_VOLUMES_IN_MEMORY: RecoveryInfo(
+        "The disk's volumes vanish at the next restart",
+        "AirPort Utility's “Erase Disk” could not replace the internal disk's partition table, so its volumes exist "
+        "only until the next restart. Anything saved on them since that erase, Time Machine backups included, is "
+        "lost at the next restart. This restarts the device, so it stopped before changing anything.",
+        (
+            "Copy off anything you need from the disk first.",
+            "Then use “Wipe Internal Disk”. It deletes everything on the internal disk and formats it for the "
+            "device.",
+            "Try again after the wipe.",
+        ),
+        retryable=False,
+        action_ids=("wipe_disk",),
+    ),
+    # Wipe Internal Disk never takes a USB disk, so no button: disconnecting it
+    # lets the command go on.
+    ErrorCode.USB_DISK_VOLUMES_IN_MEMORY: RecoveryInfo(
+        "The disk's volumes vanish at the next restart",
+        "AirPort Utility's “Erase Disk” could not replace the USB disk's partition table, so its volumes exist "
+        "only until the next restart. Anything saved on them since that erase, Time Machine backups included, is "
+        "lost at the next restart. This restarts the device, so it stopped before changing anything.",
+        (
+            "Copy off anything you need from the disk first.",
+            "Then disconnect the disk from the device and try again.",
+            "Before connecting the disk to the device again, erase it on a Mac in Disk Utility as "
+            "“Mac OS Extended (Journaled)”.",
+        ),
+        retryable=False,
+    ),
     # Wipe Internal Disk's own codes carry no "wipe_disk" action: Wipe
     # Internal Disk's screen is the one showing them.
     # Wipe Internal Disk stopped before it changed the disk
@@ -1234,6 +1267,8 @@ _CLI_WORDS = (
     ("“Install / Update Samba”", "`tcapsule deploy`"),
     ("“Disk Repair”", "`tcapsule fsck`"),
     ("“Wipe Internal Disk”", "`tcapsule wipe-internal-disk`"),
+    # Disk Utility's format name, not one of our controls.
+    ("“Mac OS Extended (Journaled)”", "Mac OS Extended (Journaled)"),
     ("“Erase Disk”", '"Erase Disk"'),
     ("“Checkup”", "`tcapsule doctor`"),
     ("“Uninstall”", "`tcapsule uninstall`"),

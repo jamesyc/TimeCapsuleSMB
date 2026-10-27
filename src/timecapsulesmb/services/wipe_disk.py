@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import functools
 import re
 import shlex
 import time
@@ -77,6 +78,7 @@ from timecapsulesmb.device.wipe import (
     size_misreported_message,
     wipe_offsets,
 )
+from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.maintenance import render_disk_maintenance_preamble, reboot_and_restart_sharing
 from timecapsulesmb.services.reboot import RebootFlowError
@@ -392,6 +394,13 @@ def prepare_wipe(connection: SshConnection, *, callbacks: OperationCallbacks) ->
     require_wipeable(disk)
     callbacks.stage("check_disk_jobs")
     require_no_disk_jobs(connection)
+    # The wipe ends by restarting the device: a USB volume that exists only
+    # until then would go with it. The internal disk's is what the wipe fixes.
+    callbacks.stage("check_in_memory_volumes")
+    storage_service.require_no_in_memory_volumes(
+        connection, callbacks, disks=disks, usb_only=True,
+        error=functools.partial(WipeDiskError, reason="volumes_in_memory"),
+    )
 
     callbacks.stage("read_disk_geometry")
     geometry_text = _read_text(connection, drvctl_command(disk.device), timeout=30)

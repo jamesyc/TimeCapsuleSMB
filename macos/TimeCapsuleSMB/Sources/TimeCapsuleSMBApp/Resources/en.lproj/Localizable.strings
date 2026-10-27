@@ -325,6 +325,7 @@
 "doctor.check.disk_not_mounting" = "A disk on the device will not mount, so file sharing and Time Machine are off. Restart the device; if it does not come back, unplug it for 10 seconds. If the disk still does not mount, run “Disk Repair”; if this keeps happening, the disk may need replacing.";
 "doctor.check.disk_size_misreported" = "The device reports its internal disk as far smaller than it is, so nothing can be installed on it. Restart the device; if it keeps reporting the wrong size, the disk needs replacing.";
 "doctor.check.disk_no_hfs_partition" = "A disk on the device has no HFS volume TimeCapsuleSMB can use. If it is the internal disk and holds nothing you need, use “Wipe Internal Disk” to format it for the device.";
+"doctor.check.disk_volumes_in_memory" = "A volume on the device exists only until the next restart: AirPort Utility's “Erase Disk” could not replace its disk's partition table. Anything saved on it since that erase, Time Machine backups included, is lost at the next restart. Copy off anything you need before the device restarts. Then, for the internal disk, use “Wipe Internal Disk”; disconnect a USB disk from the device, and before connecting it again, erase it on a Mac in Disk Utility as “Mac OS Extended (Journaled)”.";
 "doctor.check.acpd_gone" = "Apple's AirPort service (ACPd) on the device has stopped. Unplug the device, wait 10 seconds and plug it back in.";
 "doctor.check.disk_failing" = "The device's disk reported errors it could not recover from, so it is probably failing and file sharing is off. Reinstalling will not fix the disk, and AirPort Utility may still show it as OK. Copy off the files you need, replace the disk, then erase the new disk in AirPort Utility and run “Install / Update Samba”.";
 "doctor.check.client_on_unshared_network" = "This Mac is on a network where the device does not share its disks, such as its internet (WAN) side or its guest network. Join the device's main network by Wi-Fi or one of its LAN ports, then run “Checkup” again.";
@@ -818,6 +819,16 @@
 "backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "If it still fails, restart the device and try again after the disk spins up.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything on the internal disk and formats it for the device.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "Run “Install / Update Samba” again after the wipe.";
+"backend.recovery.disk_volumes_in_memory.title" = "The disk's volumes vanish at the next restart";
+"backend.recovery.disk_volumes_in_memory.message" = "AirPort Utility's “Erase Disk” could not replace the internal disk's partition table, so its volumes exist only until the next restart. Anything saved on them since that erase, Time Machine backups included, is lost at the next restart. This restarts the device, so it stopped before changing anything.";
+"backend.recovery.disk_volumes_in_memory.action.1" = "Copy off anything you need from the disk first.";
+"backend.recovery.disk_volumes_in_memory.action.2" = "Then use “Wipe Internal Disk”. It deletes everything on the internal disk and formats it for the device.";
+"backend.recovery.disk_volumes_in_memory.action.3" = "Try again after the wipe.";
+"backend.recovery.usb_disk_volumes_in_memory.title" = "The disk's volumes vanish at the next restart";
+"backend.recovery.usb_disk_volumes_in_memory.message" = "AirPort Utility's “Erase Disk” could not replace the USB disk's partition table, so its volumes exist only until the next restart. Anything saved on them since that erase, Time Machine backups included, is lost at the next restart. This restarts the device, so it stopped before changing anything.";
+"backend.recovery.usb_disk_volumes_in_memory.action.1" = "Copy off anything you need from the disk first.";
+"backend.recovery.usb_disk_volumes_in_memory.action.2" = "Then disconnect the disk from the device and try again.";
+"backend.recovery.usb_disk_volumes_in_memory.action.3" = "Before connecting the disk to the device again, erase it on a Mac in Disk Utility as “Mac OS Extended (Journaled)”.";
 "backend.recovery.deploy.deploy_disk_not_writable.title" = "No writable volume for the installation files";
 "backend.recovery.deploy.deploy_disk_not_writable.message" = "The device found HFS volumes, but none accepted the TimeCapsuleSMB installation folder.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "Wake or remount the disk.";

@@ -1,22 +1,28 @@
 """Wipe Internal Disk's device side: the disk's geometry, the commands that
 zero both ends of the disk and read them back, and what the device says about
-the disk (its partition table, diskd's disk jobs, where the Samba files are).
+the disk (its partition table, diskd's disk jobs, where the Samba files are,
+and which volumes an erase left only in memory).
 
 Apple's `gpt` rejects some partition tables ("bogus map": a table made for a
 bigger disk, partitions past the end or overlapping, a legacy MBR beside a
-GPT) and still exits 0, so AirPort Utility's erase formats partitions that
-exist only in memory and the old table returns at the next boot. Zeroing
-10 MiB at each end removes every such table; Apple's own erase then writes
-its layout (services.wipe_disk)."""
+GPT), and cannot create one beside a legacy MBR partition that reaches the
+last sector ("no room for the backup header"). It still exits 0, so AirPort
+Utility's erase formats partitions that exist only in memory, gone at the
+next boot. Zeroing 10 MiB at each end removes every such table; Apple's own
+erase then writes its layout (services.wipe_disk)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 import shlex
+from typing import TYPE_CHECKING
 import unicodedata
 
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
+
+if TYPE_CHECKING:
+    from timecapsulesmb.device.storage import MaStDiskSnapshot, MaStPartitionSnapshot
 
 
 
@@ -448,3 +454,168 @@ def parse_payload_home_probe(output: str) -> dict[str, str]:
         if root and state in {"yes", "no", "unmounted"}:
             found[root] = state
     return found
+
+
+# diskd is the manager's child, so the gpt and newfs_hfs output of every erase
+# lands in the manager's log, which is in RAM and starts empty at each boot.
+# Reading it touches no disk: a failing disk cannot slow it, nor is a sleeping
+# one woken.
+RUNTIME_LOG_PATH = "/mnt/Memory/samba4/var/runtime.log"
+ERASE_LOG_TIMEOUT_SECONDS = 30
+# Apple's gpt prints its errors as "gpt: error: bogus map" or, naming the
+# raw disk, "gpt: rsd0c: error: no room for the backup header".
+_GPT_ERROR = re.compile(r"gpt: (?:r(?P<disk>(?:sd|wd)\d+)[a-p]: )?error: (?P<error>.*?)\s*$")
+# The errors that leave the old table in place: a table gpt rejects (bogus
+# map), or a legacy MBR partition reaching the last sector, where `gpt
+# create` cannot put the backup header; every later add then finds no GPT.
+_GPT_REJECTIONS = ("bogus map", "no room for the backup header", "no primary GPT header")
+# Apple's gpt prints this after a run it could not open the table for; it
+# names the disk a bogus map belongs to.
+_GPT_FAILED_DISK = re.compile(r"gpt: unable to open device 'r((?:sd|wd)\d+)[a-p]'")
+_NEWFS_DONE = re.compile(r"Initialized /dev/rdk(\d+) as a .*HFS Plus volume")
+
+
+@dataclass(frozen=True)
+class WedgeFormat:
+    """One newfs_hfs in diskd's output: the wedge, and the disk whose table
+    gpt rejected just before it (None when gpt rejected none)."""
+
+    wedge: str
+    rejected_disk: str | None
+
+
+def wedge_formats(log: str) -> tuple[WedgeFormat, ...]:
+    """The wedges diskd formatted, in order. An erase runs gpt before each
+    newfs_hfs (destroy and create, then add and label per partition). A run
+    that succeeds prints nothing; one that cannot replace the table prints a
+    rejection naming the disk (or followed by a line naming it), writes no
+    table, and exits 0, and diskd formats its in-memory wedge anyway. So each
+    format takes its verdict from the gpt lines since the format before it. A
+    gpt line naming another disk starts over, so another disk's rejection is
+    not carried into this one's erase. A rejection with no disk named gives
+    no verdict."""
+    formats: list[WedgeFormat] = []
+    rejected = False
+    disk: str | None = None
+    for line in log.splitlines():
+        if match := _GPT_ERROR.match(line):
+            named, rejects = match["disk"], match["error"].startswith(_GPT_REJECTIONS)
+        elif match := _GPT_FAILED_DISK.match(line):
+            named, rejects = match.group(1), False
+        elif match := _NEWFS_DONE.match(line):
+            formats.append(WedgeFormat(f"dk{match.group(1)}", disk if rejected else None))
+            rejected, disk = False, None
+            continue
+        else:
+            continue
+        if named is not None:
+            if disk is not None and named != disk:
+                rejected = False
+            disk = named
+        rejected = rejected or rejects
+    return tuple(formats)
+
+
+def in_memory_volumes(
+    disks: tuple[MaStDiskSnapshot, ...], formats: tuple[WedgeFormat, ...],
+) -> tuple[tuple[MaStDiskSnapshot, MaStPartitionSnapshot], ...]:
+    """(disk, partition) for each MaSt volume whose wedge was last formatted
+    after gpt rejected that same disk's table. The log is this boot's history,
+    so the disk may have changed since (a USB disk plugged back in, another
+    disk taking the same names): read_in_memory_volumes_conn checks each
+    against the disk's own table. A volume the log does not show is not
+    flagged, so a trimmed log or a disk erased before our runtime ran misses
+    it."""
+    latest = {fmt.wedge: fmt.rejected_disk for fmt in formats}
+    return tuple(
+        (disk, partition)
+        for disk in disks
+        for partition in disk.partitions
+        if latest.get(partition.device) == disk.device
+    )
+
+
+def in_memory_volume_message(disk: MaStDiskSnapshot, partition: MaStPartitionSnapshot) -> str:
+    """What doctor and every command that restarts the device say about one
+    volume that exists only in memory. A volume diskd has not mounted yet
+    may have no name: its wedge then stands in."""
+    return (
+        f"The volume “{partition.name or partition.device}” on the {'internal' if disk.builtin else 'USB'} disk exists only until the "
+        "next restart: AirPort Utility's “Erase Disk” could not replace the disk's partition table. Anything saved "
+        "on it since that erase, Time Machine backups included, is lost at the next restart."
+    )
+
+
+@dataclass(frozen=True)
+class EraseLog:
+    """What the manager's log shows of diskd's erases; error when it could
+    not be read (then nothing is known)."""
+
+    formats: tuple[WedgeFormat, ...] = ()
+    log_bytes: int = 0
+    error: str | None = None
+
+    def debug(self) -> dict[str, object]:
+        return {
+            "error": self.error,
+            "log_bytes": self.log_bytes,
+            "formats": [[fmt.wedge, fmt.rejected_disk] for fmt in self.formats],
+        }
+
+
+def read_erase_log_conn(connection: SshConnection) -> EraseLog:
+    """diskd's erases from the manager's log; no log (no runtime yet) reads as
+    none."""
+    try:
+        proc = run_ssh(connection, f"/bin/cat {RUNTIME_LOG_PATH} 2>/dev/null; true", check=False,
+                       timeout=ERASE_LOG_TIMEOUT_SECONDS)
+    except TransportError as e:
+        return EraseLog(error=str(e) or type(e).__name__)
+    log = proc.stdout or ""
+    if proc.returncode != 0:
+        # The read itself failed (`; true` covers a missing log): the SSH
+        # session, whose message is the output.
+        last = log.strip().splitlines()[-1:] or ["no output"]
+        return EraseLog(error=f"exit {proc.returncode}: {last[0]}")
+    return EraseLog(wedge_formats(log), len(log.encode("utf-8", "replace")))
+
+
+# What `gpt show` (classify_gpt_show) finds on a disk whose volumes an erase
+# left only in memory: the table gpt rejected (bogus_map), or only the
+# protective MBR `gpt create` writes before it finds no room for the backup
+# header (blank); unreadable keeps the log's verdict. A table gpt reads
+# (apple_hfs, foreign) means the disk changed since the erase the log shows:
+# destroy and create succeed on any such table, so a rejected erase never
+# leaves one.
+IN_MEMORY_TABLES = frozenset({"bogus_map", "blank", "unreadable"})
+
+
+@dataclass(frozen=True)
+class InMemoryCheck:
+    """The volumes that exist only until the next restart, the log they were
+    found in, and what `gpt show` found on each disk the log flagged."""
+
+    erase_log: EraseLog
+    flagged: tuple[tuple[MaStDiskSnapshot, MaStPartitionSnapshot], ...] = ()
+    tables: dict[str, str] = field(default_factory=dict)
+
+    def debug(self) -> dict[str, object]:
+        return {
+            **self.erase_log.debug(),
+            "tables": self.tables,
+            "in_memory": [partition.device for _, partition in self.flagged],
+        }
+
+
+def read_in_memory_volumes_conn(connection: SshConnection, disks: tuple[MaStDiskSnapshot, ...]) -> InMemoryCheck:
+    """The log's candidates (in_memory_volumes), each confirmed by its disk's
+    table. Only a disk the log flagged is read, so a normal run touches no
+    disk and wakes no sleeping one."""
+    erase_log = read_erase_log_conn(connection)
+    candidates = in_memory_volumes(disks, erase_log.formats)
+    tables = {
+        device: read_gpt_verdict_conn(connection, device).kind
+        for device in dict.fromkeys(disk.device for disk, _ in candidates)
+    }
+    flagged = tuple(pair for pair in candidates if tables[pair[0].device] in IN_MEMORY_TABLES)
+    return InMemoryCheck(erase_log, flagged, tables)

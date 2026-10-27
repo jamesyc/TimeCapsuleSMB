@@ -8,6 +8,7 @@ from timecapsulesmb.checks.network import SSH_PORT
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH
+from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import reboot_device
@@ -197,6 +198,10 @@ def disable_set_ssh(
             summary=Summary("ssh.already_disabled", "SSH already disabled."),
         )
 
+    # The restart that keeps SSH closed would take a volume that exists only
+    # until then.
+    callbacks.stage("check_in_memory_volumes")
+    storage_service.require_no_in_memory_volumes(connection, callbacks)
     callbacks.stage("disable_ssh")
     disable_ssh_over_ssh(connection, log=callbacks.log)
     # SSH must stay closed on the new boot: the uptime proves the reboot,

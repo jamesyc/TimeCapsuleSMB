@@ -113,6 +113,9 @@ enum DeviceDashboardSnapshotMapper {
                 errorCode: summary.diskFailing ? DoctorSummary.diskFailingResultCode
                     : summary.acpdGone ? DoctorSummary.acpdBrokenResultCode
                     : summary.diskNotMounting ? DoctorSummary.diskNotMountingResultCode
+                    // Files saved now vanish at the next restart: before any
+                    // other fix, which may restart the device.
+                    : summary.diskVolumesInMemory ? DoctorSummary.diskVolumesInMemoryResultCode
                     : device.failCount == 1 ? summary.payloadProblemCode ?? "doctor_failed" : "doctor_failed",
                 errorMessage: nil,
                 recovery: nil

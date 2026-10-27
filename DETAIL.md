@@ -1253,7 +1253,7 @@ printf '%s\n' 'airport-password' | .venv/bin/tcapsule configure --no-input --hos
 Arguments:
 - `--config PATH`: use a non-default config
 - `--enable`: enable SSH via ACP if port 22 is closed; no-op if already open
-- `--disable`: remove the `dbug` property over SSH and reboot; no-op if SSH is already closed
+- `--disable`: remove the `dbug` property over SSH and reboot; no-op if SSH is already closed. It stops first, changing nothing, while a volume exists only until the next restart (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory))
 - `--status`: only report whether SSH port 22 is reachable; cannot be combined with `--no-wait`
 - `--yes`: skip the legacy prompt when SSH is already enabled and no explicit mode was selected
 - `--no-input`: fail instead of prompting in legacy mode
@@ -1350,11 +1350,15 @@ Arguments:
 - `--skip-smb`: skip authenticated SMB listing and file-operation checks
 - `--json`: emit one structured final doctor payload
 
+Doctor fails each volume that exists only until the next restart (code `disk_volumes_in_memory`; see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)), naming Wipe Internal Disk only for the internal disk. Disk Repair, Uninstall, Install and Disable SSH refuse to restart the device while one exists.
+
 `doctor` is the preferred post-deploy and post-reboot verification command. Its default SMB CRUD checks temporarily create, modify, and remove a hidden `.doctor-fileops-*` directory on a share. A timeout, interruption, or early failure can leave that directory behind; use `--skip-smb` when the diagnostic run must not write through SMB.
 
 ### `fsck`
 
 `tcapsule fsck` runs remote `fsck_hfs` against a mounted HFS volume. It mounts/wakes the Apple volumes, selects or prompts for a volume, stops the managed runtime and Apple's file sharing with the same stop actions deploy uses (and aborts if anything will not stop), unmounts the selected disk, runs `fsck_hfs`, and reboots by default.
+
+Before a repair that restarts the device, it stops if a volume exists only until the next restart (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)); `--no-reboot` skips that check.
 
 A repair can take an hour or more on a large disk, most of it in one step (the catalog file), and a repair checks the volume again afterwards. The command says so before it asks to start; the app's confirmation and its running Disk Repair row say it too, and the row also shows how long the repair has run.
 
@@ -1376,7 +1380,7 @@ Use this only when the disk needs repair before deploy or when doctor/troublesho
 
 ### `wipe-internal-disk`
 
-`tcapsule wipe-internal-disk` deletes everything on the device's internal disk and formats it for the device, the way AirPort Utility's Erase Disk does, including disks Erase Disk cannot format. Apple's `gpt` rejects some partition tables (`gpt: error: bogus map`: a table made for a bigger disk, partitions past the end or overlapping each other or the table, a legacy MBR beside a GPT) and still exits 0, so Erase Disk formats partitions that exist only in memory and the old table comes back at the next boot. Wipe Internal Disk zeroes 10 MiB at each end of the disk first, which removes every such table, then asks Apple's disk service for the same Quick erase AirPort Utility uses.
+`tcapsule wipe-internal-disk` deletes everything on the device's internal disk and formats it for the device, the way AirPort Utility's Erase Disk does, including disks Erase Disk cannot format. Apple's `gpt` rejects some partition tables (`gpt: error: bogus map`: a table made for a bigger disk, partitions past the end or overlapping each other or the table, a legacy MBR beside a GPT), cannot create one beside a legacy MBR partition that reaches the last sector, and still exits 0, so Erase Disk formats partitions that exist only in memory and they are gone at the next boot. Wipe Internal Disk zeroes 10 MiB at each end of the disk first, which removes every such table, then asks Apple's disk service for the same Quick erase AirPort Utility uses.
 
 What it does, in order:
 - Reads only: the disks from MaSt, the kernel's sector size and count (`drvctl -p`), the raw partition (`kern.rawpartition`), the other disks' GPT tables (`dd`), `gpt show` (killed after 60 s if the disk hangs), and which mounted volume holds the Samba files. It never mounts or claims a volume (`diskd.useVolume`).
@@ -1387,6 +1391,25 @@ What it does, in order:
 - Asks for a Quick erase by the disk's uuid. Apple's erase disconnects AFP and SMB users, unmounts the disk's volumes, deletes its wedges, partitions it (APconfig, APswap, APdata) and formats the data volume. The volume keeps its old name when `newfs_hfs` can take it, else "Data".
 - Waits on diskd's jobs (up to 30 minutes; a minute without one and without the new volume is a failure; a format still running at the cap is never rebooted), reboots through ACP, checks the new volume is still there, and starts file sharing again as `fsck` does, unless the wiped disk held the Samba files: then run `tcapsule deploy`.
 
+#### Volumes that exist only in memory
+
+When Apple's `gpt` cannot replace a disk's table, AirPort Utility's Erase Disk writes no table, yet diskd still creates its wedges, formats them and mounts the data volume. MaSt lists it, deploy could install onto it and Time Machine can back up to it, and the next restart takes it and everything saved on it. Two tables do this: one `gpt` rejects (`gpt: error: bogus map`, then `gpt: unable to open device 'r<disk><part>'`), and a legacy MBR whose partition reaches the last sector, as on a disk formatted for Windows: `gpt create` prints `gpt: r<disk><part>: error: no room for the backup header` (it writes only a protective MBR), and every later add `gpt: r<disk><part>: error: no primary GPT header; run create or recover`.
+
+NetBSD 4 and NetBSD 6 do the same: Apple's `gpt` exits 0 after each of those errors, and diskd's erase stops only on a failing `gpt create`, `add` or `label`, so it then adds the wedge itself and runs `newfs_hfs` on it (both confirmed from the firmware's binaries; NetBSD 6's `gpt` names the internal disk `rwd0c`).
+
+Doctor and every command that restarts the device find such volumes in two steps (`device.wipe.read_in_memory_volumes_conn`):
+
+1. The manager's log (`/mnt/Memory/samba4/var/runtime.log`). diskd is the manager's child, so every erase's `gpt` and `newfs_hfs` output lands there. An erase runs `gpt` before each `newfs_hfs` (destroy and create, then add and label per partition), and a run that works prints nothing. Each `Initialized /dev/rdk<N>` line takes its verdict from the `gpt` lines since the one before it; a `gpt` line naming another disk starts that over, and a later format of the same wedge (another erase, Wipe Internal Disk's included) replaces it. A MaSt volume is a candidate when its wedge's latest format followed one of those errors for its own disk (`wedge_formats`, `in_memory_volumes`).
+2. Each candidate's disk, read with `gpt show` (60 s at most). The flag stays when the disk still holds the rejected table (`bogus_map`), only the protective MBR `gpt create` writes before it fails (`blank`), or cannot be read. It is dropped when the disk holds a table `gpt` reads (`apple_hfs`, `foreign`): a rejected erase never leaves one, so the disk changed since the erase the log shows.
+
+The log is in RAM, so it starts empty at every boot, and within a boot it is only appended to: boot.sh and the manager's role launches open it for appending, rerunning `rc.local` keeps it, and the manager's trim keeps its last 16 KiB in place, on the same inode, so diskd keeps writing to it. It is therefore this boot's history, and a verdict in it goes stale when its disk changes with no format logged: a USB disk plugged back in (erased on a Mac or not), another disk taking the same `sd`/`dk` numbers, or `gpt` lines from an erase that never reached `newfs_hfs` before one of the same disk that worked. Step 2 catches each of those. A disk is read only when the log flags it, so a normal run touches no disk and wakes no sleeping one.
+
+- Doctor fails each one (`disk_volumes_in_memory`), naming the volume and its disk and saying to copy off what is needed before the device restarts, then Wipe Internal Disk for the internal disk, or for a USB disk to disconnect it and erase it on a Mac before connecting it again; the app's dashboard shows it as its own row. The manager's "Samba files are missing … run Install" line is left out beside it: Install would stop on the volume. A log it cannot read gives no verdict and no result; the reason is in telemetry.
+- Install, Disk Repair, Uninstall and Disable SSH stop before they change anything while any volume is in memory (`services.storage.require_no_in_memory_volumes`): each ends by restarting the device, which would take it. Install checks right after reading MaSt, before it claims a volume from diskd, waits for mounts or writes anything, and also stops on a volume MaSt lists but has not mounted; Disk Repair checks before `fsck_hfs` and Uninstall before it mounts the volumes, both only when they restart (not with `--no-reboot` or `--dry-run`); `set-ssh --disable` checks before it removes the SSH setting. Wipe Internal Disk stops only for a USB volume: the internal disk's is what it fixes. The code is the internal disk's (`disk_volumes_in_memory`, whose recovery offers Wipe Internal Disk) when it has one, else `usb_disk_volumes_in_memory` (copy off, disconnect the disk, erase it on a Mac before connecting it again). A MaSt read that fails gives no verdict. Flash restore and the restarts that turn SSH on are not checked: the first must work when ACPd or MaSt does not, and with SSH off neither the log nor the disk can be read.
+- Telemetry: `erase_log` on `doctor_finished` and on each command's finished event, with whether the log was read (or why not), its size, the wedges formatted and the disk each was rejected for, what `gpt show` found on each disk the log flagged, and the volumes flagged.
+
+It misses some: a device erased before TimeCapsuleSMB's runtime ever ran (diskd was ACPd's then, and its output went nowhere), a log trimmed past the erase (the manager keeps its last 16 KiB once the log passes 32 KiB), a `gpt` line another writer split, and other `gpt` failures, such as a dying disk's. One case goes the other way: a USB disk whose table `gpt` rejects, erased that way, then disconnected and connected again without a Mac erase, may mount volumes from that old table, which `gpt show` still calls rejected, so they stay flagged until the next restart; the newfs of the in-memory erase overwrote part of them anyway.
+
 Arguments:
 - `--config PATH`: use a non-default config
 - `--dry-run`: read the disk and print what would be done, including the wipe offsets, without changing anything or calling the disk service
@@ -1396,6 +1419,8 @@ Arguments:
 ### `uninstall`
 
 `tcapsule uninstall` removes managed TimeCapsuleSMB files from the configured device. It stops the manager, removes the payload directories from mounted HFS volumes, removes loader files under `/mnt/Flash` and runtime state, and reboots by default so Apple services and the root filesystem return to their clean state. After a waited reboot it verifies that managed files are gone. It does not restore a firmware bank changed by `flash --patch`; use `flash --restore` for that separate operation.
+
+Unless it is a dry run or `--no-reboot`, it stops before mounting anything if a volume exists only until the next restart, which its restart would take (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)).
 
 Arguments:
 - `--config PATH`: use a non-default config
@@ -1598,6 +1623,7 @@ Current deploy flow:
   - first writable internal `builtin=true` HFS volume
   - else first writable external HFS volume
   - else fails with `Deploy could not write to any deployable HFS volume.` (code `deploy_disk_not_writable`), and `MaSt found N deployable HFS volume(s).` as its detail
+- stops right after reading MaSt, before anything is claimed, written, stopped or uploaded, while any volume exists only until the next restart (code `disk_volumes_in_memory` when one is on the internal disk, its recovery offering Wipe Internal Disk, else `usb_disk_volumes_in_memory`): deploy's own restart would take it; see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)
 - computes the device-specific runtime and payload paths from that payload home
 - claims each volume it uses from diskd (`diskd.useVolume`) once: choosing the payload home claims it, and every later mount check in the same deploy (metadata inventory, migration, uploads, plan actions, payload verification) only confirms the volume is still mounted, claiming it again only if diskd unmounted it (`device.storage.VolumeClaims`). diskd counts claims per volume and only a reboot clears them, so a deploy that stops before its reboot leaves one claim per volume, where it used to leave one per uploaded file. fsck and uninstall claim each volume once the same way
 - builds the plan and renders configuration locally before stopping services

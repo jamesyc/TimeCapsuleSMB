@@ -83,6 +83,10 @@ def doctor_finished_fields(
         # Each disk MaSt lists, with its SMART status, label and volumes, or
         # why MaSt could not be read, on passing runs too.
         "disk_health": debug_fields.get("disk_health"),
+        # What the manager's log shows of AirPort Utility erases (bytes read,
+        # wedges formatted, which gpt rejected), on passing runs too, so "no
+        # evidence" can be told from "nothing in memory".
+        "erase_log": debug_fields.get("erase_log"),
         "doctor_status": report["status"],
         "doctor_sections": report["sections"],
     }

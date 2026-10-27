@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.device.errors import DeviceError, RsyncNotRunningError
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
@@ -77,6 +78,9 @@ class FsckHarness:
     reboot decisions run as in production.
     """
 
+    # The restart guard's side effect; None finds nothing in memory.
+    in_memory = None
+
     def run_fsck(self, stdout: str, *, reboot: bool = True, wait: bool = True, returncode: int = 0,
                  device: FakeAcpDevice | None = None, runtime: FakeInstalledRuntime | None = None,
                  netbsd4_autostart: bool | None = None, seconds_per_line: float = 0.0,
@@ -85,6 +89,7 @@ class FsckHarness:
         ends the session after the last line."""
         recorder = RecordingCallbacks()
         device = device or FakeAcpDevice()
+        self.last_device = device
         runtime = runtime or FakeInstalledRuntime()
         proc = SimpleNamespace(stdout=stdout, returncode=returncode)
         clock = [0.0]
@@ -99,7 +104,11 @@ class FsckHarness:
                 raise transport_error
             return proc
 
-        with mock.patch("timecapsulesmb.services.maintenance.run_ssh", side_effect=remote) as run_ssh:
+        # The restart guard has its own tests (tests/test_wipe_disk.py): here
+        # it finds nothing unless a case says otherwise.
+        with mock.patch("timecapsulesmb.services.maintenance.run_ssh", side_effect=remote) as run_ssh, \
+                mock.patch("timecapsulesmb.services.storage.require_no_in_memory_volumes",
+                           side_effect=self.in_memory) as self.guard:
             with device.patched(), runtime.patched():
                 try:
                     outcome = run_fsck(
@@ -112,6 +121,23 @@ class FsckHarness:
 
 
 class RunFsckTests(FsckHarness, unittest.TestCase):
+    def test_fsck_that_restarts_stops_before_running_while_a_volume_is_in_memory(self) -> None:
+        refused = DeviceError("in memory", code=ErrorCode.DISK_VOLUMES_IN_MEMORY)
+        self.in_memory = mock.Mock(side_effect=refused)
+        with self.assertRaises(DeviceError) as raised:
+            self.run_fsck("tcapsule-fsck: fsck_hfs exit status 0\n")
+        self.assertIs(raised.exception, refused)
+        # Neither fsck_hfs nor the restart ran.
+        self.assertEqual(self.guard.call_args.args[0], CONNECTION)
+        self.assertNotIn("run_ssh", self.last_device.calls)
+        self.assertNotIn("request", self.last_device.calls)
+
+    def test_fsck_without_a_restart_does_not_check_for_in_memory_volumes(self) -> None:
+        outcome, recorder, _run_ssh, _device = self.run_fsck("tcapsule-fsck: fsck_hfs exit status 0\n", reboot=False)
+        self.assertEqual(outcome.status, 0)
+        self.guard.assert_not_called()
+        self.assertNotIn("check_in_memory_volumes", recorder.stages)
+
     def test_clean_fsck_then_requests_the_reboot_and_waits(self) -> None:
         outcome, recorder, run_ssh, device = self.run_fsck(
             "--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n")
@@ -119,7 +145,8 @@ class RunFsckTests(FsckHarness, unittest.TestCase):
         self.assertEqual((outcome.status, outcome.failure, outcome.reboot_requested, outcome.waited), (0, None, True, True))
         # Nothing to start afterwards (NetBSD6 starts file sharing at boot), so
         # nothing is asked of the device once SSH is back.
-        self.assertEqual(recorder.stages, ["run_fsck", "reboot", "wait_for_reboot_down", "wait_for_reboot_up"])
+        self.assertEqual(recorder.stages, ["check_in_memory_volumes", "run_fsck", "reboot", "wait_for_reboot_down",
+                                           "wait_for_reboot_up"])
         self.assertIsNone(outcome.runtime_restart_error)
         self.assertNotIn("runtime_restarted", recorder.fields)
         self.assertEqual(recorder.messages[:3], ["--- fsck_hfs /dev/dk2 ---", "OK", "tcapsule-fsck: fsck_hfs exit status 0"])
@@ -694,16 +721,36 @@ class InstalledNetbsd4AutostartTests(unittest.TestCase):
 
 
 class UninstallTests(unittest.TestCase):
-    def prepare(self, *, dry_run: bool = False, reboot: bool = True, wait: bool = True, volume_roots=("/Volumes/dk2",)):
+    def prepare(self, *, dry_run: bool = False, reboot: bool = True, wait: bool = True, volume_roots=("/Volumes/dk2",),
+                guard: BaseException | None = None):
         recorder = RecordingCallbacks()
         volumes = [SimpleNamespace(volume_root=root) for root in volume_roots]
-        with mock.patch(
-            "timecapsulesmb.services.storage.mount_mast_volumes_with_diagnostics", return_value=volumes,
-        ) as mount:
+        calls = mock.Mock()
+        calls.mount.return_value = volumes
+        calls.guard.side_effect = guard
+        self.calls = calls
+        with mock.patch("timecapsulesmb.services.storage.mount_mast_volumes_with_diagnostics", calls.mount) as mount, \
+                mock.patch("timecapsulesmb.services.storage.require_no_in_memory_volumes", calls.guard):
             plan = prepare_uninstall(
                 CONNECTION, dry_run=dry_run, reboot=reboot, wait=wait, mount_wait=13, callbacks=recorder.callbacks,
             )
         return plan, recorder, mount
+
+    def test_uninstall_that_restarts_checks_for_in_memory_volumes_before_mounting_anything(self) -> None:
+        _plan, recorder, _mount = self.prepare()
+        self.assertEqual([name for name, *_ in self.calls.mock_calls], ["guard", "mount"])
+        self.assertEqual(recorder.stages, ["check_in_memory_volumes", "build_uninstall_plan"])
+        refused = DeviceError("in memory", code=ErrorCode.USB_DISK_VOLUMES_IN_MEMORY)
+        with self.assertRaises(DeviceError) as raised:
+            self.prepare(guard=refused)
+        self.assertIs(raised.exception, refused)
+        self.calls.mount.assert_not_called()
+
+    def test_uninstall_without_a_restart_or_as_a_dry_run_does_not_check(self) -> None:
+        for changes in ({"reboot": False}, {"dry_run": True}):
+            with self.subTest(**changes):
+                self.prepare(**changes)
+                self.calls.guard.assert_not_called()
 
     def test_prepare_mounts_the_volumes_and_plans_their_payload_dirs(self) -> None:
         plan, recorder, mount = self.prepare(volume_roots=("/Volumes/dk2", "/Volumes/dk3"))
@@ -713,7 +760,7 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(plan.volume_roots, ["/Volumes/dk2", "/Volumes/dk3"])
         self.assertEqual(plan.payload_dirs, ["/Volumes/dk2/.samba4", "/Volumes/dk3/.samba4"])
         self.assertEqual(recorder.fields["payload_dirs"], plan.payload_dirs)
-        self.assertEqual(recorder.stages, ["build_uninstall_plan"])
+        self.assertEqual(recorder.stages, ["check_in_memory_volumes", "build_uninstall_plan"])
         self.assertTrue(plan.reboot_required)
         self.assertTrue(plan.wait_after_reboot)
 

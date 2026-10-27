@@ -61,6 +61,9 @@ struct DoctorSummary: Equatable {
     static let rsyncUnreadableOnDiskResultCode = "rsync_unreadable_on_disk"
     static let diskNotMountingResultCode = "disk_not_mounting"
     static let diskFailingResultCode = "disk_failing"
+    /// An AirPort Utility erase left a volume only in memory: the next
+    /// restart takes it and everything saved on it.
+    static let diskVolumesInMemoryResultCode = "disk_volumes_in_memory"
     /// The disk's own SMART check says it is failing; Samba still serves.
     static let diskSmartFailingResultCode = "disk_smart_failing"
     static let acpdBrokenResultCode = "apple_acpd_broken"
@@ -104,6 +107,8 @@ struct DoctorSummary: Equatable {
     /// The disk reported errors it could not recover from: it outranks the
     /// payload problems, whose fix (Install) it would undo.
     let diskFailing: Bool
+    /// A volume exists only until the next restart (diskVolumesInMemoryResultCode).
+    let diskVolumesInMemory: Bool
     /// Apple's ACPd is gone (an ACPd check's acpd_gone): it quit, or a restart
     /// tore it down without restarting the device. Only unplugging the device
     /// brings it back, and the device's disks go with it.
@@ -130,6 +135,7 @@ struct DoctorSummary: Equatable {
         self.payloadProblemCode = Self.payloadProblems.first { Self.containsResultCode($0.code, in: payload) }?.code
         self.diskNotMounting = Self.containsResultCode(Self.diskNotMountingResultCode, in: payload)
         self.diskFailing = Self.containsResultCode(Self.diskFailingResultCode, in: payload)
+        self.diskVolumesInMemory = Self.containsResultCode(Self.diskVolumesInMemoryResultCode, in: payload)
         self.acpdGone = payload.results.contains { check in
             guard case .object(let details) = check.details else { return false }
             return details["acpd_gone"] == .bool(true)

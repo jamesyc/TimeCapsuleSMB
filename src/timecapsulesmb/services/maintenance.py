@@ -449,6 +449,9 @@ def run_fsck(
     RebootFlowError when the reboot request fails or the device does not
     restart or come back.
     """
+    if reboot:
+        callbacks.stage("check_in_memory_volumes")
+        storage_service.require_no_in_memory_volumes(connection, callbacks)
     callbacks.stage("run_fsck")
     script = build_remote_fsck_script(target.device, target.mountpoint)
     log = FsckOutputLog(callbacks, now=now)
@@ -531,6 +534,9 @@ def prepare_uninstall(
     if dry_run:
         volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
     else:
+        if reboot:
+            callbacks.stage("check_in_memory_volumes")
+            storage_service.require_no_in_memory_volumes(connection, callbacks)
         mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
             connection,
             callbacks=callbacks,

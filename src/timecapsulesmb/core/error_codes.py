@@ -95,6 +95,11 @@ class ErrorCode(str, Enum):
     DEPLOY_NO_DISK_DETECTED = "deploy_no_disk_detected"
     DEPLOY_NO_USB_DISK_DETECTED = "deploy_no_usb_disk_detected"
     DEPLOY_NO_HFS_PARTITION = "deploy_no_hfs_partition"
+    # A volume exists only until the next restart (AirPort Utility's erase
+    # formatted it on a partition table Apple's gpt rejected), and the command
+    # would restart the device.
+    DISK_VOLUMES_IN_MEMORY = "disk_volumes_in_memory"
+    USB_DISK_VOLUMES_IN_MEMORY = "usb_disk_volumes_in_memory"
     DEPLOY_DISK_NOT_WRITABLE = "deploy_disk_not_writable"
     DEPLOY_DISK_NOT_CONFIRMED = "deploy_disk_not_confirmed"
     DEPLOY_DISK_NOT_MOUNTED = "deploy_disk_not_mounted"
