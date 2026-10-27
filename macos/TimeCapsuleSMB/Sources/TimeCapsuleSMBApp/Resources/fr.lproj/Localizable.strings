@@ -399,6 +399,8 @@
 "backend.summary.flash.restore_secondary_write_plan_generated" = "La restauration réécrira la banque de firmware secondaire (de secours), non valide, avec le firmware Apple ; la banque principale n’est pas modifiée.";
 "backend.summary.flash.restore_write_plan_generated" = "Plan d’écriture de la restauration dans la mémoire flash généré.";
 "backend.summary.fsck_failed" = "fsck_hfs s’est terminé avec l’état %d ; le disque a peut-être encore besoin d’être réparé.";
+"backend.summary.fsck_crashed" = "fsck_hfs s’est fermé inopinément avec %1$@ (état %2$d) avant d’avoir terminé. Le vérificateur de disque d’Apple se ferme généralement de la même façon sur ce volume, donc une nouvelle réparation sur l’appareil n’ira pas plus loin. Pour réparer le volume, retirez le disque, connectez-le à un Mac avec un adaptateur SATA vers USB et lancez « S.O.S. » dans Utilitaire de disque.";
+"backend.summary.fsck_crashed_usb" = "fsck_hfs s’est fermé inopinément avec %1$@ (état %2$d) avant d’avoir terminé. Le vérificateur de disque d’Apple se ferme généralement de la même façon sur ce volume, donc une nouvelle réparation sur l’appareil n’ira pas plus loin. Pour réparer le volume, connectez le disque à un Mac et lancez « S.O.S. » dans Utilitaire de disque.";
 "backend.summary.wipe_disk_completed" = "Le disque a été effacé et formaté.";
 "backend.summary.reachability.auth_failed" = "L’appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
 "backend.summary.reachability.no_candidates" = "Aucun hôte enregistré n’était disponible.";

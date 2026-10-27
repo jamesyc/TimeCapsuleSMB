@@ -30,6 +30,8 @@ from timecapsulesmb.services.maintenance import (
     FSCK_PHASES,
     FSCK_NOT_UNMOUNTED_LINE,
     FSCK_NOT_UNMOUNTED_MESSAGE,
+    FSCK_OUTPUT_TAIL_LINE_CHARS,
+    FSCK_OUTPUT_TAIL_LINES,
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
     FSCK_SESSION_DROPPED_MESSAGE,
     UNINSTALL_FILES_REMAIN_MESSAGE,
@@ -38,6 +40,8 @@ from timecapsulesmb.services.maintenance import (
     prepare_uninstall,
     reboot_after_uninstall,
     build_remote_fsck_script,
+    fsck_crash_signal,
+    fsck_failure_message,
     fsck_phase,
     run_fsck,
 )
@@ -84,7 +88,7 @@ class FsckHarness:
     def run_fsck(self, stdout: str, *, reboot: bool = True, wait: bool = True, returncode: int = 0,
                  device: FakeAcpDevice | None = None, runtime: FakeInstalledRuntime | None = None,
                  netbsd4_autostart: bool | None = None, seconds_per_line: float = 0.0,
-                 transport_error: Exception | None = None):
+                 transport_error: Exception | None = None, target: FsckTarget = FSCK_TARGET):
         """`seconds_per_line` passes before each line arrives; `transport_error`
         ends the session after the last line."""
         recorder = RecordingCallbacks()
@@ -112,7 +116,7 @@ class FsckHarness:
             with device.patched(), runtime.patched():
                 try:
                     outcome = run_fsck(
-                        CONNECTION, FSCK_TARGET, reboot=reboot, wait=wait, callbacks=recorder.callbacks,
+                        CONNECTION, target, reboot=reboot, wait=wait, callbacks=recorder.callbacks,
                         netbsd4_autostart=netbsd4_autostart, now=lambda: clock[0],
                     )
                 except (RebootFlowError, TransportError) as exc:
@@ -185,6 +189,89 @@ class RunFsckTests(FsckHarness, unittest.TestCase):
         # The app marks the last step failed and telemetry records it: that is
         # the repair, not the reboot that followed it.
         self.assertEqual(recorder.stages[-1], "run_fsck")
+
+    # fsck_hfs's output on the field volume whose recheck crashed it.
+    CRASHED_RUN = (
+        "--- fsck_hfs /dev/dk2 ---\n"
+        "** Checking Journaled HFS Plus volume.\n"
+        "** Checking Catalog file.\n"
+        "   Invalid node structure\n"
+        "** Repairing volume.\n"
+        "** Rechecking volume.\n"
+        "** Checking Catalog file.\n"
+        "tcapsule-fsck: fsck_hfs exit status 138\n"
+    )
+
+    def test_a_crashed_fsck_hfs_names_its_signal_and_still_reboots(self) -> None:
+        outcome, recorder, _run_ssh, device = self.run_fsck(self.CRASHED_RUN)
+
+        self.assertEqual(outcome.status, 138)
+        self.assertEqual(
+            outcome.failure,
+            "fsck_hfs crashed with SIGBUS (exit status 138) before it finished. Apple's disk checker usually "
+            "crashes the same way again on this volume, so repairing it again on the device will not get further. "
+            "To repair the volume, take the disk out, connect it to a Mac with a SATA-to-USB adapter and run First "
+            "Aid in Disk Utility.",
+        )
+        self.assertEqual(recorder.fields["returncode"], 138)
+        # The reboot is what starts file sharing again, crash or not.
+        self.assertTrue(outcome.waited)
+        self.assertEqual(device.calls.count("request"), 1)
+        self.assertEqual(recorder.stages[-1], "run_fsck")
+        # Telemetry gets what fsck_hfs printed, without the script's own lines.
+        self.assertEqual(recorder.debug["fsck_output_tail"], [
+            "** Checking Journaled HFS Plus volume.",
+            "** Checking Catalog file.",
+            "   Invalid node structure",
+            "** Repairing volume.",
+            "** Rechecking volume.",
+            "** Checking Catalog file.",
+        ])
+
+    def test_a_crash_on_a_usb_volume_says_to_connect_the_disk_as_it_is(self) -> None:
+        # A USB disk needs no adapter and does not come out of the device.
+        usb = FsckTarget(device="/dev/dk5", mountpoint="/Volumes/dk5", name="Backup", builtin=False)
+        outcome, _recorder, _run_ssh, _device = self.run_fsck(self.CRASHED_RUN, target=usb)
+
+        self.assertTrue(outcome.failure.startswith("fsck_hfs crashed with SIGBUS (exit status 138) before it finished."))
+        self.assertTrue(outcome.failure.endswith(
+            "To repair the volume, connect the disk to a Mac and run First Aid in Disk Utility."))
+        self.assertNotIn("SATA", outcome.failure)
+        self.assertIn("SATA-to-USB adapter", fsck_failure_message(138, builtin=True))
+
+    def test_each_crash_signal_is_named_by_its_netbsd_number(self) -> None:
+        # NetBSD numbers, not the host's: Linux's SIGBUS is 7.
+        for status, name in ((132, "SIGILL"), (133, "SIGTRAP"), (134, "SIGABRT"), (135, "SIGEMT"), (136, "SIGFPE"),
+                             (138, "SIGBUS"), (139, "SIGSEGV"), (140, "SIGSYS")):
+            with self.subTest(status=status):
+                failure = fsck_failure_message(status)
+                self.assertTrue(failure.startswith(f"fsck_hfs crashed with {name} (exit status {status})"))
+                self.assertEqual(fsck_crash_signal(status), name)
+
+    def test_an_exit_status_that_is_no_crash_keeps_the_plain_failure(self) -> None:
+        # Its own failure (8), a signal that ended it rather than a crash
+        # (SIGKILL, SIGTERM), or no signal NetBSD crashes with.
+        for status in (1, 8, 128, 137, 143, 168):
+            with self.subTest(status=status):
+                self.assertIsNone(fsck_crash_signal(status))
+                self.assertEqual(fsck_failure_message(status),
+                                 f"fsck_hfs exited with status {status}; the disk may still need repair.")
+        self.assertIsNone(fsck_crash_signal(0))
+        self.assertIsNone(fsck_failure_message(0))
+
+    def test_only_a_failed_run_sends_its_last_lines_and_only_the_last_ones(self) -> None:
+        clean_run = "--- fsck_hfs /dev/dk2 ---\n** Checking Catalog file.\ntcapsule-fsck: fsck_hfs exit status 0\n"
+        _outcome, recorder, _run_ssh, _device = self.run_fsck(clean_run)
+        self.assertNotIn("fsck_output_tail", recorder.debug)
+
+        damaged = "".join(f"   Missing thread record (id = {n}) {'x' * 300}\n" for n in range(30))
+        _outcome, recorder, _run_ssh, _device = self.run_fsck(
+            f"--- fsck_hfs /dev/dk2 ---\n{damaged}tcapsule-fsck: fsck_hfs exit status 8\n")
+        tail = recorder.debug["fsck_output_tail"]
+        self.assertEqual(len(tail), FSCK_OUTPUT_TAIL_LINES)
+        self.assertTrue(tail[0].startswith("   Missing thread record (id = 10) "))
+        self.assertTrue(tail[-1].startswith("   Missing thread record (id = 29) "))
+        self.assertTrue(all(len(line) == FSCK_OUTPUT_TAIL_LINE_CHARS for line in tail))
 
     def test_no_reboot_requests_nothing_and_does_not_wait(self) -> None:
         outcome, recorder, _run_ssh, device = self.run_fsck(

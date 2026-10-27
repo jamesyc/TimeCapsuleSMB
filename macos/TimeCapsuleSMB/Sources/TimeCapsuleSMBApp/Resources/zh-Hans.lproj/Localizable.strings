@@ -399,6 +399,8 @@
 "backend.summary.flash.restore_secondary_write_plan_generated" = "恢复将用苹果固件重新写入无效的第二（备用）固件区；主固件区不会改变。";
 "backend.summary.flash.restore_write_plan_generated" = "闪存恢复写入计划已生成。";
 "backend.summary.fsck_failed" = "fsck_hfs 以状态 %d 退出；磁盘可能仍需修复。";
+"backend.summary.fsck_crashed" = "fsck_hfs 在完成前因 %1$@ 崩溃（状态 %2$d）。苹果的磁盘检查程序通常会在这个卷上以同样的方式再次崩溃，因此在设备上再次修复也无法更进一步。要修复这个卷，请取出磁盘，用 SATA 转 USB 转接器将其连接到 Mac，然后在磁盘工具中运行“急救”。";
+"backend.summary.fsck_crashed_usb" = "fsck_hfs 在完成前因 %1$@ 崩溃（状态 %2$d）。苹果的磁盘检查程序通常会在这个卷上以同样的方式再次崩溃，因此在设备上再次修复也无法更进一步。要修复这个卷，请将磁盘连接到 Mac，然后在磁盘工具中运行“急救”。";
 "backend.summary.wipe_disk_completed" = "磁盘已抹掉并格式化。";
 "backend.summary.reachability.auth_failed" = "设备拒绝了提供的密码或 SSH 凭据。";
 "backend.summary.reachability.no_candidates" = "没有可用的已保存主机地址。";

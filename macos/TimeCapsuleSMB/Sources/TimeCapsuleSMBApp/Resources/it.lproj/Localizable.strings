@@ -399,6 +399,8 @@
 "backend.summary.flash.restore_secondary_write_plan_generated" = "Il ripristino riscriverà con firmware Apple il banco firmware secondario (di riserva), non valido; il banco principale non viene modificato.";
 "backend.summary.flash.restore_write_plan_generated" = "Piano di scrittura del ripristino nella memoria flash generato.";
 "backend.summary.fsck_failed" = "fsck_hfs è terminato con lo stato %d; il disco potrebbe richiedere ancora una riparazione.";
+"backend.summary.fsck_crashed" = "fsck_hfs si è chiuso in modo anomalo con %1$@ (stato %2$d) prima di finire. Il programma di controllo del disco di Apple di solito si chiude di nuovo in modo anomalo allo stesso modo su questo volume, quindi ripararlo ancora sul dispositivo non andrà oltre. Per riparare il volume, estrai il disco, collegalo a un Mac con un adattatore da SATA a USB ed esegui “S.O.S.” in Utility Disco.";
+"backend.summary.fsck_crashed_usb" = "fsck_hfs si è chiuso in modo anomalo con %1$@ (stato %2$d) prima di finire. Il programma di controllo del disco di Apple di solito si chiude di nuovo in modo anomalo allo stesso modo su questo volume, quindi ripararlo ancora sul dispositivo non andrà oltre. Per riparare il volume, collega il disco a un Mac ed esegui “S.O.S.” in Utility Disco.";
 "backend.summary.wipe_disk_completed" = "Il disco è stato cancellato e formattato.";
 "backend.summary.reachability.auth_failed" = "Il dispositivo ha rifiutato la password o le credenziali SSH fornite.";
 "backend.summary.reachability.no_candidates" = "Nessun host salvato disponibile.";

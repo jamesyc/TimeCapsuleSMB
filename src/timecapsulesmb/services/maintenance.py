@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import re
@@ -59,6 +60,30 @@ FSCK_DURATION_WARNING = (
 # fsck_hfs prints a line for each damaged file; past this many, the log
 # keeps only its "** " step lines and the script's own.
 FSCK_DETAIL_LINE_LIMIT = 200
+# A failed run's last fsck_hfs lines go into its debug fields (telemetry), as
+# many as this, each cut to FSCK_OUTPUT_TAIL_LINE_CHARS: what it found last.
+FSCK_OUTPUT_TAIL_LINES = 20
+FSCK_OUTPUT_TAIL_LINE_CHARS = 200
+# The remote shell reports a program that a signal ended as exit status
+# 128 + the signal's number. NetBSD numbers these signals as below; the host's
+# signal module cannot name them, as Linux numbers some differently (its SIGBUS
+# is 7). Each is fsck_hfs crashing, not something ending it.
+FSCK_CRASH_SIGNALS = {
+    4: "SIGILL", 5: "SIGTRAP", 6: "SIGABRT", 7: "SIGEMT", 8: "SIGFPE", 10: "SIGBUS", 11: "SIGSEGV", 12: "SIGSYS",
+}
+# Apple's fsck_hfs crashes at the same place on the same damage, so another
+# repair on the device stops the same way; Disk Utility on a Mac has its own
+# checker. The app shows these as the fsck_crashed summaries: an internal disk
+# comes out and connects through an adapter, a USB disk connects as it is.
+_FSCK_CRASHED = (
+    "fsck_hfs crashed with {signal} (exit status {status}) before it finished. Apple's disk checker usually "
+    "crashes the same way again on this volume, so repairing it again on the device will not get further. "
+)
+FSCK_CRASHED_MESSAGE = _FSCK_CRASHED + (
+    "To repair the volume, take the disk out, connect it to a Mac with a SATA-to-USB adapter and run First "
+    "Aid in Disk Utility."
+)
+FSCK_CRASHED_USB_MESSAGE = _FSCK_CRASHED + "To repair the volume, connect the disk to a Mac and run First Aid in Disk Utility."
 # fsck_hfs's "** " lines that start a step, as the progress phase they report.
 # A repair runs every check again after "Rechecking volume.", and may repair
 # and recheck more than once.
@@ -250,6 +275,9 @@ class FsckOutputLog:
     phase_seconds: dict[str, float] = field(default_factory=dict)
     detail_lines: int = 0
     hidden_lines: int = 0
+    # fsck_hfs's last lines, its steps and findings, for a failed run's debug
+    # fields (FSCK_OUTPUT_TAIL_LINES).
+    tail: deque[str] = field(default_factory=lambda: deque(maxlen=FSCK_OUTPUT_TAIL_LINES))
     _phase_key: str | None = None
     _phase_start: float = 0.0
 
@@ -259,6 +287,8 @@ class FsckOutputLog:
         phase = fsck_phase(text)
         if phase is not None:
             self._start_phase(phase)
+        if self.started and not text.startswith((FSCK_STATUS_PREFIX, FSCK_STARTED_LINE_PREFIX)):
+            self.tail.append(text[:FSCK_OUTPUT_TAIL_LINE_CHARS])
         if not self.started or text.startswith(("** ", FSCK_STATUS_PREFIX, FSCK_STARTED_LINE_PREFIX)):
             self.callbacks.message(text)
             return
@@ -327,7 +357,11 @@ def fsck_failure_code(status: int | None, output: str = "", *, started: bool = F
     return None
 
 
-def fsck_failure_message(status: int | None, output: str = "", *, started: bool = False) -> str | None:
+def fsck_failure_message(
+    status: int | None, output: str = "", *, started: bool = False, builtin: bool = True,
+) -> str | None:
+    """Why the repair did not succeed; None when it did. `builtin` says the
+    volume is on the internal disk, which a crash's way out takes out."""
     if status is None:
         code = fsck_failure_code(status, output, started=started)
         if code == ErrorCode.FSCK_ALREADY_RUNNING:
@@ -337,9 +371,20 @@ def fsck_failure_message(status: int | None, output: str = "", *, started: bool 
         if code == ErrorCode.FSCK_VOLUME_NOT_UNMOUNTED:
             return FSCK_NOT_UNMOUNTED_MESSAGE
         return FSCK_DID_NOT_RUN_MESSAGE
+    signal = fsck_crash_signal(status)
+    if signal is not None:
+        return (FSCK_CRASHED_MESSAGE if builtin else FSCK_CRASHED_USB_MESSAGE).format(signal=signal, status=status)
     if status != 0:
         return f"fsck_hfs exited with status {status}; the disk may still need repair."
     return None
+
+
+def fsck_crash_signal(status: int | None) -> str | None:
+    """The crash signal (FSCK_CRASH_SIGNALS) that ended fsck_hfs, from its
+    exit status; None when it exited by itself or something else ended it."""
+    if status is None or status <= 128:
+        return None
+    return FSCK_CRASH_SIGNALS.get(status - 128)
 
 
 @dataclass(frozen=True)
@@ -477,13 +522,15 @@ def run_fsck(
     finally:
         log.finish(status)
     callbacks.update(returncode=status if status is not None else returncode)
+    if status and log.tail:
+        callbacks.debug(fsck_output_tail=list(log.tail))
     # Without a status line fsck never ran (or its result was lost), so the
     # volume may still be mounted: do not reboot. A failed repair still
     # reboots: that is what restarts file sharing. If the session dropped
     # after fsck finished, sharing stays off until the user restarts, as with
     # --no-reboot.
     rebooting = reboot and status is not None
-    failure = fsck_failure_message(status, output, started=log.started)
+    failure = fsck_failure_message(status, output, started=log.started, builtin=target.builtin)
     runtime_restart_error = None
     runtime_restart_code = None
     if rebooting:

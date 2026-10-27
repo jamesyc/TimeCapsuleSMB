@@ -1249,6 +1249,25 @@ class CliMaintenanceTests(CliTestCase):
         self.assertEqual(finished["device_came_back_after_reboot"], True)
         self.assertIn("fsck_hfs exited with status 8", finished["error"])
 
+    def test_fsck_that_crashes_names_the_signal_still_reboots_and_fails(self) -> None:
+        # Apple's fsck_hfs crashed: the CLI says so and where to repair the
+        # volume instead, and the reboot still brings file sharing back.
+        rc, text, device = self._run_fsck_with_remote_output(
+            "--- fsck_hfs /dev/dk2 ---\n** Checking Catalog file.\n"
+            "tcapsule-fsck: fsck_hfs exit status 138\n",
+            138,
+            ["--yes"],
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertTrue(device.served_new_boot)
+        self.assertIn("fsck_hfs crashed with SIGBUS (exit status 138) before it finished.", text)
+        self.assertIn("run First Aid in Disk Utility", text)
+        self.assertNotIn("the disk may still need repair", text)
+        finished = self.telemetry_payload("fsck_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertIn("fsck_hfs crashed with SIGBUS", finished["error"])
+
     def test_fsck_on_netbsd4_starts_file_sharing_after_the_reboot(self) -> None:
         self.use_stock_netbsd4()
         runtime = FakeInstalledRuntime()

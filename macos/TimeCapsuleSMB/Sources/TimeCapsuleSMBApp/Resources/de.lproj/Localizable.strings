@@ -399,6 +399,8 @@
 "backend.summary.flash.restore_secondary_write_plan_generated" = "Die Wiederherstellung schreibt die ungültige sekundäre Firmware-Bank (Backup) mit Apple-Firmware neu; die primäre Bank wird nicht verändert.";
 "backend.summary.flash.restore_write_plan_generated" = "Flash-Schreibplan für die Wiederherstellung erstellt.";
 "backend.summary.fsck_failed" = "fsck_hfs wurde mit Status %d beendet; die Festplatte muss möglicherweise noch repariert werden.";
+"backend.summary.fsck_crashed" = "fsck_hfs ist mit %1$@ (Status %2$d) abgestürzt, bevor es fertig war. Das Festplattenprüfprogramm von Apple stürzt auf diesem Datenträger meist erneut an derselben Stelle ab, daher kommt eine weitere Reparatur auf dem Gerät nicht weiter. Um den Datenträger zu reparieren, bauen Sie die Festplatte aus, schließen Sie sie mit einem SATA-USB-Adapter an einen Mac an und führen Sie im Festplattendienstprogramm „Erste Hilfe“ aus.";
+"backend.summary.fsck_crashed_usb" = "fsck_hfs ist mit %1$@ (Status %2$d) abgestürzt, bevor es fertig war. Das Festplattenprüfprogramm von Apple stürzt auf diesem Datenträger meist erneut an derselben Stelle ab, daher kommt eine weitere Reparatur auf dem Gerät nicht weiter. Um den Datenträger zu reparieren, schließen Sie die Festplatte an einen Mac an und führen Sie im Festplattendienstprogramm „Erste Hilfe“ aus.";
 "backend.summary.wipe_disk_completed" = "Die Festplatte wurde gelöscht und formatiert.";
 "backend.summary.reachability.auth_failed" = "Das Gerät hat das angegebene Passwort oder die SSH-Anmeldedaten abgelehnt.";
 "backend.summary.reachability.no_candidates" = "Keine gespeicherten Hostkandidaten verfügbar.";

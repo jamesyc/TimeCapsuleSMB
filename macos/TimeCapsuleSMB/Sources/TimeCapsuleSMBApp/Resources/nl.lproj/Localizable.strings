@@ -399,6 +399,8 @@
 "backend.summary.flash.restore_secondary_write_plan_generated" = "Het herstel schrijft de ongeldige secundaire firmwarebank (reserve) opnieuw met Apple-firmware; de primaire bank wordt niet gewijzigd.";
 "backend.summary.flash.restore_write_plan_generated" = "Flash-schrijfplan voor het herstel aangemaakt.";
 "backend.summary.fsck_failed" = "fsck_hfs is gestopt met status %d; de schijf moet mogelijk nog worden gerepareerd.";
+"backend.summary.fsck_crashed" = "fsck_hfs is gecrasht met %1$@ (status %2$d) voordat het klaar was. Het schijfcontroleprogramma van Apple crasht op dit volume meestal opnieuw op dezelfde manier, dus nog een reparatie op het apparaat komt niet verder. Om het volume te repareren, haal de schijf eruit, sluit die met een SATA-naar-USB-adapter aan op een Mac en voer in Schijfhulpprogramma ‘Schijf-EHBO’ uit.";
+"backend.summary.fsck_crashed_usb" = "fsck_hfs is gecrasht met %1$@ (status %2$d) voordat het klaar was. Het schijfcontroleprogramma van Apple crasht op dit volume meestal opnieuw op dezelfde manier, dus nog een reparatie op het apparaat komt niet verder. Om het volume te repareren, sluit de schijf aan op een Mac en voer in Schijfhulpprogramma ‘Schijf-EHBO’ uit.";
 "backend.summary.wipe_disk_completed" = "De schijf is gewist en geformatteerd.";
 "backend.summary.reachability.auth_failed" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
 "backend.summary.reachability.no_candidates" = "Er waren geen opgeslagen hostkandidaten beschikbaar.";

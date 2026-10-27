@@ -16,6 +16,7 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.set_ssh import SetSshStatusResult, disable_set_ssh
 from tests.reboot_support import FakeAcpDevice
 from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.services.maintenance import fsck_failure_message
 
 
 RESOURCES = Path(__file__).resolve().parents[1] / "macos/TimeCapsuleSMB/Sources/TimeCapsuleSMBApp/Resources"
@@ -172,6 +173,8 @@ class SummaryProducerTests(unittest.TestCase):
         "fsck_plan": ("fsck_plan_generated", [], "Dry-run plan generated for fsck."),
         "fsck_completed": ("fsck_completed", [], "Disk repair completed with fsck."),
         "fsck_failed": ("fsck_failed", [8], "fsck_hfs exited with status 8; the disk may still need repair."),
+        "fsck_crashed": ("fsck_crashed", ["SIGBUS", 138], fsck_failure_message(138)),
+        "fsck_crashed_usb": ("fsck_crashed_usb", ["SIGBUS", 138], fsck_failure_message(138, builtin=False)),
         "wipe_disk_completed": ("wipe_disk_completed", [], "The disk was wiped and formatted."),
         "doctor_fatal": ("doctor_found_fatal", [], "Doctor found one or more fatal problems."),
         "flash_backup": ("flash_backup_saved", ["/tmp/flash-backup"], "Flash backup saved to /tmp/flash-backup."),
@@ -278,6 +281,32 @@ class SummaryProducerTests(unittest.TestCase):
         keyed = contracts.fsck_result_payload(device="/dev/dk2", mountpoint="/Volumes/dk2", returncode=0, error="exit 0")
         self.assertEqual((keyed["summary_key"], keyed["summary_args"]), ("fsck_failed", [0]))
 
+    def test_a_fsck_result_names_a_crash_by_the_disk_its_volume_is_on(self) -> None:
+        # A crash's way out depends on the disk: an internal one comes out and
+        # connects through an adapter, a USB one connects as it is. Any other
+        # failure, or none, keeps its own sentence.
+        from timecapsulesmb.app import contracts
+
+        def payload(returncode, *, builtin=True):
+            return contracts.fsck_result_payload(
+                device="/dev/dk2", mountpoint="/Volumes/dk2", returncode=returncode,
+                error=fsck_failure_message(returncode, builtin=builtin), builtin=builtin)
+
+        for builtin, key in ((True, "fsck_crashed"), (False, "fsck_crashed_usb")):
+            with self.subTest(builtin=builtin):
+                crashed = payload(138, builtin=builtin)
+                self.assertEqual((crashed["summary_key"], crashed["summary_args"]), (key, ["SIGBUS", 138]))
+                self.assertEqual(crashed["summary"], crashed["error"])
+                self.assertEqual("SATA-to-USB adapter" in crashed["summary"], builtin)
+        failed = payload(8)
+        self.assertEqual((failed["summary_key"], failed["summary_args"]), ("fsck_failed", [8]))
+        # A signal that ended fsck_hfs without a crash is a plain failure.
+        for status in (137, 143):
+            ended = payload(status)
+            self.assertEqual((ended["summary_key"], ended["summary_args"]), ("fsck_failed", [status]))
+        completed = contracts.fsck_result_payload(device="/dev/dk2", mountpoint="/Volumes/dk2", returncode=0)
+        self.assertEqual(completed["summary_key"], "fsck_completed")
+
     def test_flash_backup_requires_its_backup_directory(self) -> None:
         from timecapsulesmb.app import contracts
 
@@ -335,7 +364,7 @@ class SummaryCatalogTests(unittest.TestCase):
 
     def test_count_sentences_are_plural_entries(self) -> None:
         # Every integer summary argument is a count, except fsck_hfs's exit status.
-        not_counts = {"fsck_failed"}
+        not_counts = {"fsck_failed", "fsck_crashed", "fsck_crashed_usb"}
         with open(RESOURCES / "en.lproj" / "Localizable.stringsdict", "rb") as handle:
             plural_keys = {key.removeprefix("backend.summary.") for key in plistlib.load(handle)}
         counting = {key for key, types in SUMMARY_KEYS.items() if "int" in types} - not_counts

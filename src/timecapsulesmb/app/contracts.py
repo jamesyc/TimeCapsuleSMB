@@ -6,6 +6,7 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.summaries import Summary, english_count
 from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.services.doctor import doctor_report, doctor_result_details, doctor_status_counts
+from timecapsulesmb.services.maintenance import fsck_crash_signal
 from timecapsulesmb.services.reachability import ReachabilityResult
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult
 from timecapsulesmb.services.version_check import VersionCheckResult
@@ -311,9 +312,16 @@ def fsck_result_payload(
     waited: bool | None = None,
     verified: bool | None = None,
     error: str | None = None,
+    builtin: bool = True,
 ) -> dict[str, object]:
     summary_fields: dict[str, object]
-    if error is not None and type(returncode) is int:
+    crash = fsck_crash_signal(returncode) if type(returncode) is int else None
+    if error is not None and crash is not None:
+        # fsck_hfs crashed: another run stops the same way, which the app's
+        # sentence says in the app's language, for the disk the volume is on.
+        key = "fsck_crashed" if builtin else "fsck_crashed_usb"
+        summary_fields = Summary(key, error, (crash, returncode)).fields()
+    elif error is not None and type(returncode) is int:
         summary_fields = Summary("fsck_failed", error, (returncode,)).fields()
     elif error is not None:
         # Without fsck_hfs's exit status there is no translatable sentence;

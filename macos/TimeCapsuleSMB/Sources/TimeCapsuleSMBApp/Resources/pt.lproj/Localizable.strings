@@ -399,6 +399,8 @@
 "backend.summary.flash.restore_secondary_write_plan_generated" = "A restauração vai regravar com firmware da Apple o banco de firmware secundário (de reserva), que é inválido; o banco principal não é alterado.";
 "backend.summary.flash.restore_write_plan_generated" = "Plano de gravação da restauração na memória flash gerado.";
 "backend.summary.fsck_failed" = "fsck_hfs terminou com o status %d; o disco ainda pode precisar de reparo.";
+"backend.summary.fsck_crashed" = "O fsck_hfs foi encerrado inesperadamente com %1$@ (status %2$d) antes de terminar. O verificador de disco da Apple costuma ser encerrado do mesmo jeito neste volume, então repará-lo de novo no dispositivo não vai avançar. Para reparar o volume, retire o disco, conecte-o a um Mac com um adaptador SATA para USB e execute “Reparador” no Utilitário de Disco.";
+"backend.summary.fsck_crashed_usb" = "O fsck_hfs foi encerrado inesperadamente com %1$@ (status %2$d) antes de terminar. O verificador de disco da Apple costuma ser encerrado do mesmo jeito neste volume, então repará-lo de novo no dispositivo não vai avançar. Para reparar o volume, conecte o disco a um Mac e execute “Reparador” no Utilitário de Disco.";
 "backend.summary.wipe_disk_completed" = "O disco foi apagado e formatado.";
 "backend.summary.reachability.auth_failed" = "O dispositivo rejeitou a senha ou as credenciais SSH fornecidas.";
 "backend.summary.reachability.no_candidates" = "Nenhum host salvo estava disponível.";

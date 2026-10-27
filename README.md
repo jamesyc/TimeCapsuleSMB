@@ -381,6 +381,10 @@ A disk operation on the device has waited for minutes without finishing, such as
 1. Unplug the device, wait 10 seconds and plug it back in. Wait 2 minutes, then try again.
 2. If the disk stops responding again, it is probably failing. Copy off the files you need: connect a USB disk to a Mac, or take an internal disk out and connect it to a Mac with a SATA-to-USB adapter. Then replace the disk, erase the new one in AirPort Utility and run “Install / Update Samba”.
 
+### Disk Repair Says fsck_hfs Crashed
+
+Apple's disk checker (`fsck_hfs`) ended with a crash signal, such as SIGBUS (exit status 138), before it finished. It usually crashes at the same place on the same volume, so another Disk Repair on the device will not get further; file sharing comes back with the restart that follows the repair. To repair the volume, connect the disk to a Mac (an internal disk through a SATA-to-USB adapter) and run First Aid in Disk Utility.
+
 ### SSH Does Not Turn On
 
 Turning on SSH restarts the device. When that fails, Configure and “Enable SSH” tell the two cases apart:

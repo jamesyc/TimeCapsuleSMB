@@ -399,6 +399,8 @@
 "backend.summary.flash.restore_secondary_write_plan_generated" = "Restore will rewrite the invalid secondary (backup) firmware bank with Apple firmware; the primary bank is not changed.";
 "backend.summary.flash.restore_write_plan_generated" = "Flash restore write plan generated.";
 "backend.summary.fsck_failed" = "fsck_hfs exited with status %d; the disk may still need repair.";
+"backend.summary.fsck_crashed" = "fsck_hfs crashed with %1$@ (exit status %2$d) before it finished. Apple's disk checker usually crashes the same way again on this volume, so repairing it again on the device will not get further. To repair the volume, take the disk out, connect it to a Mac with a SATA-to-USB adapter and run First Aid in Disk Utility.";
+"backend.summary.fsck_crashed_usb" = "fsck_hfs crashed with %1$@ (exit status %2$d) before it finished. Apple's disk checker usually crashes the same way again on this volume, so repairing it again on the device will not get further. To repair the volume, connect the disk to a Mac and run First Aid in Disk Utility.";
 "backend.summary.wipe_disk_completed" = "The disk was wiped and formatted.";
 "backend.summary.reachability.auth_failed" = "The device rejected the supplied password or SSH credentials.";
 "backend.summary.reachability.no_candidates" = "No saved host candidates were available.";

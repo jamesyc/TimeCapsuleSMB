@@ -211,7 +211,9 @@ final class BackendSummaryContractTests: XCTestCase {
         }
         XCTAssertGreaterThan(checked.values.reduce(0, +), 50)
         XCTAssertGreaterThan(checked["flash", default: 0], 15)
-        XCTAssertEqual(checked["fsck", default: 0], 4)
+        // Volumes found, the plan, a completed repair, a failed one, and a
+        // crashed one on the internal disk and on a USB disk.
+        XCTAssertEqual(checked["fsck", default: 0], 6)
         XCTAssertEqual(checked["wipe-disk", default: 0], 1)
     }
 }

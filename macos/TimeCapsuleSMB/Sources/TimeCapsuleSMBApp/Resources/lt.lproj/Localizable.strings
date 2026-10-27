@@ -399,6 +399,8 @@
 "backend.summary.flash.restore_secondary_write_plan_generated" = "Atkūrimas perrašys netinkamą antrinį (atsarginį) programinės įrangos banką Apple programine įranga; pagrindinis bankas nekeičiamas.";
 "backend.summary.flash.restore_write_plan_generated" = "Flash atminties atkūrimo įrašymo planas sugeneruotas.";
 "backend.summary.fsck_failed" = "fsck_hfs baigė darbą su būsena %d; diską gali tekti dar taisyti.";
+"backend.summary.fsck_crashed" = "fsck_hfs nulūžo su %1$@ (būsena %2$d), nebaigęs darbo. Apple disko tikrinimo programa šiame tome paprastai vėl nulūžta taip pat, todėl dar vienas taisymas įrenginyje toliau nepažengs. Kad sutaisytumėte tomą, išimkite diską, prijunkite jį prie Mac per SATA–USB adapterį ir Disk Utility paleiskite First Aid.";
+"backend.summary.fsck_crashed_usb" = "fsck_hfs nulūžo su %1$@ (būsena %2$d), nebaigęs darbo. Apple disko tikrinimo programa šiame tome paprastai vėl nulūžta taip pat, todėl dar vienas taisymas įrenginyje toliau nepažengs. Kad sutaisytumėte tomą, įkiškite diską į Mac ir Disk Utility paleiskite First Aid.";
 "backend.summary.wipe_disk_completed" = "Diskas ištrintas ir suformatuotas.";
 "backend.summary.reachability.auth_failed" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
 "backend.summary.reachability.no_candidates" = "Nebuvo jokių išsaugotų kompiuterių pavadinimų.";

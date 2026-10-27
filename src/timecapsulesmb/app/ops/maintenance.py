@@ -329,6 +329,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         waited=outcome.waited,
         verified=outcome.waited,
         error=outcome.failure,
+        builtin=target.builtin,
     ))
 
 

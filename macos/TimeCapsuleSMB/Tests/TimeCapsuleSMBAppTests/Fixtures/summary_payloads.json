@@ -833,6 +833,58 @@
   },
   {
     "event": {
+      "ok": false,
+      "operation": "fsck",
+      "payload": {
+        "device": "/dev/dk2",
+        "error": "fsck_hfs crashed with SIGBUS (exit status 138) before it finished. Apple's disk checker usually crashes the same way again on this volume, so repairing it again on the device will not get further. To repair the volume, take the disk out, connect it to a Mac with a SATA-to-USB adapter and run First Aid in Disk Utility.",
+        "mountpoint": "/Volumes/dk2",
+        "reboot_requested": true,
+        "returncode": 138,
+        "schema_version": 1,
+        "summary": "fsck_hfs crashed with SIGBUS (exit status 138) before it finished. Apple's disk checker usually crashes the same way again on this volume, so repairing it again on the device will not get further. To repair the volume, take the disk out, connect it to a Mac with a SATA-to-USB adapter and run First Aid in Disk Utility.",
+        "summary_args": [
+          "SIGBUS",
+          138
+        ],
+        "summary_key": "fsck_crashed",
+        "verified": true,
+        "waited": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "fsck_crashed"
+  },
+  {
+    "event": {
+      "ok": false,
+      "operation": "fsck",
+      "payload": {
+        "device": "/dev/dk5",
+        "error": "fsck_hfs crashed with SIGBUS (exit status 138) before it finished. Apple's disk checker usually crashes the same way again on this volume, so repairing it again on the device will not get further. To repair the volume, connect the disk to a Mac and run First Aid in Disk Utility.",
+        "mountpoint": "/Volumes/dk5",
+        "reboot_requested": true,
+        "returncode": 138,
+        "schema_version": 1,
+        "summary": "fsck_hfs crashed with SIGBUS (exit status 138) before it finished. Apple's disk checker usually crashes the same way again on this volume, so repairing it again on the device will not get further. To repair the volume, connect the disk to a Mac and run First Aid in Disk Utility.",
+        "summary_args": [
+          "SIGBUS",
+          138
+        ],
+        "summary_key": "fsck_crashed_usb",
+        "verified": true,
+        "waited": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "fsck_crashed_usb"
+  },
+  {
+    "event": {
       "ok": true,
       "operation": "wipe-disk",
       "payload": {
