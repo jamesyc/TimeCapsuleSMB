@@ -135,6 +135,7 @@ struct AddDeviceView: View {
                 } label: {
                     Label(L10n.string("add_device.save_device"), systemImage: "checkmark.circle")
                 }
+                .buttonStyle(.borderedProminent)
                 .disabled(!store.canConfigure)
 
                 Button {

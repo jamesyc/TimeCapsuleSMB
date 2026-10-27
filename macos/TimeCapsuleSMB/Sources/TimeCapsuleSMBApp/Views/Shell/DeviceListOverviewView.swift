@@ -36,6 +36,7 @@ struct DeviceListOverviewView: View {
                     } label: {
                         Label(L10n.string("sidebar.add_airport_device"), systemImage: "plus.circle")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             } else {
                 ForEach(deviceRegistry.profiles) { profile in
