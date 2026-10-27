@@ -328,6 +328,7 @@
 "doctor.check.disk_volumes_in_memory" = "A volume on the device exists only until the next restart: AirPort Utility's “Erase Disk” could not replace its disk's partition table. Anything saved on it since that erase, Time Machine backups included, is lost at the next restart. Copy off anything you need before the device restarts. Then, for the internal disk, use “Wipe Internal Disk”; disconnect a USB disk from the device, and before connecting it again, erase it on a Mac in Disk Utility as “Mac OS Extended (Journaled)”.";
 "doctor.check.acpd_gone" = "Apple's AirPort service (ACPd) on the device has stopped. Unplug the device, wait 10 seconds and plug it back in.";
 "doctor.check.disk_failing" = "The device's disk reported errors it could not recover from, so it is probably failing and file sharing is off. Reinstalling will not fix the disk, and AirPort Utility may still show it as OK. Copy off the files you need, replace the disk, then erase the new disk in AirPort Utility and run “Install / Update Samba”.";
+"doctor.check.disk_not_responding" = "A disk on the device has stopped responding: a disk operation has waited for minutes without finishing, and Apple's AirPort service waits for the disk too. Unplug the device, wait 10 seconds and plug it back in. If the disk stops responding again, it is probably failing: copy off the files you need, replace the disk, then erase the new disk in AirPort Utility and run “Install / Update Samba”.";
 "doctor.check.client_on_unshared_network" = "This Mac is on a network where the device does not share its disks, such as its internet (WAN) side or its guest network. Join the device's main network by Wi-Fi or one of its LAN ports, then run “Checkup” again.";
 "doctor.check.mac_smb3_disabled" = "%@ turns off SMB 3 (protocol_vers_map), and Time Machine needs SMB 3. Delete that line, then remove the disk in Time Machine settings and add it again.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ turns off SMB 3 for the server [%2$@]. If that is this device, delete that line, then remove the disk in Time Machine settings and add it again.";
@@ -1033,6 +1034,13 @@
 "backend.recovery.disk_failing.action.1" = "Copy off the files you need. If file sharing is off, take the disk out and connect it to a Mac with a SATA-to-USB adapter.";
 "backend.recovery.disk_failing.action.2" = "Replace the disk.";
 "backend.recovery.disk_failing.action.3" = "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, full backup on it.";
+"backend.recovery.disk_not_responding.title" = "The disk is not responding";
+"backend.recovery.disk_not_responding.message" = "A disk operation on the device has waited for minutes without finishing. Apple's AirPort service waits for the disk too, so the device cannot be updated or restarted over the network.";
+"backend.recovery.disk_not_responding.action.1" = "Unplug the device, wait 10 seconds and plug it back in.";
+"backend.recovery.disk_not_responding.action.2" = "Wait 2 minutes for the device to start up, then try again.";
+"backend.recovery.disk_not_responding.action.3" = "If the disk stops responding again, it is probably failing: copy off the files you need. Connect a USB disk to a Mac; if file sharing is off, take an internal disk out and connect it to a Mac with a SATA-to-USB adapter.";
+"backend.recovery.disk_not_responding.action.4" = "Replace the disk.";
+"backend.recovery.disk_not_responding.action.5" = "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, full backup on it.";
 "backend.recovery.deploy_disk_size_misreported.title" = "The disk is reporting the wrong size";
 "backend.recovery.deploy_disk_size_misreported.message" = "The device reports the internal disk as much smaller than it is. A restart sometimes clears this; if it keeps happening, the disk is probably failing.";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "Restart the device, then run “Install / Update Samba” again after the disk spins up.";
@@ -1065,6 +1073,12 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "If the device is still formatting the disk, wait until it finishes.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Unplug the device, wait 10 seconds and plug it back in.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Wait 2 minutes for the device to start up, then run “Wipe Internal Disk” again.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "The disk stopped responding during the wipe";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "The device's disk stopped responding after its partition table was cleared. Apple's AirPort service waits for the disk too, so the device cannot restart itself.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "If the device is still formatting the disk, wait until it finishes.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.2" = "Unplug the device, wait 10 seconds and plug it back in.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.3" = "Wait 2 minutes for the device to start up, then run “Wipe Internal Disk” again.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.4" = "If the disk stops responding again, it is probably failing: replace the disk.";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.title" = "The disk failed while it was being wiped";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.message" = "The disk did not respond, or did not keep the zeros written to it, so it is probably failing. Its partition table may already be cleared, so its volumes may not show up anywhere. File sharing stays off until the device restarts.";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.action.1" = "Restart the device.";

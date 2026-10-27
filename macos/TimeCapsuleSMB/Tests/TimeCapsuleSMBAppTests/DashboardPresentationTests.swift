@@ -437,6 +437,33 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertTrue(german.message.hasPrefix("Ein Datenträger auf dem Gerät lässt sich nicht einbinden"))
     }
 
+    func testCheckupPresentationLocalizesDiskNotRespondingCheck() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+
+        // The helper's sentence names the stuck processes in English; the row
+        // is the catalog's sentence in the app language.
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "A disk on the device has stopped responding: a disk operation has waited for minutes without finishing. Stuck: mount_hfs (pid 421) waiting on biolock for 127+ s.",
+                domain: "device",
+                code: "disk_not_responding"
+            )
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        L10n.apply(language: .english)
+        let english = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first?.rows.first)
+        XCTAssertEqual(english.message, L10n.string("doctor.check.disk_not_responding"))
+        XCTAssertTrue(english.message.hasPrefix("A disk on the device has stopped responding"))
+        XCTAssertFalse(english.message.contains("mount_hfs"))
+
+        L10n.apply(language: .german)
+        let german = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first?.rows.first)
+        XCTAssertTrue(german.message.hasPrefix("Eine Festplatte am Gerät reagiert nicht mehr"))
+    }
+
     func testCheckupPresentationLocalizesClientOnUnsharedNetworkCheck() throws {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
@@ -1138,6 +1165,20 @@ final class DashboardPresentationTests: XCTestCase {
             hostWarning: nil
         ))
         XCTAssertEqual(try row(.runtime, in: other).id, "runtime-unhealthy")
+        // The disk stopped responding: say unplug, and what a repeat means.
+        stuckProfile.runtimeState?.errorCode = DoctorSummary.diskNotRespondingResultCode
+        let stalled = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: stuckProfile,
+            passwordState: .available,
+            displayStatus: .failed,
+            primaryAction: .viewCheckup,
+            hostWarning: nil
+        ))
+        let stalledRow = try row(.runtime, in: stalled)
+        XCTAssertEqual(stalledRow.id, "runtime-disk-not-responding")
+        XCTAssertEqual(stalledRow.status, .failed)
+        XCTAssertEqual(stalledRow.action, .viewCheckup)
+        XCTAssertEqual(stalledRow.detail, L10n.string("doctor.check.disk_not_responding"))
         // Apple's ACPd is gone: say unplug, not only how many checks failed.
         stuckProfile.runtimeState?.errorCode = DoctorSummary.acpdBrokenResultCode
         let acpdGone = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(

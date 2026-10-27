@@ -7,7 +7,12 @@ from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
-from timecapsulesmb.device.disk_errors import DiskFailingError, disk_errors_explain, read_disk_errors_conn
+from timecapsulesmb.device.disk_errors import (
+    DiskFailingError,
+    DiskNotRespondingError,
+    disk_errors_explain,
+    read_disk_errors_conn,
+)
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError
 from timecapsulesmb.device.probe import (
     ACPD_QUIT_STEP,
@@ -21,6 +26,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.deploy.commands import RemoteAction
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.runtime import acpd_problems_and_disk_stalls
 from timecapsulesmb.services.runtime_verification import runtime_failure_error, verify_managed_runtime_ready
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -287,11 +293,17 @@ def require_acpd_for_start(
     verification. `runtime` is the decision's probe, whose wait already ends
     once two listings show ACPd gone (ACPD_QUIT_STEP): ACPd is not read again
     then. The marker and syUT reads raise TransportError; a process listing
-    that fails says nothing."""
+    that fails says nothing. A process stuck on the disk refuses the start
+    first, as it refuses require_acpd_ready's work
+    (services.runtime.acpd_problems_and_disk_stalls): the manager could
+    stage nothing from that disk."""
     if runtime is not None and any(step.id == ACPD_QUIT_STEP for step in runtime.steps):
         callbacks.debug(acpd_problems=["quit"])
         raise AcpdQuitError(ACPD_QUIT_START_MESSAGE)
-    problems = [problem for problem in acpd.acpd_problems(connection) if problem.code in ACPD_START_BLOCKERS]
+    problems, stalls = acpd_problems_and_disk_stalls(connection, callbacks)
+    if stalls:
+        raise DiskNotRespondingError(stalls, prefix="NetBSD4 activation failed.", suffix="Nothing was started.")
+    problems = [problem for problem in problems if problem.code in ACPD_START_BLOCKERS]
     if not problems:
         return
     callbacks.debug(acpd_problems=[problem.code for problem in problems])

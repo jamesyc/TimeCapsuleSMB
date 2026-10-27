@@ -305,6 +305,8 @@ class FakeInstalledRuntime:
     rsync_not_running: bool = False
     # This boot's disk errors (device.disk_errors), which keep Samba off.
     disk_errors: tuple[str, ...] = ()
+    # A process listing with a process stuck on the disk, which keeps Samba off.
+    disk_stall_listing: str = ""
     # Apple's ACPd quit once the runtime started (device.acpd, "quit").
     acpd_quit: bool = False
     calls: list[str] = field(default_factory=list)
@@ -338,6 +340,11 @@ class FakeInstalledRuntime:
             from timecapsulesmb.device.disk_errors import DiskFailingError
 
             raise DiskFailingError(self.disk_errors)
+        if self.disk_stall_listing:
+            from timecapsulesmb.device.disk_errors import DiskNotRespondingError
+            from timecapsulesmb.device.processes import disk_io_stalls
+
+            raise DiskNotRespondingError(disk_io_stalls(self.disk_stall_listing))
         if self.acpd_quit:
             from timecapsulesmb.device.acpd import ACPD_QUIT_MESSAGE
             from timecapsulesmb.device.errors import AcpdQuitError

@@ -155,6 +155,36 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(otherState?.errorCode, "doctor_failed")
     }
 
+    func testADiskThatStoppedRespondingOutranksTheACPdAndMountFailuresItCauses() throws {
+        // A process stuck on the disk holds up diskd, and ACPd behind it, so
+        // the disk is what the dashboard names, ahead of an ACPd that is gone
+        // and a disk that will not mount; a failing disk still comes first.
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let stalled = testDoctorCheck(status: "FAIL", message: "The device's disk has stopped responding",
+                                      domain: "device", code: DoctorSummary.diskNotRespondingResultCode)
+        let acpd = testDoctorCheck(status: "FAIL", message: "Apple ACPd is broken", domain: "device",
+                                   code: DoctorSummary.acpdBrokenResultCode,
+                                   extraDetails: ["acpd_problem": .string("quit"), "acpd_gone": .bool(true)])
+        let mounting = testDoctorCheck(status: "FAIL", message: "a disk on the device will not mount",
+                                       domain: "device", code: DoctorSummary.diskNotMountingResultCode)
+        let failing = testDoctorCheck(status: "FAIL", message: "the disk is failing",
+                                      domain: "device", code: DoctorSummary.diskFailingResultCode)
+        let cases: [([JSONValue], String)] = [
+            ([stalled], DoctorSummary.diskNotRespondingResultCode),
+            ([stalled, acpd, mounting], DoctorSummary.diskNotRespondingResultCode),
+            ([stalled, failing], DoctorSummary.diskFailingResultCode),
+            ([mounting], DoctorSummary.diskNotMountingResultCode),
+        ]
+        for (checks, code) in cases {
+            let summary = try makeDoctorSummary(checks: checks)
+            let state = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: profile, skipSSH: false, state: .failed, summary: summary)
+            XCTAssertEqual(summary.diskNotResponding, checks.contains(stalled))
+            XCTAssertEqual(state?.state, .unhealthy)
+            XCTAssertEqual(state?.errorCode, code)
+        }
+    }
+
     func testVolumesInMemoryAreUnhealthyWithTheirOwnCodeBehindAFailingDisk() throws {
         // An erase left a volume only in memory: the dashboard says so, even
         // beside the payload's own FAIL; a failing disk still comes first.
@@ -226,6 +256,22 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
             profile: profile, skipSSH: false, state: .failed, summary: blocked)
         XCTAssertEqual(blockedState?.state, .unhealthy)
         XCTAssertEqual(blockedState?.errorCode, DoctorSummary.acpdBrokenResultCode)
+    }
+
+    func testANetBSD4DiskThatIsFailingOrStoppedRespondingIsShownInsteadOfActivate() throws {
+        // Samba never started because the disk is failing or stuck: Activate
+        // cannot start it from that disk, so the dashboard names the disk.
+        let profile = try makeProfile(payloadFamily: "netbsd4le_samba4")
+        let notStarted = testDoctorCheck(status: "FAIL", message: "the runtime is installed but not running",
+                                         domain: "device", code: DoctorSummary.runtimeNotStartedResultCode)
+        for code in [DoctorSummary.diskNotRespondingResultCode, DoctorSummary.diskFailingResultCode] {
+            let disk = testDoctorCheck(status: "FAIL", message: "the disk", domain: "device", code: code)
+            let state = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: profile, skipSSH: false, state: .failed,
+                summary: try makeDoctorSummary(checks: [notStarted, disk]))
+            XCTAssertEqual(state?.state, .unhealthy, code)
+            XCTAssertEqual(state?.errorCode, code, code)
+        }
     }
 
     func testASectionDecodesWithoutItsTelemetryCodeLists() throws {

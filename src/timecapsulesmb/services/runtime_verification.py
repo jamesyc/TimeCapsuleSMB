@@ -6,7 +6,13 @@ from collections.abc import Callable
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
 from timecapsulesmb.device import acpd
-from timecapsulesmb.device.disk_errors import DiskFailingError, disk_errors_explain, read_disk_errors_conn
+from timecapsulesmb.device.disk_errors import (
+    DiskFailingError,
+    DiskNotRespondingError,
+    disk_errors_explain,
+    read_disk_errors_conn,
+)
+from timecapsulesmb.device.processes import StuckProcess, disk_io_stalls
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, RsyncNotRunningError
 from timecapsulesmb.device.probe import (
     ACPD_QUIT_STEP,
@@ -37,8 +43,11 @@ def verify_managed_runtime_ready(
     read_runtime_logs: Callable[[SshConnection], dict[str, object]] | None = None,
     read_disk_errors: Callable[[SshConnection], tuple[str, ...] | None] | None = None,
     read_start_state: Callable[[SshConnection], ManagerStartupAgeProbeResult] | None = None,
+    read_processes: Callable[[SshConnection], str] | None = None,
 ) -> ManagedRuntimeProbeResult:
     callbacks = callbacks or OperationCallbacks()
+    if read_processes is None:
+        read_processes = acpd.read_processes
     if probe_runtime is None:
         probe_runtime = probe_managed_runtime_conn
     if read_runtime_logs is None:
@@ -98,7 +107,12 @@ def verify_managed_runtime_ready(
     disk_errors = read_disk_errors(connection)
     if disk_errors:
         callbacks.debug(disk_error_lines=list(disk_errors[-5:]))
-    raise runtime_failure_error(verification, failure_message, disk_errors=disk_errors)
+    # NetBSD 4's kernel log often keeps no line of a disk that stopped
+    # answering; a process stuck on it says so instead.
+    disk_stalls = tuple(disk_io_stalls(read_processes(connection)))
+    if disk_stalls:
+        callbacks.debug(disk_io_stalls=[stall.describe() for stall in disk_stalls])
+    raise runtime_failure_error(verification, failure_message, disk_errors=disk_errors, disk_stalls=disk_stalls)
 
 
 def acpd_after_start_measurement(
@@ -138,10 +152,16 @@ def acpd_after_start_measurement(
 
 
 def runtime_failure_error(
-    verification: ManagedRuntimeProbeResult, failure_message: str, *, disk_errors: tuple[str, ...] | None = None,
+    verification: ManagedRuntimeProbeResult,
+    failure_message: str,
+    *,
+    disk_errors: tuple[str, ...] | None = None,
+    disk_stalls: tuple[StuckProcess, ...] = (),
 ) -> DeviceError:
     """The error for a runtime that is not ready: this boot's disk errors
-    when they explain it (disk_errors_explain), else ACPd gone (the wait's
+    when they explain it (disk_errors_explain), else a process stuck on the
+    disk while Samba is off (disk_stalls, processes.disk_io_stalls: the
+    manager cannot stage anything from it), else ACPd gone (the wait's
     ACPD_QUIT_STEP: without it the manager sees no disk, so its verdicts say
     nothing), else the manager's verdict, or rsync's alone while file sharing
     serves (whose error must not say file sharing failed), or failure_message
@@ -149,6 +169,8 @@ def runtime_failure_error(
     problem = runtime_payload_problem(verification)
     if disk_errors_explain(disk_errors, (problem,) if problem else (), samba_ready=verification.samba_ready):
         return DiskFailingError(disk_errors)
+    if disk_stalls and not verification.samba_ready:
+        return DiskNotRespondingError(disk_stalls)
     if any(step.id == ACPD_QUIT_STEP for step in verification.steps):
         # The checks that failed, without the ones that passed beside them.
         failed = "; ".join(step.detail for step in verification.steps

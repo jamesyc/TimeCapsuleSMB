@@ -374,6 +374,13 @@ Install / Update Samba, Uninstall, Disk Repair and Checkup read the device's ker
 
 Install, Uninstall and Disk Repair ask before they go on with a failing disk; `--yes` goes on after printing the warning.
 
+### The Disk Is Not Responding
+
+A disk operation on the device has waited for minutes without finishing, such as Apple's `mount_hfs` mounting the disk at startup. Apple's AirPort service waits for the disk too, so the device cannot be updated or restarted over the network, and AirPort Utility may say the AirPort service is not answering. Install / Update Samba, Uninstall, Disk Repair, Wipe Internal Disk and Activate refuse to start, with nothing changed, and Checkup names the stuck processes.
+
+1. Unplug the device, wait 10 seconds and plug it back in. Wait 2 minutes, then try again.
+2. If the disk stops responding again, it is probably failing. Copy off the files you need: connect a USB disk to a Mac, or take an internal disk out and connect it to a Mac with a SATA-to-USB adapter. Then replace the disk, erase the new one in AirPort Utility and run “Install / Update Samba”.
+
 ### SSH Does Not Turn On
 
 Turning on SSH restarts the device. When that fails, Configure and “Enable SSH” tell the two cases apart:

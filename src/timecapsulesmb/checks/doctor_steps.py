@@ -98,6 +98,8 @@ from timecapsulesmb.device.disk_errors import (
     disk_errors_explain,
     disk_errors_in,
     DISK_FAILING_WAY_OUT,
+    DISK_NOT_RESPONDING_MESSAGE,
+    DISK_NOT_RESPONDING_WAY_OUT,
     disk_failing_message,
     read_disk_errors_conn,
 )
@@ -122,9 +124,13 @@ from timecapsulesmb.device import acpd
 from timecapsulesmb.device.processes import (
     LOCK_WAIT_READ_SECONDS,
     STUCK_SLEEP_SECONDS,
+    StuckProcess,
+    disk_io_stalls,
     manager_unnamed_stuck_count,
+    parse_ps_rows,
     read_lock_waits,
     smbd_lock_waits,
+    smbd_running,
     stuck_processes,
 )
 from timecapsulesmb.device.probe import (
@@ -2288,28 +2294,25 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
         _doctor_record_kern_limits(target, sink)
     # The manager's title names the four longest and counts the rest.
     unnamed = manager_unnamed_stuck_count(snapshot)
+    disk_stalls = tuple(disk_io_stalls(snapshot))
     if stuck:
-        details: dict[str, object] = {
-            "stuck_processes": [
-                {"pid": p.pid, "name": p.name, "wchan": p.wchan, "sleep_seconds": p.sleep_seconds}
-                for p in stuck
-            ],
-        }
+        details = _stuck_details(stuck)
         more = ""
         if unnamed:
             details["stuck_processes_unnamed"] = unnamed
             more = f"; and {unnamed} more the device's manager counts but does not name"
-        sink.add(
-            CheckResult(
+        if disk_stalls:
+            # One of them waits for the disk itself, which explains the rest
+            # and the ACPd check's silence too (_doctor_check_apple_acpd).
+            sink.add(_disk_not_responding_result(stuck, details, more=more))
+        else:
+            sink.add(CheckResult(
                 "FAIL",
-                "device processes are blocked in the kernel without making progress: "
-                + "; ".join(process.describe() for process in stuck)
-                + more
-                + ". A disk operation is not completing (a failing disk or a kernel I/O stall); "
+                f"device processes are blocked in the kernel without making progress: {_stuck_list(stuck, more)}. "
+                "A disk operation is not completing (a failing disk or a kernel I/O stall); "
                 "if this does not clear, power-cycle the device",
                 details,
-            )
-        )
+            ))
     # Nothing on the device ends a lock wait. The waiter's registers above say
     # which call and file it waits on (a TDB record lock, or a flock() on a
     # shared file), and the TDB listing names a TDB lock's holder.
@@ -2325,7 +2328,28 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
                 {"smbd_lock_waits": waiting},
             )
         )
-    return ProcessSnapshotState(stuck=stuck, snapshot=snapshot)
+    return ProcessSnapshotState(stuck=stuck, snapshot=snapshot, disk_stalls=disk_stalls)
+
+
+def _stuck_details(stuck: Iterable[StuckProcess]) -> dict[str, object]:
+    return {"stuck_processes": [
+        {"pid": p.pid, "name": p.name, "wchan": p.wchan, "sleep_seconds": p.sleep_seconds} for p in stuck
+    ]}
+
+
+def _stuck_list(stuck: Iterable[StuckProcess], more: str = "") -> str:
+    return "; ".join(process.describe() for process in stuck) + more
+
+
+def _disk_not_responding_result(
+    stuck: Iterable[StuckProcess], details: dict[str, object], *, more: str = "",
+) -> CheckResult:
+    """The verdict for processes stuck on the disk (processes.disk_io_stalls)."""
+    return CheckResult(
+        "FAIL",
+        f"{DISK_NOT_RESPONDING_MESSAGE} Stuck: {_stuck_list(stuck, more)}. {DISK_NOT_RESPONDING_WAY_OUT}",
+        {**details, "code": ErrorCode.DISK_NOT_RESPONDING},
+    )
 
 
 def _doctor_record_kern_limits(target: DoctorTarget, sink: DoctorSink) -> None:
@@ -2399,20 +2423,36 @@ def _doctor_check_apple_acpd(
     clears in the time a check takes. Read from the stuck-process step's
     listing; a device whose ps did not answer is asked nothing more.
     `network_reading` is this computer's network ACP read at this address.
+    A process stuck on the disk explains ACPd's silence on both (ACPd waits
+    on diskd, which waits for the disk), so that silence is not blamed on
+    ACPd: the disk's verdict says it, from the stuck-process step, or from a
+    second listing here when ACPd's slow reads let a disk process pass the
+    stall threshold after the first.
     An ACPd that is gone while Samba is off (AcpdProblem.sharing_off) is the
     whole verdict: without it the manager reads no disk and no setting, so
     every check after it would only restate it. With smbd still running, the
-    checks after it say how sharing is."""
+    checks after it say how sharing is. A stuck disk while Samba is off is
+    the whole verdict the same way (_disk_stall_stops)."""
     if not remote.remote_checks_enabled or processes.timed_out or processes.snapshot is None:
         return StepDecision()
+    disk_stalls, listing = processes.disk_stalls, processes.snapshot
     try:
         problems = acpd.acpd_problems(target.connection, processes.snapshot, network_reading=network_reading)
     except TransportError:
-        return StepDecision()
+        return StepDecision(stop=_disk_stall_stops(disk_stalls, listing))
     if sink.debug_fields is not None:
         sink.debug_fields["acpd_problems"] = [problem.code for problem in problems]
         for problem in problems:
             sink.debug_fields.update(problem.details)
+    if not disk_stalls and acpd.disk_stall_could_explain(problems):
+        listing = acpd.read_processes(target.connection)
+        disk_stalls = tuple(disk_io_stalls(listing))
+        if disk_stalls:
+            if sink.debug_fields is not None:
+                sink.debug_fields["remote_process_snapshot_after_acpd"] = limit_remote_log_tail(listing.rstrip())
+            sink.add(_disk_not_responding_result(disk_stalls, _stuck_details(disk_stalls)))
+    if disk_stalls:
+        problems = [problem for problem in problems if problem.code not in acpd.DISK_STALL_PROBLEMS]
     for problem in problems:
         message = f"{acpd.acpd_broken_message(problem.what, note=problem.note)} {acpd.ACPD_FIX}, then check again"
         if problem.gone:
@@ -2425,7 +2465,25 @@ def _doctor_check_apple_acpd(
                  **problem.details},
             )
         )
-    return StepDecision(stop=any(problem.sharing_off for problem in problems))
+    return StepDecision(
+        stop=any(problem.sharing_off for problem in problems)
+        or _disk_stall_stops(disk_stalls, listing),
+    )
+
+
+def _disk_stall_stops(disk_stalls: tuple[StuckProcess, ...], listing: str) -> bool:
+    """Whether a stuck disk is doctor's whole verdict: Samba is off, as no
+    smbd runs in `listing` or every smbd in it is stuck. Every check after it
+    would only restate it, slowly (the disk reads, the startup wait). A stall
+    beside an smbd that serves, such as a client's child stuck on a USB disk
+    while the parent serves the internal one, is not."""
+    if not disk_stalls:
+        return False
+    if smbd_running(listing) is False:
+        return True
+    smbds = [process.pid for process in parse_ps_rows(listing) if process.ucomm == "smbd" and not process.zombie]
+    stuck = {process.pid for process in stuck_processes(listing)}
+    return bool(smbds) and all(pid in stuck for pid in smbds)
 
 
 def _doctor_check_running_migration(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
@@ -2683,9 +2741,13 @@ def _doctor_check_disk_errors_after_failure(
 def _doctor_check_disk_mounting(manager: ManagerStartupAgeProbeResult | None, sink: DoctorSink) -> StepDecision:
     """A disk has not mounted for 10 minutes and no other holds the Samba
     files: file sharing is off until a restart, so this is the whole verdict;
-    what follows only restates it."""
+    what follows only restates it. A disk already reported as not responding
+    is why it does not mount, and that verdict's way out is the one to follow:
+    this one's Disk Repair would only wait on the same disk."""
     if manager is None or manager.unmounted_since is None:
         return StepDecision()
+    if any(result.details.get("code") == ErrorCode.DISK_NOT_RESPONDING for result in sink.results):
+        return StepDecision(stop=True)
     sink.add(CheckResult("FAIL", DISK_NOT_MOUNTING_MESSAGE, details={"code": DOCTOR_CODE_DISK_NOT_MOUNTING}))
     return StepDecision(stop=True)
 

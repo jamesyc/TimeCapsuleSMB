@@ -2209,6 +2209,14 @@ def _runtime_timeout_detail(timeout_seconds: int, final_attempts_allowed: int) -
 
 # Checkup's results say what to do; an error's next steps come from its code.
 _PAYLOAD_REINSTALL = 'run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line'
+# The same for a disk that stopped responding (device.disk_errors
+# .DISK_NOT_RESPONDING_WAY_OUT): which disk it is goes unsaid, and a USB disk
+# connects to a Mac as it is.
+DISK_STALL_REPLACE = (
+    "copy off the files you need (connect a USB disk to a Mac; if file sharing is off, take an internal disk "
+    "out and connect it to a Mac with a SATA-to-USB adapter), replace the disk, then erase the new disk in "
+    f"AirPort Utility and {_PAYLOAD_REINSTALL}"
+)
 # A failing disk's way out (device.disk_errors.DISK_FAILING_WAY_OUT).
 DISK_REPLACE = (
     "copy off the files you need (if file sharing is off, take the disk out and connect it to a Mac with a "

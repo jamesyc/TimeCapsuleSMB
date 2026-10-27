@@ -79,6 +79,7 @@ class ErrorCode(str, Enum):
 
     # The disk.
     DISK_FAILING = "disk_failing"
+    DISK_NOT_RESPONDING = "disk_not_responding"
     DISK_WRITE_TEST_UNRESPONSIVE = "disk_write_test_unresponsive"
     FSCK_ALREADY_RUNNING = "fsck_already_running"
     FSCK_SESSION_DROPPED = "fsck_session_dropped"

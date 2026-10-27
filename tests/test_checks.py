@@ -2941,17 +2941,24 @@ class CheckTests(unittest.TestCase):
         run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, self.STUCK_SMBD_ROW]))
 
         self.assertTrue(run.fatal)
-        stuck = [result for result in run.results if "blocked in the kernel" in result.message]
+        # biowait is a wait for the disk's own I/O: the disk stopped responding.
+        stuck = [result for result in run.results if result.details.get("code") == "disk_not_responding"]
         self.assertEqual(len(stuck), 1)
         self.assertEqual(stuck[0].status, "FAIL")
+        self.assertTrue(stuck[0].message.startswith("A disk on the device has stopped responding"))
         self.assertIn("smbd (pid 3166) waiting on biowait for 127+ s", stuck[0].message)
+        self.assertIn("If the disk stops responding again, it is probably failing", stuck[0].message)
         self.assertEqual(
             stuck[0].details["stuck_processes"],
             [{"pid": 3166, "name": "smbd", "wchan": "biowait", "sleep_seconds": 127}],
         )
+        # The parent smbd still serves, so doctor goes on past the disk, but a
+        # Mac's login would wait behind the stuck child: the SMB check says
+        # why it does not run.
         skipped = [result for result in run.results if result.status == "SKIP" and "authenticated SMB" in result.message]
         self.assertEqual(len(skipped), 1)
         run.mocks.check_authenticated_smb_listing.assert_not_called()
+        run.mocks.probe_managed_smbd_conn.assert_called()
         self.assertIn(self.STUCK_SMBD_ROW.strip(), run.debug_fields["remote_process_snapshot"])
         # The snapshot answered, so the data-disk logs are still worth reading.
         run.log_tails.assert_called_once()
@@ -3320,10 +3327,15 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(any("blocked in the kernel" in result.message for result in run.results))
 
     def test_run_doctor_checks_reports_stuck_processes_while_the_device_starts(self) -> None:
-        run = self.run_doctor_with_process_snapshot(self.STUCK_SMBD_ROW, manager_started_seconds_ago=41.0)
+        stuck_mdns = "  359 119 2 D 125 tstile 0:00.00 mDNSResponder"
+        for row, code in ((self.STUCK_SMBD_ROW, "disk_not_responding"), (stuck_mdns, None)):
+            with self.subTest(row=row):
+                run = self.run_doctor_with_process_snapshot(row, manager_started_seconds_ago=41.0)
 
-        failures = [result for result in run.results if result.status == "FAIL"]
-        self.assertTrue(any("blocked in the kernel" in result.message for result in failures))
+                failures = [result for result in run.results if result.status == "FAIL"]
+                stuck = [result for result in failures if "stuck_processes" in result.details]
+                self.assertEqual(len(stuck), 1)
+                self.assertEqual(stuck[0].details.get("code"), code)
 
     STUCK_ACPD_ROWS = "\n".join((
         "  119 1 2 Sl 0 kqueue 0:00.00 ACPd",
@@ -3505,6 +3517,157 @@ class CheckTests(unittest.TestCase):
 
         self.assertEqual([result.details["acpd_problem"] for result in self.apple_acpd_failures(run)], ["syut_silent"])
         run.mocks.check_authenticated_smb_listing.assert_called()
+
+    # The field case: Apple's mount_hfs asleep on a disk buffer at every boot,
+    # diskd waiting on it, and ACPd (parked) behind diskd.
+    STALLED_DISK_ROWS = "\n".join((
+        "  119 1 2 Sl 127 parked 0:00.83 ACPd",
+        "   39 144 39 I 127 wait 0:00.02 diskd /sbin/diskd -i lo0 -d local.",
+        "  421 379 39 D 127 biolock 0:00.00 mount_hfs",
+    ))
+
+    def test_run_doctor_checks_blames_a_stuck_disk_not_the_acpd_waiting_behind_it(self) -> None:
+        # ACPd answers neither its own acp nor the network: that is the disk,
+        # reported once as the disk, with no ACPd failure.
+        evidence = {"remote_kern_limits": "kern.maxfiles = 4096", "remote_kernel_table_full": []}
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.network_silent_details", return_value=evidence):
+            run = self.run_doctor_with_process_snapshot(self.STALLED_DISK_ROWS)
+
+        disk = [result for result in run.results if result.details.get("code") == "disk_not_responding"]
+        self.assertEqual(len(disk), 1)
+        self.assertEqual(disk[0].status, "FAIL")
+        self.assertIn("mount_hfs (pid 421) waiting on biolock for 127+ s", disk[0].message)
+        self.assertIn("Unplug the device", disk[0].message)
+        self.assertEqual(self.apple_acpd_failures(run), [])
+        self.assertFalse(any("blocked in the kernel" in result.message for result in run.results))
+        # What ACPd did is still in the diagnostics.
+        self.assertEqual(run.debug_fields["acpd_problems"], ["syut_silent"])
+
+    def test_run_doctor_checks_reads_the_list_again_before_blaming_a_silent_acpd(self) -> None:
+        # The snapshot came too early to show mount_hfs as stuck; ACPd's slow
+        # reads let it pass the threshold, and the second listing says so.
+        young = self.STALLED_DISK_ROWS.replace(" D 127 biolock", " D 100 biolock")
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=self.STALLED_DISK_ROWS) as listing:
+            run = self.run_doctor_with_process_snapshot(young)
+
+        disk = [result for result in run.results if result.details.get("code") == "disk_not_responding"]
+        self.assertEqual(len(disk), 1)
+        self.assertIn("mount_hfs (pid 421) waiting on biolock for 127+ s", disk[0].message)
+        self.assertEqual(self.apple_acpd_failures(run), [])
+        self.assertIn("biolock", run.debug_fields["remote_process_snapshot_after_acpd"])
+        listing.assert_called_once()
+
+    def test_run_doctor_checks_blames_a_silent_acpd_when_the_second_listing_shows_no_stall(self) -> None:
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=self.HEALTHY_SMBD_ROW):
+            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
+
+        self.assertEqual([result.details["acpd_problem"] for result in self.apple_acpd_failures(run)], ["syut_silent"])
+        self.assertEqual([r for r in run.results if r.details.get("code") == "disk_not_responding"], [])
+
+    SSHD_ROW = "  107 1 15 S 0 select 0:00.32 sshd"
+    LISTING_END = "tcapsule-ps: end"
+
+    def finished_listing(self, *rows: str) -> str:
+        """A listing that can say a process is gone (processes.listing_complete)."""
+        return "\n".join((self.SSHD_ROW, *rows, self.LISTING_END))
+
+    def test_run_doctor_checks_stops_at_a_stuck_disk_while_samba_is_off(self) -> None:
+        # No smbd, or an smbd itself stuck: the disk is the whole verdict, and
+        # doctor neither waits for a startup nor checks the services it stops.
+        cases = {
+            "no smbd": self.finished_listing(self.STALLED_DISK_ROWS),
+            "smbd stuck beside it": self.finished_listing(self.STALLED_DISK_ROWS, self.STUCK_SMBD_ROW),
+        }
+        for name, listing in cases.items():
+            with self.subTest(name):
+                run = self.run_doctor_with_process_snapshot(listing)
+
+                self.assertTrue(run.fatal)
+                self.assertEqual(
+                    [r.details.get("code") for r in run.results if r.status == "FAIL"], ["disk_not_responding"])
+                run.mocks.probe_managed_smbd_conn.assert_not_called()
+                run.mocks.check_authenticated_smb_listing.assert_not_called()
+                # What the manager logged still reaches the diagnostics.
+                run.log_tails.assert_called_once()
+
+    def test_run_doctor_checks_goes_on_past_a_stuck_disk_while_smbd_serves(self) -> None:
+        # A USB disk stuck while the internal disk's Samba serves: the checks
+        # after the verdict still say how sharing is.
+        run = self.run_doctor_with_process_snapshot(self.finished_listing(self.STALLED_DISK_ROWS, self.HEALTHY_SMBD_ROW))
+
+        self.assertEqual(len([r for r in run.results if r.details.get("code") == "disk_not_responding"]), 1)
+        run.mocks.probe_managed_smbd_conn.assert_called()
+
+    def test_run_doctor_checks_adds_the_disk_line_when_the_second_listing_finds_the_disk(self) -> None:
+        # The first listing showed only a stuck name lookup; the second shows
+        # mount_hfs stuck too. The first line stays, and the disk's line names
+        # what waits for the disk in the second.
+        stuck_mdns = "  359 119 2 D 125 tstile 0:00.00 mDNSResponder"
+        young = self.STALLED_DISK_ROWS.replace(" D 127 biolock", " D 100 biolock")
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.read_processes",
+                           return_value="\n".join([stuck_mdns, self.STALLED_DISK_ROWS])):
+            run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, stuck_mdns, young]))
+
+        stuck_lines = [r for r in run.results if isinstance(r.details, dict) and "stuck_processes" in r.details]
+        self.assertEqual([r.details.get("code") for r in stuck_lines], [None, "disk_not_responding"])
+        self.assertIn("mDNSResponder (pid 359) waiting on tstile for 125 s", stuck_lines[0].message)
+        self.assertEqual([p["pid"] for p in stuck_lines[1].details["stuck_processes"]], [421])
+        self.assertIn("mount_hfs (pid 421) waiting on biolock for 127+ s", stuck_lines[1].message)
+        self.assertEqual(self.apple_acpd_failures(run), [])
+
+    def test_run_doctor_checks_reads_the_list_again_when_acpd_is_silent_beside_a_stuck_fork(self) -> None:
+        # The stuck fork is ACPd's own and stays reported; the silence is the
+        # disk's, which passed the stall threshold during ACPd's reads.
+        fork = "  352 119 2 S 1 nanoslp 0:00.00 ACPd"
+        young = self.STALLED_DISK_ROWS.replace(" D 127 biolock", " D 100 biolock")
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.read_processes",
+                           return_value="\n".join([fork, self.STALLED_DISK_ROWS])) as listing:
+            run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, fork, young]))
+
+        listing.assert_called_once()
+        disk = [r for r in run.results if r.details.get("code") == "disk_not_responding"]
+        self.assertEqual(len(disk), 1)
+        self.assertIn("mount_hfs (pid 421) waiting on biolock for 127+ s", disk[0].message)
+        self.assertEqual([r.details["acpd_problem"] for r in self.apple_acpd_failures(run)], ["stuck_child"])
+
+    def test_run_doctor_checks_stops_at_a_known_stall_when_acpd_cannot_be_read(self) -> None:
+        # SSH failed while ACPd was read: the stuck-process step's disk verdict
+        # still decides whether doctor goes on, by whether Samba serves.
+        cases = {
+            "no smbd": (self.finished_listing(self.STALLED_DISK_ROWS), True),
+            "smbd serves": (self.finished_listing(self.STALLED_DISK_ROWS, self.HEALTHY_SMBD_ROW), False),
+        }
+        for name, (listing, stops) in cases.items():
+            with self.subTest(name), \
+                    mock.patch("timecapsulesmb.device.acpd.acpd_problems", side_effect=SshError("ssh failed")):
+                run = self.run_doctor_with_process_snapshot(listing)
+
+                self.assertEqual(
+                    [r.details.get("code") for r in run.results if r.details.get("code") == "disk_not_responding"],
+                    ["disk_not_responding"])
+                self.assertEqual(run.mocks.probe_managed_smbd_conn.called, not stops)
+
+    def test_run_doctor_checks_stops_when_every_smbd_is_stuck_on_the_disk(self) -> None:
+        # The parent and its only child both wait for the disk: nothing serves.
+        stuck_parent = "  457 146 457 D 127 biowait 0:00.00 smbd"
+        run = self.run_doctor_with_process_snapshot(self.finished_listing(stuck_parent, self.STUCK_SMBD_ROW))
+
+        self.assertTrue(run.fatal)
+        run.mocks.probe_managed_smbd_conn.assert_not_called()
+
+    def test_run_doctor_checks_still_reports_an_acpd_problem_a_stuck_disk_does_not_cause(self) -> None:
+        # A restart that never happened is ACPd's own, stuck disk or not.
+        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True):
+            run = self.run_doctor_with_process_snapshot(self.STALLED_DISK_ROWS)
+
+        self.assertEqual([result.details["acpd_problem"] for result in self.apple_acpd_failures(run)],
+                         ["restart_never_happened"])
+        self.assertEqual(len([r for r in run.results if r.details.get("code") == "disk_not_responding"]), 1)
 
     def test_run_doctor_checks_does_not_call_a_listing_cut_short_a_quit_acpd(self) -> None:
         run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
@@ -3881,6 +4044,29 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(debug_fields["remote_diskd_threads"], self.HUNG_DISK_THREADS)
         self.assertEqual(debug_fields["manager_startup_age"]["unmounted_since"], 1260)
         self.assertIn("stage=activate", debug_fields["remote_manager_log_tail"])
+
+    def test_doctor_leaves_the_disk_that_does_not_mount_to_the_stuck_disk_verdict(self) -> None:
+        # mount_hfs stuck on the disk is why it does not mount: one verdict,
+        # the disk's, without "run Disk Repair", which would wait on it too.
+        stuck = "  421 379 39 D 127 biolock 0:00.00 mount_hfs"
+        run, smbd = self.run_doctor_with_manager(
+            ManagerStartupAgeProbeResult(14400.0, "manager started 14400s ago", unmounted_since=1260),
+            debug_fields={},
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.read_process_snapshot_conn": mock.Mock(return_value=stuck),
+                "timecapsulesmb.checks.doctor_debug.probe_mast_diagnostics_conn":
+                    mock.Mock(return_value=self.mast_probe_diagnostics()),
+                "timecapsulesmb.checks.doctor_debug.read_remote_command_conn":
+                    self.disk_evidence(kernel=self.HUNG_DISK_KERNEL, threads=self.HUNG_DISK_THREADS),
+            },
+        )
+
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual([result.details.get("code") for result in failures], ["disk_not_responding"])
+        self.assertNotIn(DISK_NOT_MOUNTING_MESSAGE, [result.message for result in run.results])
+        self.assertTrue(run.fatal)
+        # Still the whole verdict: nothing after it restates the disk.
+        smbd.assert_not_called()
 
     def test_doctor_keeps_the_verdict_and_the_kernel_lines_when_the_thread_listing_hangs(self) -> None:
         # ps can wait on a process that holds its map lock; the kernel's disk

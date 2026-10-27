@@ -732,6 +732,65 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         # Read once, for whether Samba still runs; never rechecked for a quit.
         processes.assert_called_once_with(self.CONNECTION)
 
+    # Apple's mount_hfs asleep on a disk buffer at every boot, and ACPd behind
+    # diskd behind it: a disk that stopped answering.
+    STALLED_DISK_LISTING = "\n".join((
+        "  119 1 2 Sl 127 parked 0:00.83 ACPd",
+        "  421 379 39 D 127 biolock 0:00.00 mount_hfs",
+    ))
+
+    def test_a_process_stuck_on_the_disk_refuses_the_command_before_acpd_is_read(self) -> None:
+        # ACPd waits behind the disk, so the disk is the cause, and the work
+        # would hang on it anyway: refused at once, without ACPd's 15 s reads.
+        error, debug, answer, processes = self.gate(listing=self.STALLED_DISK_LISTING, answers=False)
+        self.assertEqual(error.code, "disk_not_responding")
+        self.assertTrue(str(error).startswith("A disk on the device has stopped responding"))
+        self.assertNotIn("Apple ACPd is broken", str(error))
+        self.assertIn("Nothing was changed.", str(error))
+        self.assertEqual(error.detail, "Waiting for the disk: mount_hfs (pid 421) waiting on biolock for 127+ s.")
+        self.assertEqual(debug["disk_io_stalls"], ["mount_hfs (pid 421) waiting on biolock for 127+ s"])
+        self.assertNotIn("acpd_problems", debug)
+        answer.assert_not_called()
+        self.network.assert_not_called()
+        processes.assert_called_once_with(self.CONNECTION)
+        steps = cli_steps("deploy", error.code)
+        self.assertEqual(steps[0], "Unplug the device, wait 10 seconds and plug it back in.")
+        self.assertTrue(any(step.startswith("If the disk stops responding again, it is probably failing") for step in steps))
+
+    def test_a_disk_stall_that_passes_the_threshold_during_acpds_reads_is_still_the_disk(self) -> None:
+        # Right after a restart, mount_hfs has slept under 120 s at the first
+        # listing; ACPd's slow reads let it pass, so the list is read again
+        # before ACPd is blamed.
+        young = self.STALLED_DISK_LISTING.replace(" D 127 biolock", " D 100 biolock")
+        debug: dict[str, object] = {}
+        callbacks = OperationCallbacks(add_debug_fields=debug.update)
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False) as answer, \
+                mock.patch("timecapsulesmb.device.acpd.read_processes",
+                           side_effect=[young, self.STALLED_DISK_LISTING]) as processes, \
+                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.pause"):
+            with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+                service_runtime.require_acpd_ready(self.CONNECTION, callbacks, reading=acp_reading(True))
+        self.assertEqual(raised.exception.code, "disk_not_responding")
+        self.assertEqual(debug["disk_io_stalls"], ["mount_hfs (pid 421) waiting on biolock for 127+ s"])
+        answer.assert_called_once_with(self.CONNECTION)
+        self.assertEqual(processes.call_count, 2)
+
+    def test_acpd_problems_a_stuck_disk_does_not_cause_are_never_rechecked(self) -> None:
+        # A stuck fork of ACPd is ACPd's own: no second listing is read.
+        error, debug, _answer, processes = self.gate(listing=self.STUCK_LISTING)
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertEqual(debug["acpd_problems"], ["stuck_child"])
+        processes.assert_called_once_with(self.CONNECTION)
+
+    def test_a_process_stuck_on_something_other_than_the_disk_leaves_the_verdict_to_acpd(self) -> None:
+        # Stuck for minutes, but on a name lookup, not the disk.
+        listing = "  359 119 2 D 125 tstile 0:00.00 mDNSResponder"
+        error, debug, answer, _processes = self.gate(listing=listing, answers=False)
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertEqual(debug["acpd_problems"], ["syut_silent"])
+        answer.assert_called_once_with(self.CONNECTION)
+
     def test_a_rejected_password_is_refused_before_ssh_is_asked(self) -> None:
         error, _debug, answer, processes = self.gate(reading=acp_reading(False))
         self.assertEqual(error.code, "auth_failed")

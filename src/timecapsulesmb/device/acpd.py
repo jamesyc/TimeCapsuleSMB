@@ -92,6 +92,21 @@ ACPD_FIX = "Unplug the device, wait 10 seconds, plug it back in and wait 2 minut
 # Checkup's code for every ACPd problem; its `acpd_problem` names which.
 APPLE_ACPD_BROKEN_CODE = "apple_acpd_broken"
 
+# The problems a process stuck on the disk causes (processes.disk_io_stalls):
+# ACPd, waiting on diskd, which waits for the disk, answers neither its own acp
+# nor the network. A quit, a restart that never happened or a stuck fork of
+# ACPd is ACPd's own.
+DISK_STALL_PROBLEMS = frozenset({"syut_silent", "network_silent"})
+
+
+def disk_stall_could_explain(problems: list[AcpdProblem]) -> bool:
+    """Whether a problem found is one a stuck disk causes, so the process
+    list is worth reading again before ACPd is blamed for it: ACPd's reads
+    take up to 45 s, long enough for a disk process that stopped answering
+    at boot to pass processes.STUCK_SLEEP_SECONDS meanwhile. Another problem
+    beside it, such as a stuck fork of ACPd, does not explain the silence."""
+    return any(problem.code in DISK_STALL_PROBLEMS for problem in problems)
+
 
 def acpd_broken_message(what: str, *, note: str = "") -> str:
     """Every caller's words for a broken ACPd: what failed, and why it matters."""

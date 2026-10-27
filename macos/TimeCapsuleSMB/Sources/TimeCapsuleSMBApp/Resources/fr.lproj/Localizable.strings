@@ -328,6 +328,7 @@
 "doctor.check.disk_volumes_in_memory" = "Un volume de l’appareil n’existe que jusqu’au prochain redémarrage : la commande « Effacer le disque » d’Utilitaire AirPort n’a pas pu remplacer la table de partitions de son disque. Tout ce qui y a été enregistré depuis cet effacement, sauvegardes Time Machine comprises, sera perdu au prochain redémarrage. Copiez tout ce dont vous avez besoin avant que l’appareil ne redémarre. Ensuite, pour le disque interne, utilisez « Reformater le disque interne » ; débranchez un disque USB de l’appareil et, avant de le rebrancher, effacez-le sur un Mac dans Utilitaire de disque au format « Mac OS étendu (journalisé) ».";
 "doctor.check.acpd_gone" = "Le service AirPort d’Apple (ACPd) s’est arrêté sur l’appareil. Débranchez l’appareil, attendez 10 secondes, puis rebranchez-le.";
 "doctor.check.disk_failing" = "Le disque de l’appareil a signalé des erreurs qu’il n’a pas pu corriger : il est probablement défaillant et le partage de fichiers est arrêté. Une réinstallation ne réparera pas le disque, et Utilitaire AirPort peut encore l’afficher comme en bon état. Copiez les fichiers dont vous avez besoin, remplacez le disque, puis effacez le nouveau disque dans Utilitaire AirPort et lancez « Installer / mettre à jour Samba ».";
+"doctor.check.disk_not_responding" = "Un disque de l’appareil ne répond plus : une opération sur le disque attend depuis plusieurs minutes sans se terminer, et le service AirPort d’Apple attend aussi le disque. Débranchez l’appareil, attendez 10 secondes, puis rebranchez-le. Si le disque cesse de nouveau de répondre, il est probablement défaillant : copiez les fichiers dont vous avez besoin, remplacez le disque, puis effacez le nouveau disque dans Utilitaire AirPort et lancez « Installer / mettre à jour Samba ».";
 "doctor.check.client_on_unshared_network" = "Ce Mac est sur un réseau où l’appareil ne partage pas ses disques, comme son côté Internet (WAN) ou son réseau invité. Connectez ce Mac au réseau principal de l’appareil en Wi-Fi ou par l’un de ses ports LAN, puis relancez « Vérification ».";
 "doctor.check.mac_smb3_disabled" = "%@ désactive SMB 3 (protocol_vers_map), alors que Time Machine en a besoin. Supprimez cette ligne, puis retirez le disque dans les réglages Time Machine et ajoutez-le à nouveau.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ désactive SMB 3 pour le serveur [%2$@]. S’il s’agit de cet appareil, supprimez cette ligne, puis retirez le disque dans les réglages Time Machine et ajoutez-le à nouveau.";
@@ -1033,6 +1034,13 @@
 "backend.recovery.disk_failing.action.1" = "Copiez les fichiers dont vous avez besoin. Si le partage de fichiers est arrêté, retirez le disque et connectez-le à un Mac avec un adaptateur SATA vers USB.";
 "backend.recovery.disk_failing.action.2" = "Remplacez le disque.";
 "backend.recovery.disk_failing.action.3" = "Effacez le nouveau disque dans Utilitaire AirPort, puis lancez « Installer / mettre à jour Samba ». Time Machine y commence une nouvelle sauvegarde complète.";
+"backend.recovery.disk_not_responding.title" = "Le disque ne répond pas";
+"backend.recovery.disk_not_responding.message" = "Une opération sur le disque de l’appareil attend depuis plusieurs minutes sans se terminer. Le service AirPort d’Apple attend aussi le disque : l’appareil ne peut donc pas être mis à jour ni redémarré par le réseau.";
+"backend.recovery.disk_not_responding.action.1" = "Débranchez l’appareil, attendez 10 secondes, puis rebranchez-le.";
+"backend.recovery.disk_not_responding.action.2" = "Attendez 2 minutes que l’appareil démarre, puis réessayez.";
+"backend.recovery.disk_not_responding.action.3" = "Si le disque cesse de nouveau de répondre, il est probablement défaillant : copiez les fichiers dont vous avez besoin. Connectez un disque USB à un Mac ; si le partage de fichiers est arrêté, retirez un disque interne et connectez-le à un Mac avec un adaptateur SATA vers USB.";
+"backend.recovery.disk_not_responding.action.4" = "Remplacez le disque.";
+"backend.recovery.disk_not_responding.action.5" = "Effacez le nouveau disque dans Utilitaire AirPort, puis lancez « Installer / mettre à jour Samba ». Time Machine y commence une nouvelle sauvegarde complète.";
 "backend.recovery.deploy_disk_size_misreported.title" = "Le disque signale une taille erronée";
 "backend.recovery.deploy_disk_size_misreported.message" = "L’appareil signale le disque interne comme beaucoup plus petit qu’il n’est. Un redémarrage corrige parfois ce problème ; si cela se reproduit, le disque est probablement défaillant.";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "Redémarrez l’appareil, puis relancez « Installer / mettre à jour Samba » une fois que le disque tourne.";
@@ -1065,6 +1073,12 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "Si l’appareil est encore en train de formater le disque, attendez qu’il ait terminé.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Débranchez l’appareil, attendez 10 secondes, puis rebranchez-le.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Attendez 2 minutes que l’appareil démarre, puis relancez « Reformater le disque interne ».";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "Le disque a cessé de répondre pendant le reformatage";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "Le disque de l’appareil a cessé de répondre après l’effacement de sa table de partition. Le service AirPort d’Apple attend aussi le disque, donc l’appareil ne peut pas redémarrer de lui-même.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "Si l’appareil est encore en train de formater le disque, attendez qu’il ait terminé.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.2" = "Débranchez l’appareil, attendez 10 secondes, puis rebranchez-le.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.3" = "Attendez 2 minutes que l’appareil démarre, puis relancez « Reformater le disque interne ».";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.4" = "Si le disque cesse de nouveau de répondre, il est probablement défaillant : remplacez le disque.";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.title" = "Le disque est tombé en panne pendant l’effacement";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.message" = "Le disque n’a pas répondu, ou n’a pas conservé les zéros qui y ont été écrits : il est probablement défaillant. Sa table de partitions est peut-être déjà effacée, donc ses volumes risquent de n’apparaître nulle part. Le partage de fichiers reste désactivé jusqu’au redémarrage de l’appareil.";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.action.1" = "Redémarrez l’appareil.";

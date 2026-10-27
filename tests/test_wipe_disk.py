@@ -1047,6 +1047,36 @@ class RunWipeTests(unittest.TestCase):
         recovery = recovery_for("wipe-disk", ErrorCode.ACPD_BROKEN, stage="erase_disk")
         self.assertEqual(recovery["actions"][0], "If the device is still formatting the disk, wait until it finishes.")
 
+    def test_an_unanswered_erase_behind_a_stuck_disk_blames_the_disk_and_requests_no_reboot(self) -> None:
+        # ACPd waits behind a process stuck on the disk: the disk's verdict and
+        # its stuck processes reach the user, not "Apple ACPd is broken".
+        from timecapsulesmb.app.recovery import recovery_for
+        from timecapsulesmb.device.disk_errors import DISK_NOT_RESPONDING_MESSAGE
+        from timecapsulesmb.device.storage import StorageDeviceError
+        facts = "Waiting for the disk: newfs_hfs (pid 612) waiting on biowait for 127+ s."
+        for jobs, still in (((), False), (("newfs_hfs",), True)):
+            with self.subTest(jobs=jobs):
+                device = FakeDevice()
+                device.erase = SshCommandTimeout("acp rpc")
+                device.wait_jobs = [jobs]
+                stalled = StorageDeviceError(DISK_NOT_RESPONDING_MESSAGE, code=ErrorCode.DISK_NOT_RESPONDING, detail=facts)
+                with mock.patch.object(wipe_disk, "raise_if_acpd_silent", side_effect=stalled):
+                    device.erased_on_timeout = bool(jobs)
+                    with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+                        device.run()
+                error = raised.exception
+                self.assertEqual((error.code, error.reason), (ErrorCode.DISK_NOT_RESPONDING, "disk_stalled"))
+                self.assertTrue(error.message.startswith(DISK_NOT_RESPONDING_MESSAGE))
+                self.assertIn("partition table was already cleared", error.message)
+                self.assertEqual("still formatting" in error.message, still)
+                self.assertNotIn("Apple ACPd is broken", str(error))
+                self.assertEqual(error.detail, facts)
+                self.assertFalse(any(call.startswith("reboot") for call in device.calls))
+        recovery = recovery_for("wipe-disk", ErrorCode.DISK_NOT_RESPONDING, stage="erase_disk")
+        self.assertEqual(recovery["title"], "The disk stopped responding during the wipe")
+        self.assertEqual(recovery["actions"][0], "If the device is still formatting the disk, wait until it finishes.")
+        self.assertEqual(recovery["actions"][-1], "If the disk stops responding again, it is probably failing: replace the disk.")
+
     def test_an_unanswered_erase_with_acpd_answering_waits_for_diskd(self) -> None:
         device = FakeDevice()
         device.erase = SshCommandTimeout("acp rpc")

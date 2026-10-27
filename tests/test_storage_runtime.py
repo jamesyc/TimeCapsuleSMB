@@ -1591,10 +1591,45 @@ class AcpdDiskReadTests(unittest.TestCase):
                 self.assertEqual(error.code, "acpd_broken")
                 self.assertIn("is not answering", str(error))
 
-    def test_an_acpd_that_answers_is_never_listed(self) -> None:
-        with mock.patch("timecapsulesmb.device.acpd.read_processes") as listing:
-            self.read(self.FAILED_GET, answers=True)
-        listing.assert_not_called()
+    def test_an_acpd_that_answers_is_listed_once_for_a_stuck_disk_and_never_for_a_quit(self) -> None:
+        # ACPd can still answer syUT while it waits behind a stuck disk, so the
+        # listing is read for disk stalls; with none, the read is empty.
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=self.RUNNING_LISTING) as listing, \
+                mock.patch("timecapsulesmb.device.acpd.acpd_quit") as quit_check:
+            result, _answer = self.read(self.FAILED_GET, answers=True)
+        self.assertEqual(result.volumes, ())
+        listing.assert_called_once_with(self.CONNECTION)
+        quit_check.assert_not_called()
+
+    # Apple's mount_hfs asleep on a disk buffer, as on a disk that stopped
+    # answering at boot.
+    STALLED_LISTING = RUNNING_LISTING.replace(
+        "tcapsule-ps: end", "  421 379 39 D 127 biolock 0:00.00 mount_hfs\ntcapsule-ps: end")
+
+    def test_a_failed_or_hung_mast_read_behind_a_stuck_disk_blames_the_disk(self) -> None:
+        # Whether or not ACPd still answers syUT, a process stuck on the disk
+        # is why MaSt does not come back: that is what is reported, not ACPd.
+        from timecapsulesmb.device.storage import StorageDeviceError
+
+        timeout = SshCommandTimeout("Timed out waiting for ssh command to finish: /usr/bin/acp MaSt")
+        for outcome in (self.FAILED_GET, timeout):
+            for answers in (True, False):
+                with self.subTest(outcome=type(outcome).__name__, answers=answers):
+                    with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=self.STALLED_LISTING):
+                        error, _answer = self.read(outcome, answers=answers)
+                    self.assertIsInstance(error, StorageDeviceError)
+                    self.assertEqual(error.code, "disk_not_responding")
+                    self.assertTrue(str(error).startswith("A disk on the device has stopped responding"))
+                    self.assertNotIn("Apple ACPd is broken", str(error))
+                    self.assertEqual(
+                        error.detail, "Waiting for the disk: mount_hfs (pid 421) waiting on biolock for 127+ s.")
+
+    def test_a_short_disk_wait_still_leaves_the_verdict_to_acpd(self) -> None:
+        # A disk read takes a moment; only one asleep for minutes is a stall.
+        short = self.STALLED_LISTING.replace(" D 127 biolock", " D 3 biolock")
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=short):
+            error, _answer = self.read(self.FAILED_GET, answers=False)
+        self.assertEqual(error.code, "acpd_broken")
 
     def test_a_failed_mast_get_with_a_working_acpd_is_an_empty_read(self) -> None:
         result, _answer = self.read(self.FAILED_GET, answers=True)

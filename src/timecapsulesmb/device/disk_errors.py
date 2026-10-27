@@ -24,9 +24,11 @@ from typing import Literal
 
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
+from timecapsulesmb.device.processes import StuckProcess
 from timecapsulesmb.device.probe import (
     DISK_EVIDENCE_COMMANDS,
     DISK_REPLACE,
+    DISK_STALL_REPLACE,
     DISK_UNREADABLE_PROBLEMS,
     DiskPayloadProblem,
     manager_payload_problems,
@@ -89,6 +91,29 @@ DISK_FAILING_MESSAGE = (
 def disk_failing_message(errors: tuple[str, ...]) -> str:
     """Checkup's line for why Samba is off, naming the kernel's last disk error."""
     return DISK_FAILING_MESSAGE.replace("from,", f"from ({errors[-1]}),", 1)
+
+
+# A process stuck on the disk for minutes (processes.disk_io_stalls): the disk
+# has stopped answering. Apple's ACPd waits on diskd, which waits on the disk,
+# so ACPd stops answering MaSt and the network as well; the disk is the cause,
+# not Apple's firmware. A restart clears a stall a passing fault caused; one
+# that comes back is a failing disk. The stuck processes do not say which
+# disk, internal or USB, so the words fit either.
+DISK_NOT_RESPONDING_MESSAGE = (
+    "A disk on the device has stopped responding: a disk operation has waited for minutes without finishing. "
+    "Apple's AirPort service waits for the disk too, so the device's disks cannot be read, and it cannot be "
+    "updated or restarted over the network."
+)
+# Checkup's result says the way out; an error's next steps come from its code.
+DISK_NOT_RESPONDING_WAY_OUT = (
+    "Unplug the device, wait 10 seconds, plug it back in and wait 2 minutes, then check again. If the disk "
+    f"stops responding again, it is probably failing: {DISK_STALL_REPLACE}."
+)
+
+
+def disk_stall_facts(stalls: Iterable[StuckProcess]) -> str:
+    """The stuck disk processes, as an error's detail."""
+    return f"Waiting for the disk: {'; '.join(stall.describe() for stall in stalls)}."
 
 
 _PREFLIGHT_EFFECTS = {
@@ -167,6 +192,20 @@ def disk_failing_warning(evidence: DiskFailingEvidence, operation: str) -> str:
         f"{subject} {evidence.text}, so it is probably failing. "
         f"{_PREFLIGHT_EFFECTS[operation]} Copy off the files you need first."
     )
+
+
+class DiskNotRespondingError(DeviceError):
+    """Samba is off, and a process stuck on the disk says why
+    (processes.disk_io_stalls). `prefix` and `suffix` frame the message for
+    the command that stopped: what failed, and what it left as it was."""
+
+    code = ErrorCode.DISK_NOT_RESPONDING
+    samba_off = True
+
+    def __init__(self, stalls: Iterable[StuckProcess], *, prefix: str = "", suffix: str = "") -> None:
+        self.stalls = tuple(stalls)
+        message = " ".join(part for part in (prefix, DISK_NOT_RESPONDING_MESSAGE, suffix) if part)
+        super().__init__(message, detail=disk_stall_facts(self.stalls))
 
 
 class DiskFailingError(DeviceError):

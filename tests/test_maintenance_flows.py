@@ -542,6 +542,21 @@ class RunFsckOnNetbsd4Tests(FsckHarness, unittest.TestCase):
         self.assertTrue(outcome.failure.endswith(f"\n{errors[-1]}"))
         self.assertFalse(recorder.fields["runtime_restarted"])
 
+    def test_runtime_kept_off_by_a_stuck_disk_keeps_its_code(self) -> None:
+        # The repair finished, but a process stuck on the disk keeps the manager
+        # from staging anything: that is why file sharing did not come back.
+        from timecapsulesmb.device.disk_errors import DISK_NOT_RESPONDING_MESSAGE
+
+        stalled = "  421 379 39 D 127 biolock 0:00.00 mount_hfs"
+        outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(disk_stall_listing=stalled))
+
+        self.assertEqual(outcome.status, 0)
+        self.assertEqual(outcome.runtime_restart_code, "disk_not_responding")
+        self.assertTrue(outcome.failure.startswith(f"Disk repair completed. {DISK_NOT_RESPONDING_MESSAGE}"))
+        self.assertTrue(outcome.failure.endswith("mount_hfs (pid 421) waiting on biolock for 127+ s."))
+        self.assertNotIn("Activate", outcome.failure)
+        self.assertFalse(recorder.fields["runtime_restarted"])
+
     def test_runtime_kept_off_by_an_acpd_that_quit_keeps_its_code(self) -> None:
         # A restart, not "run Activate" at once, is what brings ACPd back.
         outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(acpd_quit=True))

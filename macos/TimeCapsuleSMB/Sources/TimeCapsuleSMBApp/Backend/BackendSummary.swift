@@ -261,6 +261,10 @@ extension DoctorCheckPayload {
         // The helper's line quotes the kernel's; the catalog's says what it means.
         case "disk_failing":
             return L10n.string("doctor.check.disk_failing")
+        // The helper's line names the stuck processes; the catalog's says
+        // what it means and what to do.
+        case "disk_not_responding":
+            return L10n.string("doctor.check.disk_not_responding")
         case "client_on_unshared_network":
             return L10n.string("doctor.check.client_on_unshared_network")
         // The helper's text names ports and the connect error; the dashboard

@@ -328,6 +328,7 @@
 "doctor.check.disk_volumes_in_memory" = "Een volume van het apparaat bestaat alleen tot de volgende herstart: ‘Wis schijf’ in AirPort-configuratieprogramma kon de partitietabel van de schijf niet vervangen. Alles wat sinds dat wissen erop is bewaard, ook Time Machine-reservekopieën, gaat bij de volgende herstart verloren. Kopieer alles wat u nodig hebt voordat het apparaat opnieuw opstart. Gebruik daarna voor de interne schijf ‘Interne schijf opnieuw formatteren’; verwijder een USB-schijf van het apparaat en wis hem, voordat u hem weer aansluit, op een Mac in Schijfhulpprogramma als ‘Mac OS uitgebreid (journaled)’.";
 "doctor.check.acpd_gone" = "De AirPort-dienst van Apple (ACPd) op het apparaat is gestopt. Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
 "doctor.check.disk_failing" = "De schijf van het apparaat meldde fouten die niet konden worden hersteld, dus de schijf is waarschijnlijk defect en bestandsdeling staat uit. Opnieuw installeren repareert de schijf niet, en het AirPort-configuratieprogramma kan de schijf nog steeds als in orde tonen. Kopieer de bestanden die u nodig hebt, vervang de schijf, wis daarna de nieuwe schijf in het AirPort-configuratieprogramma en voer ‘Samba installeren / bijwerken’ uit.";
+"doctor.check.disk_not_responding" = "Een schijf van het apparaat reageert niet meer: een schijfbewerking wacht al minuten zonder klaar te zijn, en de AirPort-dienst van Apple wacht ook op de schijf. Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan. Als de schijf opnieuw niet meer reageert, is die waarschijnlijk defect: kopieer de bestanden die u nodig hebt, vervang de schijf, wis daarna de nieuwe schijf in het AirPort-configuratieprogramma en voer ‘Samba installeren / bijwerken’ uit.";
 "doctor.check.client_on_unshared_network" = "Deze Mac zit op een netwerk waarop het apparaat zijn schijven niet deelt, zoals de internetkant (WAN) of het gastnetwerk van het apparaat. Verbind deze Mac via Wi-Fi of een van de LAN-poorten van het apparaat met het hoofdnetwerk van het apparaat en voer ‘Controle’ opnieuw uit.";
 "doctor.check.mac_smb3_disabled" = "%@ schakelt SMB 3 uit (protocol_vers_map), terwijl Time Machine SMB 3 nodig heeft. Verwijder die regel, verwijder daarna de schijf in de Time Machine-instellingen en voeg hem opnieuw toe.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ schakelt SMB 3 uit voor de server [%2$@]. Als dat dit apparaat is, verwijder dan die regel, verwijder daarna de schijf in de Time Machine-instellingen en voeg hem opnieuw toe.";
@@ -1033,6 +1034,13 @@
 "backend.recovery.disk_failing.action.1" = "Kopieer de bestanden die u nodig hebt. Als bestandsdeling uit staat, haal de schijf eruit en sluit die met een SATA-naar-USB-adapter aan op een Mac.";
 "backend.recovery.disk_failing.action.2" = "Vervang de schijf.";
 "backend.recovery.disk_failing.action.3" = "Wis de nieuwe schijf in het AirPort-configuratieprogramma en voer daarna ‘Samba installeren / bijwerken’ uit. Time Machine begint er een nieuwe, volledige reservekopie op.";
+"backend.recovery.disk_not_responding.title" = "De schijf reageert niet";
+"backend.recovery.disk_not_responding.message" = "Een schijfbewerking op het apparaat wacht al minuten zonder klaar te zijn. De AirPort-dienst van Apple wacht ook op de schijf, dus het apparaat kan niet via het netwerk worden bijgewerkt of opnieuw worden opgestart.";
+"backend.recovery.disk_not_responding.action.1" = "Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
+"backend.recovery.disk_not_responding.action.2" = "Wacht 2 minuten tot het apparaat is opgestart en probeer het opnieuw.";
+"backend.recovery.disk_not_responding.action.3" = "Als de schijf opnieuw niet meer reageert, is die waarschijnlijk defect: kopieer de bestanden die u nodig hebt. Sluit een USB-schijf aan op een Mac; als bestandsdeling uit staat, haal een interne schijf eruit en sluit die met een SATA-naar-USB-adapter aan op een Mac.";
+"backend.recovery.disk_not_responding.action.4" = "Vervang de schijf.";
+"backend.recovery.disk_not_responding.action.5" = "Wis de nieuwe schijf in het AirPort-configuratieprogramma en voer daarna ‘Samba installeren / bijwerken’ uit. Time Machine begint er een nieuwe, volledige reservekopie op.";
 "backend.recovery.deploy_disk_size_misreported.title" = "De schijf meldt een verkeerde grootte";
 "backend.recovery.deploy_disk_size_misreported.message" = "Het apparaat meldt de interne schijf als veel kleiner dan hij is. Een herstart verhelpt dit soms; als het blijft gebeuren, is de schijf waarschijnlijk defect.";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "Herstart het apparaat en voer ‘Samba installeren / bijwerken’ daarna opnieuw uit zodra de schijf draait.";
@@ -1065,6 +1073,12 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "Als het apparaat de schijf nog aan het formatteren is, wacht dan tot het klaar is.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Wacht 2 minuten tot het apparaat is opgestart en voer daarna ‘Interne schijf opnieuw formatteren’ opnieuw uit.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "De schijf reageerde niet meer tijdens het formatteren";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "De schijf van het apparaat reageerde niet meer nadat de partitietabel was gewist. De AirPort-dienst van Apple wacht ook op de schijf, dus het apparaat kan niet zelf opnieuw opstarten.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "Als het apparaat de schijf nog aan het formatteren is, wacht dan tot het klaar is.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.2" = "Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.3" = "Wacht 2 minuten tot het apparaat is opgestart en voer daarna ‘Interne schijf opnieuw formatteren’ opnieuw uit.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.4" = "Als de schijf opnieuw niet meer reageert, is die waarschijnlijk defect: vervang de schijf.";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.title" = "De schijf is defect geraakt tijdens het wissen";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.message" = "De schijf reageerde niet, of hield de nullen die erop werden geschreven niet vast, dus de schijf is waarschijnlijk defect. De partitietabel ervan is misschien al gewist, waardoor de volumes ervan mogelijk nergens meer verschijnen. Bestandsdeling blijft uit tot het apparaat opnieuw opstart.";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.action.1" = "Herstart het apparaat.";

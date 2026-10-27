@@ -23,6 +23,8 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.device import probe as device_probe
 from timecapsulesmb.device import acpd
+from timecapsulesmb.device.disk_errors import DISK_NOT_RESPONDING_MESSAGE, disk_stall_facts
+from timecapsulesmb.device.processes import StuckProcess, disk_io_stalls
 from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
@@ -98,6 +100,40 @@ def report_airport_identity(callbacks: OperationCallbacks, reading: device_probe
         callbacks.update(**airport_identity_fields(reading.airport_mac, reading.airport_name, reading.airport_dns_name))
 
 
+def acpd_problems_and_disk_stalls(
+    connection: SshConnection,
+    callbacks: OperationCallbacks,
+    *,
+    network_reading: device_probe.AirportAcpReading | None = None,
+) -> tuple[list[acpd.AcpdProblem], list[StuckProcess]]:
+    """acpd.acpd_problems, with the processes stuck on the disk
+    (processes.disk_io_stalls), which callers report instead of the problems:
+    ACPd waits behind them, so the disk is what to report, and work would
+    hang on that disk anyway. A stall in the first listing returns before
+    ACPd is read; the list is read again when a problem is one a stuck disk
+    causes (acpd.disk_stall_could_explain), as ACPd's slow reads can let a
+    disk process pass the stall threshold."""
+
+    def stalls_in(listing: str) -> list[StuckProcess]:
+        stalls = disk_io_stalls(listing)
+        if stalls:
+            callbacks.debug(disk_io_stalls=[stall.describe() for stall in stalls])
+        return stalls
+
+    listing = acpd.read_processes(connection)
+    stalls = stalls_in(listing)
+    if stalls:
+        return [], stalls
+    problems = acpd.acpd_problems(connection, listing, network_reading=network_reading)
+    if acpd.disk_stall_could_explain(problems):
+        stalls = stalls_in(acpd.read_processes(connection))
+        if stalls:
+            # Callers report only the disk; what ACPd showed is still recorded.
+            callbacks.debug(acpd_problems=[problem.code for problem in problems],
+                            **{key: value for problem in problems for key, value in problem.details.items()})
+    return problems, stalls
+
+
 def require_acpd_ready(
     connection: SshConnection,
     callbacks: OperationCallbacks,
@@ -109,7 +145,10 @@ def require_acpd_ready(
     Every reboot and every flash command goes through Apple's ACPd: the
     password must be the one ACP takes, ACPd must answer the device's own acp
     and the network, the last restart requested must have happened, and no
-    stuck fork of ACPd may be waiting to hang the next reboot. `reading` is
+    stuck fork of ACPd may be waiting to hang the next reboot. A process stuck
+    on the disk (processes.disk_io_stalls) refuses the work too, before ACPd is
+    read: ACPd waits behind it, so the disk is what to report, and the work
+    would hang on that disk anyway. `reading` is
     this command's earlier network read of the device at this address
     (confirm_device_address); an unanswered one is not read again from here,
     as the second read would only repeat the same retry, but ACPd's listener
@@ -121,7 +160,13 @@ def require_acpd_ready(
     if reading.password_matches is False:
         raise DeviceAccessError(AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, code=ErrorCode.AUTH_FAILED)
     report_airport_identity(callbacks, reading)
-    problems = acpd.acpd_problems(connection, network_reading=reading)
+    problems, stalls = acpd_problems_and_disk_stalls(connection, callbacks, network_reading=reading)
+    if stalls:
+        raise DeviceAccessError(
+            f"{DISK_NOT_RESPONDING_MESSAGE} Nothing was changed.",
+            code=ErrorCode.DISK_NOT_RESPONDING,
+            detail=disk_stall_facts(stalls),
+        )
     if problems:
         details = {key: value for problem in problems for key, value in problem.details.items()}
         callbacks.debug(acpd_problems=[problem.code for problem in problems], **details)

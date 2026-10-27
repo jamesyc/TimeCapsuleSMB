@@ -417,6 +417,27 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         _DISK_FAILING_STEPS,
         retryable=False,
     ),
+    # A process has waited minutes for the disk (device.processes.disk_io_stalls),
+    # and Apple's ACPd waits behind it: the preflight of every command that
+    # restarts the device or writes it, and a MaSt read that hangs or fails
+    # (device.storage.raise_if_acpd_silent). A restart clears a passing stall;
+    # one that comes back is a failing disk, whose way out follows.
+    ErrorCode.DISK_NOT_RESPONDING: RecoveryInfo(
+        "The disk is not responding",
+        (
+            "A disk operation on the device has waited for minutes without finishing. Apple's AirPort service "
+            "waits for the disk too, so the device cannot be updated or restarted over the network."
+        ),
+        (
+            "Unplug the device, wait 10 seconds and plug it back in.",
+            "Wait 2 minutes for the device to start up, then try again.",
+            "If the disk stops responding again, it is probably failing: copy off the files you need. Connect a USB "
+            "disk to a Mac; if file sharing is off, take an internal disk out and connect it to a Mac with a "
+            "SATA-to-USB adapter.",
+            *_DISK_FAILING_STEPS[1:],
+        ),
+        retryable=True,
+    ),
     # The internal disk reports a size far below its real one, and its identity
     # without Apple's prefix (device.storage.disk_size_misreported). Erasing it
     # would format it as that size, so no step offers an erase or a wipe.
@@ -1024,6 +1045,24 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
             "If the device is still formatting the disk, wait until it finishes.",
             "Unplug the device, wait 10 seconds and plug it back in.",
             "Wait 2 minutes for the device to start up, then run “Wipe Internal Disk” again.",
+        ),
+        retryable=True,
+    ),
+    # The erase request got no answer because a process is stuck on the disk,
+    # which ACPd waits behind (services.wipe_disk): the table is already
+    # cleared, and only unplugging restarts the device. A stall that comes back
+    # is a failing disk; nothing on it is left to copy off.
+    ("wipe-disk", ErrorCode.DISK_NOT_RESPONDING, "erase_disk"): RecoveryInfo(
+        "The disk stopped responding during the wipe",
+        (
+            "The device's disk stopped responding after its partition table was cleared. Apple's AirPort service "
+            "waits for the disk too, so the device cannot restart itself."
+        ),
+        (
+            "If the device is still formatting the disk, wait until it finishes.",
+            "Unplug the device, wait 10 seconds and plug it back in.",
+            "Wait 2 minutes for the device to start up, then run “Wipe Internal Disk” again.",
+            "If the disk stops responding again, it is probably failing: replace the disk.",
         ),
         retryable=True,
     ),

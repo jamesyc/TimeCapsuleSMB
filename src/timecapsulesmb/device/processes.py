@@ -340,6 +340,26 @@ def stuck_processes(ps_output: str) -> list[StuckProcess]:
     return list(by_pid.values())
 
 
+# Wait channels of a process waiting for the disk itself: a buffer's I/O to
+# finish (biowait), a buffer another process holds while its I/O runs
+# (biolock), or the pages genfs is writing out (genput).
+DISK_IO_WCHANS = frozenset({"biowait", "biolock", "genput"})
+# The programs that only ever work on a disk: Apple's diskd, and the
+# mount_hfs, fsck_hfs and newfs_hfs it runs. One stuck in the kernel waits for
+# the disk, whatever its wait channel names.
+DISK_PROGRAMS = frozenset({"diskd", "mount_hfs", "fsck_hfs", "newfs_hfs"})
+
+
+def disk_io_stalls(ps_output: str) -> list[StuckProcess]:
+    """The stuck processes (stuck_processes) that wait for the disk: on a
+    disk I/O wait channel, or one of the programs that work only on a disk.
+
+    Any of them means the disk has stopped answering. Apple's ACPd waits on
+    diskd, which waits on the disk, so ACPd then stops answering MaSt and the
+    network too: the disk is the cause, not ACPd."""
+    return [p for p in stuck_processes(ps_output) if p.wchan in DISK_IO_WCHANS or p.name in DISK_PROGRAMS]
+
+
 # ps's wait channel for a process waiting for a lock another holds: an
 # fcntl() byte-range lock (a TDB's record locks) or a flock() on a whole file
 # (smbd's native HFS xattr writes) both sleep here.

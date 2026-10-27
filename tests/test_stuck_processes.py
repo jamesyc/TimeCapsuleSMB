@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from tests.device_ps import ps_row
-from timecapsulesmb.device.processes import StuckProcess, manager_unnamed_stuck_count, stuck_processes
+from timecapsulesmb.device.processes import StuckProcess, disk_io_stalls, manager_unnamed_stuck_count, stuck_processes
 
 # PROCESS_SNAPSHOT_COMMAND rows: only service and diskd rows carry a command
 # line.
@@ -135,6 +135,50 @@ class StuckProcessesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiskIoStallTests(unittest.TestCase):
+    """A stuck process that waits for the disk: one on a disk I/O wait
+    channel, or a program that only ever works on a disk."""
+
+    def test_a_process_on_a_disk_io_wait_channel_is_a_stall(self) -> None:
+        for wchan in ("biowait", "biolock", "genput"):
+            with self.subTest(wchan=wchan):
+                self.assertEqual(
+                    disk_io_stalls(row(3166, "D", "127", wchan, "smbd")),
+                    [StuckProcess(3166, "smbd", wchan, 127, capped=True)],
+                )
+
+    def test_a_disk_program_stuck_on_any_wait_channel_is_a_stall(self) -> None:
+        # The field cases: mount_hfs on a buffer at every boot, and diskd
+        # behind a vnode lock while smbd waits on the same disk.
+        for name, wchan in (("mount_hfs", "biolock"), ("diskd", "vnlock"), ("fsck_hfs", "tstile"), ("newfs_hfs", "vnlock")):
+            with self.subTest(name=name):
+                self.assertEqual([p.name for p in disk_io_stalls(row(421, "D", "127", wchan, name))], [name])
+
+    def test_a_disk_stall_the_manager_title_names_counts(self) -> None:
+        listing = manager_row("stuck=3166:smbd:biowait:600")
+        self.assertEqual(disk_io_stalls(listing), [StuckProcess(3166, "smbd", "biowait", 600)])
+
+    def test_only_the_disk_stalls_are_returned(self) -> None:
+        listing = "\n".join([
+            row(359, "D", "125", "tstile", "mDNSResponder"),
+            row(421, "D", "127", "biolock", "mount_hfs"),
+        ])
+        self.assertEqual([p.pid for p in stuck_processes(listing)], [359, 421])
+        self.assertEqual([p.pid for p in disk_io_stalls(listing)], [421])
+
+    def test_other_stuck_processes_and_short_or_interruptible_disk_waits_are_not_stalls(self) -> None:
+        for listing in (
+            row(359, "D", "125", "tstile", "mDNSResponder"),
+            row(8893, "I", "127", "lockf", "smbd"),
+            row(3166, "D", "60", "biowait", "smbd"),
+            row(421, "S", "127", "biolock", "mount_hfs"),
+            NETBSD4_KERNEL_THREAD,
+            SMBD_PARENT,
+        ):
+            with self.subTest(listing=listing):
+                self.assertEqual(disk_io_stalls(listing), [])
 
 
 class ListedWithoutCommandLinesTests(unittest.TestCase):

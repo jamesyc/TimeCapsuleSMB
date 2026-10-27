@@ -11,7 +11,9 @@ import uuid
 
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device import acpd
+from timecapsulesmb.device.disk_errors import DISK_NOT_RESPONDING_MESSAGE, disk_stall_facts
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.processes import disk_io_stalls
 from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
@@ -486,19 +488,28 @@ def parse_mast_xml_inventory(output: str) -> tuple[MaStDiskSnapshot, ...]:
 
 
 def raise_if_acpd_silent(connection: SshConnection, *, after: SshCommandTimeout | None = None) -> None:
-    """After an acp call failed or hung: raise acpd_broken when ACPd itself does
-    not answer syUT, or acpd_quit when it is not running at all (acpd.acpd_quit,
-    read only then). `after` is the hang being explained: when SSH cannot run
-    the syUT read either, that hang is re-raised, with the SSH error as its cause."""
+    """After an acp call failed or hung: raise disk_not_responding when a
+    process has waited minutes for the disk (processes.disk_io_stalls), which
+    ACPd waits behind, whether or not it still answers syUT; else acpd_broken
+    when ACPd itself does not answer syUT, or acpd_quit when it is not running
+    at all (acpd.acpd_quit). `after` is the hang being explained: when SSH
+    cannot run the syUT read either, that hang is re-raised, with the SSH
+    error as its cause, and nothing more is read."""
     try:
         answers = acpd.acpd_answers(connection)
     except TransportError as exc:
         if after is None:
             raise
         raise after from exc
+    listing = acpd.read_processes(connection)
+    stalls = disk_io_stalls(listing)
+    if stalls:
+        raise StorageDeviceError(
+            DISK_NOT_RESPONDING_MESSAGE, code=ErrorCode.DISK_NOT_RESPONDING, detail=disk_stall_facts(stalls),
+        )
     if answers:
         return
-    gone = acpd.acpd_quit(connection, acpd.read_processes(connection))
+    gone = acpd.acpd_quit(connection, listing)
     if gone is not None:
         raise StorageDeviceError(
             f"{acpd.acpd_broken_message(gone.what, note=gone.note)} Its disks cannot be read.", code=ErrorCode.ACPD_QUIT,

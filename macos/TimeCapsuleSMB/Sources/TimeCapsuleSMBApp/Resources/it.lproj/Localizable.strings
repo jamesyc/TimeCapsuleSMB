@@ -328,6 +328,7 @@
 "doctor.check.disk_volumes_in_memory" = "Un volume del dispositivo esiste solo fino al prossimo riavvio: “Inizializza disco” in Utility AirPort non è riuscito a sostituire la tabella delle partizioni del suo disco. Tutto ciò che vi è stato salvato da quell’inizializzazione, inclusi i backup di Time Machine, andrà perso al prossimo riavvio. Copia tutto ciò che ti serve prima che il dispositivo si riavvii. Poi, per il disco interno, usa “Riformatta disco interno”; scollega un disco USB dal dispositivo e, prima di ricollegarlo, inizializzalo su un Mac con Utility Disco come “Mac OS esteso (journaled)”.";
 "doctor.check.acpd_gone" = "Il servizio AirPort di Apple (ACPd) si è fermato sul dispositivo. Scollega il dispositivo, attendi 10 secondi, quindi ricollegalo.";
 "doctor.check.disk_failing" = "Il disco del dispositivo ha segnalato errori che non è riuscito a correggere, quindi è probabilmente guasto e la condivisione dei file è ferma. Reinstallare non ripara il disco, e Utility AirPort potrebbe ancora mostrarlo come funzionante. Copia i file che ti servono, sostituisci il disco, poi cancella il nuovo disco in Utility AirPort ed esegui “Installa/aggiorna Samba”.";
+"doctor.check.disk_not_responding" = "Un disco del dispositivo non risponde più: un’operazione sul disco è in attesa da minuti senza terminare, e anche il servizio AirPort di Apple attende il disco. Scollega il dispositivo, attendi 10 secondi, quindi ricollegalo. Se il disco smette di nuovo di rispondere, è probabilmente guasto: copia i file che ti servono, sostituisci il disco, poi cancella il nuovo disco in Utility AirPort ed esegui “Installa/aggiorna Samba”.";
 "doctor.check.client_on_unshared_network" = "Questo Mac è su una rete in cui il dispositivo non condivide i suoi dischi, come il lato Internet (WAN) o la rete ospiti del dispositivo. Collega questo Mac alla rete principale del dispositivo tramite Wi-Fi o una delle sue porte LAN, poi esegui di nuovo “Controllo”.";
 "doctor.check.mac_smb3_disabled" = "%@ disattiva SMB 3 (protocol_vers_map), ma Time Machine ne ha bisogno. Elimina quella riga, poi rimuovi il disco nelle impostazioni di Time Machine e aggiungilo di nuovo.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ disattiva SMB 3 per il server [%2$@]. Se è questo dispositivo, elimina quella riga, poi rimuovi il disco nelle impostazioni di Time Machine e aggiungilo di nuovo.";
@@ -1033,6 +1034,13 @@
 "backend.recovery.disk_failing.action.1" = "Copia i file che ti servono. Se la condivisione dei file è ferma, estrai il disco e collegalo a un Mac con un adattatore da SATA a USB.";
 "backend.recovery.disk_failing.action.2" = "Sostituisci il disco.";
 "backend.recovery.disk_failing.action.3" = "Cancella il nuovo disco in Utility AirPort, poi esegui “Installa/aggiorna Samba”. Time Machine avvia su di esso un nuovo backup completo.";
+"backend.recovery.disk_not_responding.title" = "Il disco non risponde";
+"backend.recovery.disk_not_responding.message" = "Un’operazione sul disco del dispositivo è in attesa da minuti senza terminare. Anche il servizio AirPort di Apple attende il disco, quindi il dispositivo non può essere aggiornato né riavviato tramite la rete.";
+"backend.recovery.disk_not_responding.action.1" = "Scollega il dispositivo, attendi 10 secondi, quindi ricollegalo.";
+"backend.recovery.disk_not_responding.action.2" = "Attendi 2 minuti che il dispositivo si avvii, poi riprova.";
+"backend.recovery.disk_not_responding.action.3" = "Se il disco smette di nuovo di rispondere, è probabilmente guasto: copia i file che ti servono. Collega un disco USB a un Mac; se la condivisione dei file è ferma, estrai un disco interno e collegalo a un Mac con un adattatore da SATA a USB.";
+"backend.recovery.disk_not_responding.action.4" = "Sostituisci il disco.";
+"backend.recovery.disk_not_responding.action.5" = "Cancella il nuovo disco in Utility AirPort, poi esegui “Installa/aggiorna Samba”. Time Machine avvia su di esso un nuovo backup completo.";
 "backend.recovery.deploy_disk_size_misreported.title" = "Il disco segnala una dimensione errata";
 "backend.recovery.deploy_disk_size_misreported.message" = "Il dispositivo segnala il disco interno come molto più piccolo di quanto sia. A volte un riavvio risolve il problema; se continua a succedere, il disco è probabilmente guasto.";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "Riavvia il dispositivo, poi esegui di nuovo “Installa/aggiorna Samba” quando il disco si è messo in rotazione.";
@@ -1065,6 +1073,12 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "Se il dispositivo sta ancora formattando il disco, attendi che finisca.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Scollega il dispositivo, attendi 10 secondi, quindi ricollegalo.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Attendi 2 minuti che il dispositivo si avvii, poi esegui di nuovo “Riformatta disco interno”.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "Il disco ha smesso di rispondere durante la riformattazione";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "Il disco del dispositivo ha smesso di rispondere dopo che la sua tabella delle partizioni è stata cancellata. Anche il servizio AirPort di Apple attende il disco, quindi il dispositivo non può riavviarsi da solo.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "Se il dispositivo sta ancora formattando il disco, attendi che finisca.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.2" = "Scollega il dispositivo, attendi 10 secondi, quindi ricollegalo.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.3" = "Attendi 2 minuti che il dispositivo si avvii, poi esegui di nuovo “Riformatta disco interno”.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.4" = "Se il disco smette di nuovo di rispondere, è probabilmente guasto: sostituisci il disco.";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.title" = "Il disco si è guastato durante la cancellazione";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.message" = "Il disco non ha risposto, o non ha mantenuto gli zeri scritti su di esso, quindi è probabilmente guasto. La sua tabella delle partizioni potrebbe essere già cancellata, quindi i suoi volumi potrebbero non comparire da nessuna parte. La condivisione dei file resta disattivata finché il dispositivo non si riavvia.";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.action.1" = "Riavvia il dispositivo.";

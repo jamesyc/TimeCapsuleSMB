@@ -486,6 +486,11 @@ def _raise_if_acpd_silent_after_wipe(connection: SshConnection, exc: TransportEr
     except StorageDeviceError as silent:
         jobs = disk_jobs_conn(connection)
         detail = f" {ERASE_STILL_FORMATTING}" if jobs else ""
+        if silent.code == ErrorCode.DISK_NOT_RESPONDING:
+            # A process stuck on the disk, which ACPd waits behind: the disk
+            # is what to report, with the stuck processes as its detail.
+            raise WipeDiskError(f"{silent.message} {ERASE_TABLE_CLEARED}{detail}", code=ErrorCode.DISK_NOT_RESPONDING,
+                                reason="disk_stalled", detail=silent.detail) from exc
         raise WipeDiskError(f"{silent} {ERASE_TABLE_CLEARED}{detail}", code=ErrorCode.ACPD_BROKEN,
                             reason="acpd_silent") from exc
 

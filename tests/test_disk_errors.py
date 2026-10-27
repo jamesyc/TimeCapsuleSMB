@@ -12,6 +12,8 @@ from unittest import mock
 from timecapsulesmb.cli.runtime import confirm_despite_failing_disk
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.disk_errors import (
+    DISK_NOT_RESPONDING_MESSAGE,
+    DiskNotRespondingError,
     DISK_FAILING_MESSAGE,
     KERNEL_DISK_MESSAGES_COMMAND,
     UNREADABLE_EVIDENCE,
@@ -33,6 +35,7 @@ from timecapsulesmb.device.errors import (
     RsyncUnreadableError,
 )
 from timecapsulesmb.device import probe
+from timecapsulesmb.device.processes import disk_io_stalls
 from timecapsulesmb.device.probe import (
     DISK_PAYLOAD_PROBLEMS,
     ManagedRuntimeProbeResult,
@@ -269,16 +272,51 @@ class RuntimeFailureTests(unittest.TestCase):
         self.assertFalse(error.samba_off)
         self.assertTrue(str(error).startswith("File sharing and Time Machine are running, but the device's disk"))
 
-    def verify(self, verification, read):
+    def verify(self, verification, read, *, listing: str = ""):
         debug: dict[str, object] = {}
         callbacks = OperationCallbacks(add_debug_fields=lambda **fields: debug.update(fields))
         verify_managed_runtime_ready(
             SshConnection("host", "pw", ""), callbacks=callbacks, stage="verify_runtime_activation",
             timeout_seconds=200, heading="Runtime verification:", failure_message="NetBSD4 activation failed.",
             probe_runtime=mock.Mock(return_value=verification), read_runtime_logs=mock.Mock(return_value={}),
-            read_disk_errors=read,
+            read_disk_errors=read, read_processes=mock.Mock(return_value=listing),
         )
         return debug
+
+    # Apple's mount_hfs asleep on a disk buffer: a disk that stopped
+    # answering, which NetBSD 4's kernel log often keeps no line of.
+    STALLED = "  421 379 39 D 127 biolock 0:00.00 mount_hfs"
+
+    def test_a_process_stuck_on_the_disk_is_the_error_for_a_samba_that_did_not_start(self) -> None:
+        for errors in (None, ()):
+            with self.subTest(errors=errors):
+                with self.assertRaises(DiskNotRespondingError) as raised:
+                    self.verify(runtime(), mock.Mock(return_value=errors), listing=self.STALLED)
+                error = raised.exception
+                self.assertEqual(error.code, ErrorCode.DISK_NOT_RESPONDING)
+                self.assertTrue(error.samba_off)
+                self.assertEqual(error.message, DISK_NOT_RESPONDING_MESSAGE)
+                self.assertEqual(error.detail, "Waiting for the disk: mount_hfs (pid 421) waiting on biolock for 127+ s.")
+
+    def test_kernel_disk_errors_outrank_a_stuck_disk_and_a_serving_samba_ignores_it(self) -> None:
+        stalls = tuple(disk_io_stalls(self.STALLED))
+        self.assertIsInstance(runtime_failure_error(runtime(), "x", disk_errors=self.ERRORS, disk_stalls=stalls),
+                              DiskFailingError)
+        self.assertIsInstance(runtime_failure_error(runtime(samba_ready=True), "x", disk_stalls=stalls),
+                              RsyncNotRunningError)
+        self.assertIs(type(runtime_failure_error(runtime(), "x", disk_stalls=())), DeviceError)
+
+    def test_the_stuck_processes_reach_telemetry(self) -> None:
+        debug: dict[str, object] = {}
+        callbacks = OperationCallbacks(add_debug_fields=lambda **fields: debug.update(fields))
+        with self.assertRaises(DiskNotRespondingError):
+            verify_managed_runtime_ready(
+                SshConnection("host", "pw", ""), callbacks=callbacks, stage="verify_runtime_activation",
+                timeout_seconds=200, heading="Runtime verification:", failure_message="failed.",
+                probe_runtime=mock.Mock(return_value=runtime()), read_runtime_logs=mock.Mock(return_value={}),
+                read_disk_errors=mock.Mock(return_value=None), read_processes=mock.Mock(return_value=self.STALLED),
+            )
+        self.assertEqual(debug["disk_io_stalls"], ["mount_hfs (pid 421) waiting on biolock for 127+ s"])
 
     def test_the_runtime_check_reads_them_only_when_samba_did_not_start(self) -> None:
         read = mock.Mock(return_value=self.ERRORS)
@@ -369,6 +407,81 @@ class RuntimeFailureTests(unittest.TestCase):
                         self.assertEqual(error.detail, errors[-1])
                     elif code == ErrorCode.ACPD_QUIT:
                         self.assertIsInstance(error, AcpdQuitError)
+
+
+    # ACPd running but silent behind a mount_hfs stuck on the disk.
+    STALLED_ACPD_LISTING = (
+        "107 1 15 S 0 select 0:00.32 sshd\n"
+        "119 1 2 Sl 127 parked 0:00.83 ACPd\n"
+        "421 379 39 D 127 biolock 0:00.00 mount_hfs\n"
+        "tcapsule-ps: end\n"
+    )
+
+    def activate(self, listings, *, errors=None, answers=False):
+        """activate_runtime with these process listings, read in turn."""
+        debug: dict[str, object] = {}
+        callbacks = OperationCallbacks(add_debug_fields=lambda **fields: debug.update(fields))
+        with mock.patch("timecapsulesmb.services.activation.require_compatible_install"), \
+                mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=runtime()), \
+                mock.patch("timecapsulesmb.services.activation.read_disk_errors_conn", return_value=errors), \
+                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=False) as marker, \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as syut, \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", side_effect=listings) as listing, \
+                mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as start:
+            with self.assertRaises(DeviceError) as raised:
+                activate_runtime(SshConnection("host", "pw", ""), [], callbacks=callbacks)
+        start.assert_not_called()
+        self.marker = marker
+        return raised.exception, debug, syut, listing
+
+    def test_activate_refuses_a_stuck_disk_before_it_reads_acpd(self) -> None:
+        # ACPd waits behind the disk: its silence is the disk's, said as such.
+        error, debug, syut, listing = self.activate([self.STALLED_ACPD_LISTING])
+        self.assertIsInstance(error, DiskNotRespondingError)
+        self.assertEqual(error.code, ErrorCode.DISK_NOT_RESPONDING)
+        self.assertEqual(error.message, f"NetBSD4 activation failed. {DISK_NOT_RESPONDING_MESSAGE} Nothing was started.")
+        self.assertNotIn("Apple ACPd is broken", str(error))
+        self.assertEqual(error.detail, "Waiting for the disk: mount_hfs (pid 421) waiting on biolock for 127+ s.")
+        self.assertEqual(debug["disk_io_stalls"], ["mount_hfs (pid 421) waiting on biolock for 127+ s"])
+        # Neither the restart marker nor syUT is read.
+        self.marker.assert_not_called()
+        syut.assert_not_called()
+        listing.assert_called_once()
+
+    def test_activate_reads_the_list_again_before_it_blames_a_silent_acpd(self) -> None:
+        # mount_hfs passed the stall threshold during ACPd's slow reads.
+        young = self.STALLED_ACPD_LISTING.replace(" D 127 biolock", " D 100 biolock")
+        error, _debug, syut, listing = self.activate([young, self.STALLED_ACPD_LISTING])
+        self.assertIsInstance(error, DiskNotRespondingError)
+        syut.assert_called_once()
+        self.assertEqual(listing.call_count, 2)
+
+    def test_activate_reads_the_list_again_when_acpd_is_silent_beside_a_stuck_fork(self) -> None:
+        # A stuck fork of ACPd does not explain its silence; the disk that
+        # passed the stall threshold meanwhile does.
+        fork = "352 119 2 S 1 nanoslp 0:00.00 ACPd\n"
+        young = self.STALLED_ACPD_LISTING.replace(" D 127 biolock", " D 100 biolock").replace("421 ", fork + "421 ")
+        stalled = self.STALLED_ACPD_LISTING.replace("421 ", fork + "421 ")
+        error, debug, syut, listing = self.activate([young, stalled])
+        self.assertIsInstance(error, DiskNotRespondingError)
+        syut.assert_called_once()
+        self.assertEqual(listing.call_count, 2)
+        # The error names only the disk; what ACPd showed is still recorded.
+        self.assertEqual(debug["acpd_problems"], ["syut_silent", "stuck_child"])
+        self.assertEqual(debug["acpd_stuck_children"], [352])
+
+    def test_activate_names_a_failing_disk_ahead_of_a_stuck_one(self) -> None:
+        # Kernel disk errors say more than a stall: the disk is failing.
+        error, _debug, _syut, _listing = self.activate([self.STALLED_ACPD_LISTING], errors=self.ERRORS)
+        self.assertIsInstance(error, DiskFailingError)
+
+    def test_activate_without_a_stall_keeps_the_acpd_refusal(self) -> None:
+        healthy = self.STALLED_ACPD_LISTING.replace("421 379 39 D 127 biolock 0:00.00 mount_hfs\n", "")
+        error, debug, _syut, listing = self.activate([healthy, healthy])
+        self.assertEqual(error.code, ErrorCode.ACPD_BROKEN)
+        self.assertIn("Apple ACPd is broken", str(error))
+        self.assertEqual(debug["acpd_problems"], ["syut_silent"])
+        self.assertEqual(listing.call_count, 2)
 
 
 class CommandLinePreflightTests(unittest.TestCase):

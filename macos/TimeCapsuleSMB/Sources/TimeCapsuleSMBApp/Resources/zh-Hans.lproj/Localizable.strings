@@ -328,6 +328,7 @@
 "doctor.check.disk_volumes_in_memory" = "设备上的一个卷只会存在到下次重启：AirPort 实用工具中的“抹掉磁盘”无法替换其磁盘的分区表。自那次抹掉以来保存在上面的所有内容（包括时间机器备份）都会在下次重启时丢失。请在设备重启前拷贝出你需要的所有内容。然后，如果是内部磁盘，请使用“重新格式化内部磁盘”；如果是 USB 磁盘，请从设备断开，并在再次连接前，在 Mac 上用磁盘工具将其抹掉为“Mac OS 扩展（日志式）”。";
 "doctor.check.acpd_gone" = "设备上的苹果 AirPort 服务（ACPd）已停止运行。拔掉设备电源，等待 10 秒，然后重新插上。";
 "doctor.check.disk_failing" = "设备的磁盘报告了无法恢复的错误，因此磁盘很可能出现故障，文件共享已停止。重新安装无法修复磁盘，AirPort 实用工具可能仍显示磁盘正常。请复制出你需要的文件，更换磁盘，然后在 AirPort 实用工具中抹掉新磁盘，并运行“安装 / 更新 Samba”。";
+"doctor.check.disk_not_responding" = "设备上的一个磁盘已停止响应：一项磁盘操作已等待数分钟仍未完成，苹果 AirPort 服务也在等待该磁盘。拔掉设备电源，等待 10 秒，然后重新插上。如果磁盘再次停止响应，它很可能出现故障：请复制出你需要的文件，更换磁盘，然后在 AirPort 实用工具中抹掉新磁盘，并运行“安装 / 更新 Samba”。";
 "doctor.check.client_on_unshared_network" = "此 Mac 所在的网络中，设备不共享其磁盘，例如设备的互联网（WAN）一侧或访客网络。请通过 Wi-Fi 或设备的某个 LAN 端口将此 Mac 连接到设备的主网络，然后再次运行“检查”。";
 "doctor.check.mac_smb3_disabled" = "%@ 关闭了 SMB 3（protocol_vers_map），而时间机器需要 SMB 3。请删除该行，然后在时间机器设置中移除该磁盘并重新添加。";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ 为服务器 [%2$@] 关闭了 SMB 3。如果它就是此设备，请删除该行，然后在时间机器设置中移除该磁盘并重新添加。";
@@ -1033,6 +1034,13 @@
 "backend.recovery.disk_failing.action.1" = "请复制出你需要的文件。如果文件共享已停止，请取出磁盘，并用 SATA 转 USB 转接器将其连接到 Mac。";
 "backend.recovery.disk_failing.action.2" = "请更换磁盘。";
 "backend.recovery.disk_failing.action.3" = "请在 AirPort 实用工具中抹掉新磁盘，然后运行“安装 / 更新 Samba”。时间机器会在新磁盘上开始新的完整备份。";
+"backend.recovery.disk_not_responding.title" = "磁盘没有响应";
+"backend.recovery.disk_not_responding.message" = "设备上的一项磁盘操作已等待数分钟仍未完成。苹果 AirPort 服务也在等待该磁盘，因此无法通过网络更新或重启设备。";
+"backend.recovery.disk_not_responding.action.1" = "拔掉设备电源，等待 10 秒，然后重新插上。";
+"backend.recovery.disk_not_responding.action.2" = "等待 2 分钟让设备完成启动，然后重试。";
+"backend.recovery.disk_not_responding.action.3" = "如果磁盘再次停止响应，它很可能出现故障：请复制出你需要的文件。将 USB 磁盘连接到 Mac；如果文件共享已停止，请取出内部磁盘，并用 SATA 转 USB 转接器将其连接到 Mac。";
+"backend.recovery.disk_not_responding.action.4" = "请更换磁盘。";
+"backend.recovery.disk_not_responding.action.5" = "请在 AirPort 实用工具中抹掉新磁盘，然后运行“安装 / 更新 Samba”。时间机器会在新磁盘上开始新的完整备份。";
 "backend.recovery.deploy_disk_size_misreported.title" = "磁盘报告的容量不正确";
 "backend.recovery.deploy_disk_size_misreported.message" = "设备报告的内部磁盘容量远小于实际容量。重启有时可以解决这个问题；如果反复出现，磁盘很可能出现故障。";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "重启设备，等磁盘转动起来后重新运行“安装 / 更新 Samba”。";
@@ -1065,6 +1073,12 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "如果设备仍在格式化磁盘，请等待完成。";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "拔掉设备电源，等待 10 秒，然后重新插上。";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "等待 2 分钟让设备完成启动，然后再次运行“重新格式化内部磁盘”。";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "重新格式化期间磁盘停止响应";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "清除分区表后，设备的磁盘停止响应。苹果 AirPort 服务也在等待该磁盘，因此设备无法自行重启。";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "如果设备仍在格式化磁盘，请等待完成。";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.2" = "拔掉设备电源，等待 10 秒，然后重新插上。";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.3" = "等待 2 分钟让设备完成启动，然后再次运行“重新格式化内部磁盘”。";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.4" = "如果磁盘再次停止响应，它很可能出现故障：请更换磁盘。";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.title" = "磁盘在抹掉过程中出现故障";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.message" = "磁盘没有响应，或没有保留写入的零，因此很可能出现故障。它的分区表可能已被清除，因此它的卷可能在任何地方都不会显示。在设备重启之前，文件共享会保持关闭。";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.action.1" = "请重启设备。";

@@ -328,6 +328,7 @@
 "doctor.check.disk_volumes_in_memory" = "Vienas įrenginio tomas egzistuos tik iki kito paleidimo iš naujo: AirPort Utility komanda „Erase Disk“ negalėjo pakeisti jo disko skaidinių lentelės. Viskas, kas jame išsaugota nuo to ištrynimo, įskaitant Time Machine atsargines kopijas, bus prarasta per kitą paleidimą iš naujo. Nukopijuokite viską, ko jums reikia, kol įrenginys dar nepaleistas iš naujo. Tada, jei tai vidinis diskas, paleiskite „Performatuoti vidinį diską“; USB diską ištraukite iš įrenginio ir, prieš vėl jį įkišdami, ištrinkite jį Mac kompiuteryje su Disk Utility kaip „Mac OS Extended (Journaled)“.";
 "doctor.check.acpd_gone" = "Apple AirPort tarnyba (ACPd) įrenginyje sustojo. Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
 "doctor.check.disk_failing" = "Įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda, o failų bendrinimas sustabdytas. Įdiegimas iš naujo disko nesutaisys, o AirPort Utility jį vis dar gali rodyti kaip tvarkingą. Nukopijuokite reikalingus failus, pakeiskite diską, tada AirPort Utility ištrinkite naująjį diską ir paleiskite „Įdiegti / atnaujinti Samba“.";
+"doctor.check.disk_not_responding" = "Vienas iš įrenginio diskų nebeatsako: disko operacija jau kelias minutes laukia ir nesibaigia, o Apple AirPort tarnyba taip pat laukia disko. Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite. Jei diskas vėl nustos atsakyti, jis greičiausiai genda: nukopijuokite reikalingus failus, pakeiskite diską, tada AirPort Utility ištrinkite naująjį diską ir paleiskite „Įdiegti / atnaujinti Samba“.";
 "doctor.check.client_on_unshared_network" = "Šis Mac yra tinkle, kuriame įrenginys nebendrina savo diskų, pavyzdžiui, įrenginio interneto (WAN) pusėje arba svečių tinkle. Prijunkite šį Mac prie pagrindinio įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir dar kartą paleiskite operaciją „Patikrinimas“.";
 "doctor.check.mac_smb3_disabled" = "%@ išjungia SMB 3 (protocol_vers_map), o Time Machine reikia SMB 3. Ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ išjungia SMB 3 serveriui [%2$@]. Jei tai šis įrenginys, ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
@@ -1033,6 +1034,13 @@
 "backend.recovery.disk_failing.action.1" = "Nukopijuokite reikalingus failus. Jei failų bendrinimas sustabdytas, išimkite diską ir prijunkite jį prie Mac per SATA–USB adapterį.";
 "backend.recovery.disk_failing.action.2" = "Pakeiskite diską.";
 "backend.recovery.disk_failing.action.3" = "AirPort Utility ištrinkite naująjį diską, tada paleiskite „Įdiegti / atnaujinti Samba“. Time Machine jame pradės naują visą atsarginę kopiją.";
+"backend.recovery.disk_not_responding.title" = "Diskas neatsako";
+"backend.recovery.disk_not_responding.message" = "Disko operacija įrenginyje jau kelias minutes laukia ir nesibaigia. Apple AirPort tarnyba taip pat laukia disko, todėl įrenginio negalima atnaujinti ar paleisti iš naujo per tinklą.";
+"backend.recovery.disk_not_responding.action.1" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
+"backend.recovery.disk_not_responding.action.2" = "Palaukite 2 minutes, kol įrenginys pasileis, tada bandykite dar kartą.";
+"backend.recovery.disk_not_responding.action.3" = "Jei diskas vėl nustos atsakyti, jis greičiausiai genda: nukopijuokite reikalingus failus. USB diską įkiškite į Mac; jei failų bendrinimas sustabdytas, išimkite vidinį diską ir prijunkite jį prie Mac per SATA–USB adapterį.";
+"backend.recovery.disk_not_responding.action.4" = "Pakeiskite diską.";
+"backend.recovery.disk_not_responding.action.5" = "AirPort Utility ištrinkite naująjį diską, tada paleiskite „Įdiegti / atnaujinti Samba“. Time Machine jame pradės naują visą atsarginę kopiją.";
 "backend.recovery.deploy_disk_size_misreported.title" = "Diskas praneša neteisingą dydį";
 "backend.recovery.deploy_disk_size_misreported.message" = "Įrenginys praneša, kad vidinis diskas daug mažesnis, nei yra iš tikrųjų. Kartais tai išsprendžia paleidimas iš naujo; jei tai kartojasi, diskas greičiausiai genda.";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "Paleiskite įrenginį iš naujo ir, kai diskas įsisuks, vėl paleiskite „Įdiegti / atnaujinti Samba“.";
@@ -1065,6 +1073,12 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "Jei įrenginys dar formatuoja diską, palaukite, kol baigs.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Palaukite 2 minutes, kol įrenginys pasileis, tada vėl paleiskite „Performatuoti vidinį diską“.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "Diskas nustojo atsakyti performatavimo metu";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "Įrenginio diskas nustojo atsakyti, kai buvo išvalyta jo skaidinių lentelė. Apple AirPort tarnyba taip pat laukia disko, todėl įrenginys negali pats pasileisti iš naujo.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "Jei įrenginys dar formatuoja diską, palaukite, kol baigs.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.2" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.3" = "Palaukite 2 minutes, kol įrenginys pasileis, tada vėl paleiskite „Performatuoti vidinį diską“.";
+"backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.4" = "Jei diskas vėl nustos atsakyti, jis greičiausiai genda: pakeiskite diską.";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.title" = "Diskas sugedo jį trinant";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.message" = "Diskas neatsakė arba neišlaikė į jį įrašytų nulių, todėl jis greičiausiai genda. Jo skaidinių lentelė jau gali būti išvalyta, todėl jo tomai gali niekur nebesimatyti. Failų bendrinimas liks išjungtas, kol įrenginys bus paleistas iš naujo.";
 "backend.recovery.wipe-disk.disk_failing.during_wipe.action.1" = "Paleiskite įrenginį iš naujo.";

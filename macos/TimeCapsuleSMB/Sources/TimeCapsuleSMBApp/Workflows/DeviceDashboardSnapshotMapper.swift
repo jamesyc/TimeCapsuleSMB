@@ -96,8 +96,10 @@ enum DeviceDashboardSnapshotMapper {
             return DeviceRuntimeStateSnapshot(
                 // Installed but not running: on NetBSD4 that is what Activate
                 // fixes, unless ACPd is gone, which refuses Activate until the
-                // device is unplugged.
+                // device is unplugged, or the disk is failing or stopped
+                // responding, which Activate cannot start Samba from.
                 state: summary.runtimeNotStarted && profile.traits.isNetBSD4 && !summary.acpdGone
+                    && !summary.diskFailing && !summary.diskNotResponding
                     ? .activationNeeded : .unhealthy,
                 source: .doctor,
                 stage: nil,
@@ -109,8 +111,10 @@ enum DeviceDashboardSnapshotMapper {
                 // and so does a damaged rsync when nothing else failed: with
                 // other failures (Samba's own) the generic row sends the user
                 // to the Checkup, which lists them all. An ACPd that is gone
-                // takes diskd with it, so it explains a disk that will not mount.
+                // takes diskd with it, so it explains a disk that will not mount,
+                // and a disk that stopped responding holds up diskd, so it does too.
                 errorCode: summary.diskFailing ? DoctorSummary.diskFailingResultCode
+                    : summary.diskNotResponding ? DoctorSummary.diskNotRespondingResultCode
                     : summary.acpdGone ? DoctorSummary.acpdBrokenResultCode
                     : summary.diskNotMounting ? DoctorSummary.diskNotMountingResultCode
                     // Files saved now vanish at the next restart: before any

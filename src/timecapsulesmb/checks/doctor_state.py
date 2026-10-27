@@ -125,6 +125,8 @@ class ProcessSnapshotState:
     timed_out: bool = False
     # The listing itself, when ps answered.
     snapshot: str | None = None
+    # The stuck processes that wait for the disk (processes.disk_io_stalls).
+    disk_stalls: tuple[StuckProcess, ...] = ()
 
     @property
     def smbd_stuck(self) -> bool:
