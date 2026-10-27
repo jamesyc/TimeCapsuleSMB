@@ -56,6 +56,7 @@ class ErrorCode(str, Enum):
     # configure turns it into another code before the app sees it.
     SSH_UNREACHABLE = "ssh_unreachable"
     SSH_ENABLE_TIMEOUT = "ssh_enable_timeout"
+    SSH_CLOSED_AFTER_RESTART = "ssh_closed_after_restart"
     SSH_STILL_ENABLED = "ssh_still_enabled"
     UNSUPPORTED_DEVICE = "unsupported_device"
 

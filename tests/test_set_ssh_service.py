@@ -128,12 +128,21 @@ class SetSshServiceTests(unittest.TestCase):
         self.assertFalse(result.ssh_final_reachable)
         self.assertEqual(result.summary, Summary("ssh.enable_requested", "SSH enable requested; not waiting for SSH to open."))
 
-    def test_enable_fails_with_the_enable_message_when_ssh_does_not_open(self) -> None:
-        result, _recorder, _enable = self.enable(FakeAcpDevice(ssh_open=False, ssh_up_after_boot=None))
+    def test_enable_fails_with_the_enable_message_and_says_whether_the_device_came_back(self) -> None:
+        # Back on a new boot with SSH still closed, or no new boot at all
+        # within the restart wait: each has its own code and next steps.
+        for device, wait_result, code in (
+            (FakeAcpDevice(ssh_open=False, ssh_up_after_boot=None), "ssh_not_open", "ssh_closed_after_restart"),
+            (FakeAcpDevice(ssh_open=False, kernel_after=10_000.0), "did_not_come_back_up", "ssh_enable_timeout"),
+        ):
+            with self.subTest(wait_result=wait_result):
+                result, recorder, _enable = self.enable(device)
 
-        self.assertIsInstance(result, RebootFlowError)
-        self.assertEqual(result.code, "reboot_not_finished")
-        self.assertEqual(str(result), SSH_ENABLE_TIMEOUT_MESSAGE)
+                self.assertIsInstance(result, RebootFlowError)
+                self.assertEqual(result.code, code)
+                self.assertEqual(result.result, wait_result)
+                self.assertEqual(str(result), SSH_ENABLE_TIMEOUT_MESSAGE)
+                self.assertEqual(recorder.measurement("reboot_cycle")["result"], wait_result)
 
     def test_enable_reports_a_device_that_never_restarted(self) -> None:
         result, _recorder, _enable = self.enable(FakeAcpDevice(ssh_open=False, reboots=False))

@@ -37,6 +37,7 @@ from timecapsulesmb.app import contracts, helper, service
 from timecapsulesmb.flash_workflow import SecondaryBankInvalidError, SecondaryBankReadMismatchError
 from tests.flash_fixtures import inspect_full_banks, plan_full_restore
 from tests.reboot_support import DEVICE_AIRPORT_MAC
+from timecapsulesmb.services.configure import ConfigureFlowError
 from timecapsulesmb.services.version_check import VersionCheckResult
 from timecapsulesmb.cli import main as cli_main
 from timecapsulesmb.checks.models import CheckResult
@@ -4075,7 +4076,8 @@ class AppApiTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
                 with mock.patch(
                     "timecapsulesmb.app.ops.set_ssh.enable_set_ssh",
-                    side_effect=RebootFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code="reboot_not_finished"),
+                    side_effect=RebootFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code="ssh_enable_timeout",
+                                                result="did_not_come_back_up"),
                 ):
                     rc = service.run_api_request(
                         {
@@ -4762,7 +4764,9 @@ class AppApiTests(unittest.TestCase):
                 },
             )
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
-                with mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe", side_effect=lambda connection, **_kwargs: (connection, None)):
+                with mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe",
+                                side_effect=ConfigureFlowError("SSH did not open after enabling via ACP.",
+                                                               code="ssh_enable_timeout")):
                     rc = service.run_api_request(
                         {
                             "operation": "configure",
@@ -4798,7 +4802,10 @@ class AppApiTests(unittest.TestCase):
                         rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
 
         self.assertEqual(rc, 1)
-        self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "ssh_enable_timeout")
+        # The device came back on a new boot, and only SSH stayed closed.
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "ssh_closed_after_restart")
+        self.assertEqual(error["recovery"]["localization_key"], "ssh_closed_after_restart")
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["phase"], "finished")
         cycle = finished["execution"]["measurements"]["reboot_cycle"][0]

@@ -668,11 +668,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     continue
                 if exc.code == ErrorCode.UNSUPPORTED_DEVICE:
                     raise SystemExit(str(exc))
-                if exc.code == ErrorCode.SSH_ENABLE_TIMEOUT:
-                    return fail_configure(
-                        "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again."
-                    )
-                return fail_configure(str(exc), exc=exc)
+                return fail_configure(str(exc), code=exc.code, exc=exc)
             values.clear()
             values.update(result.values)
             command_context.connection = result.connection

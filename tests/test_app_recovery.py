@@ -81,17 +81,48 @@ class AppRecoveryTests(unittest.TestCase):
                 self.assertEqual(recovery["message"], "This operation is not supported on the detected AirPort model or OS.")
                 self.assertFalse(any("Forget" in action for action in recovery["actions"]))
 
-    def test_ssh_enable_timeout_recovery_says_to_wait_and_retry(self) -> None:
+    def test_ssh_enable_timeout_recovery_says_to_unplug_and_retry(self) -> None:
         # configure and set-ssh both report this code once ACP took the request
-        # but SSH stayed closed for the whole wait.
+        # but SSH stayed closed for the whole wait. A restart that long has
+        # stopped partway and ends only when the device is unplugged, so the
+        # first step is unplugging it, never waiting longer.
         for operation in ("configure", "set-ssh"):
             with self.subTest(operation=operation):
                 recovery = recovery_for(operation, "ssh_enable_timeout")
                 self.assertEqual(recovery["localization_key"], "ssh_enable_timeout")
-                self.assertEqual(recovery["title"], "SSH has not opened yet")
+                self.assertEqual(recovery["title"], "The device has not come back")
                 self.assertIn("restarts the device", recovery["message"])
+                self.assertIn("until they are unplugged", recovery["message"])
                 self.assertTrue(recovery["retryable"])
-                self.assertEqual(recovery["actions"][0], "Wait a few minutes, then try again.")
+                self.assertEqual(recovery["actions"], [
+                    "Unplug the device, wait 10 seconds and plug it back in.",
+                    "Wait 2 minutes for the device to start up, then try again.",
+                ])
+                self.assertFalse(any("Wait a few minutes" in action for action in recovery["actions"]))
+
+    def test_ssh_that_stayed_closed_after_a_finished_restart_says_to_try_again_first(self) -> None:
+        # The device came back on a new boot and is on the network, so the
+        # first step enables SSH again; unplugging comes only after that.
+        for operation in ("configure", "set-ssh"):
+            with self.subTest(operation=operation):
+                recovery = recovery_for(operation, "ssh_closed_after_restart")
+                self.assertEqual(recovery["localization_key"], "ssh_closed_after_restart")
+                self.assertEqual(recovery["title"], "SSH did not turn on")
+                self.assertIn("it came back", recovery["message"])
+                self.assertNotIn("off the network", recovery["message"])
+                self.assertTrue(recovery["retryable"])
+                self.assertEqual(recovery["actions"][0], "Try again.")
+                self.assertIn("unplug the device", recovery["actions"][1])
+
+    def test_ssh_enable_guidance_names_the_waits_the_restart_wait_uses(self) -> None:
+        # The guidance states each wait in minutes: it must say what
+        # services.reboot actually waits.
+        from timecapsulesmb.services.reboot import REBOOT_SSH_TIMEOUT_SECONDS, REBOOT_UP_TIMEOUT_SECONDS
+        for code, seconds in (("ssh_enable_timeout", REBOOT_UP_TIMEOUT_SECONDS),
+                              ("ssh_closed_after_restart", REBOOT_SSH_TIMEOUT_SECONDS)):
+            with self.subTest(code=code):
+                self.assertEqual(seconds % 60, 0)
+                self.assertIn(f"{seconds // 60} minutes", recovery_for("configure", code)["message"])
 
     def test_file_sharing_that_did_not_restart_offers_activate_at_every_restart_stage(self) -> None:
         # fsck fails with this code once its reboot is done, whether starting

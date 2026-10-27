@@ -73,9 +73,8 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 raise AppOperationError(str(exc), code=ErrorCode.DEVICE_UNREACHABLE) from exc
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
         except RebootFlowError as exc:
-            # SSH not opening in time keeps its own guidance: enabling it can be slow.
-            code = ErrorCode.SSH_ENABLE_TIMEOUT if exc.code == ErrorCode.REBOOT_NOT_FINISHED else exc.code
-            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=code) from exc
+            # SSH not opening in time has its own codes (services.set_ssh).
+            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=exc.code) from exc
         except Exception as exc:
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
     else:

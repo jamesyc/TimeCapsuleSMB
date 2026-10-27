@@ -72,9 +72,25 @@ ACPD_STOPPED_MESSAGE = acpd.acpd_broken_message(
 
 
 class RebootFlowError(CodedError):
-    """A reboot that failed or could not be proven; `code` is the app's error code."""
+    """A reboot that failed or could not be proven; `code` is the app's error
+    code, and `result` the restart wait's own outcome (its reboot_cycle
+    measurement's result), when the wait raised it."""
 
     code: ErrorCode
+
+    def __init__(
+        self, message: str, *, code: ErrorCode | str, detail: str | None = None, result: str | None = None,
+    ) -> None:
+        super().__init__(message, code=code, detail=detail)
+        self.result = result
+
+
+def ssh_enable_error_code(exc: RebootFlowError) -> ErrorCode:
+    """The code for SSH that did not open after the restart that turns it on:
+    ssh_closed_after_restart when the device came back on a new boot and only
+    SSH stayed closed for REBOOT_SSH_TIMEOUT_SECONDS, ssh_enable_timeout when
+    no new boot answered within the restart wait (REBOOT_UP_TIMEOUT_SECONDS)."""
+    return ErrorCode.SSH_CLOSED_AFTER_RESTART if exc.result == "ssh_not_open" else ErrorCode.SSH_ENABLE_TIMEOUT
 
 
 def reboot_device(
@@ -272,7 +288,7 @@ def _wait(
             fields.update(_network_context(host))
         callbacks.measurement("reboot_cycle", result=result, **fields)
         if code is not None:
-            raise RebootFlowError(message, code=code)
+            raise RebootFlowError(message, code=code, result=result)
 
     def is_new_boot(uptime: int | None, read_started: float) -> bool:
         return uptime is not None and uptime + UPTIME_SLACK_SECONDS < u0 + (read_started - started)

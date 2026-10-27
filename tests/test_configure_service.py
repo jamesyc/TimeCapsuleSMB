@@ -959,21 +959,28 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertIs(state, probe_state)
         probe.assert_called_once_with(connection)
 
-    def test_enable_ssh_and_reprobe_returns_none_when_ssh_does_not_open(self) -> None:
-        callbacks, stages, _logs, _debug_fields, update_fields = self.callbacks()
-        with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
-            with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug"):
-                with mock.patch(
-                    "timecapsulesmb.services.configure.reboot_device",
-                    side_effect=RebootFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code="reboot_not_finished"),
-                ):
-                    with mock.patch("timecapsulesmb.services.configure.probe_connection_state") as probe:
-                        result = enable_ssh_and_reprobe(self.make_connection(), callbacks=callbacks)
+    def test_enable_ssh_and_reprobe_names_whether_the_device_came_back_when_ssh_does_not_open(self) -> None:
+        # A restart that never came back stays stuck until the device is
+        # unplugged; one that came back with SSH closed may have lost the
+        # setting, and enabling again sets it again: each has its own code.
+        for wait_result, code in (("did_not_come_back_up", "ssh_enable_timeout"),
+                                  ("ssh_not_open", "ssh_closed_after_restart")):
+            with self.subTest(wait_result=wait_result):
+                callbacks, stages, _logs, _debug_fields, update_fields = self.callbacks()
+                timeout = RebootFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code="reboot_not_finished", result=wait_result)
+                with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
+                    with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug"):
+                        with mock.patch("timecapsulesmb.services.configure.reboot_device", side_effect=timeout):
+                            with mock.patch("timecapsulesmb.services.configure.probe_connection_state") as probe:
+                                with self.assertRaises(ConfigureFlowError) as raised:
+                                    enable_ssh_and_reprobe(self.make_connection(), callbacks=callbacks)
 
-        self.assertEqual(result, (self.make_connection(), None))
-        probe.assert_not_called()
-        self.assertEqual(stages, ["acp_port_probe", "acp_enable_ssh"])
-        self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT, {"ssh_final_reachable": False}])
+                self.assertEqual(raised.exception.code, code)
+                self.assertEqual(str(raised.exception), SSH_ENABLE_TIMEOUT_MESSAGE)
+                self.assertIs(raised.exception.__cause__, timeout)
+                probe.assert_not_called()
+                self.assertEqual(stages, ["acp_port_probe", "acp_enable_ssh"])
+                self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT, {"ssh_final_reachable": False}])
 
     def test_device_that_did_not_restart_fails_configure_with_its_own_code(self) -> None:
         # Only SSH not opening in time is the soft "try again" outcome; a reboot

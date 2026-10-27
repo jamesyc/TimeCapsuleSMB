@@ -211,11 +211,38 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         action_ids=("run_checkup",),
     ),
     # Configure and set-ssh: ACP took the request but SSH did not open within
-    # services.reboot.REBOOT_UP_TIMEOUT_SECONDS.
+    # services.reboot.REBOOT_UP_TIMEOUT_SECONDS (10 minutes). A restart that
+    # takes that long has stopped partway, and only unplugging the device
+    # ends it, so waiting longer does not help.
     ErrorCode.SSH_ENABLE_TIMEOUT: RecoveryInfo(
-        "SSH has not opened yet",
-        "Turning on SSH restarts the device. Some devices take longer to restart than TimeCapsuleSMB waits.",
-        ("Wait a few minutes, then try again.", "If SSH still does not open, restart the device, then try again."),
+        "The device has not come back",
+        (
+            "Turning on SSH restarts the device, and it did not come back with SSH open within 10 minutes. Some "
+            "devices stop partway through a restart and stay off the network, Wi-Fi included, until they are "
+            "unplugged."
+        ),
+        (
+            "Unplug the device, wait 10 seconds and plug it back in.",
+            "Wait 2 minutes for the device to start up, then try again.",
+        ),
+        retryable=True,
+    ),
+    # Configure and set-ssh: the restart that turns SSH on finished (ACP
+    # answered on a new boot), but SSH stayed closed for
+    # services.reboot.REBOOT_SSH_TIMEOUT_SECONDS (4 minutes): the device is on
+    # the network, and the setting may not have taken. Enabling it again sets
+    # it again.
+    ErrorCode.SSH_CLOSED_AFTER_RESTART: RecoveryInfo(
+        "SSH did not turn on",
+        (
+            "Turning on SSH restarted the device, and it came back, but SSH stayed off for 4 minutes after that. "
+            "The device may not have kept the setting."
+        ),
+        (
+            "Try again.",
+            "If SSH still does not turn on, unplug the device, wait 10 seconds and plug it back in, then try again "
+            "after 2 minutes.",
+        ),
         retryable=True,
     ),
     # services.reboot.reboot_device: every reboot that does not finish.

@@ -25,6 +25,8 @@ from timecapsulesmb.discovery.bonjour import (
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 
+from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.services.configure import ConfigureFlowError
 from timecapsulesmb.services.configure import enable_ssh_and_reprobe as real_enable_ssh_and_reprobe
 from tests.cli_support import CliTestCase, FakeCommandContext
 from tests.reboot_support import acp_reading
@@ -2831,22 +2833,33 @@ class CliConfigureTests(CliTestCase):
         self.assertNotIn("Next steps", self.configure_finished_error())
 
     def test_configure_hard_fails_when_ssh_does_not_open_after_acp(self) -> None:
-        self._configure_acp_probe_mock.side_effect = [None]
-        result = self.run_configure_cli(
-            prompt_side_effect=self.configure_prompt_defaults(),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+        # A restart still not back after the whole wait stays stuck until the
+        # device is unplugged, so its steps say to unplug it, not to wait; one
+        # back with SSH closed is enabled again first.
+        cases = (
+            (ErrorCode.SSH_ENABLE_TIMEOUT,
+             "  1. Unplug the device, wait 10 seconds and plug it back in.\n"
+             "  2. Wait 2 minutes for the device to start up, then try again."),
+            (ErrorCode.SSH_CLOSED_AFTER_RESTART,
+             "  1. Try again.\n"
+             "  2. If SSH still does not turn on, unplug the device, wait 10 seconds and plug it back in, then "
+             "try again after 2 minutes."),
         )
+        for code, steps in cases:
+            with self.subTest(code=code):
+                self._configure_acp_probe_mock.side_effect = ConfigureFlowError(
+                    "SSH did not open after enabling via ACP.", code=code)
+                result = self.run_configure_cli(
+                    prompt_side_effect=self.configure_prompt_defaults(),
+                    probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+                )
 
-        self.assertEqual(result.rc, 1)
-        result.mocks.write_env_file.assert_not_called()
-        self.assertIn(
-            "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again.",
-            result.text,
-        )
-        self.assertIn(
-            "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again.",
-            self.configure_finished_error(),
-        )
+                self.assertEqual(result.rc, 1)
+                result.mocks.write_env_file.assert_not_called()
+                self.assertIn(f"SSH did not open after enabling via ACP.\n\nNext steps:\n{steps}", result.text)
+                # Telemetry keeps the message alone, the text the dashboard groups on.
+                self.assertIn("SSH did not open after enabling via ACP.", self.configure_finished_error())
+                self.assertNotIn("Next steps", self.configure_finished_error())
 
     def test_configure_records_the_ssh_enable_reboot_cycle_in_telemetry(self) -> None:
         # The real enable-and-reboot runs against the simulated device; only the

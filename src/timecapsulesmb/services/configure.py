@@ -38,7 +38,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, AirportIdentityMismatchError, enable_ssh_with_port_preflight
-from timecapsulesmb.services.reboot import RebootFlowError, followed, reboot_device
+from timecapsulesmb.services.reboot import RebootFlowError, followed, reboot_device, ssh_enable_error_code
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
@@ -162,12 +162,14 @@ def enable_ssh_and_reprobe(
     probe: Callable[[SshConnection], ProbedDeviceState] | None = None,
     record: BonjourResolvedService | None = None,
     before_enable: Callable[[str], None] | None = None,
-) -> tuple[SshConnection, ProbedDeviceState | None]:
+) -> tuple[SshConnection, ProbedDeviceState]:
     """Turn SSH on through ACP, reboot, and probe again.
 
     Returns the connection to the address SSH was turned on at, which moves
     when the device is found at a new address by its AirPort MAC, and the new
-    probe, or None when SSH did not open in time.
+    probe. SSH that did not open in time raises ConfigureFlowError with
+    reboot.ssh_enable_error_code's code: whether the device came back at all
+    decides what the user does next.
     """
     callbacks = callbacks or OperationCallbacks()
     if probe is None:
@@ -207,7 +209,7 @@ def enable_ssh_and_reprobe(
         if exc.code != ErrorCode.REBOOT_NOT_FINISHED:
             raise
         callbacks.update(ssh_final_reachable=False)
-        return connection, None
+        raise ConfigureFlowError(str(exc), code=ssh_enable_error_code(exc)) from exc
 
     callbacks.update(ssh_final_reachable=True)
     callbacks.stage("ssh_probe_after_acp")
@@ -322,8 +324,6 @@ def run_configure_flow(
             raise ConfigureFlowError(str(exc), code=ErrorCode.DEVICE_IDENTITY_MISMATCH) from exc
         except RebootFlowError as exc:
             raise ConfigureFlowError(str(exc), code=exc.code) from exc
-        if probed_state is None:
-            raise ConfigureFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code=ErrorCode.SSH_ENABLE_TIMEOUT)
         # The device answered at a new address: that is the one to save.
         values["TC_HOST"] = connection.host
         if hooks.after_probe is not None:

@@ -374,6 +374,13 @@ Install / Update Samba, Uninstall, Disk Repair and Checkup read the device's ker
 
 Install, Uninstall and Disk Repair ask before they go on with a failing disk; `--yes` goes on after printing the warning.
 
+### SSH Does Not Turn On
+
+Turning on SSH restarts the device. When that fails, Configure and “Enable SSH” tell the two cases apart:
+
+- **The device has not come back:** no new startup answered within 10 minutes. Some Time Capsules stop partway through a restart and stay off the network, Wi-Fi included, until they are unplugged. Unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, then try again.
+- **SSH did not turn on:** the device restarted and is back, but SSH stayed off for 4 minutes after that. Try again; if it still does not turn on, unplug the device, wait 10 seconds and plug it back in, then try again after 2 minutes.
+
 ### I Want The Full Technical Story
 
 Read:

@@ -82,12 +82,27 @@ final class RecoveryActionMapperTests: XCTestCase {
         )
 
         L10n.apply(language: .english)
-        XCTAssertEqual(configureError.message, "SSH has not opened yet")
+        XCTAssertEqual(configureError.message, "The device has not come back")
         XCTAssertEqual(setSSHError.message, configureError.message)
 
         L10n.apply(language: .simplifiedChinese)
-        XCTAssertEqual(configureError.message, "SSH 尚未启动")
+        XCTAssertEqual(configureError.message, "设备尚未恢复")
         XCTAssertEqual(setSSHError.message, configureError.message)
+    }
+
+    func testSSHClosedAfterRestartLineIsItsOwnGuidanceTitle() throws {
+        // The device came back and only SSH stayed off: not the "has not come
+        // back" line of a restart that never finished.
+        let closed = try helperError(
+            operation: "configure",
+            code: "ssh_closed_after_restart",
+            message: "SSH did not open after enabling via ACP."
+        )
+
+        L10n.apply(language: .english)
+        XCTAssertEqual(closed.message, "SSH did not turn on")
+        L10n.apply(language: .german)
+        XCTAssertEqual(closed.message, "SSH wurde nicht aktiviert")
     }
 
     func testFailingDiskSymptomLinesAreTheirGuidanceTitles() throws {

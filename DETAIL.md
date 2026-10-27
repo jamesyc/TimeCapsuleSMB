@@ -1259,6 +1259,8 @@ Arguments:
 - `--no-input`: fail instead of prompting in legacy mode
 - `--no-wait`: after enabling or disabling, return without waiting for the port/reboot verification
 
+Turning SSH on restarts the device. When SSH does not open, the restart wait's outcome picks the error code, for `set-ssh` and `configure` alike (`reboot.ssh_enable_error_code`): `ssh_enable_timeout` when no new boot answered within the 10-minute restart wait (`did_not_come_back_up`; some Time Capsules stop partway through a restart until unplugged, so the steps say to unplug it), and `ssh_closed_after_restart` when ACP answered on a new boot but SSH stayed closed for 4 minutes (`ssh_not_open`; the device is on the network and may not have kept the setting, so the first step is to try again). Both keep the message "SSH did not open after enabling via ACP.", which telemetry groups on.
+
 Use `configure` for normal first-time setup. Use `set-ssh` only when you intentionally want to manage SSH separately from the main config flow.
 
 ### `deploy`
