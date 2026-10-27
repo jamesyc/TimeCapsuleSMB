@@ -1,8 +1,13 @@
 name: CI
 
 on:
+  # The GitHub Pages site in docs/ has nothing for CI to build or test.
   push:
+    paths-ignore:
+      - 'docs/**'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
 
 jobs:
   samba-regressions:

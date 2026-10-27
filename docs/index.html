@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TimeCapsuleSMB: keep your Time Capsule working with macOS 27</title>
+<meta name="description" content="macOS 27 removed AFP, so Macs can no longer back up to an AirPort Time Capsule. TimeCapsuleSMB installs Samba 4 on the Time Capsule itself, so Time Machine keeps working with your existing backups.">
+<link rel="canonical" href="https://jamesyc.github.io/TimeCapsuleSMB/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="TimeCapsuleSMB: keep your Time Capsule working with macOS 27">
+<meta property="og:description" content="Install modern SMB on your AirPort Time Capsule and keep backing up with Time Machine. Your existing backups keep working.">
+<meta property="og:url" content="https://jamesyc.github.io/TimeCapsuleSMB/">
+<meta property="og:image" content="https://jamesyc.github.io/TimeCapsuleSMB/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+<link rel="apple-touch-icon" href="assets/icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;600&family=Atkinson+Hyperlegible+Next:ital,wght@0,400;0,600;0,800;1,400&display=swap" rel="stylesheet">
+<style>
+  /* Colors come from the hardware: the matte grey and white of the
+     Time Capsule's shell, and the two colors of its status light. */
+  :root {
+    --bg: #eceef1;
+    --shell: #f9fafb;
+    --ink: #1c232b;
+    --muted: #55606c;
+    --rule: #cfd4da;
+    --link: #1d5bbf;
+    --led-green: #2bbf62;
+    --led-amber: #e89a2c;
+    --button: #1c232b;
+    --button-ink: #f9fafb;
+    --code-bg: #e2e5e9;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14181d;
+      --shell: #1e242a;
+      --ink: #e7eaee;
+      --muted: #9ba5b0;
+      --rule: #2f363e;
+      --link: #86b4ff;
+      --button: #e7eaee;
+      --button-ink: #14181d;
+      --code-bg: #1e242a;
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 1.0625rem/1.6 "Atkinson Hyperlegible Next", system-ui, sans-serif;
+  }
+  a { color: var(--link); text-underline-offset: 0.18em; }
+  a:focus-visible, button:focus-visible {
+    outline: 3px solid var(--link);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+  img { max-width: 100%; height: auto; display: block; }
+  code, pre { font-family: "Atkinson Hyperlegible Mono", ui-monospace, monospace; font-size: 0.9em; }
+
+  .wrap { max-width: 68rem; margin: 0 auto; padding: 0 1.5rem; }
+
+  /* Header */
+  .top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding-top: 1.25rem; padding-bottom: 1.25rem;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 0.6rem;
+    color: var(--ink); text-decoration: none; font-weight: 600;
+  }
+  .brand img { width: 2rem; height: 2rem; }
+  .top nav { display: flex; gap: 1.25rem; font-size: 0.95rem; }
+  .top nav a { color: var(--muted); text-decoration: none; }
+  .top nav a:hover { color: var(--ink); }
+
+  /* Hero: the headline beside a photo of the device whose status
+     light goes from blinking amber to steady green. */
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 3rem;
+    padding-top: 3.5rem;
+    padding-bottom: 5rem;
+  }
+  .hero h1 {
+    font-size: clamp(2.5rem, 6vw, 4.25rem);
+    line-height: 1.02;
+    font-weight: 800;
+    letter-spacing: -0.025em;
+    margin: 0 0 1.5rem;
+    max-width: 13ch;
+  }
+  .hero .lede { font-size: 1.25rem; color: var(--muted); max-width: 34rem; margin: 0 0 2rem; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.5rem; }
+  .download {
+    display: inline-block;
+    background: var(--button); color: var(--button-ink);
+    padding: 0.9rem 1.5rem; border-radius: 0.75rem;
+    font-weight: 600; font-size: 1.1rem; text-decoration: none;
+  }
+  .download:hover { opacity: 0.88; }
+  .fineprint { color: var(--muted); font-size: 0.95rem; margin: 1rem 0 0; }
+
+  .stage { display: flex; justify-content: center; }
+  /* A photo of the 5th generation Time Capsule with its background
+     removed; the status light is drawn over the one in the photo. */
+  .device { width: min(15rem, 60vw); height: auto; display: block; overflow: visible; }
+  .tc-shadow { fill: #1c2530; opacity: 0.35; }
+  .led {
+    fill: var(--led-green);
+    filter: drop-shadow(0 0 2px var(--led-green));
+    animation: boot 3.2s steps(1, end) 0.4s both;
+  }
+  @keyframes boot {
+    0%, 30%, 60% { fill: var(--led-amber); filter: drop-shadow(0 0 2px var(--led-amber)); }
+    15%, 45%, 75% { fill: #c9cdd2; filter: none; }
+    90%, 100% { fill: var(--led-green); filter: drop-shadow(0 0 2px var(--led-green)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .led { animation: none; }
+  }
+  @media (prefers-color-scheme: dark) {
+    .tc-shadow { fill: #000; opacity: 0.8; }
+  }
+
+  /* Sections */
+  section { padding: 4rem 0; border-top: 1px solid var(--rule); }
+  h2 {
+    font-size: clamp(1.75rem, 3.5vw, 2.25rem);
+    line-height: 1.15; font-weight: 800; letter-spacing: -0.015em;
+    margin: 0 0 1rem; max-width: 24ch;
+  }
+  h3 { font-size: 1.15rem; line-height: 1.3; margin: 0 0 0.35rem; }
+  p { margin: 0 0 1rem; max-width: 40rem; }
+  .intro { color: var(--muted); font-size: 1.125rem; margin-bottom: 2.5rem; }
+
+  .facts {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2rem 3rem; margin: 0; max-width: 56rem;
+  }
+  .facts dt { font-weight: 600; font-size: 1.15rem; margin-bottom: 0.35rem; }
+  .facts dd { margin: 0; color: var(--muted); }
+
+  /* Install steps are a real sequence, so they are numbered. */
+  .steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .steps > li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 3rem minmax(0, 1fr);
+    gap: 0 1rem;
+    padding: 1.5rem 0;
+  }
+  .steps > li::before {
+    content: counter(step);
+    font-weight: 800; font-size: 1.6rem; line-height: 1.1;
+    color: var(--muted);
+  }
+  .steps > li > div > p:last-child { margin-bottom: 0; }
+  .steps figure { margin: 1.25rem 0 0; max-width: 40rem; }
+  .steps figure img { border-radius: 0.6rem; box-shadow: 0 0.75rem 2rem -1rem rgba(0, 0, 0, 0.45); }
+  .steps figcaption { color: var(--muted); font-size: 0.9rem; margin-top: 0.6rem; }
+
+  table { border-collapse: collapse; width: 100%; max-width: 56rem; }
+  th, td { text-align: left; vertical-align: top; padding: 1rem 1.5rem 1rem 0; border-bottom: 1px solid var(--rule); }
+  th { font-weight: 600; }
+  thead th { color: var(--muted); font-size: 0.95rem; }
+  td { color: var(--muted); }
+  tbody th { width: 34%; }
+
+  .checklist { list-style: none; padding: 0; margin: 0; max-width: 44rem; }
+  .checklist li { position: relative; padding: 0 0 1.25rem 1.75rem; }
+  .checklist li::before {
+    /* The amber of the status light, used only for these warnings. */
+    content: ""; position: absolute; left: 0.2rem; top: 0.55em;
+    width: 0.55rem; height: 0.55rem; border-radius: 50%;
+    background: var(--led-amber);
+  }
+
+  pre {
+    background: var(--code-bg); border-radius: 0.6rem;
+    padding: 1.1rem 1.25rem; overflow-x: auto; max-width: 44rem;
+    line-height: 1.55; margin: 0 0 1rem;
+  }
+  p code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 0.3em; }
+
+  .links { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.9rem; max-width: 40rem; }
+  .links a { font-weight: 600; }
+  .links span { color: var(--muted); }
+
+  footer { border-top: 1px solid var(--rule); padding: 2.5rem 0 3rem; color: var(--muted); font-size: 0.9rem; }
+  footer p { max-width: 48rem; }
+
+  @media (max-width: 760px) {
+    .wrap { padding: 0 1rem; }
+    .top nav a:not(.gh) { display: none; }
+    .hero { grid-template-columns: 1fr; gap: 2.5rem; padding-top: 1.5rem; padding-bottom: 3.5rem; }
+    .stage { order: -1; }
+    .device { width: 7rem; }
+    .facts { grid-template-columns: 1fr; }
+    .steps > li { grid-template-columns: 2rem minmax(0, 1fr); }
+    section { padding: 3rem 0; }
+    th, td { padding-right: 0.75rem; }
+    tbody th { width: auto; }
+  }
+</style>
+</head>
+<body>
+<header class="wrap top">
+  <a class="brand" href="./"><img src="assets/icon.png" alt="" width="32" height="32">TimeCapsuleSMB</a>
+  <nav aria-label="Site">
+    <a href="#install">Install</a>
+    <a href="#devices">Devices</a>
+    <a href="https://github.com/jamesyc/TimeCapsuleSMB/blob/main/FAQ.md">FAQ</a>
+    <a class="gh" href="https://github.com/jamesyc/TimeCapsuleSMB">GitHub</a>
+  </nav>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <div>
+      <h1>Keep backing up to your Time Capsule.</h1>
+      <p class="lede">Apple removed AFP support in macOS 27, which is the protocol AirPort Time Capsules use for Time Machine. TimeCapsuleSMB will directly install Samba on the Time Capsule, so it stays compatible with macOS.</p>
+      <div class="actions">
+        <a class="download" href="https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/TimeCapsuleSMB.app.zip">Download for Mac</a>
+        <span><a href="#command-line">Use the command line instead</a>. Supports Linux and older macOS</span>
+      </div>
+      <p class="fineprint">Free and open source. Needs macOS 14 or later on an Intel or Apple silicon Mac.</p>
+    </div>
+    <div class="stage" aria-hidden="true">
+      <svg class="device" viewBox="0 0 197 356" xmlns="http://www.w3.org/2000/svg">
+        <defs><filter id="tc-blur" x="-20%" y="-100%" width="140%" height="300%"><feGaussianBlur stdDeviation="5"/></filter></defs>
+        <ellipse class="tc-shadow" cx="99" cy="333.4" rx="80" ry="10" filter="url(#tc-blur)"/>
+        <image href="assets/time-capsule.webp" width="197" height="343.4"/>
+        <ellipse class="led" cx="69.5" cy="316.9" rx="1.6" ry="1.7"/>
+      </svg>
+    </div>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <h2>Features of TimeCapsuleSMB</h2>
+      <p class="intro">The Time Capsule runs Samba 4.25 and speaks SMB 3, the file sharing protocol current Macs use. Nothing keeps running on your Mac.</p>
+      <dl class="facts">
+        <div>
+          <dt>Your existing backups keep working</dt>
+          <dd>The disk is not wiped or reformatted. Time Machine picks up the backups already on it.</dd>
+        </div>
+        <div>
+          <dt>It finds itself on the network</dt>
+          <dd>The Time Capsule appears in Finder's Network list and in Time Machine settings, even if its IP address changes.</dd>
+        </div>
+        <div>
+          <dt>Sign in with the device password</dt>
+          <dd>Any user name works. The password is the Time Capsule's own password from AirPort Utility. Guest access is off.</dd>
+        </div>
+        <div>
+          <dt>You only set it up once</dt>
+          <dd>The server starts each time the Time Capsule restarts. On 1st to 4th generation models this needs the one-time boot hook described below.</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>How to Install</h2>
+      <p class="intro">Expect 10 to 20 minutes, most of it waiting for the Time Capsule to restart and start Samba.</p>
+      <ol class="steps">
+        <li><div>
+          <h3>Download and open the app</h3>
+          <p>Unzip <a href="https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/TimeCapsuleSMB.app.zip">TimeCapsuleSMB.app.zip</a> and open the app. When macOS asks, allow it to find devices on your local network. If you missed the prompt, turn it on in System Settings, Privacy &amp; Security, Local Network, then quit and reopen the app.</p>
+        </div></li>
+        <li><div>
+          <h3>Add your Time Capsule</h3>
+          <p>Click Add Device, choose your Time Capsule and enter its password. The app turns on SSH on the device, which it needs for the install.</p>
+        </div></li>
+        <li><div>
+          <h3>Install Samba</h3>
+          <p>Select the device, open the Install / Update tab and click Install / Update Samba. The app copies the server to the Time Capsule, restarts it and checks that file sharing came back up.</p>
+          <figure>
+            <img src="assets/install-button.png" alt="The Install / Update tab with every step checked off and Install / Update Verified" width="1087" height="779" loading="lazy">
+            <figcaption>A finished install. Run Checkup confirms everything is working.</figcaption>
+          </figure>
+        </div></li>
+        <li><div>
+          <h3>1st to 4th generation only: install the boot hook</h3>
+          <p>Older Time Capsules need a small firmware patch to start Samba by themselves after a restart. On the Maintenance tab, under Persistent NetBSD4 Boot Hook, click Back Up and Inspect, then Plan Patch, then Write Patch. Keep the Time Capsule plugged in while it writes: losing power in the middle can leave it unable to start.</p>
+          <p>If you skip the patch, click Activate on the Maintenance tab after every restart instead.</p>
+          <figure>
+            <img src="assets/boot-hook.png" alt="The Maintenance tab showing the Persistent NetBSD4 Boot Hook section with a patch plan ready" width="1268" height="858" loading="lazy">
+            <figcaption>The boot hook section after Plan Patch.</figcaption>
+          </figure>
+        </div></li>
+        <li><div>
+          <h3>Point Time Machine at it</h3>
+          <p>In System Settings, open Time Machine, remove the old Time Capsule destination and add the new one. Removing the destination does not delete any backups from the disk.</p>
+          <figure>
+            <img src="assets/time-machine.png" alt="Time Machine settings listing the Time Capsule's Data share as the backup disk, with hourly backups" width="956" height="536" loading="lazy">
+            <figcaption>Time Machine backing up to the Time Capsule over SMB.</figcaption>
+          </figure>
+        </div></li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="devices">
+    <div class="wrap">
+      <h2>Which devices work</h2>
+      <table>
+        <thead>
+          <tr><th scope="col">Device</th><th scope="col">After a restart</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Time Capsule, 5th generation (2013, the tall one)</th>
+            <td>Samba starts by itself.</td>
+          </tr>
+          <tr>
+            <th scope="row">Time Capsule, 1st to 4th generation (2008 to 2011, the flat ones)</th>
+            <td>Samba starts by itself once the boot hook is installed. Without it, click Activate after every restart.</td>
+          </tr>
+          <tr>
+            <th scope="row">AirPort Extreme with a hard disk</th>
+            <td>Works, but not officially supported and less tested. The server is stored on the disk, so a model without one cannot run it.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Before you start</h2>
+      <ul class="checklist">
+        <li>Turn off VPN and firewall software on your Mac. It can block the app from reaching the Time Capsule.</li>
+        <li>If your Mac connects straight to the Time Capsule, use an Ethernet cable. A direct Wi-Fi connection drops every time the Time Capsule restarts.</li>      </ul>
+    </div>
+  </section>
+
+  <section id="command-line">
+    <div class="wrap">
+      <h2>Install from the command line</h2>
+      <p>On Linux, or if you prefer a terminal, use the Python tool. It needs Python 3.9 or later.</p>
+<pre><code>git clone https://github.com/jamesyc/TimeCapsuleSMB.git
+cd TimeCapsuleSMB
+./tcapsule bootstrap
+.venv/bin/tcapsule configure
+.venv/bin/tcapsule deploy
+.venv/bin/tcapsule doctor</code></pre>
+      <p><code>configure</code> finds the Time Capsule and saves its settings, <code>deploy</code> installs Samba and <code>doctor</code> checks the result. The <a href="https://github.com/jamesyc/TimeCapsuleSMB#quick-start-with-python">README</a> covers every command, including the boot hook and uninstalling.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Help and more</h2>
+      <ul class="links">
+        <li><a href="https://github.com/jamesyc/TimeCapsuleSMB/blob/main/FAQ.md">FAQ</a> <span>for common problems, such as the disk showing as full or not appearing in Finder.</span></li>
+        <li><a href="https://github.com/jamesyc/TimeCapsuleSMB/issues">Report a problem</a> <span>if the FAQ does not solve it.</span></li>
+        <li><a href="https://github.com/jamesyc/TimeCapsuleSMB/blob/main/DETAIL.md">How it works</a> <span>for the full technical story.</span></li>
+        <li><a href="https://buymeacoffee.com/jamesyc">Buy me a coffee</a> <span>if TimeCapsuleSMB saved your backups.</span></li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>TimeCapsuleSMB is an independent open source project under the GPL-3.0 license. It is not affiliated with or endorsed by Apple. AirPort, Time Capsule, Time Machine and macOS are trademarks of Apple Inc.</p>
+  </div>
+</footer>
+
+</body>
+</html>
