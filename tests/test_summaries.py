@@ -172,6 +172,7 @@ class SummaryProducerTests(unittest.TestCase):
         "fsck_plan": ("fsck_plan_generated", [], "Dry-run plan generated for fsck."),
         "fsck_completed": ("fsck_completed", [], "Disk repair completed with fsck."),
         "fsck_failed": ("fsck_failed", [8], "fsck_hfs exited with status 8; the disk may still need repair."),
+        "wipe_disk_completed": ("wipe_disk_completed", [], "The disk was wiped and formatted."),
         "doctor_fatal": ("doctor_found_fatal", [], "Doctor found one or more fatal problems."),
         "flash_backup": ("flash_backup_saved", ["/tmp/flash-backup"], "Flash backup saved to /tmp/flash-backup."),
         "flash_apple_stock_match": ("flash.apple_stock_match", [], "Active firmware bank matches Apple stock firmware."),

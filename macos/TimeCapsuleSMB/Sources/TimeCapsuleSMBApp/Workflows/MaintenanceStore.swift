@@ -34,6 +34,7 @@ final class MaintenanceStore: ObservableObject {
     var activateState: MaintenanceOperationState { activationStore.state }
     var uninstallState: MaintenanceOperationState { uninstallStore.state }
     var fsckState: MaintenanceOperationState { fsckStore.state }
+    var wipeDiskState: MaintenanceOperationState { wipeDiskStore.state }
     var sshAccessState: MaintenanceOperationState { sshAccessStore.state }
 
     var activationResult: ActivationResultPayload? { activationStore.result }
@@ -41,6 +42,7 @@ final class MaintenanceStore: ObservableObject {
     var fsckTargets: [FsckTargetViewModel] { fsckStore.targets }
     var fsckPlan: FsckPlanPayload? { fsckStore.plan }
     var fsckResult: FsckResultPayload? { fsckStore.result }
+    var wipeDiskResult: WipeDiskResultPayload? { wipeDiskStore.result }
     var sshAccessPayload: SSHAccessPayload? { sshAccessStore.payload }
 
     var currentStage: OperationStageState? {
@@ -55,6 +57,7 @@ final class MaintenanceStore: ObservableObject {
     let activationStore: ActivationStore
     let uninstallStore: UninstallStore
     let fsckStore: FsckStore
+    let wipeDiskStore: WipeDiskStore
     let sshAccessStore: SSHAccessMaintenanceStore
 
     private let coordinator: OperationCoordinator
@@ -97,6 +100,11 @@ final class MaintenanceStore: ObservableObject {
             coordinator: coordinator,
             laneKey: laneKeysByWorkflow[.fsck]
         )
+        self.wipeDiskStore = WipeDiskStore(
+            backend: backendsByWorkflow[.wipeDisk] ?? coordinator.lane(for: laneKey).backend,
+            coordinator: coordinator,
+            laneKey: laneKeysByWorkflow[.wipeDisk]
+        )
         self.sshAccessStore = SSHAccessMaintenanceStore(
             backend: backendsByWorkflow[.sshAccess] ?? coordinator.lane(for: laneKey).backend,
             coordinator: coordinator,
@@ -137,6 +145,7 @@ final class MaintenanceStore: ObservableObject {
         observe(activationStore)
         observe(uninstallStore)
         observe(fsckStore)
+        observe(wipeDiskStore)
     }
 
     private func observe<Store: ObservableObject>(_ store: Store) where Store.ObjectWillChangePublisher == ObservableObjectPublisher {
@@ -195,6 +204,8 @@ final class MaintenanceStore: ObservableObject {
             uninstallStore.cancelPendingConfirmation()
         case .fsck:
             fsckStore.cancelPendingConfirmation(options: currentOptions)
+        case .wipeDisk:
+            wipeDiskStore.cancelPendingConfirmation()
         }
     }
 
@@ -224,6 +235,11 @@ final class MaintenanceStore: ObservableObject {
 
     var canRunFsck: Bool {
         !isBusy && fsckStore.canRun(options: currentOptions)
+    }
+
+    var canRunWipeDisk: Bool {
+        // isBusy covers the wipe's own store and the device.
+        !isBusy
     }
 
     var canCheckSSHAccess: Bool {
@@ -280,6 +296,15 @@ final class MaintenanceStore: ObservableObject {
     }
 
     @discardableResult
+    func runWipeDisk(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
+        startMaintenanceWorkflow(
+            .wipeDisk,
+            rejectAlreadyRunning: { wipeDiskStore.rejectAlreadyRunning() },
+            start: { wipeDiskStore.runWipe(password: password, profile: profile) }
+        )
+    }
+
+    @discardableResult
     func checkSSHAccess(profile: DeviceProfile? = nil) -> OperationStartResult {
         startMaintenanceWorkflow(
             .sshAccess,
@@ -301,6 +326,7 @@ final class MaintenanceStore: ObservableObject {
         activationStore.clear()
         uninstallStore.clear()
         fsckStore.clear()
+        wipeDiskStore.clear()
         sshAccessStore.clear()
     }
 
@@ -322,7 +348,7 @@ final class MaintenanceStore: ObservableObject {
     }
 
     private var workflowStores: [any MaintenanceWorkflowStore] {
-        [sshAccessStore, activationStore, uninstallStore, fsckStore]
+        [sshAccessStore, activationStore, uninstallStore, fsckStore, wipeDiskStore]
     }
 
     private var activeWorkflowStore: (any MaintenanceWorkflowStore)? {
@@ -343,6 +369,8 @@ final class MaintenanceStore: ObservableObject {
             return uninstallStore
         case .fsck:
             return fsckStore
+        case .wipeDisk:
+            return wipeDiskStore
         }
     }
 
@@ -382,4 +410,5 @@ private protocol MaintenanceWorkflowStore: ObservableObject {
 extension ActivationStore: MaintenanceWorkflowStore {}
 extension UninstallStore: MaintenanceWorkflowStore {}
 extension FsckStore: MaintenanceWorkflowStore {}
+extension WipeDiskStore: MaintenanceWorkflowStore {}
 extension SSHAccessMaintenanceStore: MaintenanceWorkflowStore {}

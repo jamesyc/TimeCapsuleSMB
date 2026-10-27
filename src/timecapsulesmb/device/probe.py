@@ -3213,8 +3213,9 @@ def read_kern_limits_conn(connection: SshConnection) -> str:
 # and one long-lived diskd thread from a new one per claim. Neither reads the
 # data disk, and each is its own command so that one timing out keeps the
 # other. dmesg's buffer is 16 KB on NetBSD 6 and 4 KB on NetBSD 4, and Wi-Fi
-# lines fill NetBSD 6's, so only disk lines are kept (not the dkN wedge lines,
-# which only repeat the boot's partition table); device sed has no \|.
+# lines fill NetBSD 6's, so only disk lines are kept. The wd0/sd0 patterns also
+# keep the wedge lines (`dk2 at wd0: APdata`, `dk0 at sd0 (primary) deleted`),
+# which show the partition table the kernel found; device sed has no \|.
 # `ps -s` lists threads, with no argv column on NetBSD 6 so it never waits on a
 # process's map lock. NetBSD 4's adds its default columns, the command line
 # among them, and its diskd has one thread, so it is not run there.

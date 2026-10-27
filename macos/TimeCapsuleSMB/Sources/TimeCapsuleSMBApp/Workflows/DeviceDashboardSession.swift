@@ -223,6 +223,16 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 let start = maintenanceStore.runFsck(password: password, profile: profile)
                 stateSynchronizer.invalidateCheckupIfStarted(start)
             }
+        case .runWipeDisk:
+            if let password = maintenancePassword(for: profile) {
+                let start = maintenanceStore.runWipeDisk(password: password, profile: profile)
+                if case .started(let operation) = start {
+                    stateSynchronizer.trackWipeDiskStart(operation)
+                }
+                stateSynchronizer.invalidateCheckupIfStarted(start)
+            }
+        case .installSMB:
+            runInstall(profile: profile)
         case .checkSSHAccess:
             maintenanceStore.checkSSHAccess(profile: profile)
         case .enableSSHAccess:
@@ -343,6 +353,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             return { [weak self] in self?.showMaintenance(.uninstall) }
         case .diskRepair:
             return { [weak self] in self?.showMaintenance(.fsck) }
+        case .wipeDisk:
+            return { [weak self] in self?.showMaintenance(.wipeDisk) }
         case .replacePassword:
             return { [weak self] in self?.showPasswordReplacement() }
         case .openSystemSettings:
@@ -435,6 +447,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             maintenanceStore.activationStore.$error,
             maintenanceStore.uninstallStore.$error,
             maintenanceStore.fsckStore.$error,
+            maintenanceStore.wipeDiskStore.$error,
             maintenanceStore.sshAccessStore.$error
         ] {
             publisher

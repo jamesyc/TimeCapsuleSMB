@@ -23,10 +23,19 @@ struct OperationTimelineItem: Equatable, Identifiable {
 }
 
 enum OperationTimelineBuilder {
-    /// Whether a running stage shows how long it has run and a note to leave
-    /// the device alone: Disk Repair can spend an hour on one step.
-    private static func isLongDeviceStep(operation: String, stage: String?) -> Bool {
-        operation == "fsck" && stage == "run_fsck"
+    /// The note a running stage shows, with how long it has run, when it can
+    /// take long enough that someone may unplug the device: Disk Repair can
+    /// spend an hour on one step, and Wipe Internal Disk minutes zeroing a
+    /// failing disk or waiting for the device to format it.
+    private static func longDeviceStepNote(operation: String, stage: String?) -> String? {
+        switch (operation, stage) {
+        case ("fsck", "run_fsck"):
+            return L10n.string("timeline.fsck.keep_plugged_in")
+        case ("wipe-disk", "wipe_disk"), ("wipe-disk", "wait_for_erase"):
+            return L10n.string("timeline.wipe_disk.keep_plugged_in")
+        default:
+            return nil
+        }
     }
 
     static func timeline(from events: [BackendEvent]) -> [OperationTimelineItem] {
@@ -34,7 +43,7 @@ enum OperationTimelineBuilder {
             switch event.type {
             case "stage":
                 let state = stageState(forEventAt: index, in: events)
-                let long = state == .running && isLongDeviceStep(operation: event.operation, stage: event.stage)
+                let note = state == .running ? longDeviceStepNote(operation: event.operation, stage: event.stage) : nil
                 return OperationTimelineItem(
                     id: "\(index):\(event.operation):\(event.stage ?? "stage")",
                     operation: event.operation,
@@ -44,8 +53,8 @@ enum OperationTimelineBuilder {
                     state: state,
                     risk: event.risk,
                     cancellable: event.cancellable,
-                    note: long ? L10n.string("timeline.fsck.keep_plugged_in") : nil,
-                    elapsedSince: long ? event.receivedAt : nil
+                    note: note,
+                    elapsedSince: note != nil ? event.receivedAt : nil
                 )
             case "result":
                 return OperationTimelineItem(
@@ -82,7 +91,7 @@ enum OperationTimelineBuilder {
         _ stage: OperationStageState,
         state: OperationTimelineItem.State = .running
     ) -> OperationTimelineItem {
-        let long = state == .running && isLongDeviceStep(operation: stage.operation, stage: stage.stage)
+        let note = state == .running ? longDeviceStepNote(operation: stage.operation, stage: stage.stage) : nil
         return OperationTimelineItem(
             id: "current:\(stage.operation):\(stage.stage)",
             operation: stage.operation,
@@ -91,8 +100,8 @@ enum OperationTimelineBuilder {
             state: state,
             risk: stage.risk,
             cancellable: stage.cancellable,
-            note: long ? L10n.string("timeline.fsck.keep_plugged_in") : nil,
-            elapsedSince: long ? stage.startedAt : nil
+            note: note,
+            elapsedSince: note != nil ? stage.startedAt : nil
         )
     }
 
@@ -189,6 +198,8 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.operation.activate")
         case "fsck":
             return L10n.string("timeline.operation.fsck")
+        case "wipe-disk":
+            return L10n.string("timeline.operation.wipe_disk")
         case "uninstall":
             return L10n.string("timeline.operation.uninstall")
         case "capabilities", "validate-install":

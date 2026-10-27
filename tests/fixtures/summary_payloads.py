@@ -209,6 +209,8 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         ("fsck_failed", result, "fsck", False, contracts.fsck_result_payload(
             device="/dev/dk2", mountpoint="/Volumes/dk2", returncode=8, reboot_requested=True, waited=True,
             verified=True, error=fsck_failure_message(8))),
+        ("wipe_disk_completed", result, "wipe-disk", True, contracts.wipe_disk_result_payload(
+            disk="wd0", volume_name="Data", new_volume_uuid="0a000000-0000-0000-0000-000000000003", offer_install=True)),
         ("doctor_passed", result, "doctor", True, contracts.doctor_payload(fatal=False, results=[])),
         ("doctor_fatal", result, "doctor", False, contracts.doctor_payload(
             fatal=True, results=doctor_fail, error="Doctor failures:\nFAIL smbd is not running")),

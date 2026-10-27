@@ -8,6 +8,8 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
     case findVolumes
     case planFsck
     case runFsck
+    case runWipeDisk
+    case installSMB
     case viewDiagnostics
 
     var id: String { rawValue }
@@ -28,6 +30,12 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return L10n.string("maintenance.action.plan_disk_repair")
         case .runFsck:
             return L10n.string("maintenance.action.run_disk_repair")
+        case .runWipeDisk:
+            return L10n.string("maintenance.action.wipe_disk")
+        case .installSMB:
+            // The one spelling of Install / Update Samba, as the text beside
+            // it names it.
+            return L10n.string("dashboard.action.install_update_smb")
         case .viewDiagnostics:
             return L10n.string("recovery.action.open_diagnostics")
         }
@@ -49,6 +57,10 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return "externaldrive"
         case .runFsck:
             return "externaldrive.badge.exclamationmark"
+        case .runWipeDisk:
+            return "externaldrive.badge.xmark"
+        case .installSMB:
+            return "square.and.arrow.down.on.square"
         case .viewDiagnostics:
             return "wrench.and.screwdriver"
         }
@@ -56,7 +68,7 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
 
     var isCommitAction: Bool {
         switch self {
-        case .enableSSHAccess, .runActivation, .runUninstall, .runFsck:
+        case .enableSSHAccess, .runActivation, .runUninstall, .runFsck, .runWipeDisk, .installSMB:
             return true
         case .checkSSHAccess, .findVolumes, .planFsck, .viewDiagnostics:
             return false
@@ -85,6 +97,8 @@ extension MaintenanceWorkflow {
             return L10n.string("maintenance.presentation.uninstall.title")
         case .fsck:
             return L10n.string("maintenance.presentation.fsck.title")
+        case .wipeDisk:
+            return L10n.string("maintenance.presentation.wipe_disk.title")
         }
     }
 
@@ -98,6 +112,8 @@ extension MaintenanceWorkflow {
             return L10n.string("maintenance.presentation.uninstall.subtitle")
         case .fsck:
             return L10n.string("maintenance.presentation.fsck.subtitle")
+        case .wipeDisk:
+            return L10n.string("maintenance.presentation.wipe_disk.subtitle")
         }
     }
 
@@ -107,7 +123,7 @@ extension MaintenanceWorkflow {
             return L10n.string("maintenance.presentation.risk.reboot")
         case .activate:
             return L10n.string("maintenance.presentation.risk.remote_write")
-        case .uninstall, .fsck:
+        case .uninstall, .fsck, .wipeDisk:
             return L10n.string("maintenance.presentation.risk.destructive")
         }
     }
@@ -155,7 +171,21 @@ enum MaintenanceActionPolicy {
             return [.runUninstall]
         case .fsck:
             return [.findVolumes, .planFsck, .runFsck]
+        case .wipeDisk:
+            return [.runWipeDisk]
         }
+    }
+
+    /// The workflow's actions now: Wipe Internal Disk adds Install / Update
+    /// Samba once it wiped the disk that held the Samba files (or no disk held
+    /// them).
+    @MainActor
+    static func actions(for workflow: MaintenanceWorkflow, store: MaintenanceStore) -> [MaintenanceUserAction] {
+        let actions = actions(for: workflow)
+        if workflow == .wipeDisk, store.wipeDiskState == .succeeded, store.wipeDiskResult?.offerInstall == true {
+            return actions + [.installSMB]
+        }
+        return actions
     }
 
     @MainActor
@@ -179,6 +209,11 @@ enum MaintenanceActionPolicy {
                 (.findVolumes, store.canFindFsckVolumes),
                 (.planFsck, store.canPlanFsck),
                 (.runFsck, store.canRunFsck)
+            ])
+        case .wipeDisk:
+            return enabled([
+                (.runWipeDisk, store.canRunWipeDisk),
+                (.installSMB, !store.isBusy)
             ])
         }
     }
@@ -242,7 +277,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         self.risk = workflow.presentationRisk
         self.stateTitle = state.title
         self.statusMessage = state.maintenanceStatusMessage(for: workflow)
-        self.actions = MaintenanceActionPolicy.actions(for: workflow)
+        self.actions = MaintenanceActionPolicy.actions(for: workflow, store: store)
         self.enabledActions = MaintenanceActionPolicy.enabledActions(workflow: workflow, store: store)
         self.plan = Self.plan(workflow: workflow, store: store)
         self.completion = Self.completion(workflow: workflow, store: store)
@@ -259,7 +294,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         store: MaintenanceStore
     ) -> MaintenancePlanPresentation? {
         switch workflow {
-        case .sshAccess, .activate, .uninstall:
+        case .sshAccess, .activate, .uninstall, .wipeDisk:
             return nil
         case .fsck:
             guard let plan = store.fsckPlan else { return nil }
@@ -315,6 +350,19 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
                     PresentationRow(label: L10n.string("deploy.result.verified"), value: result.verified == true ? L10n.string("value.yes") : L10n.string("value.no"))
                 ]
             )
+        case .wipeDisk:
+            guard let result = store.wipeDiskResult else { return nil }
+            var rows = [
+                // The disk by Apple's name ("Disk 1"); "Device" means the Time
+                // Capsule.
+                PresentationRow(label: L10n.string("maintenance.result.disk"), value: result.diskLabel ?? result.disk),
+                PresentationRow(label: L10n.string("maintenance.result.volume_name"), value: result.volumeName),
+                PresentationRow(label: L10n.string("deploy.result.message"), value: result.localizedSummary)
+            ]
+            if result.offerInstall {
+                rows.append(PresentationRow(label: L10n.string("maintenance.result.next"), value: L10n.string("maintenance.wipe_disk.install_next")))
+            }
+            return MaintenanceCompletionPresentation(title: L10n.string("maintenance.completion.wipe_disk"), rows: rows)
         }
     }
 
@@ -387,6 +435,8 @@ extension MaintenanceWorkflow {
             return "uninstall"
         case .fsck:
             return "fsck"
+        case .wipeDisk:
+            return "wipe-disk"
         }
     }
 }
@@ -402,6 +452,8 @@ extension MaintenanceStore {
             return uninstallState
         case .fsck:
             return fsckState
+        case .wipeDisk:
+            return wipeDiskState
         }
     }
 }

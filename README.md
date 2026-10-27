@@ -84,6 +84,7 @@ If you run into any issues:
 
 - `.venv/bin/tcapsule activate` after reboot on NetBSD 4 devices if Samba did not auto-start
 - `.venv/bin/tcapsule fsck` if the internal disk needs repair before deploy
+- `.venv/bin/tcapsule wipe-internal-disk` to delete everything on the internal disk and format it for the device, when deploy finds no usable HFS partition on it
 - `.venv/bin/tcapsule discover` to list all mDNS/Bonjour devices
 - `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
 

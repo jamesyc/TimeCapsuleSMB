@@ -23,6 +23,7 @@ from timecapsulesmb.device.storage import (
     VolumeClaims,
     MaStDiskSnapshot,
     MaStPartitionSnapshot,
+    MAST_PARTITIONLESS_ATTEMPTS,
     MAST_PROBE_COMMAND,
     PayloadVerificationResult,
     StorageDeviceError,
@@ -168,7 +169,7 @@ MaSt = (
         inventory = (
             MaStDiskSnapshot("wd0", "", None, True, (
                 MaStPartitionSnapshot("", "Free", ""),
-                MaStPartitionSnapshot("dk2", "Data", "hfs"),
+                MaStPartitionSnapshot("dk2", "Data", "hfs", uuid="f42bdb83-c265-5522-a087-25606a4d0abf"),
             )),
             MaStDiskSnapshot("sd0", "", None, False, ()),
         )
@@ -289,8 +290,8 @@ MaSt = (
         ))
         self.assertEqual(parse_mast_inventory(self.APPLE_ALTERNATE_FORM), (
             MaStDiskSnapshot("wd0", "", "1907729", True, (
-                MaStPartitionSnapshot("dk2", first, "hfs", size_mib=1905681),
-                MaStPartitionSnapshot("dk3", "two\nlines", "hfs"),
+                MaStPartitionSnapshot("dk2", first, "hfs", size_mib=1905681, uuid="105b5aa0-ebe6-5928-84d0-9b3f959fe903"),
+                MaStPartitionSnapshot("dk3", "two\nlines", "hfs", uuid="7b7d5b5d-7c22-0a0d-3d28-293b2c2041ff"),
             )),
         ))
         # The same text through ssh's terminal, with CRLF line ends.
@@ -316,8 +317,12 @@ MaSt = (
     def test_inventory_reads_acps_native_text_form(self) -> None:
         fixture = next(f for f in MAST_FIXTURES if f.name == "native_acp_array_internal_external")
         self.assertEqual(parse_mast_inventory(fixture.raw), (
-            MaStDiskSnapshot("wd0", "", None, True, (MaStPartitionSnapshot("dk2", "Data", "hfs"),)),
-            MaStDiskSnapshot("sd0", "", None, False, (MaStPartitionSnapshot("dk3", "Untitled", "hfs"),)),
+            MaStDiskSnapshot("wd0", "", None, True, (
+                MaStPartitionSnapshot("dk2", "Data", "hfs", uuid="f42bdb83-c265-5522-a087-25606a4d0abf"),
+            )),
+            MaStDiskSnapshot("sd0", "", None, False, (
+                MaStPartitionSnapshot("dk3", "Untitled", "hfs", uuid="51f93e6f-dc69-524d-986d-cee4d7cb3573"),
+            )),
         ))
 
     # `acp -A MaSt` on the LAN NetBSD 6 unit (serials and UUIDs replaced): the
@@ -340,11 +345,11 @@ MaSt = (
         '                users=1\n'
         '                name="AirPort Disk"\n'
         '                sizeFree=513501\n'
-        '                uuid=0000000a 00000000 00000000 00000002 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
+        '                uuid=0a000000 00000000 00000000 00000002 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
         '            }\n'
         '        ]\n'
         '        builtin=true\n'
-        '        uuid=0000000a 00000000 00000000 00000001 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
+        '        uuid=0a000000 00000000 00000000 00000001 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
         '        smartStatus="verified"\n'
         '        info="Disk 1"\n'
         '        revision="PA45"\n'
@@ -366,10 +371,10 @@ MaSt = (
         '                users=1\n'
         '                name="4TB"\n'
         '                sizeFree=3741102\n'
-        '                uuid=0000000b 00000000 00000000 00000002 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
+        '                uuid=0b000000 00000000 00000000 00000002 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
         '            }\n'
         '        ]\n'
-        '        uuid=0000000b 00000000 00000000 00000001 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
+        '        uuid=0b000000 00000000 00000000 00000001 |^^^^^^^^^^^^^^^^| (16 bytes)\n'
         '        info="Disk 2"\n'
         '        revision="1014"\n'
         '        softDisconnected=false\n'
@@ -383,22 +388,36 @@ MaSt = (
         self.assertEqual(parse_mast_inventory(self.NETBSD6_INTERNAL_AND_USB), (
             MaStDiskSnapshot(
                 "wd0", "", "1907729", True,
-                (MaStPartitionSnapshot("dk2", "AirPort Disk", "hfs", 1905681, 1392180, 513501, users=1),),
+                (MaStPartitionSnapshot(
+                    "dk2", "AirPort Disk", "hfs", 1905681, 1392180, 513501, users=1,
+                    uuid="0a000000-0000-0000-0000-000000000002",
+                ),),
                 label="Disk 1", smart_status="verified",
                 # wd0's model as Apple's NetBSD 6 kernel reports it: byte-swapped.
                 model="PALP EDH DTS0200MD00 1", revision="PA45", soft_disconnected=False,
+                product="SERIAL6", uuid="0a000000-0000-0000-0000-000000000001",
             ),
             MaStDiskSnapshot(
                 "sd0", "", "3815415", False,
-                (MaStPartitionSnapshot("dk4", "4TB", "hfs", 3815086, 73984, 3741102, users=1),),
+                (MaStPartitionSnapshot(
+                    "dk4", "4TB", "hfs", 3815086, 73984, 3741102, users=1, uuid="0b000000-0000-0000-0000-000000000002",
+                ),),
                 label="Disk 2", smart_status=None, model="WD", revision="1014", soft_disconnected=False,
+                product="Elements 25A1", uuid="0b000000-0000-0000-0000-000000000001",
             ),
         ))
 
-    def test_inventory_never_reads_the_serial_number(self) -> None:
+    def test_inventory_reads_each_disks_identity_in_either_form(self) -> None:
+        # Wipe Internal Disk addresses the disk by its uuid and reports its
+        # serial; the uuid survives a wipe because it hashes only the drive's
+        # identity.
         for raw in (self.NETBSD6_INTERNAL_AND_USB, netbsd6_internal_and_usb_xml()):
             with self.subTest(form="xml" if "<?xml" in raw else "text"):
-                self.assertNotIn("SERIAL6", repr(parse_mast_inventory(raw)))
+                internal, usb = parse_mast_inventory(raw)
+                self.assertEqual((internal.product, internal.size_mib), ("SERIAL6", 1907729))
+                self.assertEqual(internal.uuid, "0a000000-0000-0000-0000-000000000001")
+                self.assertEqual(internal.partitions[0].uuid, "0a000000-0000-0000-0000-000000000002")
+                self.assertEqual((usb.product, usb.uuid), ("Elements 25A1", "0b000000-0000-0000-0000-000000000001"))
 
     def test_inventory_reads_softdisconnected_and_users_in_either_form(self) -> None:
         # diskd's hang signature: the disk soft-disconnected, its volume held by no one.
@@ -472,9 +491,12 @@ MaSt = (
         self.assertEqual(parse_mast_inventory(f"MaSt={raw}"), (
             MaStDiskSnapshot(
                 "sd0", "", 1907729, True,
-                (MaStPartitionSnapshot("dk2", "Data", "hfs", 1905681, 8977, 1896704, users=1),),
+                (MaStPartitionSnapshot(
+                    "dk2", "Data", "hfs", 1905681, 8977, 1896704, users=1, uuid="00000000-0000-0000-0000-000000000000",
+                ),),
                 label="Disk 1", smart_status="verified",
                 model="WDC WD20EARS-42S0XB0", revision="12.01D04", soft_disconnected=False,
+                product="SERIAL4", uuid="00000000-0000-0000-0000-000000000000",
             ),
         ))
 
@@ -564,7 +586,7 @@ MaSt = (
         read_mock.assert_called_once_with(connection, check_acpd=True)
         sleep_mock.assert_not_called()
 
-    def test_wait_for_mast_volumes_stops_when_disk_has_empty_partition_table(self) -> None:
+    def test_wait_for_mast_volumes_keeps_reading_while_every_disk_shows_no_partitions(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         raw_output = """
 MaSt = (
@@ -586,16 +608,45 @@ MaSt = (
             with mock.patch("timecapsulesmb.device.storage.time.sleep") as sleep_mock:
                 result = wait_for_mast_volumes_conn(connection, attempts=10, delay_seconds=3)
 
+        # Healthy disks list no partitions for a while after they appear, so
+        # the wait reads for 60 s (20 reads 3 s apart), then returns the last
+        # read for the caller to explain.
         inventory = parse_mast_inventory(raw_output)
         self.assertEqual(result.volumes, ())
-        self.assertEqual(result.attempts, 1)
+        self.assertEqual(result.attempts, MAST_PARTITIONLESS_ATTEMPTS)
+        self.assertEqual(MAST_PARTITIONLESS_ATTEMPTS * 3, 60)
         self.assertEqual(result.raw_output, raw_output)
         self.assertEqual(inventory[0].name, "Seagate Expansion HDD")
         self.assertEqual(inventory[0].size, "8000000000000")
         self.assertEqual(inventory[0].partitions, ())
-        # The first read still checks a failed get against ACPd.
-        read_mock.assert_called_once_with(connection, check_acpd=True)
-        sleep_mock.assert_not_called()
+        self.assertEqual(read_mock.call_count, MAST_PARTITIONLESS_ATTEMPTS)
+        # Only the first read checks a failed get against ACPd.
+        self.assertEqual(read_mock.call_args_list[0], mock.call(connection, check_acpd=True))
+        self.assertEqual(sleep_mock.call_args_list, [mock.call(3)] * (MAST_PARTITIONLESS_ATTEMPTS - 1))
+
+    def test_wait_for_mast_volumes_stops_once_partitions_fill_in(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        empty = "MaSt = (\n{\ndeviceName = \"wd0\";\nbuiltin = true;\npartitions = (\n);\n}\n);\n"
+        filled = (
+            "MaSt = (\n{\ndeviceName = \"wd0\";\nbuiltin = true;\npartitions = (\n{\n"
+            "deviceName = \"dk2\";\nformat = \"msdos\";\n}\n);\n}\n);\n"
+        )
+        reads = [MaStReadResult((), empty), MaStReadResult((), empty), MaStReadResult((), filled)]
+        with mock.patch("timecapsulesmb.device.storage.read_mast_volumes_with_output_conn", side_effect=reads):
+            with mock.patch("timecapsulesmb.device.storage.time.sleep"):
+                result = wait_for_mast_volumes_conn(connection, attempts=10, delay_seconds=3)
+        # A disk with any partition, even one deploy cannot use, ends the wait.
+        self.assertEqual((result.attempts, result.volumes, result.raw_output), (3, (), filled))
+
+    def test_wait_for_mast_volumes_waits_attempts_only_when_no_disk_appears(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        with mock.patch(
+            "timecapsulesmb.device.storage.read_mast_volumes_with_output_conn",
+            return_value=MaStReadResult((), "MaSt = (\n);\n"),
+        ) as read_mock:
+            with mock.patch("timecapsulesmb.device.storage.time.sleep"):
+                result = wait_for_mast_volumes_conn(connection, attempts=10, delay_seconds=3)
+        self.assertEqual((result.attempts, read_mock.call_count), (10, 10))
 
     def test_probe_mast_diagnostics_records_empty_success(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")

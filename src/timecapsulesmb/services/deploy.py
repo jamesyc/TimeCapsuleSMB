@@ -100,11 +100,13 @@ from timecapsulesmb.device.storage import (
     PayloadVerificationResult,
     VolumeClaims,
     build_dry_run_payload_home,
+    disk_size_misreported,
     payload_candidate_checks_debug_summary,
     parse_mast_inventory,
     select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
 )
+from timecapsulesmb.device.wipe import gpt_verdict_description, read_gpt_verdict_conn, size_misreported_message
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import Netbsd4StartMessages, start_netbsd4_runtime_after_reboot
 from timecapsulesmb.services.callbacks import OperationCallbacks
@@ -612,13 +614,42 @@ def mast_disk_inventory_debug_summary(disks: tuple[MaStDiskSnapshot, ...]) -> li
     ]
 
 
-def mast_no_volume_error(mast_discovery: MaStDiscoveryResult, *, no_internal_disk: bool = False) -> DeployDeviceError:
+HFS_ON_DISK_NOT_MOUNTED_MESSAGE = (
+    "The disk has an HFS volume, but the device has not mounted it, and did not when asked."
+)
+
+
+def mast_no_volume_error(
+    mast_discovery: MaStDiscoveryResult,
+    *,
+    no_internal_disk: bool = False,
+    connection: SshConnection | None = None,
+    callbacks: OperationCallbacks | None = None,
+) -> DeployDeviceError:
+    """Why MaSt lists no HFS volume, as the code whose guidance fits. With the
+    SSH connection, `gpt show` (read-only) says what is on each disk itself:
+    an Apple HFS partition means the disk has not mounted yet, which must not
+    be met with a Wipe Internal Disk button."""
     try:
         disks = parse_mast_inventory(mast_discovery.raw_output)
     except Exception:
         disks = ()
     if disks:
-        return DeployDeviceError(no_hfs_partition_message(), code=ErrorCode.DEPLOY_NO_HFS_PARTITION)
+        misreported = next((disk for disk in disks if disk_size_misreported(disk)), None)
+        if misreported is not None:
+            return DeployDeviceError(
+                size_misreported_message(misreported.size_mib), code=ErrorCode.DISK_SIZE_MISREPORTED,
+                detail=f"{misreported.device}: {misreported.model or 'unknown model'}, {misreported.size_mib} MiB",
+            )
+        verdicts = {disk.device: read_gpt_verdict_conn(connection, disk.device) for disk in disks} if connection else {}
+        if callbacks is not None and verdicts:
+            callbacks.debug(gpt_verdicts={device: {"kind": verdict.kind, "formats": list(verdict.formats)}
+                                          for device, verdict in verdicts.items()})
+        if any(verdict.kind == "apple_hfs" for verdict in verdicts.values()):
+            return DeployDeviceError(HFS_ON_DISK_NOT_MOUNTED_MESSAGE, code=ErrorCode.DEPLOY_DISK_NOT_MOUNTED)
+        found = [text for text in (gpt_verdict_description(verdict) for verdict in verdicts.values()) if text]
+        message = " ".join([no_hfs_partition_message(), *dict.fromkeys(found)])
+        return DeployDeviceError(message, code=ErrorCode.DEPLOY_NO_HFS_PARTITION)
     detail = mast_queries_detail(attempts=MAST_DISCOVERY_ATTEMPTS, delay_seconds=MAST_DISCOVERY_DELAY_SECONDS)
     if no_internal_disk:
         return DeployDeviceError(NO_USB_DISK_MESSAGE, code=ErrorCode.DEPLOY_NO_USB_DISK_DETECTED, detail=detail)
@@ -882,7 +913,9 @@ def select_deploy_payload_home(
         except Exception:
             disks = ()
         callbacks.debug(mast_disk_inventory=mast_disk_inventory_debug_summary(disks))
-        raise mast_no_volume_error(mast_discovery, no_internal_disk=no_internal_disk)
+        raise mast_no_volume_error(
+            mast_discovery, no_internal_disk=no_internal_disk, connection=connection, callbacks=callbacks,
+        )
 
     callbacks.stage("select_payload_home")
     if select_payload_home is None:

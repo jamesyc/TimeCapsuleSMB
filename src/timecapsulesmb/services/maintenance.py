@@ -170,26 +170,37 @@ def format_fsck_plan(target: FsckTarget, *, reboot: bool, wait: bool) -> str:
     return "\n".join(lines)
 
 
-def build_remote_fsck_script(device: str, mountpoint: str) -> str:
-    # The host gives this script a terminal so that fsck_hfs writes each step
-    # as it starts. A dropped session would then hang up the terminal, so
-    # ignore that: fsck_hfs, which inherits it, must not stop mid-repair.
+def render_disk_maintenance_preamble(busy_ucomm: str | None = None, busy_line: str = "") -> list[str]:
+    """The start of a script that works on a disk with file sharing stopped
+    (fsck, Wipe Internal Disk): ignore a hangup, refuse while `busy_ucomm`
+    runs, and stop every managed process and afpserver, aborting unless they
+    stopped.
+
+    A dropped session hangs up the script (fsck's runs on a terminal), and the
+    disk job it started must not stop halfway. Nothing may write the disk while
+    it is worked on: the manager could remount it and smbd write it, and AFP
+    could write it too, so afpserver stops even without a reboot; file sharing
+    then stays off until the next reboot either way."""
     lines = ["trap '' HUP"]
-    # That fsck_hfs then outlives the session that started it. A second one on
-    # the same disk would repair it while the first still writes, so touch
-    # nothing while any runs (or when the process list cannot be read).
-    lines.append(
-        f"if ( {render_process_present_by_ucomm('fsck_hfs')} ); then "
-        f"echo '{FSCK_ALREADY_RUNNING_LINE}'; exit 1; fi"
-    )
-    # Never repair a volume the manager could remount or smbd could write:
-    # abort unless every managed process has stopped. AFP could write it too,
-    # so afpserver stops even without a reboot; file sharing then stays off
-    # until the next reboot either way.
+    if busy_ucomm is not None:
+        lines.append(
+            f"if ( {render_process_present_by_ucomm(busy_ucomm)} ); then "
+            f"echo '{busy_line}'; exit 1; fi"
+        )
     lines += [
         f"( {command} ) || exit 1"
         for command in render_remote_actions(managed_stop_actions(stop_afpserver=True))
     ]
+    return lines
+
+
+def build_remote_fsck_script(device: str, mountpoint: str) -> str:
+    # The host gives this script a terminal so that fsck_hfs writes each step
+    # as it starts. A fsck_hfs from an earlier session can outlive the session
+    # that started it; a second one on the same disk would repair it while the
+    # first still writes, so touch nothing while any runs (or when the process
+    # list cannot be read).
+    lines = render_disk_maintenance_preamble("fsck_hfs", FSCK_ALREADY_RUNNING_LINE)
     # umount can fail harmlessly when Apple already unmounted the disk to save
     # power, so its status is not the test: the mount table is. A volume still
     # mounted (anywhere) must never be repaired. Stopping here skips the reboot
@@ -347,6 +358,78 @@ class FsckOutcome:
     failure_code: str | None = None
 
 
+@dataclass(frozen=True)
+class SharingRestart:
+    """After reboot_and_restart_sharing: the connection to the new boot, and
+    why file sharing did not start again (`error`, with its `code` when one
+    names the cause), if it did not."""
+
+    connection: SshConnection
+    error: str | None = None
+    code: ErrorCode | None = None
+
+
+def reboot_and_restart_sharing(
+    connection: SshConnection,
+    *,
+    wait: bool,
+    netbsd4_autostart: bool | None,
+    callbacks: OperationCallbacks,
+    after_reboot: Callable[[SshConnection], None] | None = None,
+) -> SharingRestart:
+    """Reboot through ACP after a disk job that stopped file sharing (fsck,
+    Wipe Internal Disk), and start it again as deploy does.
+
+    `netbsd4_autostart` is services.activation.installed_netbsd4_autostart,
+    read before the job: None when nothing needs starting (NetBSD 6 starts the
+    runtime at boot, or there is nothing to start). `after_reboot` runs once
+    the new boot answers, before anything is started. Raises RebootFlowError
+    when the reboot request fails or the device does not restart or come back;
+    a failed start is returned, not raised."""
+    if not wait and netbsd4_autostart is False:
+        # Without the wait nothing starts file sharing after the reboot.
+        callbacks.message(MANUAL_START_AFTER_REBOOT_MESSAGE)
+    connection = followed(connection, reboot_device(
+        connection.host,
+        connection.password,
+        wait=wait,
+        callbacks=callbacks,
+        start_timeout_seconds=120,
+        ssh=connection,
+    ))
+    if not wait:
+        return SharingRestart(connection)
+    if after_reboot is not None:
+        after_reboot(connection)
+    if netbsd4_autostart is None:
+        return SharingRestart(connection)
+    error = None
+    code = None
+    runtime_restarted = False
+    try:
+        start_netbsd4_runtime_after_reboot(
+            connection,
+            build_runtime_start_actions(),
+            rc_local_autostart=netbsd4_autostart,
+            callbacks=callbacks,
+            messages=RESTART_AFTER_REBOOT_MESSAGES,
+        )
+    except (AcpdQuitError, DiskPayloadError, DiskFailingError, RsyncNotRunningError) as exc:
+        error = str(exc)
+        code = exc.code
+        # File sharing did restart when only rsync is off.
+        runtime_restarted = not exc.samba_off
+    except DeviceError as exc:
+        error = str(exc)
+    except TransportError as exc:
+        error = f"{RUNTIME_RESTART_FAILURE_MESSAGE} {exc}"
+    else:
+        runtime_restarted = True
+        callbacks.message("File sharing is running again after the reboot.")
+    callbacks.update(runtime_restarted=runtime_restarted)
+    return SharingRestart(connection, error, code)
+
+
 def run_fsck(
     connection: SshConnection,
     target: FsckTarget,
@@ -398,52 +481,22 @@ def run_fsck(
     # --no-reboot.
     rebooting = reboot and status is not None
     failure = fsck_failure_message(status, output, started=log.started)
-    try:
-        if rebooting:
-            if not wait and netbsd4_autostart is False:
-                # Without the wait nothing starts file sharing after the reboot.
-                callbacks.message(MANUAL_START_AFTER_REBOOT_MESSAGE)
-            connection = followed(connection, reboot_device(
-                connection.host,
-                connection.password,
-                wait=wait,
-                callbacks=callbacks,
-                start_timeout_seconds=120,
-                ssh=connection,
-            ))
-    except RebootFlowError as exc:
-        if failure is None:
-            raise
-        # A failed reboot must not hide a failed repair. The reboot error
-        # stays first so its known message prefixes still match.
-        raise RebootFlowError(f"{exc}\n{failure}", code=exc.code) from exc
     runtime_restart_error = None
     runtime_restart_code = None
-    if rebooting and wait and netbsd4_autostart is not None:
+    if rebooting:
         # A failed repair still starts file sharing: the reboot does on every
         # device that starts it by itself.
-        runtime_restarted = False
         try:
-            start_netbsd4_runtime_after_reboot(
-                connection,
-                build_runtime_start_actions(),
-                rc_local_autostart=netbsd4_autostart,
-                callbacks=callbacks,
-                messages=RESTART_AFTER_REBOOT_MESSAGES,
+            restart = reboot_and_restart_sharing(
+                connection, wait=wait, netbsd4_autostart=netbsd4_autostart, callbacks=callbacks,
             )
-        except (AcpdQuitError, DiskPayloadError, DiskFailingError, RsyncNotRunningError) as exc:
-            runtime_restart_error = str(exc)
-            runtime_restart_code = exc.code
-            # File sharing did restart when only rsync is off.
-            runtime_restarted = not exc.samba_off
-        except DeviceError as exc:
-            runtime_restart_error = str(exc)
-        except TransportError as exc:
-            runtime_restart_error = f"{RUNTIME_RESTART_FAILURE_MESSAGE} {exc}"
-        else:
-            runtime_restarted = True
-            callbacks.message("File sharing is running again after the reboot.")
-        callbacks.update(runtime_restarted=runtime_restarted)
+        except RebootFlowError as exc:
+            if failure is None:
+                raise
+            # A failed reboot must not hide a failed repair. The reboot error
+            # stays first so its known message prefixes still match.
+            raise RebootFlowError(f"{exc}\n{failure}", code=exc.code) from exc
+        runtime_restart_error, runtime_restart_code = restart.error, restart.code
     if runtime_restart_error is not None:
         failure = (
             f"{failure}\n{runtime_restart_error}"

@@ -101,12 +101,14 @@ from timecapsulesmb.device.disk_errors import (
     disk_failing_message,
     read_disk_errors_conn,
 )
+from timecapsulesmb.device.wipe import decimal_size, gpt_verdict_description, read_gpt_verdict_conn
 from timecapsulesmb.device.storage import (
     MAST_ACP_COMMAND,
     MAST_GET_FAILED_TEXT,
     MAST_PROBE_TIMEOUT_SECONDS,
     MaStDiskSnapshot,
     diskd_rpc_status_conn,
+    disk_size_misreported,
     parse_mast_xml_inventory,
 )
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
@@ -291,6 +293,11 @@ DOCTOR_CODE_DISK_SMART_FAILING = "disk_smart_failing"
 DOCTOR_CODE_DISK_INFO = "disk_info"
 # INFO, not WARN: a WARN would mark the runtime unverified in the app.
 DOCTOR_CODE_DISK_INFO_UNAVAILABLE = "disk_info_unavailable"
+# No disk has an HFS volume: the internal disk reports the wrong size, or a
+# disk holds a table or a format the device cannot use (Wipe Internal Disk
+# formats the internal one).
+DOCTOR_CODE_DISK_SIZE_MISREPORTED = "disk_size_misreported"
+DOCTOR_CODE_DISK_NO_HFS_PARTITION = "disk_no_hfs_partition"
 DOCTOR_CODE_HOSTNAME_WAITING = "hostname_waiting"
 DOCTOR_CODE_HOSTNAME_UNMAPPED = "hostname_unmapped"
 # This computer is only on networks where the device does not share its disks
@@ -2762,7 +2769,11 @@ def _doctor_check_disk_health(target: DoctorTarget, remote: RemoteAccess, sink: 
             reason = str(e) or type(e).__name__
     if sink.debug_fields is not None:
         # Every run's disks reach telemetry (services.doctor.doctor_finished_fields).
-        sink.debug_fields["disk_health"] = {"error": reason, "disks": [asdict(disk) for disk in disks]}
+        # Never the serial number (`product`): doctor runs on every check.
+        sink.debug_fields["disk_health"] = {
+            "error": reason,
+            "disks": [{key: value for key, value in asdict(disk).items() if key != "product"} for disk in disks],
+        }
     if reason is not None:
         sink.add(CheckResult(
             "INFO", f"Attempt to read Apple ACPd's MaSt to get disk information failed: {reason}",
@@ -2770,6 +2781,41 @@ def _doctor_check_disk_health(target: DoctorTarget, remote: RemoteAccess, sink: 
         ))
     for disk in disks:
         sink.add(_disk_health_result(disk))
+    if disks and not any(partition.format == "hfs" for disk in disks for partition in disk.partitions):
+        _doctor_check_disks_without_hfs(target, disks, sink)
+
+
+def _doctor_check_disks_without_hfs(target: DoctorTarget, disks: tuple[MaStDiskSnapshot, ...], sink: DoctorSink) -> None:
+    """Why no disk has an HFS volume, the way deploy explains it
+    (services.deploy.mast_no_volume_error): the internal disk reporting the
+    wrong size, or what `gpt show` (read-only) finds on each disk. A disk
+    whose table has an Apple HFS partition only has not mounted yet."""
+    for disk in disks:
+        name = f"{disk.label or disk.device} ({'internal' if disk.builtin else 'USB'})"
+        details: dict[str, object] = {"disk": disk.device, "builtin": disk.builtin}
+        if disk_size_misreported(disk):
+            size = decimal_size(disk.size_mib or 0)
+            sink.add(CheckResult(
+                "FAIL",
+                f"{name} reports only {size}, much smaller than it is; restart the device, and if it keeps "
+                f"reporting {size}, the disk needs replacing",
+                details={"code": DOCTOR_CODE_DISK_SIZE_MISREPORTED, **details, "size_mib": disk.size_mib},
+            ))
+            continue
+        verdict = read_gpt_verdict_conn(target.connection, disk.device)
+        if verdict.kind == "apple_hfs":
+            continue
+        found = gpt_verdict_description(verdict)
+        sink.add(CheckResult(
+            "FAIL",
+            f"{name} has no HFS volume TimeCapsuleSMB can use." + (f" {found}" if found else "")
+            # Doctor's text reaches the CLI too: it names the command beside the
+            # app's label (the app shows its own catalog line for the code).
+            + (" If it holds nothing you need, Wipe Internal Disk (`tcapsule wipe-internal-disk`) formats it for "
+               "the device" if disk.builtin else ""),
+            details={"code": DOCTOR_CODE_DISK_NO_HFS_PARTITION, **details, "gpt_verdict": verdict.kind,
+                     "gpt_formats": list(verdict.formats)},
+        ))
 
 
 def _doctor_check_runtime_naming_identity(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> RuntimeNamingState:

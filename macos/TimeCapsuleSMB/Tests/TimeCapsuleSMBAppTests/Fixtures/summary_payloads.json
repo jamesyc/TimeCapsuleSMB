@@ -834,6 +834,27 @@
   {
     "event": {
       "ok": true,
+      "operation": "wipe-disk",
+      "payload": {
+        "disk": "wd0",
+        "disk_label": null,
+        "new_volume_uuid": "0a000000-0000-0000-0000-000000000003",
+        "offer_install": true,
+        "schema_version": 1,
+        "summary": "The disk was wiped and formatted.",
+        "summary_args": [],
+        "summary_key": "wipe_disk_completed",
+        "volume_name": "Data"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "wipe_disk_completed"
+  },
+  {
+    "event": {
+      "ok": true,
       "operation": "doctor",
       "payload": {
         "counts": {

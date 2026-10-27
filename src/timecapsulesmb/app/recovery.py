@@ -390,6 +390,95 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         _DISK_FAILING_STEPS,
         retryable=False,
     ),
+    # The internal disk reports a size far below its real one, and its identity
+    # without Apple's prefix (device.storage.disk_size_misreported). Erasing it
+    # would format it as that size, so no step offers an erase or a wipe.
+    ErrorCode.DISK_SIZE_MISREPORTED: RecoveryInfo(
+        "The disk is reporting the wrong size",
+        "The device reports the internal disk as much smaller than it is. A restart sometimes clears this; "
+        "if it keeps happening, the disk is probably failing.",
+        (
+            "Restart the device, then run “Install / Update Samba” again after the disk spins up.",
+            "If it keeps reporting the wrong size, the disk needs replacing. Its files cannot be reached while it "
+            "does this; a data recovery service may be able to get them back.",
+            "Run “Checkup” and copy the diagnostics if you need help.",
+        ),
+        retryable=True,
+    ),
+    # Wipe Internal Disk's own codes carry no "wipe_disk" action: Wipe
+    # Internal Disk's screen is the one showing them.
+    # Wipe Internal Disk stopped before it changed the disk
+    # (services.wipe_disk): the disk's size unreadable, the erase request not
+    # accepted, or file sharing not stopped. A restart clears each.
+    ErrorCode.WIPE_DISK_RESTART_NEEDED: RecoveryInfo(
+        "Restart the device first",
+        "The device could not start wiping the disk. Nothing on the disk was changed.",
+        (
+            "Restart the device.",
+            "Then run “Wipe Internal Disk” again.",
+            "If it still does not start, try “Erase Disk” in AirPort Utility instead.",
+        ),
+        retryable=True,
+    ),
+    # A format of this disk still running at the end of the wait: a restart
+    # now would leave a broken volume.
+    ErrorCode.WIPE_DISK_ERASE_RUNNING: RecoveryInfo(
+        "An erase is still running",
+        "The device is still erasing or formatting this disk. Restarting it now could leave the disk unusable.",
+        ("Wait half an hour.", "Then restart the device, or run “Wipe Internal Disk” again."),
+        retryable=True,
+    ),
+    # diskd is formatting a disk, or checking or mounting a volume, before the
+    # wipe (services.wipe_disk.require_no_disk_jobs): its jobs name no disk.
+    ErrorCode.WIPE_DISK_JOB_RUNNING: RecoveryInfo(
+        "The device is busy with a disk",
+        "The device is formatting a disk, or checking or mounting a volume. Wiping a disk now could interrupt it.",
+        ("Wait until it finishes.", "Then run “Wipe Internal Disk” again."),
+        retryable=True,
+    ),
+    # Another disk carries Apple's partition names, or its tables could not
+    # be read (services.wipe_disk.disks_with_apple_labels): the device's erase
+    # could format that disk instead of the internal one.
+    ErrorCode.WIPE_DISK_OTHER_DISK: RecoveryInfo(
+        "Disconnect the other disk first",
+        "Another connected disk has partitions named like an internal disk's, or could not be read. While it is "
+        "connected, the device's erase can format that disk instead of the internal one.",
+        (
+            "Disconnect every USB disk from the device.",
+            "Then run “Wipe Internal Disk” again.",
+            "Connect the USB disks again after the wipe.",
+        ),
+        retryable=True,
+    ),
+    # diskd said it is already erasing this disk: a secure erase started in
+    # AirPort Utility runs for hours, and a restart would cut it short.
+    ErrorCode.WIPE_DISK_BUSY: RecoveryInfo(
+        "Another erase is running",
+        "The device is already erasing this disk, perhaps with a secure erase started in AirPort Utility, which can "
+        "take hours. Restarting the device now could leave the disk unusable.",
+        ("Wait until that erase finishes.", "Then run “Wipe Internal Disk” again."),
+        retryable=True,
+    ),
+    # MaSt no longer lists the internal disk under the confirmed uuid, or
+    # drvctl's size differs right before the zeroing (services.wipe_disk).
+    # Nothing was written; in the second case file sharing is already off,
+    # and the restart turns it back on.
+    ErrorCode.WIPE_DISK_CHANGED: RecoveryInfo(
+        "The disk no longer matches",
+        "The device stopped reporting the internal disk the way it did when you confirmed the wipe, so nothing was "
+        "wiped.",
+        ("Restart the device.", "Then run “Wipe Internal Disk” again."),
+        retryable=True,
+    ),
+    # Past the wipe: the device did not format the disk, or the new volume was
+    # gone after the restart. The disk's old files are gone either way.
+    ErrorCode.WIPE_DISK_ERASE_FAILED: RecoveryInfo(
+        "The disk was not formatted",
+        "The device did not finish formatting the disk after wiping it, or the new volume was gone after the "
+        "restart. The files that were on the disk are gone.",
+        ("Run “Wipe Internal Disk” again.", "If it fails again, the disk is probably failing; replace it."),
+        retryable=True,
+    ),
     ErrorCode.SSH_STILL_ENABLED: RecoveryInfo(
         "SSH is still enabled",
         "The device restarted, but SSH was still enabled afterwards.",
@@ -663,12 +752,15 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         "The disk may need formatting (for example, if it is formatted as APFS, exFAT, FAT32 or NTFS), "
         "its partition information may be damaged, or the disk itself may be failing.",
         (
-            "Try running “Install / Update Samba” again.",
-            "If the problem persists, erase the disk with AirPort Utility using “Erase Disk”.",
-            "Run “Install / Update Samba” again after the Time Capsule formats the disk.",
+            "Try running “Install / Update Samba” again in a few minutes.",
+            "If it still fails, restart the device and try again after the disk spins up.",
+            "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything "
+            "on the internal disk and formats it for the device.",
+            "Run “Install / Update Samba” again after the wipe.",
         ),
         retryable=True,
         suggested_operation="deploy",
+        action_ids=("wipe_disk",),
     ),
     ("deploy", ErrorCode.DEPLOY_DISK_NOT_WRITABLE): RecoveryInfo(
         "No writable volume for the installation files",
@@ -683,8 +775,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     ("deploy", ErrorCode.DEPLOY_DISK_NOT_MOUNTED): RecoveryInfo(
         "HFS disk not mounted",
-        "The device found HFS volumes, but none was mounted, and the device did not mount one "
-        "when asked.",
+        "The disk has an HFS volume, but the device has not mounted it, and did not when asked.",
         (
             "Wait a minute, then run “Install / Update Samba” again.",
             "Restart the device if the disk still does not mount.",
@@ -863,6 +954,19 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
 
 
 _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
+    # The erase request got no answer and ACPd is silent (services.wipe_disk):
+    # the table is already cleared, and only unplugging restarts the device.
+    ("wipe-disk", ErrorCode.ACPD_BROKEN, "erase_disk"): RecoveryInfo(
+        "Apple ACPd stopped during the wipe",
+        "Apple's AirPort service (ACPd) on the device stopped answering after the disk's partition table was "
+        "cleared, so the device cannot restart itself. This is a bug in Apple's firmware, not TimeCapsuleSMB.",
+        (
+            "If the device is still formatting the disk, wait until it finishes.",
+            "Unplug the device, wait 10 seconds and plug it back in.",
+            "Wait 2 minutes for the device to start up, then run “Wipe Internal Disk” again.",
+        ),
+        retryable=True,
+    ),
     ("configure", ErrorCode.REMOTE_ERROR, "acp_port_probe"): RecoveryInfo(
         "AirPort not reachable at this address",
         "TimeCapsuleSMB could not reach the AirPort ACP service before enabling SSH. "
@@ -1037,6 +1141,28 @@ _STAGE_RECOVERY.update(dict.fromkeys(
     (("deploy", ErrorCode.ACPD_QUIT, stage) for stage in ("verify_runtime_reboot", "verify_runtime_activation")),
     _DEPLOY_ACPD_QUIT_AFTER_UPDATE,
 ))
+# The disk failed while Wipe Internal Disk zeroed its ends (wipe_disk) or
+# read them back (check_wipe): unlike a failing disk found anywhere else, its
+# partition table may be gone, so a Mac may not show its volumes, and file
+# sharing is off until a restart (nothing reboots a disk that stopped
+# answering). One card for both.
+_WIPE_DISK_FAILED_DURING_WIPE = RecoveryInfo(
+    "The disk failed while it was being wiped",
+    "The disk did not respond, or did not keep the zeros written to it, so it is probably failing. Its partition "
+    "table may already be cleared, so its volumes may not show up anywhere. File sharing stays off until the device "
+    "restarts.",
+    (
+        "Restart the device.",
+        "If you need the files that were on it, a data recovery service may be able to get them back.",
+        *_DISK_FAILING_STEPS[1:],
+    ),
+    retryable=False,
+    localization_key="wipe-disk.disk_failing.during_wipe",
+)
+_STAGE_RECOVERY.update(dict.fromkeys(
+    (("wipe-disk", ErrorCode.DISK_FAILING, stage) for stage in ("wipe_disk", "check_wipe")),
+    _WIPE_DISK_FAILED_DURING_WIPE,
+))
 
 
 _SSH_TIMEOUT_SLOW_DEVICE_RECOVERY = RecoveryInfo(
@@ -1106,8 +1232,9 @@ _CLI_WORDS = (
     ("Select a specific HFS volume.", "Name the volume with `tcapsule fsck --volume`."),
     ("Select the volume to repair.", "Name the volume with `tcapsule fsck --volume`."),
     ("“Install / Update Samba”", "`tcapsule deploy`"),
-    ("“Erase Disk”", '"Erase Disk"'),
     ("“Disk Repair”", "`tcapsule fsck`"),
+    ("“Wipe Internal Disk”", "`tcapsule wipe-internal-disk`"),
+    ("“Erase Disk”", '"Erase Disk"'),
     ("“Checkup”", "`tcapsule doctor`"),
     ("“Uninstall”", "`tcapsule uninstall`"),
     ("“Activate”", "`tcapsule activate`"),

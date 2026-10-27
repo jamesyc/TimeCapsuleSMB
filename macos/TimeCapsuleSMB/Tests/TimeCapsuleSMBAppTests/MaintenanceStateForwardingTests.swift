@@ -77,7 +77,7 @@ final class MaintenanceStateForwardingTests: XCTestCase {
     }
 
     func testEachRemoteChildInvalidatesCredentialsAndRefreshesSSHDespiteAnotherSelectedError() async throws {
-        for operation in ["activate", "uninstall", "fsck", "set-ssh"] {
+        for operation in ["activate", "uninstall", "fsck", "wipe-disk", "set-ssh"] {
             let fixture = try await makeFixture(responses: [
                 .init(events: [.error(operation: operation, code: "auth_failed", message: "Password rejected.")]),
                 .init(events: [BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())])
@@ -95,6 +95,8 @@ final class MaintenanceStateForwardingTests: XCTestCase {
                 )
             case "fsck":
                 store.fsckStore.refreshTargets(mountWaitValue: 30, password: "pw", profile: fixture.profile)
+            case "wipe-disk":
+                store.wipeDiskStore.runWipe(password: "pw", profile: fixture.profile)
             default:
                 store.sshAccessStore.enable(password: "pw", noWait: false, profile: fixture.profile)
             }

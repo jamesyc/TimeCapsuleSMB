@@ -259,6 +259,14 @@ enum OperationParams {
         }
     }
 
+    enum WipeDisk {
+        /// The internal disk is the only target, and the app has no Plan
+        /// step: nothing to send.
+        static func run() -> [String: JSONValue] {
+            [:]
+        }
+    }
+
     enum Flash {
         static func backup() -> [String: JSONValue] {
             [

@@ -247,16 +247,21 @@ def _confirm_suffix(default: bool) -> str:
     return "[Y/n]" if default else "[y/N]"
 
 
-_ANYWAY_PROMPTS = {"install": "Install anyway?", "uninstall": "Uninstall anyway?", "repair": "Run fsck anyway?"}
+_ANYWAY_PROMPTS = {
+    "install": "Install anyway?", "uninstall": "Uninstall anyway?", "repair": "Run fsck anyway?", "wipe": "Wipe anyway?",
+}
 
 
-def confirm_despite_failing_disk(connection, operation: str, *, yes: bool, command: str, update_fields) -> bool | None:
+def confirm_despite_failing_disk(
+    connection, operation: str, *, yes: bool, command: str, update_fields, read_evidence=None,
+) -> bool | None:
     """The preflight before an operation that cannot fix a failing disk
-    ("install", "uninstall" or "repair"): None when nothing says the disk is
-    failing (device.disk_errors.read_disk_failing_evidence_conn); else whether
-    to go on, which --yes answers after printing the warning. update_fields
-    records that it warned, for telemetry."""
-    evidence = read_disk_failing_evidence_conn(connection)
+    ("install", "uninstall", "repair" or "wipe"): None when nothing says the disk is
+    failing (`read_evidence`, device.disk_errors.read_disk_failing_evidence_conn
+    unless the operation narrows it to one disk); else whether to go on, which
+    --yes answers after printing the warning. update_fields records that it
+    warned, for telemetry."""
+    evidence = (read_evidence or read_disk_failing_evidence_conn)(connection)
     if not evidence:
         return None
     update_fields(disk_failing_warned=True)

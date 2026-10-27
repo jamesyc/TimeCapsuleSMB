@@ -9,6 +9,7 @@ from timecapsulesmb.app.contracts import (
     fsck_volume_list_payload,
     uninstall_plan_payload,
     uninstall_result_payload,
+    wipe_disk_result_payload,
 )
 from timecapsulesmb.app.confirmations import build_confirmation, disk_failing_confirmation_fields, require_confirmation
 from timecapsulesmb.app.ops.common import (
@@ -52,6 +53,13 @@ from timecapsulesmb.services.maintenance import (
     select_fsck_target,
 )
 from timecapsulesmb.services.deploy import require_supported_payload
+from timecapsulesmb.services.wipe_disk import (
+    WipeDiskError,
+    WipePlan,
+    prepare_wipe,
+    run_wipe,
+    wipe_failing_evidence,
+)
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.services.runtime import (
@@ -321,4 +329,98 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         waited=outcome.waited,
         verified=outcome.waited,
         error=outcome.failure,
+    ))
+
+
+def _wipe_presentation_values(plan: WipePlan) -> dict[str, object]:
+    """What the confirmation names: the disk and what will be lost, as data
+    the app words and formats itself (sizes in MiB, the partition table's
+    verdict and formats as codes). Shown, never hashed into the confirmation
+    id (WipePlan.confirmation_context)."""
+    disk = plan.disk
+    return {
+        "disk": disk.label or disk.device,
+        "size_mib": disk.size_mib,
+        "volumes": [
+            {"name": partition.name, "used_mib": partition.used_mib}
+            for partition in disk.partitions
+            if partition.name
+        ],
+        "gpt_verdict": plan.gpt_verdict.kind,
+        "formats": list(plan.gpt_verdict.formats),
+    }
+
+
+def wipe_disk_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    """Wipe Internal Disk: the wipe asks for its confirmation first and only
+    then calls diskd. The internal disk is the only target, so there is
+    nothing to choose: prepare_wipe finds it, and refuses it with its reason.
+    The app has no Plan step (the CLI's --dry-run prints one). Nothing here
+    mounts or claims a volume (unlike fsck_operation)."""
+    operation = "wipe-disk"
+    config = load_request_config(params, context)
+    context.stage("resolve_connection")
+    # The reboot goes through ACP, which needs the password.
+    connection = resolve_env_connection(config)
+    context.connection = connection
+    callbacks = context.to_operation_callbacks()
+    try:
+        # The reboot goes through ACP: check ACPd and the password before the
+        # confirmation and before the disk is touched.
+        require_request_acpd_ready(context, connection)
+        plan = prepare_wipe(connection, callbacks=callbacks)
+        disk_failing = wipe_failing_evidence(connection, plan)
+        message = (
+            "Wipe Internal Disk deletes everything on this disk and formats it for the device, then restarts the device. "
+            "Any backup in progress will be interrupted."
+        )
+        presentation = {
+            "title": "Wipe Internal Disk?",
+            "message": message,
+            "action_title": "Wipe Internal Disk",
+            "presentation_id": "wipe-disk.confirm",
+        }
+        if disk_failing:
+            context.update_fields(disk_failing_warned=True)
+            presentation.update(disk_failing_confirmation_fields(operation, disk_failing))
+            # The warning follows what the wipe deletes; it never replaces it.
+            presentation["message"] = f"{message} {presentation['message']}"
+        require_confirmation(
+            params,
+            build_confirmation(
+                operation=operation,
+                params=params,
+                risk="destructive",
+                summary="Wipe and format a disk",
+                context={**plan.confirmation_context(), **({"disk_failing": True} if disk_failing else {})},
+                presentation_values=_wipe_presentation_values(plan),
+                **presentation,
+            ),
+        )
+        netbsd4_autostart = None
+        if not plan.offer_install:
+            # Whether file sharing must be started after the reboot, read
+            # before the reboot as deploy does.
+            probe_state = probe_managed_connection_state(connection)
+            context.apply_probe_state(probe_state)
+            if probe_state.compatibility is None:
+                raise device_operation_error(context, probe_failure_error(probe_state.probe_result, connection.host))
+            netbsd4_autostart = installed_netbsd4_autostart(connection, probe_state, callbacks)
+        outcome = run_wipe(connection, plan, netbsd4_autostart=netbsd4_autostart, callbacks=callbacks)
+    except WipeDiskError as exc:
+        context.update_fields(wipe_reason=exc.reason)
+        raise AppOperationError(str(exc), code=exc.code) from exc
+    except RebootFlowError as exc:
+        raise AppOperationError(str(exc), code=exc.code) from exc
+    if outcome.runtime_restart_error is not None:
+        raise AppOperationError(
+            f"The disk was wiped and formatted. {outcome.runtime_restart_error}",
+            code=outcome.runtime_restart_code or ErrorCode.RUNTIME_NOT_RESTARTED,
+        )
+    return OperationResult(True, wipe_disk_result_payload(
+        disk=plan.disk.device,
+        volume_name=outcome.volume_name,
+        new_volume_uuid=outcome.new_volume_uuid,
+        offer_install=outcome.offer_install,
+        disk_label=plan.disk.label,
     ))

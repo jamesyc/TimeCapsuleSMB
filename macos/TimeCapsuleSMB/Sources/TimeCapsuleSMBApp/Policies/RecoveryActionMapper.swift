@@ -7,6 +7,7 @@ enum RecoveryActionKind: String, Equatable {
     case startSMB = "start_smb"
     case uninstall
     case diskRepair = "disk_repair"
+    case wipeDisk = "wipe_disk"
     case replacePassword = "replace_password"
     case copyDiagnostics = "copy_diagnostics"
     case diagnostics = "open_diagnostics"
@@ -81,6 +82,8 @@ enum RecoveryActionMapper {
             return action(for: .uninstall)
         case "fsck":
             return action(for: .diskRepair)
+        case "wipe-disk":
+            return action(for: .wipeDisk)
         case "validate-install":
             return action(for: .diagnostics)
         default:
@@ -106,6 +109,8 @@ enum RecoveryActionMapper {
             return L10n.string("recovery.action.uninstall")
         case .diskRepair:
             return L10n.string("recovery.action.disk_repair")
+        case .wipeDisk:
+            return L10n.string("recovery.action.wipe_disk")
         case .replacePassword:
             return L10n.string("recovery.action.replace_password")
         case .copyDiagnostics:

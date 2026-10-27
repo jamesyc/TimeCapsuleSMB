@@ -6215,12 +6215,16 @@ MaSt = (
             "its partition information may be damaged, or the disk itself may be failing.",
         )
         self.assertTrue(error["recovery"]["retryable"])
+        # Retry first (healthy disks list no partitions for a while), then a
+        # restart, then Wipe Internal Disk, which the error's button opens.
         self.assertEqual(error["recovery"]["actions"], [
-            "Try running “Install / Update Samba” again.",
-            "If the problem persists, erase the disk with AirPort Utility using “Erase Disk”.",
-            "Run “Install / Update Samba” again after the Time Capsule formats the disk.",
+            "Try running “Install / Update Samba” again in a few minutes.",
+            "If it still fails, restart the device and try again after the disk spins up.",
+            "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything "
+            "on the internal disk and formats it for the device.",
+            "Run “Install / Update Samba” again after the wipe.",
         ])
-        self.assertEqual(error["recovery"]["action_ids"], [])
+        self.assertEqual(error["recovery"]["action_ids"], ["wipe_disk"])
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["stage"], "read_mast")

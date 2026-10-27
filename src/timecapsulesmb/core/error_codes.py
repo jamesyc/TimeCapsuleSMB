@@ -82,6 +82,14 @@ class ErrorCode(str, Enum):
     FSCK_ALREADY_RUNNING = "fsck_already_running"
     FSCK_SESSION_DROPPED = "fsck_session_dropped"
     FSCK_VOLUME_NOT_UNMOUNTED = "fsck_volume_not_unmounted"
+    DISK_SIZE_MISREPORTED = "deploy_disk_size_misreported"
+    WIPE_DISK_RESTART_NEEDED = "wipe_disk_restart_needed"
+    WIPE_DISK_ERASE_RUNNING = "wipe_disk_erase_running"
+    WIPE_DISK_JOB_RUNNING = "wipe_disk_job_running"
+    WIPE_DISK_OTHER_DISK = "wipe_disk_other_disk"
+    WIPE_DISK_BUSY = "wipe_disk_busy"
+    WIPE_DISK_CHANGED = "wipe_disk_changed"
+    WIPE_DISK_ERASE_FAILED = "wipe_disk_erase_failed"
 
     # Installing.
     DEPLOY_NO_DISK_DETECTED = "deploy_no_disk_detected"

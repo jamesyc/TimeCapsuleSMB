@@ -31,6 +31,7 @@ What is working now:
 - deploy-time device compatibility detection
 - manual NetBSD 4 activation via `tcapsule activate`
 - manual disk repair via `tcapsule fsck`
+- internal disk formatting via `tcapsule wipe-internal-disk`, also for disks AirPort Utility's Erase Disk cannot format
 - managed-file uninstall via `tcapsule uninstall`; firmware boot-hook patches are restored separately with `tcapsule flash --restore`
 
 Current validation status:
@@ -1372,6 +1373,25 @@ Arguments:
 - `--volume VOLUME`: select the HFS volume device, for example `dk2` or `/dev/dk2`; if omitted and multiple mounted volumes exist, interactive mode prompts
 
 Use this only when the disk needs repair before deploy or when doctor/troubleshooting points at filesystem problems.
+
+### `wipe-internal-disk`
+
+`tcapsule wipe-internal-disk` deletes everything on the device's internal disk and formats it for the device, the way AirPort Utility's Erase Disk does, including disks Erase Disk cannot format. Apple's `gpt` rejects some partition tables (`gpt: error: bogus map`: a table made for a bigger disk, partitions past the end or overlapping each other or the table, a legacy MBR beside a GPT) and still exits 0, so Erase Disk formats partitions that exist only in memory and the old table comes back at the next boot. Wipe Internal Disk zeroes 10 MiB at each end of the disk first, which removes every such table, then asks Apple's disk service for the same Quick erase AirPort Utility uses.
+
+What it does, in order:
+- Reads only: the disks from MaSt, the kernel's sector size and count (`drvctl -p`), the raw partition (`kern.rawpartition`), the other disks' GPT tables (`dd`), `gpt show` (killed after 60 s if the disk hangs), and which mounted volume holds the Samba files. It never mounts or claims a volume (`diskd.useVolume`).
+- Refuses an internal disk with no partitions that reports under 15 GB: that is a drive misreporting its size (the stock Seagates of TC8,119s at 3950 MiB), which an erase would format as that size. Refuses a disk diskd has lost (`softDisconnected`), and any disk while diskd is formatting a disk or checking or mounting a volume (its jobs name no disk). Refuses while another disk (MaSt's or the kernel's `hw.disknames`) has a partition named APconfig, APswap or APdata in either GPT table, or a table it cannot read; it checks again after the confirmation, before anything is written. A disk plugged in during the zeroing (seconds; minutes on a failing disk) is not checked: a later check would refuse with the internal disk already cleared. When the kernel's list cannot be read, or lacks the internal disk, that counts as a disk it cannot read. Apple's erase deletes the internal disk's wedges, then asks the kernel for new ones under those names; wedge names are unique across all disks, and the kernel names a disk's wedges after its GPT labels when the disk attaches, so a USB disk with those labels can hold the names and `dk0` to `dk2`. diskd ignores the kernel's refusal and runs `newfs_hfs` on its own guesses, `dk0` to `dk2`, which would be that USB disk. Unplugging the USB disk avoids it. Wipe Internal Disk never wipes a USB disk: Apple's erase of a USB disk beside the internal one formats the internal disk instead, for the same reason. Known limits: the check reads GPT labels, while the clash is between the kernel's wedge names, which nothing on the device can list; the two differ only when a disk's labels were changed after it attached. And if Apple's erase cannot delete one of the internal disk's own wedges (one in use), that wedge's name clashes too, and `dk0` to `dk2` are formatted, which goes wrong only if another disk owns them.
+- Asks, defaulting to No, naming the disk and what is on it (its volumes, else its partition formats in words). When this disk's own kernel errors, or unreadable Samba files that may be on it, say it is failing, the CLI first asks whether to wipe anyway; the app adds that warning to the same confirmation.
+- Checks the disk is still the one confirmed (MaSt's disk uuid, which hashes the drive's identity and survives a wipe), then calls `diskd.eraseDisk` with an invalid method to prove the request is accepted, only after the confirmation.
+- Stops the managed runtime, Apple's file sharing and afpserver, leaving the volumes mounted and idle, zeroes both ends of `/dev/r<disk><rawpart>` (it re-reads `drvctl` right before writing and stops if the disk changed), checks every `dd` wrote its full count, and reads sectors 0, 1 and the last one back on the Mac. A failure there stops without a reboot (a disk that stopped answering can hang one): file sharing stays off until the device restarts, and the guidance says to restart it first.
+- Asks for a Quick erase by the disk's uuid. Apple's erase disconnects AFP and SMB users, unmounts the disk's volumes, deletes its wedges, partitions it (APconfig, APswap, APdata) and formats the data volume. The volume keeps its old name when `newfs_hfs` can take it, else "Data".
+- Waits on diskd's jobs (up to 30 minutes; a minute without one and without the new volume is a failure; a format still running at the cap is never rebooted), reboots through ACP, checks the new volume is still there, and starts file sharing again as `fsck` does, unless the wiped disk held the Samba files: then run `tcapsule deploy`.
+
+Arguments:
+- `--config PATH`: use a non-default config
+- `--dry-run`: read the disk and print what would be done, including the wipe offsets, without changing anything or calling the disk service
+- `--yes`: do not prompt before wiping
+- `--no-input`: fail instead of prompting; a wipe requires `--yes`
 
 ### `uninstall`
 

@@ -9235,6 +9235,7 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
         self.assertEqual(health["disks"][0]["partitions"][0], {
             "device": "dk2", "name": "AirPort Disk", "format": "hfs",
             "size_mib": 1905681, "used_mib": 1392180, "free_mib": 513501, "users": 1,
+            "uuid": "0a000000-0000-0000-0000-000000000002",
         })
         self.assertNotIn("SERIAL6", json.dumps(health))
 

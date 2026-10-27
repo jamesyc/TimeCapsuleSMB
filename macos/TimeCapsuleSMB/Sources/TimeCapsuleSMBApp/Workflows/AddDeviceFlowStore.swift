@@ -331,7 +331,7 @@ final class AddDeviceFlowStore: ObservableObject {
             return { [weak self] in self?.urlOpener.open(url) }
         case .replacePassword:
             return { [weak self] in self?.state = .passwordEntry }
-        case .runCheckup, .installSMB, .startSMB, .uninstall, .diskRepair, .copyDiagnostics, .diagnostics,
+        case .runCheckup, .installSMB, .startSMB, .uninstall, .diskRepair, .wipeDisk, .copyDiagnostics, .diagnostics,
              .openSSHAccess, .generic:
             return nil
         }

@@ -171,6 +171,7 @@ final class BackendClientTests: XCTestCase {
         for (presentationID, prefersCancel) in [("deploy.disk_failing", true), ("uninstall.disk_failing", true),
                                                 ("fsck.disk_failing", true), ("deploy.disk_unreadable", true),
                                                 ("uninstall.disk_unreadable", true), ("fsck.disk_unreadable", true),
+                                                ("wipe-disk.disk_failing", true), ("wipe-disk.disk_unreadable", true),
                                                 ("uninstall.no_reboot", false)] {
             let event = BackendEvent(
                 type: "error", operation: "deploy", code: "confirmation_required", message: "English",
@@ -189,6 +190,68 @@ final class BackendClientTests: XCTestCase {
         }
         XCTAssertNotEqual(L10n.string("confirm.deploy.disk_unreadable.message"),
                           L10n.string("confirm.deploy.disk_failing.message"))
+    }
+
+    func testWipeDiskConfirmationNamesTheDiskAndMakesCancelTheDefault() throws {
+        // It deletes everything on the disk, so Cancel answers Return; the
+        // message names the disk and what is on it, worded and sized in the
+        // app's language from the helper's data.
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        func confirmation(
+            _ presentationID: String = "wipe-disk.confirm",
+            volumes: [JSONValue] = [],
+            verdict: String = "apple_hfs",
+            formats: [String] = []
+        ) throws -> PendingConfirmation {
+            let event = BackendEvent(
+                type: "error", operation: "wipe-disk", code: "confirmation_required", message: "English",
+                details: .object([
+                    "title": .string("Wipe Internal Disk?"), "message": .string("English message"),
+                    "action_title": .string("Wipe Internal Disk"), "confirmation_id": .string("confirm-1"),
+                    "presentation_id": .string(presentationID),
+                    "presentation_values": .object([
+                        "disk": .string("Disk 2"), "size_mib": .number(3815415), "volumes": .array(volumes),
+                        "gpt_verdict": .string(verdict), "formats": .array(formats.map { .string($0) }),
+                        "volume_name": .string("4TB"), "device": .string("sd0"), "builtin": .bool(false),
+                    ]),
+                ])
+            )
+            return try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
+        }
+        let size = DiskSize.decimalSize(3815415)
+        let used = DiskSize.decimalSize(73984)
+        let wipe = "“Wipe Internal Disk” deletes everything on Disk 2 (\(size)) and formats it for the device, then restarts the "
+            + "device. Any backup in progress will be interrupted."
+        let withVolumes = try confirmation(volumes: [.object(["name": .string("4TB"), "used_mib": .number(73984)])])
+        XCTAssertTrue(withVolumes.prefersCancel)
+        XCTAssertEqual(withVolumes.title, "Wipe Internal Disk?")
+        XCTAssertEqual(withVolumes.actionTitle, "Wipe Internal Disk")
+        XCTAssertEqual(withVolumes.message, wipe + " On it now: 4TB (\(used) used).")
+
+        // No named volume: the partition table in words, never format codes.
+        XCTAssertEqual(try confirmation(verdict: "foreign", formats: ["efi", "basic_data", "basic_data"]).message,
+                       wipe + " It is formatted as exFAT or NTFS.")
+        XCTAssertEqual(try confirmation(verdict: "bogus_map").message,
+                       wipe + " AirPort Utility cannot replace its partition table.")
+        XCTAssertEqual(try confirmation(verdict: "blank").message, wipe + " It has no partitions.")
+        XCTAssertEqual(try confirmation(verdict: "foreign", formats: ["other", "efi"]).message, wipe)
+        XCTAssertEqual(try confirmation(verdict: "unreadable").message, wipe)
+
+        // The failing-disk warning follows what the wipe deletes.
+        for cause in ["disk_failing", "disk_unreadable"] {
+            let failing = try confirmation("wipe-disk.\(cause)", verdict: "blank")
+            XCTAssertTrue(failing.prefersCancel)
+            XCTAssertEqual(failing.actionTitle, "Wipe Anyway")
+            XCTAssertEqual(failing.message,
+                           wipe + " It has no partitions.\n\n" + L10n.string("confirm.wipe-disk.\(cause).message"))
+            XCTAssertTrue(failing.message.contains("This disk"))
+        }
+
+        L10n.apply(language: .french)
+        XCTAssertTrue(try confirmation(verdict: "foreign", formats: ["basic_data"]).message
+            .hasSuffix(" Il est formaté en exFAT ou NTFS."))
     }
 
     func testLegacyEventsWithoutRequestIDStillUpdatePolicyAndConfirmation() async throws {

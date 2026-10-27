@@ -864,9 +864,11 @@ class CliDeployTests(CliTestCase):
             str(result.exception),
             "A disk was found, but no valid HFS partition was detected.\n\n"
             "Next steps:\n"
-            "  1. Try running `tcapsule deploy` again.\n"
-            "  2. If the problem persists, erase the disk with AirPort Utility using \"Erase Disk\".\n"
-            "  3. Run `tcapsule deploy` again after the Time Capsule formats the disk.",
+            "  1. Try running `tcapsule deploy` again in a few minutes.\n"
+            "  2. If it still fails, restart the device and try again after the disk spins up.\n"
+            "  3. If it is the internal disk and it holds nothing you need, use `tcapsule wipe-internal-disk`. It deletes "
+            "everything on the internal disk and formats it for the device.\n"
+            "  4. Run `tcapsule deploy` again after the wipe.",
         )
         result.mocks.wait_for_mast_volumes_conn.assert_called_once()
         result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()

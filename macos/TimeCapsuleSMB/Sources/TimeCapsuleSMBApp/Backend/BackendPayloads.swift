@@ -619,6 +619,32 @@ struct FsckResultPayload: Decodable, Equatable {
     }
 }
 
+struct WipeDiskResultPayload: Decodable, Equatable {
+    let schemaVersion: Int
+    let disk: String
+    /// Apple's name for the disk ("Disk 1").
+    var diskLabel: String? = nil
+    let volumeName: String
+    let newVolumeUUID: String
+    /// The Samba files were on the wiped disk (or on none): Install comes next.
+    let offerInstall: Bool
+    let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case disk
+        case diskLabel = "disk_label"
+        case volumeName = "volume_name"
+        case newVolumeUUID = "new_volume_uuid"
+        case offerInstall = "offer_install"
+        case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
+    }
+}
+
 struct FlashBankPayload: Decodable, Equatable, Identifiable {
     let name: String
     let device: String

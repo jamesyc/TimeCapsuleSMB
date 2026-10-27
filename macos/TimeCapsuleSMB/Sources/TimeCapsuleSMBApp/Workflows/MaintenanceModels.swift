@@ -5,6 +5,7 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
     case activate
     case uninstall
     case fsck
+    case wipeDisk
 
     var id: String { rawValue }
 
@@ -18,6 +19,8 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
             return L10n.string("maintenance.workflow.uninstall")
         case .fsck:
             return L10n.string("maintenance.workflow.fsck")
+        case .wipeDisk:
+            return L10n.string("maintenance.workflow.wipe_disk")
         }
     }
 
@@ -31,6 +34,8 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
             return .uninstall
         case .fsck:
             return .fsck
+        case .wipeDisk:
+            return .wipeDisk
         }
     }
 }

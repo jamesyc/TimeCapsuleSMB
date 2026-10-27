@@ -17,7 +17,7 @@ final class MaintenanceStoreTests: XCTestCase {
             .succeeded,
             .failed
         ])
-        XCTAssertEqual(MaintenanceWorkflow.allCases, [.sshAccess, .activate, .uninstall, .fsck])
+        XCTAssertEqual(MaintenanceWorkflow.allCases, [.sshAccess, .activate, .uninstall, .fsck, .wipeDisk])
     }
 
     func testNoRebootAndNoWaitAreMutuallyExclusiveAndRequestsAreNormalized() async throws {
@@ -527,6 +527,145 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertNil(store.fsckPlan)
         XCTAssertNil(store.error)
         XCTAssertNil(store.currentStage)
+    }
+
+    private func wipeDiskResultPayload(offerInstall: Bool, diskLabel: String? = "Disk 1") -> JSONValue {
+        .object([
+            "schema_version": .number(1),
+            "disk": .string("sd0"),
+            "disk_label": diskLabel.map { .string($0) } ?? .null,
+            "volume_name": .string("Data"),
+            "new_volume_uuid": .string("0b000000-0000-0000-0000-000000000003"),
+            "offer_install": .bool(offerInstall),
+            "reboot_requested": .bool(true),
+            "waited": .bool(true),
+            "verified": .bool(true),
+            "summary": .string("The disk was wiped and formatted."),
+            "summary_key": .string("wipe_disk_completed"),
+            "summary_args": .array([]),
+        ])
+    }
+
+    func testWipeInternalDiskRunsOnlyAfterConfirmationAndOffersInstall() async throws {
+        // One action: nothing to find or choose, since the helper finds the
+        // internal disk itself.
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                confirmationRequired(operation: "wipe-disk", id: "wipe-confirm")
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
+            .init(events: [
+                BackendEvent(type: "stage", operation: "wipe-disk", stage: "wipe_disk", risk: "destructive", cancellable: false),
+                BackendEvent(type: "result", operation: "wipe-disk", ok: true, payload: wipeDiskResultPayload(offerInstall: true))
+            ])
+        ])
+        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        var detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk)
+        XCTAssertEqual(detail.actions, [.runWipeDisk])
+        XCTAssertTrue(detail.isEnabled(.runWipeDisk))
+
+        store.runWipeDisk(password: "pw")
+        try await waitUntilStoreState {
+            store.wipeDiskState == .awaitingConfirmation && store.pendingConfirmation(for: .wipeDisk) != nil && !store.isRunning
+        }
+        // Nothing to name and no Plan step: no disk and no dry-run flag.
+        XCTAssertNil(runner.calls[0].params["disk"])
+        XCTAssertNil(runner.calls[0].params["dry_run"])
+
+        store.confirmPending(for: .wipeDisk)
+        try await waitUntilStoreState { store.wipeDiskState == .succeeded && !store.isRunning }
+        XCTAssertEqual(runner.calls[1].params["confirmation_id"], .string("wipe-confirm"))
+        XCTAssertEqual(store.wipeDiskResult?.volumeName, "Data")
+
+        // The Samba files were on the wiped disk: Install comes next.
+        detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk)
+        XCTAssertEqual(detail.actions, [.runWipeDisk, .installSMB])
+        XCTAssertTrue(detail.isEnabled(.installSMB))
+        XCTAssertTrue(detail.completion?.rows.contains { $0.value == L10n.string("maintenance.wipe_disk.install_next") } == true)
+        // The disk by Apple's name ("Device" is the Time Capsule), and the
+        // button by the one spelling the row beside it uses.
+        XCTAssertEqual(detail.completion?.rows.first?.label, L10n.string("maintenance.result.disk"))
+        XCTAssertEqual(detail.completion?.rows.first?.value, "Disk 1")
+        XCTAssertEqual(MaintenanceUserAction.installSMB.title, L10n.string("dashboard.action.install_update_smb"))
+    }
+
+    func testWipeResultWithoutALabelNamesTheDiskByItsDevice() async throws {
+        // MaSt does not always report Apple's name for the disk.
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "wipe-disk", ok: true,
+                             payload: wipeDiskResultPayload(offerInstall: false, diskLabel: nil))
+            ])
+        ])
+        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        store.runWipeDisk(password: "pw")
+        try await waitUntilStoreState { store.wipeDiskState == .succeeded && !store.isRunning }
+        let rows = MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk).completion?.rows
+        XCTAssertEqual(rows?.first?.label, L10n.string("maintenance.result.disk"))
+        XCTAssertEqual(rows?.first?.value, "sd0")
+    }
+
+    func testWipeInternalDiskRefusalIsAnErrorWithItsCode() async throws {
+        // A disk that cannot be wiped (another disk with Apple's labels, the
+        // wrong size, a lost disk) comes back as the helper's error.
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent.error(operation: "wipe-disk", code: "wipe_disk_other_disk", message: "Disconnect the other disk.")
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+        ])
+        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        store.runWipeDisk(password: "pw")
+        try await waitUntilStoreState { store.wipeDiskState == .failed && !store.isBusy }
+        XCTAssertEqual(store.error(for: .wipeDisk)?.code, "wipe_disk_other_disk")
+        XCTAssertTrue(MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk).isEnabled(.runWipeDisk))
+    }
+
+    func testWipeDiskIsRejectedWhileAnotherOperationRunsOnTheDevice() async throws {
+        let runner = PausingStoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: .object(["ok": .bool(true)]))
+            ], pauseBeforeEvents: true)
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let profile = DeviceProfile.make(
+            id: "device-one",
+            configuredDevice: try testConfiguredDevice(),
+            discoveredDevice: nil,
+            applicationSupportURL: URL(fileURLWithPath: "/tmp/timecapsulesmb-tests", isDirectory: true)
+        )
+        let store = MaintenanceStore(coordinator: coordinator, laneKey: .deviceWorkflow(profile.id, .maintenance))
+
+        _ = coordinator.run(operation: "deploy", profile: profile)
+        try await waitUntilStoreState { runner.calls.count == 1 && coordinator.isDeviceBusy(profile) }
+        let result = store.runWipeDisk(password: "pw", profile: profile)
+
+        XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
+        XCTAssertEqual(store.wipeDiskState, .failed)
+        XCTAssertEqual(runner.calls.map(\.operation), ["deploy"])
+        runner.finishAll()
+        try await waitUntilStoreState { !store.isRunning }
+    }
+
+    func testWipeDiskWithoutInstallNextAndCancelledConfirmation() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                confirmationRequired(operation: "wipe-disk", id: "wipe-confirm")
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
+            .init(events: [
+                BackendEvent(type: "result", operation: "wipe-disk", ok: true, payload: wipeDiskResultPayload(offerInstall: false))
+            ])
+        ])
+        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        store.runWipeDisk(password: "pw")
+        try await waitUntilStoreState { store.wipeDiskState == .awaitingConfirmation && !store.isRunning }
+        store.cancelPendingConfirmation(for: .wipeDisk)
+        try await waitUntilStoreState { store.wipeDiskState == .idle && !store.isRunning }
+        XCTAssertNil(store.error(for: .wipeDisk))
+
+        store.runWipeDisk(password: "pw")
+        try await waitUntilStoreState { store.wipeDiskState == .succeeded && !store.isRunning }
+        let detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk)
+        // Samba lives on another disk: no Install button.
+        XCTAssertEqual(detail.actions, [.runWipeDisk])
     }
 
     private func confirmationRequired(operation: String, id: String) -> BackendEvent {

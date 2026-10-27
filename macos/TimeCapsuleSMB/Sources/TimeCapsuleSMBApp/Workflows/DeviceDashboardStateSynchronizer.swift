@@ -11,6 +11,7 @@ final class DeviceDashboardStateSynchronizer {
     private var activeCheckupOperation: ActiveOperation?
     private var activeDeployOperation: ActiveOperation?
     private var activeUninstallOperation: ActiveOperation?
+    private var activeWipeDiskOperation: ActiveOperation?
     private var cancellables: Set<AnyCancellable> = []
 
     init(
@@ -30,6 +31,7 @@ final class DeviceDashboardStateSynchronizer {
         observeCredentialInvalidProfileIDs(maintenanceStore.activationStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(maintenanceStore.uninstallStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(maintenanceStore.fsckStore.$passwordInvalidProfileID)
+        observeCredentialInvalidProfileIDs(maintenanceStore.wipeDiskStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(maintenanceStore.sshAccessStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(flashStore.$passwordInvalidProfileID)
     }
@@ -46,6 +48,10 @@ final class DeviceDashboardStateSynchronizer {
 
     func trackUninstallStart(_ operation: ActiveOperation) {
         activeUninstallOperation = operation
+    }
+
+    func trackWipeDiskStart(_ operation: ActiveOperation) {
+        activeWipeDiskOperation = operation
     }
 
     func invalidateCheckupIfStarted(_ start: OperationStartResult) {
@@ -74,6 +80,11 @@ final class DeviceDashboardStateSynchronizer {
         maintenanceStore.uninstallStore.$state
             .sink { [weak self] state in
                 self?.updateUninstallSnapshot(state: state)
+            }
+            .store(in: &cancellables)
+        maintenanceStore.wipeDiskStore.$state
+            .sink { [weak self] state in
+                self?.updateWipeDiskSnapshot(state: state)
             }
             .store(in: &cancellables)
     }
@@ -298,6 +309,28 @@ final class DeviceDashboardStateSynchronizer {
         }
         guard state == .succeeded,
               let profileID = activeUninstallOperation?.profileID else {
+            return
+        }
+        appStore.deviceRegistry.enqueueOperationUpdate { [self] in
+            await appStore.deviceRegistry.clearInstallState(for: profileID)
+        }
+    }
+
+    /// A wipe of the disk that held the Samba files (the result's
+    /// offer_install) removed the install, as Uninstall does. After a failed
+    /// wipe the app cannot tell where the files were, so the install state
+    /// stays; the Checkup the wipe cleared when it started tells.
+    private func updateWipeDiskSnapshot(state: MaintenanceOperationState) {
+        // idle: the confirmation was cancelled.
+        guard [.idle, .succeeded, .failed].contains(state) else {
+            return
+        }
+        defer {
+            activeWipeDiskOperation = nil
+        }
+        guard state == .succeeded,
+              maintenanceStore.wipeDiskStore.result?.offerInstall == true,
+              let profileID = activeWipeDiskOperation?.profileID else {
             return
         }
         appStore.deviceRegistry.enqueueOperationUpdate { [self] in

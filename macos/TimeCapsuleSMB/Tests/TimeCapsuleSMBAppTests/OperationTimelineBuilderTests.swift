@@ -593,6 +593,31 @@ final class FsckProgressTimelineTests: XCTestCase {
         XCTAssertNil(timeline[1].note)
     }
 
+    func testWipeDisksLongStepsShowTheClockAndItsOwnNote() {
+        // Zeroing a failing disk and waiting for the device to format it can
+        // take minutes; the request to format it is quick.
+        let note = "This can take several minutes, longer on a failing disk. Keep the device plugged in until it finishes."
+        for stage in ["wipe_disk", "wait_for_erase"] {
+            let timeline = OperationTimelineBuilder.timeline(from: [
+                BackendEvent(type: "stage", operation: "wipe-disk", stage: stage, cancellable: false, receivedAt: started)
+            ])
+            XCTAssertEqual(timeline[0].elapsedSince, started, stage)
+            XCTAssertEqual(timeline[0].note, note, stage)
+        }
+        let quick = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "wipe-disk", stage: "erase_disk", cancellable: false, receivedAt: started)
+        ])
+        XCTAssertNil(quick[0].elapsedSince)
+        XCTAssertNil(quick[0].note)
+        // Once the next step starts, the finished one drops both.
+        let done = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "wipe-disk", stage: "wait_for_erase", receivedAt: started),
+            BackendEvent(type: "stage", operation: "wipe-disk", stage: "reboot")
+        ])
+        XCTAssertNil(done[0].note)
+        XCTAssertNil(done[0].elapsedSince)
+    }
+
     func testOtherStagesNeverShowTheClock() {
         let timeline = OperationTimelineBuilder.timeline(from: [
             BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy", receivedAt: started),

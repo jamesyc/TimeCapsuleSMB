@@ -168,7 +168,10 @@ private struct MaintenanceDetailView: View {
                 MaintenanceCompletionView(presentation: completion)
             }
 
-            MaintenanceAdvancedOptionsView(workflow: presentation.workflow, store: store)
+            // Wipe Internal Disk mounts nothing and always restarts and waits.
+            if presentation.workflow != .wipeDisk {
+                MaintenanceAdvancedOptionsView(workflow: presentation.workflow, store: store)
+            }
         }
         .padding(10)
         .background(Color.secondary.opacity(0.06))

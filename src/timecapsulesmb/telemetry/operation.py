@@ -400,6 +400,16 @@ def _details_capabilities(_params: Mapping[str, object], payload: object | None)
     return details
 
 
+def _details_wipe_disk(params: Mapping[str, object], payload: object | None) -> dict[str, object]:
+    """The result's disk and volume; the wipe's own fields (wipe_disk,
+    wipe_reason, sizes, timings) and the reboot's come through update_fields."""
+    details: dict[str, object] = {}
+    if isinstance(payload, Mapping):
+        _copy_payload_key(payload, details, "disk", to_key="wipe_disk")
+        _copy_payload_keys(payload, details, ("volume_name", "new_volume_uuid", "offer_install", "summary"))
+    return details
+
+
 DETAIL_EXTRACTORS: dict[str, DetailExtractor] = {
     "activate": _details_activate,
     "capabilities": _details_capabilities,
@@ -414,6 +424,7 @@ DETAIL_EXTRACTORS: dict[str, DetailExtractor] = {
     "uninstall": _details_uninstall,
     "validate-install": _details_validate_install,
     "version-check": _details_version_check,
+    "wipe-disk": _details_wipe_disk,
 }
 
 

@@ -137,12 +137,32 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("flash", "write_secondary_bank"): StagePolicy(DESTRUCTIVE, False, "Rewrite the invalid secondary firmware bank."),
     ("flash", "post_write_validation"): StagePolicy(REMOTE_READ, True, "Read back and validate the written firmware bank."),
 }
-# After its reboot, fsck starts file sharing again where it does not start by
-# itself, as deploy does (services.activation.start_netbsd4_runtime_after_reboot).
-_POLICIES[("fsck", "post_reboot_activation")] = StagePolicy(REMOTE_WRITE, False, "Start the installed runtime after reboot.")
-_POLICIES[("fsck", "verify_runtime_activation")] = StagePolicy(REMOTE_READ, True, "Wait for the started runtime to become ready.")
+# Wipe Internal Disk (services.wipe_disk): reads until the confirmation, then
+# the steps that change the disk.
+_POLICIES.update({
+    ("wipe-disk", "load_config"): StagePolicy(LOCAL_READ, True, "Read Wipe Internal Disk configuration."),
+    ("wipe-disk", "resolve_connection"): StagePolicy(REMOTE_READ, True, "Resolve the configured SSH connection."),
+    ("wipe-disk", "read_disks"): StagePolicy(REMOTE_READ, True, "Read the device's disks from MaSt."),
+    ("wipe-disk", "check_disk_jobs"): StagePolicy(REMOTE_READ, True, "Check that no erase or format is running."),
+    ("wipe-disk", "read_disk_geometry"): StagePolicy(REMOTE_READ, True, "Read the disk's sector size and count."),
+    ("wipe-disk", "check_other_disks"): StagePolicy(REMOTE_READ, True, "Read the other disks' partition names."),
+    ("wipe-disk", "read_partition_table"): StagePolicy(REMOTE_READ, True, "Read the disk's partition table."),
+    ("wipe-disk", "find_payload_home"): StagePolicy(REMOTE_READ, True, "Find which mounted volume holds the Samba files."),
+    ("wipe-disk", "check_disk_identity"): StagePolicy(REMOTE_READ, True, "Check the disk is the one confirmed."),
+    ("wipe-disk", "probe_erase"): StagePolicy(REMOTE_READ, True, "Check the device accepts the erase request."),
+    ("wipe-disk", "wipe_disk"): StagePolicy(DESTRUCTIVE, False, "Stop file sharing and zero both ends of the disk."),
+    ("wipe-disk", "check_wipe"): StagePolicy(REMOTE_READ, False, "Read back both ends of the disk."),
+    ("wipe-disk", "erase_disk"): StagePolicy(DESTRUCTIVE, False, "Ask the device to erase and format the disk."),
+    ("wipe-disk", "wait_for_erase"): StagePolicy(REMOTE_READ, False, "Wait for the device to format the disk."),
+})
+# After its reboot, fsck and Wipe Internal Disk start file sharing again where
+# it does not start by itself, as deploy does
+# (services.activation.start_netbsd4_runtime_after_reboot).
+for _operation in ("fsck", "wipe-disk"):
+    _POLICIES[(_operation, "post_reboot_activation")] = StagePolicy(REMOTE_WRITE, False, "Start the installed runtime after reboot.")
+    _POLICIES[(_operation, "verify_runtime_activation")] = StagePolicy(REMOTE_READ, True, "Wait for the started runtime to become ready.")
 # Every reboot goes through services.reboot.reboot_device.
-for _operation in ("configure", "set-ssh", "deploy", "uninstall", "fsck", "flash"):
+for _operation in ("configure", "set-ssh", "deploy", "uninstall", "fsck", "flash", "wipe-disk"):
     _POLICIES[(_operation, "reboot")] = StagePolicy(REBOOT, False, "Ask AirPort ACP to reboot the device.")
     _POLICIES[(_operation, "wait_for_reboot_down")] = StagePolicy(REBOOT, True, "Wait for the device's ACP uptime to restart.")
     _POLICIES[(_operation, "wait_for_reboot_up")] = StagePolicy(REBOOT, True, "Wait for the restarted device's SSH port.")

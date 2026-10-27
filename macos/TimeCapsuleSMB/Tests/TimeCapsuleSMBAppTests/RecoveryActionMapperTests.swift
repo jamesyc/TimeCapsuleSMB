@@ -195,6 +195,26 @@ final class RecoveryActionMapperTests: XCTestCase {
         ])
     }
 
+    func testNoHFSPartitionOffersWipeDisk() throws {
+        let recovery = try recoveryValue(
+            title: "The disk is not ready for installation",
+            actions: ["If the disk holds nothing you need, use “Wipe Internal Disk”."],
+            suggestedOperation: "deploy",
+            actionIDs: ["wipe_disk"]
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "deploy_no_hfs_partition",
+            message: "A disk was found, but no valid HFS partition was detected.",
+            recovery: recovery
+        )
+
+        let actions = RecoveryActionMapper.actions(for: error)
+
+        XCTAssertEqual(actions.first, RecoveryAction(title: "Wipe Internal Disk", kind: .wipeDisk))
+        XCTAssertFalse(actions.contains { $0.kind == .installSMB })
+    }
+
     func testDeployRecoveryDoesNotShowInstallSMBOrUnknownActions() throws {
         let recovery = try recoveryValue(
             title: "No HFS volumes found",

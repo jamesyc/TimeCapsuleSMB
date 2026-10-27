@@ -49,6 +49,7 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
     case activate
     case uninstall
     case fsck
+    case wipeDisk = "wipe_disk"
     case flash
 
     static func lane(for operation: String) -> DeviceWorkflowLane? {
@@ -69,6 +70,8 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
             return .uninstall
         case "fsck":
             return .fsck
+        case "wipe-disk":
+            return .wipeDisk
         case "flash":
             return .flash
         default:

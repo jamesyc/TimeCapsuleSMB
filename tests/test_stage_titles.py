@@ -47,7 +47,7 @@ class StageTitleTests(unittest.TestCase):
         for stage in ("post_reboot_activation", "verify_runtime_activation"):
             with self.subTest(stage=stage):
                 operations = {operation for operation, other in stage_policy._POLICIES if other == stage}
-                self.assertLessEqual(operations, {"deploy", "fsck", "activate"})
+                self.assertLessEqual(operations, {"deploy", "fsck", "activate", "wipe-disk"})
 
     def test_an_operation_s_own_title_wins_over_the_shared_one(self) -> None:
         english = catalog("en")

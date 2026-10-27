@@ -95,6 +95,7 @@ _PREFLIGHT_EFFECTS = {
     "install": "Installing will not fix that.",
     "uninstall": "Uninstalling will not fix that.",
     "repair": "A disk repair cannot fix a failing disk, and works it hard.",
+    "wipe": "Wiping it does not fix that, and the new volume may fail too.",
 }
 
 
@@ -122,14 +123,34 @@ UNREADABLE_EVIDENCE = DiskFailingEvidence(
 )
 
 
-def read_disk_failing_evidence_conn(connection: SshConnection) -> DiskFailingEvidence | None:
+def internal_disk_errors(errors: tuple[str, ...], device: str) -> tuple[str, ...]:
+    """The lines about the internal disk `device`: its own `wd`/`sd` lines,
+    and the Marvell driver's, which only the internal disk prints."""
+    own = re.compile(rf"^{re.escape(device)}[a-p]?: ")
+    return tuple(line for line in errors if own.match(line) or _MARVELL_DEVICE_ERROR.match(line))
+
+
+def read_disk_failing_evidence_conn(
+    connection: SshConnection,
+    *,
+    internal_device: str | None = None,
+    holds_payload: bool = True,
+) -> DiskFailingEvidence | None:
     """Why the disk is probably failing: this boot's kernel disk errors, else
     the manager's title saying the disk could not read its files (NetBSD 4's
     kernel log keeps too little to rely on); None for neither, or when the
-    device could not be asked."""
+    device could not be asked.
+
+    With `internal_device`, only about the internal disk (Wipe Internal
+    Disk's): its own kernel lines (internal_disk_errors), and the manager's
+    title only when the disk holds, or may hold, the files (`holds_payload`)."""
     errors = read_disk_errors_conn(connection)
+    if errors and internal_device is not None:
+        errors = internal_disk_errors(errors, internal_device)
     if errors:
         return kernel_evidence(errors)
+    if not holds_payload:
+        return None
     try:
         problems = manager_payload_problems(connection)
     except TransportError:
@@ -139,9 +160,11 @@ def read_disk_failing_evidence_conn(connection: SshConnection) -> DiskFailingEvi
 
 def disk_failing_warning(evidence: DiskFailingEvidence, operation: str) -> str:
     """A preflight's warning before an operation that cannot fix the disk
-    ("install", "uninstall" or "repair"), from read_disk_failing_evidence_conn."""
+    ("install", "uninstall", "repair" or "wipe"), from read_disk_failing_evidence_conn.
+    A wipe's evidence is about the disk it wipes, so it says "This disk"."""
+    subject = "This disk" if operation == "wipe" else "The device's disk"
     return (
-        f"The device's disk {evidence.text}, so it is probably failing. "
+        f"{subject} {evidence.text}, so it is probably failing. "
         f"{_PREFLIGHT_EFFECTS[operation]} Copy off the files you need first."
     )
 

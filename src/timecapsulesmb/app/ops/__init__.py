@@ -17,6 +17,7 @@ from timecapsulesmb.app.ops.maintenance import (
     activate_operation,
     fsck_operation,
     uninstall_operation,
+    wipe_disk_operation,
 )
 from timecapsulesmb.app.ops.reachability import reachability_operation
 from timecapsulesmb.app.ops.readiness import (
@@ -129,6 +130,9 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec("uninstall", uninstall_operation, REBOOT_PARAMS, telemetry=True, keep_awake=True),
     OperationSpec("validate-install", validate_install_operation),
     OperationSpec("version-check", version_check_operation, frozenset({"url"})),
+    # Not REBOOT_PARAMS: Wipe Internal Disk never mounts, and always reboots
+    # and waits.
+    OperationSpec("wipe-disk", wipe_disk_operation, frozenset(), telemetry=True, keep_awake=True),
 )
 
 

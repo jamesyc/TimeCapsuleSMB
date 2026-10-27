@@ -232,6 +232,7 @@ extension MaintenanceResultPayload: BackendSummarized {}
 extension FsckVolumeListPayload: BackendSummarized {}
 extension FsckPlanPayload: BackendSummarized {}
 extension FsckResultPayload: BackendSummarized {}
+extension WipeDiskResultPayload: BackendSummarized {}
 extension FlashBackupPayload: BackendSummarized {}
 extension FlashPlanPayload: BackendSummarized {}
 extension FlashWritePayload: BackendSummarized {}
@@ -247,6 +248,12 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.metadata_migration_in_progress")
         case "disk_not_mounting":
             return L10n.string("doctor.check.disk_not_mounting")
+        // No disk has an HFS volume: the helper's line names the disk and
+        // what gpt found; the catalog's says what to do.
+        case "disk_size_misreported":
+            return L10n.string("doctor.check.disk_size_misreported")
+        case "disk_no_hfs_partition":
+            return L10n.string("doctor.check.disk_no_hfs_partition")
         // The helper's line quotes the kernel's; the catalog's says what it means.
         case "disk_failing":
             return L10n.string("doctor.check.disk_failing")

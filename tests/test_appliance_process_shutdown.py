@@ -379,8 +379,10 @@ FSCK_OTHER_MOUNTS = [
 
 def _run_fsck_script(tmp_path, *, stubborn=None, fsck_rc=0,
                      mounts=None, umount_unmounts=True, mount_fails=False,
-                     extra_rows=None, ps_fails=False):
-    """Run the real fsck script against fake ps/kill/umount/mount/fsck tools.
+                     extra_rows=None, ps_fails=False, script=None, drvctl=''):
+    """Run the real fsck script (or `script`, such as Wipe Internal Disk's)
+    against fake ps/kill/umount/mount/fsck/drvctl/dd tools. A dd call is
+    logged with the pids still running when it wrote.
 
     Returns (result, logged tool calls, pids still running, mounts left).
     """
@@ -429,6 +431,11 @@ elif cmd == 'mount':
     if {mount_fails!r}:
         sys.exit(1)
     print('\\n'.join(data['mounts']))
+elif cmd == 'drvctl':
+    sys.stdout.write({drvctl!r})
+elif cmd == 'dd':
+    with open({str(log)!r}, 'a') as out:
+        out.write('dd ' + ' '.join(sys.argv[2:]) + ' running=' + ','.join(sorted(rows)) + '\\n')
 else:
     with open({str(log)!r}, 'a') as out:
         out.write(' '.join(sys.argv[1:]) + '\\n')
@@ -449,7 +456,8 @@ if cmd == 'fsck_hfs':
 sys.exit(status)
 """)
     fake = lambda name: shlex.join([sys.executable, str(tool), name])
-    script = build_remote_fsck_script('/dev/dk2', '/Volumes/dk2')
+    if script is None:
+        script = build_remote_fsck_script('/dev/dk2', '/Volumes/dk2')
     # The host requests the reboot after the script reports; any reboot tool
     # the script ran itself would show up in the logged calls.
     for real, name in (
@@ -462,6 +470,8 @@ sys.exit(status)
         ('/sbin/umount', 'umount'),
         ('/sbin/mount', 'mount'),
         ('/sbin/fsck_hfs', 'fsck_hfs'),
+        ('/sbin/drvctl', 'drvctl'),
+        ('/bin/dd', 'dd'),
     ):
         script = script.replace(real, fake(name))
     script = script.replace('sleep 1', ':')
@@ -500,6 +510,38 @@ def test_fsck_repairs_only_after_every_managed_process_stopped(tmp_path, stubbor
         # No status line (so the host will not reboot), and nothing touched the disk.
         assert fsck_exit_status(result.stdout) is None
         assert calls == []
+
+
+@pytest.mark.parametrize('stubborn', [None, '30', '41'])
+def test_wipe_zeroes_only_after_every_managed_process_and_afpserver_stopped(tmp_path, stubborn):
+    # Wipe Internal Disk starts as fsck does (render_disk_maintenance_preamble):
+    # nothing of ours or afpserver may write the disk while its ends are
+    # zeroed. It never unmounts: Apple's erase does that itself.
+    from tests.test_wipe_disk import TWO_TB, drvctl_output
+    from timecapsulesmb.device import wipe
+    from timecapsulesmb.services.maintenance import render_disk_maintenance_preamble
+
+    offsets = wipe.wipe_offsets(TWO_TB)
+    script = '\n'.join([*render_disk_maintenance_preamble(), wipe.render_wipe_script('sd0', 2, TWO_TB, offsets)])
+    result, calls, remaining, mounts = _run_fsck_script(
+        tmp_path, stubborn=stubborn, script=script, drvctl=drvctl_output('0x200', '0xe8e088b0'))
+
+    if stubborn is None:
+        assert result.returncode == 0, result.stderr
+        assert remaining == {'90'}
+        assert calls == [
+            f'dd if=/dev/zero of=/dev/rsd0c bs={offsets.block_size} count={offsets.head_count} running=90',
+            f'dd if=/dev/zero of=/dev/rsd0c bs={offsets.block_size} seek={offsets.tail_seek} '
+            f'count={offsets.tail_count} running=90',
+        ]
+    else:
+        # Something still running: nothing is written, and without the
+        # script's lines the host reports the stop as failed.
+        assert result.returncode == 1
+        assert stubborn in remaining
+        assert calls == []
+        assert wipe.WIPE_LINE_PREFIX not in result.stdout
+    assert mounts == ['/dev/dk2 on /Volumes/dk2 type hfs (local)'] + FSCK_OTHER_MOUNTS
 
 
 @pytest.mark.parametrize(('case', 'mounts', 'umount_unmounts', 'mount_fails'), [

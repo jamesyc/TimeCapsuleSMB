@@ -129,6 +129,7 @@
     "validate-install": [],
     "version-check": [
       "url"
-    ]
+    ],
+    "wipe-disk": []
   }
 }

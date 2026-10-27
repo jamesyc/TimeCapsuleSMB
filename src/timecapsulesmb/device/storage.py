@@ -19,6 +19,8 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_s
 
 MAST_DISCOVERY_ATTEMPTS = 10
 MAST_DISCOVERY_DELAY_SECONDS = 3
+# 60 s of reads while every disk shows no partitions (wait_for_mast_volumes_conn).
+MAST_PARTITIONLESS_ATTEMPTS = 20
 MAST_ACP_COMMAND = f"{DEVICE_ACP_PATH} MaSt"
 MAST_PROBE_COMMAND = f"{DEVICE_ACP_PATH} -A MaSt"
 MAST_PROBE_TIMEOUT_SECONDS = 30
@@ -66,6 +68,8 @@ class MaStPartitionSnapshot:
     # How many diskd.useVolume holds the volume has; 0 on a mounted volume
     # is part of diskd's hang signature (with the disk's soft_disconnected).
     users: int | None = None
+    # The volume's uuid; an erase gives the new volume a new one.
+    uuid: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,11 +83,34 @@ class MaStDiskSnapshot:
     # ("verified" or "failing"), which it reports for the built-in disk only.
     label: str | None = None
     smart_status: str | None = None
-    # The drive's model (MaSt's `vendor`; byte-swapped on NetBSD 6's wd0) and
-    # firmware (`revision`). `product`, the internal disk's serial, is never read.
+    # The drive's model (MaSt's `vendor`; byte-swapped on NetBSD 6's wd0),
+    # firmware (`revision`) and serial (`product`).
     model: str | None = None
     revision: str | None = None
     soft_disconnected: bool | None = None
+    product: str | None = None
+    # The disk's uuid: a name-based uuid over the drive's identity and size,
+    # so a wipe or an erase keeps it.
+    uuid: str = ""
+
+    @property
+    def size_mib(self) -> int | None:
+        """diskd's size, in MiB, rounded down: the kernel's (drvctl's) size."""
+        return _whole_number(self.size)
+
+
+# Internal disks under this many MiB (15 GB) with no partitions: the drive
+# misreports its size (and identity), as the stock Seagates of TC8,119s do at
+# 3950 MiB; diskd takes the size from the kernel, so nothing else tells it from
+# a real small disk. No Time Capsule shipped with an internal disk under 16 GB.
+MISREPORTED_DISK_SIZE_LIMIT_MIB = 14305
+
+
+def disk_size_misreported(disk: MaStDiskSnapshot) -> bool:
+    """Whether the internal disk reports a size far below its real one. Only
+    the internal disk: a blank USB stick under 15 GB is a real small disk."""
+    size = disk.size_mib
+    return disk.builtin and not disk.partitions and size is not None and size < MISREPORTED_DISK_SIZE_LIMIT_MIB
 
 
 @dataclass(frozen=True)
@@ -299,6 +326,7 @@ def _partition_snapshot_from_mapping(partition: dict[str, object]) -> MaStPartit
         used_mib=_whole_number(partition.get("sizeUsed")),
         free_mib=_whole_number(partition.get("sizeFree")),
         users=_whole_number(partition.get("users")),
+        uuid=_uuid_from_value(partition.get("uuid")),
     )
 
 
@@ -321,6 +349,8 @@ def _disk_snapshot_from_mapping(disk: dict[str, object]) -> MaStDiskSnapshot:
         model=_optional_text(disk.get("vendor")),
         revision=_optional_text(disk.get("revision")),
         soft_disconnected=_optional_bool(disk.get("softDisconnected")),
+        product=_optional_text(disk.get("product")),
+        uuid=_uuid_from_value(disk.get("uuid")),
     )
 
 
@@ -549,14 +579,23 @@ def wait_for_mast_volumes_conn(
     *,
     attempts: int = MAST_DISCOVERY_ATTEMPTS,
     delay_seconds: int = MAST_DISCOVERY_DELAY_SECONDS,
+    partitionless_attempts: int = MAST_PARTITIONLESS_ATTEMPTS,
 ) -> MaStDiscoveryResult:
-    if attempts <= 0:
-        attempts = 1
+    """Read MaSt until it lists an HFS volume, or a disk with partitions.
+
+    No disk at all is waited out for `attempts` reads. Disks that all show no
+    partitions are waited out for `partitionless_attempts`: healthy disks show
+    `partitions: []` for a while after they appear, and the internal disk that
+    reports the wrong size sometimes recovers. Either way the last read is
+    returned for the caller to explain."""
+    attempts = max(attempts, 1)
     volumes: tuple[MaStVolume, ...] = ()
     raw_output = ""
     # One syUT check per wait: ACPd that answered it once is not asked again.
     acpd_checked = False
-    for attempt in range(1, attempts + 1):
+    attempt = 0
+    while True:
+        attempt += 1
         read_result = read_mast_volumes_with_output_conn(connection, check_acpd=not acpd_checked)
         acpd_checked = acpd_checked or read_result.get_failed
         volumes = read_result.volumes
@@ -567,11 +606,11 @@ def wait_for_mast_volumes_conn(
             disks = parse_mast_inventory(raw_output)
         except Exception:
             disks = ()
-        if disks:
+        if any(disk.partitions for disk in disks):
             return MaStDiscoveryResult(volumes, attempt, raw_output)
-        if attempt < attempts:
-            time.sleep(delay_seconds)
-    return MaStDiscoveryResult(volumes, attempts, raw_output)
+        if attempt >= (max(partitionless_attempts, attempts) if disks else attempts):
+            return MaStDiscoveryResult(volumes, attempt, raw_output)
+        time.sleep(delay_seconds)
 
 
 def _remote_mounted_test(volume_root: str) -> str:
@@ -586,17 +625,59 @@ def _remote_mounted_test(volume_root: str) -> str:
 ACP_RPC_ERROR_CODE_SED = r"""sed -n 's/.*failed: \(-*[0-9][0-9]*\).*/\1/p' | sed -n '$p'"""
 
 
+DISKD_RPC_EXIT_PREFIX = "tcapsule-rpc-exit "
+_RPC_STATUS = re.compile(r"<key>status</key>\s*<integer>\s*(-?\d+)\s*</integer>")
+_RPC_FAILED = re.compile(r"### RPC function .* failed: (-?\d+)")
+
+
+@dataclass(frozen=True)
+class DiskdRpcReply:
+    """One `acp rpc diskd.*` call. Two channels report failure: diskd's own
+    handler answers in the reply plist's `status` (acp exits 0), while a call
+    ACPd could not route (an RPC name that is not registered) makes acp print
+    `### RPC function "NAME" failed: CODE` on stderr and exit 22."""
+
+    exit_status: int | None
+    status: int | None
+    error_code: str | None
+
+    @property
+    def answered(self) -> bool:
+        return self.exit_status == 0
+
+
+def diskd_rpc_conn(connection: SshConnection, name: str, *arguments: str, timeout: int = 30) -> DiskdRpcReply:
+    """Call a diskd RPC through ACPd. `arguments` are acp's `name:type:value`
+    words, each passed as one shell word."""
+    words = " ".join(shlex.quote(argument) for argument in (f"diskd.{name}", *arguments))
+    script = (
+        f"rpc_out=$({DEVICE_ACP_PATH} rpc {words} 2>&1); rpc_rc=$?; "
+        f"""printf '%s\\n' "$rpc_out"; echo "{DISKD_RPC_EXIT_PREFIX}$rpc_rc\""""
+    )
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=timeout)
+    output = proc.stdout or ""
+    exit_status = None
+    for line in output.splitlines():
+        if line.startswith(DISKD_RPC_EXIT_PREFIX):
+            exit_status = _whole_number(line.removeprefix(DISKD_RPC_EXIT_PREFIX).strip())
+    status = _RPC_STATUS.search(output)
+    failed = _RPC_FAILED.findall(output)
+    return DiskdRpcReply(
+        exit_status=exit_status,
+        status=int(status.group(1)) if status else None,
+        error_code=failed[-1] if failed else None,
+    )
+
+
 def diskd_rpc_status_conn(connection: SshConnection) -> str:
     """"answered" when ACPd routes diskd.getVolumeCounts, else acp's error code.
 
     getVolumeCounts is the second diskd RPC name a colliding diskd deletes, so
     it is gone before diskd.useVolume (see boot.sh's diskd guard)."""
-    script = (
-        f"err=$({DEVICE_ACP_PATH} rpc diskd.getVolumeCounts 2>&1 >/dev/null) && echo answered && exit 0; "
-        f"""printf '%s\\n' "$err" | {ACP_RPC_ERROR_CODE_SED}"""
-    )
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
-    return proc.stdout.strip() or "?"
+    reply = diskd_rpc_conn(connection, "getVolumeCounts")
+    if reply.answered:
+        return "answered"
+    return reply.error_code or "?"
 
 
 @dataclass

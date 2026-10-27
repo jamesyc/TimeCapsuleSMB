@@ -12,7 +12,10 @@ import argparse
 from contextlib import nullcontext
 from typing import Optional
 
-from . import activate, api, bootstrap, configure, deploy, discover, doctor, flash, fsck, paths, set_ssh, uninstall, validate_install
+from . import (
+    activate, api, bootstrap, configure, deploy, discover, doctor, flash, fsck, paths, set_ssh, uninstall,
+    validate_install, wipe_disk,
+)
 from timecapsulesmb.app.ops import KEEP_AWAKE_OPERATIONS
 from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.core.paths import DistributionRootError
@@ -33,6 +36,7 @@ COMMANDS = {
     "set-ssh": set_ssh.main,
     "uninstall": uninstall.main,
     "validate-install": validate_install.main,
+    "wipe-internal-disk": wipe_disk.main,
 }
 
 

@@ -103,7 +103,8 @@ def build_confirmation(
 # confirmation says so instead, and the app makes Cancel its default.
 _DISK_FAILING_KINDS = {"deploy": ("install", "Install Anyway", "Install anyway?"),
                        "uninstall": ("uninstall", "Uninstall Anyway", "Uninstall anyway?"),
-                       "fsck": ("repair", "Repair Anyway", "Repair anyway?")}
+                       "fsck": ("repair", "Repair Anyway", "Repair anyway?"),
+                       "wipe-disk": ("wipe", "Wipe Anyway", "Wipe anyway?")}
 
 
 def disk_failing_confirmation_fields(operation: str, evidence: DiskFailingEvidence) -> dict[str, str]:

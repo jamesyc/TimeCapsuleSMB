@@ -823,6 +823,53 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertNil(fixture.runner.calls[0].params["dry_run"])
     }
 
+    func testWipingTheSambaDiskClearsTheInstalledSnapshotAndAnotherDiskKeepsIt() async throws {
+        // offer_install: the Samba files were on the wiped disk, so the
+        // install is gone, as after Uninstall. Samba files on a USB disk keep it.
+        for offerInstall in [true, false] {
+            let fixture = try await makeFixture(responses: [
+                .init(events: [BackendEvent(type: "result", operation: "wipe-disk", ok: true, payload: .object([
+                    "schema_version": .number(1), "disk": .string("sd0"), "volume_name": .string("Data"),
+                    "new_volume_uuid": .string("0b000000-0000-0000-0000-000000000003"),
+                    "offer_install": .bool(offerInstall),
+                    "reboot_requested": .bool(true), "waited": .bool(true), "verified": .bool(true),
+                    "summary": .string("The disk was wiped and formatted."), "summary_key": .string("wipe_disk_completed"),
+                    "summary_args": .array([]),
+                ]))], pauseBeforeEvents: true),
+            ])
+            let profile = try await fixture.registry.storeTestProfile(
+                configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+                discoveredDevice: nil,
+                passwordState: .available,
+                preferredID: "device-one"
+            )
+            await fixture.registry.updateDeployState(testDeployState(), for: profile.id)
+            await fixture.registry.updateRuntimeState(testRuntimeState(), for: profile.id)
+            let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+            try fixture.passwordStore.save("pw", for: installed.keychainAccount)
+            let dashboard = DashboardStore(appStore: fixture.appStore)
+            let session = dashboard.session(for: installed)
+
+            session.performMaintenanceAction(.runWipeDisk, profile: installed) {}
+            try await waitUntilStoreState { session.maintenanceStore.wipeDiskState == .running }
+            fixture.runner.finishAll()
+            try await waitUntilStoreState { session.maintenanceStore.wipeDiskState == .succeeded }
+            if offerInstall {
+                try await waitUntilStoreState {
+                    fixture.registry.profile(id: installed.id)?.lastDeployState == nil
+                        && fixture.registry.profile(id: installed.id)?.runtimeState == nil
+                }
+            } else {
+                // A wrong clear would be queued before this: wait for the queue.
+                let drained = expectation(description: "queued registry updates ran")
+                fixture.registry.enqueueOperationUpdate { drained.fulfill() }
+                await fulfillment(of: [drained], timeout: 5)
+                XCTAssertNotNil(fixture.registry.profile(id: installed.id)?.lastDeployState)
+                XCTAssertNotNil(fixture.registry.profile(id: installed.id)?.runtimeState)
+            }
+        }
+    }
+
     func testActivationInvalidatesCheckupWhenRunStarts() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [

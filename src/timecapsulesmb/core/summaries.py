@@ -57,6 +57,7 @@ SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
     "fsck_plan_generated": (),
     "fsck_completed": (),
     "fsck_failed": ("int",),
+    "wipe_disk_completed": (),
     "doctor_checks_passed": (),
     "doctor_found_fatal": (),
     "flash_backup_saved": ("str",),

@@ -176,6 +176,7 @@ final class BackendSummaryContractTests: XCTestCase {
             case "fsck_plan_generated": return { try $0.decode(FsckPlanPayload.self).summaryRef }
             default: return { try $0.decode(FsckResultPayload.self).summaryRef }
             }
+        case "wipe-disk": return { try $0.decode(WipeDiskResultPayload.self).summaryRef }
         case "flash":
             if name == "flash_backup_saved" {
                 return { try $0.decode(FlashBackupPayload.self).summaryRef }
@@ -211,5 +212,6 @@ final class BackendSummaryContractTests: XCTestCase {
         XCTAssertGreaterThan(checked.values.reduce(0, +), 50)
         XCTAssertGreaterThan(checked["flash", default: 0], 15)
         XCTAssertEqual(checked["fsck", default: 0], 4)
+        XCTAssertEqual(checked["wipe-disk", default: 0], 1)
     }
 }

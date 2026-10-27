@@ -339,6 +339,28 @@ def fsck_result_payload(
     return _with_schema(payload)
 
 
+def wipe_disk_result_payload(
+    *,
+    disk: str,
+    volume_name: str,
+    new_volume_uuid: str,
+    offer_install: bool,
+    disk_label: str | None = None,
+) -> dict[str, object]:
+    """After a wipe that formatted the internal disk and restarted the device.
+    `offer_install`: the Samba files were on that disk (or on none), so
+    Install / Update Samba comes next. `disk_label`: Apple's name for the
+    disk ("Disk 1"), for the app's result."""
+    return _with_schema({
+        "disk": disk,
+        "disk_label": disk_label,
+        "volume_name": volume_name,
+        "new_volume_uuid": new_volume_uuid,
+        "offer_install": offer_install,
+        **Summary("wipe_disk_completed", "The disk was wiped and formatted.").fields(),
+    })
+
+
 def flash_backup_payload(raw: Mapping[str, object]) -> dict[str, object]:
     banks = raw.get("banks")
     bank_count = len(banks) if isinstance(banks, list) else 0
