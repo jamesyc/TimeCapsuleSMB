@@ -1760,11 +1760,13 @@ class CliConfigureTests(CliTestCase):
                     self.assertNotIn("TC_AIRPORT_SYAP", result.text)
                     self.assertNotIn("TC_AIRPORT_SYAP", result.values)
                     self.assertNotIn("device_syap", finished)
+                    self.assertNotIn("device_syap_source", finished)
                     self.assertNotIn("device_model", finished)
                 else:
                     self.assertEqual(result.values["TC_AIRPORT_SYAP"], expected_syap)
                     self.assertIn(f"Using TC_AIRPORT_SYAP from the selected device: {expected_syap}", result.text)
                     self.assertEqual(finished["device_syap"], expected_syap)
+                    self.assertEqual(finished["device_syap_source"], "selected_record")
                     self.assertEqual(finished["device_model"], "TimeCapsule8,119")
 
     def test_configure_probed_syap_beats_record_and_invalid_existing_syap(self) -> None:

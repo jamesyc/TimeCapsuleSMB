@@ -251,7 +251,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                 ssh_opts=ssh_opts,
                 configure_id=configure_id,
                 persist_password=bool_param(params, "persist_password"),
-                selected_record=target.target_record,
+                selected_record=target.selected_record,
                 expected_airport_mac=request_airport_mac(params),
                 enable_ssh=bool_param(params, "enable_ssh", True),
                 internal_share_use_disk_root=bool_param(

@@ -1087,7 +1087,10 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(stages, ["ssh_probe", "write_env"])
         self.assertIn({"ssh_final_reachable": True}, debug_fields)
         self.assertIn({"ssh_final_reachable": True}, update_fields)
-        self.assertIn({"configure_id": "config-id", "device_syap": "119", "device_model": "TimeCapsule8,119"}, update_fields)
+        self.assertIn(
+            {"configure_id": "config-id", "device_syap": "119", "device_syap_source": "probed", "device_model": "TimeCapsule8,119"},
+            update_fields,
+        )
 
     def test_run_configure_flow_strips_removed_settings_with_one_notice_each(self) -> None:
         probe_state = self.make_probe_state()

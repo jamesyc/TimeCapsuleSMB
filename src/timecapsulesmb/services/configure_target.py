@@ -22,13 +22,9 @@ ConfigureTargetSource = Literal["explicit_host", "selected_record", "existing_co
 class ConfigureTargetResolution:
     host: str
     source: ConfigureTargetSource
+    # The record the host came from. A host typed over a selected record may be
+    # another device, so it gets none.
     selected_record: BonjourResolvedService | None = None
-
-    @property
-    def target_record(self) -> BonjourResolvedService | None:
-        # A host typed over a selected record may be another device, so the
-        # record only describes the target when the host came from it.
-        return self.selected_record if self.source == "selected_record" else None
 
 
 def selected_record_properties(selected: Mapping[str, object] | None) -> dict[str, str]:
@@ -99,5 +95,5 @@ def resolve_configure_target(
     return ConfigureTargetResolution(
         host=configure_service.configure_ssh_target(target, ssh_opts, validate_config_value=True),
         source=source,
-        selected_record=record,
+        selected_record=record if source == "selected_record" else None,
     )

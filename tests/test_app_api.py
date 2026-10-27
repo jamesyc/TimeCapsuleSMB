@@ -2564,6 +2564,34 @@ class AppApiTests(unittest.TestCase):
                 finished = self._telemetry_client.emit.call_args_list[-1].kwargs
                 self.assertEqual(finished.get("address_source"), recorded)
 
+    def test_configure_telemetry_says_where_the_syap_came_from(self) -> None:
+        # The device's own ACP reading, or, when it gave none, the selected
+        # record the host came from.
+        from dataclasses import replace
+        base = probed_state()
+        no_identity = replace(
+            base,
+            probe_result=replace(base.probe_result, airport_model=None, airport_syap=None),
+            compatibility=replace(base.compatibility, syap_candidates=(), model_candidates=()),
+        )
+        record = {
+            "name": "Office", "hostname": "office.local", "service_type": "_airport._tcp.local.",
+            "ipv4": ["10.0.0.2"], "properties": {"syAP": "119"},
+        }
+        for target, state, source in (
+            ({"host": "root@10.0.0.2"}, base, "probed"),
+            ({"selected_record": record}, no_identity, "selected_record"),
+        ):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as tmp:
+                self._telemetry_client.emit.reset_mock()
+                params = {"config": str(Path(tmp) / ".env"), "password": "pw", **target}
+                with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=state):
+                    rc = service.run_api_request({"operation": "configure", "params": params}, CollectingSink().sink)
+                self.assertEqual(rc, 0)
+                finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                self.assertEqual(finished["device_syap"], "119")
+                self.assertEqual(finished["device_syap_source"], source)
+
     def run_configure_for_a_saved_device(self, airport_mac: object, reading: AirportAcpReading):
         """Configure as the profile editor sends it: with the profile's saved MAC."""
         collector = CollectingSink()
@@ -4719,6 +4747,8 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["recovery"]["localization_key"], "configure.unsupported_device")
         self.assertFalse(error["recovery"]["retryable"])
         self.assertEqual(error["debug"]["stage"], "check_device_model")
+        # Telemetry keeps what the record advertised.
+        self.assertEqual(error["debug"]["selected_bonjour_record"]["properties"], {"syAP": "115"})
 
     def test_configure_rejects_airport_express_found_by_probe(self) -> None:
         collector = CollectingSink()

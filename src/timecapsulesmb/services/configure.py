@@ -4,7 +4,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, Mapping
 
 from timecapsulesmb.configure_defaults import existing_config_value_or_default, validated_value_or_empty
 from timecapsulesmb.core.config import (
@@ -70,10 +70,15 @@ class ConfigureFlowError(CodedError):
         self.debug = debug
 
 
+# Where ObservedDeviceIdentity.syap came from: the device's own ACP reading, or
+# the selected record standing in when the device gave none.
+SyapSource = Literal["probed", "selected_record"]
+
+
 @dataclass(frozen=True)
 class ObservedDeviceIdentity:
     syap: str | None
-    syap_source: str | None
+    syap_source: SyapSource | None
     model: str | None
 
 
@@ -86,8 +91,8 @@ class ConfigureFlowRequest:
     ssh_opts: str
     configure_id: str
     persist_password: bool
-    # The Bonjour record the host came from; resolve_configure_target leaves it
-    # empty for an explicit or saved host. Its syAP rejects an unsupported model
+    # The Bonjour record the host came from: ConfigureTargetResolution's, none
+    # for a typed or saved host. Its syAP rejects an unsupported model
     # before ACP enables SSH, and stands in for the device's own when the probe
     # has no ACP identity. Its MAC pins the device, and ACP probe telemetry
     # reports it.
@@ -218,7 +223,7 @@ def observed_device_identity(
     *,
     record_airport_syap: str | None = None,
 ) -> ObservedDeviceIdentity:
-    syap_source: str | None = "probed"
+    syap_source: SyapSource | None = "probed"
     syap = None if compatibility is None else compatibility.exact_syap
     if syap is None:
         syap = validated_value_or_empty(
@@ -424,6 +429,7 @@ def run_configure_flow(
     callbacks.update(
         configure_id=request.configure_id,
         device_syap=identity.syap,
+        device_syap_source=identity.syap_source,
         device_model=identity.model,
     )
 
