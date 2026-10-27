@@ -7,10 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Optional
 
-from timecapsulesmb.configure_defaults import (
-    ConfigureValueChoice,
-    validated_value_or_empty,
-)
+from timecapsulesmb.configure_defaults import validated_value_or_empty
 from timecapsulesmb.core.config import (
     AppConfig,
     CONFIG_VALIDATORS,
@@ -280,15 +277,11 @@ def prompt_valid_config_value(key: str, label: str, current: str, secret: bool =
         return candidate
 
 
-def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None:
-    if choice.source == "saved":
-        print(f"Using {key} from .env: {choice.value}")
-    elif choice.source == "discovered":
-        print(f"Using discovered {key}: {choice.value}")
-    elif choice.source == "probed":
-        print(f"Using probed {key}: {choice.value}")
-    elif choice.source == "derived":
-        print(f"Using {key} derived from TC_AIRPORT_SYAP: {choice.value}")
+def print_syap_choice(identity: configure_service.ObservedDeviceIdentity) -> None:
+    if identity.syap_source == "selected_record":
+        print(f"Using TC_AIRPORT_SYAP from the selected device: {identity.syap}")
+    else:
+        print(f"Using probed TC_AIRPORT_SYAP: {identity.syap}")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -534,8 +527,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     flush=True,
                 )
         command_context.add_debug_fields(discovered_host=discovered_host)
-        if discovered_record is not None:
-            command_context.add_debug_fields(discovered_airport_syap=discovered_record.properties.get("syAP") or None)
         command_context.set_stage("prompt_host_password")
         if no_input_enabled(args):
             try:
@@ -618,9 +609,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         ssh_opts=ssh_opts,
                         configure_id=configure_id,
                         persist_password=True,
-                        discovered_airport_syap=target.discovered_airport_syap,
-                        selected_record_airport_syap=target.selected_record_airport_syap,
-                        selected_record=target.target_record,
+                        selected_record=target.selected_record,
                         enable_ssh=True,
                         internal_share_use_disk_root=args.internal_share_use_disk_root,
                         smb_browse_compatibility=args.smb_browse_compatibility,
@@ -675,10 +664,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.probe_state = result.probe_state
             command_context.compatibility = result.compatibility
             if result.identity.syap is not None and not args.json:
-                print_automatic_value_choice(
-                    "TC_AIRPORT_SYAP",
-                    ConfigureValueChoice(value=result.identity.syap, source=result.identity.syap_source or "probed"),
-                )
+                print_syap_choice(result.identity)
             break
         if args.json:
             print_json({

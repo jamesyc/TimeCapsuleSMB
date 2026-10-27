@@ -50,6 +50,7 @@ COMMAND_FIELD_BLACKLIST = {
     "configure_id",
     "device_model",
     "device_syap",
+    "device_syap_source",
     "device_os_version",
     "device_family",
     "rsync_enabled",

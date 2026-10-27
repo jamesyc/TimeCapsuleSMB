@@ -4,7 +4,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, Mapping
 
 from timecapsulesmb.configure_defaults import existing_config_value_or_default, validated_value_or_empty
 from timecapsulesmb.core.config import (
@@ -70,10 +70,15 @@ class ConfigureFlowError(CodedError):
         self.debug = debug
 
 
+# Where ObservedDeviceIdentity.syap came from: the device's own ACP reading, or
+# the selected record standing in when the device gave none.
+SyapSource = Literal["probed", "selected_record"]
+
+
 @dataclass(frozen=True)
 class ObservedDeviceIdentity:
     syap: str | None
-    syap_source: str | None
+    syap_source: SyapSource | None
     model: str | None
 
 
@@ -86,12 +91,11 @@ class ConfigureFlowRequest:
     ssh_opts: str
     configure_id: str
     persist_password: bool
-    discovered_airport_syap: str | None = None
-    # The syAP of the Bonjour record the host came from. Unlike
-    # discovered_airport_syap, it is unset when the user typed another host, so
-    # it can reject this device before ACP enables SSH and reboots it.
-    selected_record_airport_syap: str | None = None
-    # The Bonjour record the host came from, for ACP probe telemetry.
+    # The Bonjour record the host came from: ConfigureTargetResolution's, none
+    # for a typed or saved host. Its syAP rejects an unsupported model
+    # before ACP enables SSH, and stands in for the device's own when the probe
+    # has no ACP identity. Its MAC pins the device, and ACP probe telemetry
+    # reports it.
     selected_record: BonjourResolvedService | None = None
     # The MAC of the saved device whose settings these are (the app's
     # profile). Another AirPort at the host is refused before ACP enables SSH
@@ -219,17 +223,17 @@ def enable_ssh_and_reprobe(
 def observed_device_identity(
     compatibility: DeviceCompatibility | None,
     *,
-    discovered_airport_syap: str | None = None,
+    record_airport_syap: str | None = None,
 ) -> ObservedDeviceIdentity:
-    syap_source: str | None = "probed"
+    syap_source: SyapSource | None = "probed"
     syap = None if compatibility is None else compatibility.exact_syap
     if syap is None:
         syap = validated_value_or_empty(
             "TC_AIRPORT_SYAP",
-            discovered_airport_syap or "",
+            record_airport_syap or "",
             "Airport Utility syAP code",
         ) or None
-        syap_source = "discovered" if syap is not None else None
+        syap_source = "selected_record" if syap is not None else None
 
     model = None if compatibility is None else compatibility.exact_model
     if model is None and syap is not None:
@@ -251,16 +255,13 @@ def run_configure_flow(
     callbacks = callbacks or OperationCallbacks()
     hooks = hooks or ConfigureFlowHooks()
 
-    if airport_syap_supported(request.selected_record_airport_syap) is False:
+    # What the record advertised, checked before the device is contacted; the
+    # device's own syAP comes from the probe below.
+    record_syap = request.selected_record.properties.get("syAP") if request.selected_record is not None else None
+    if airport_syap_supported(record_syap) is False:
         callbacks.stage(CHECK_DEVICE_MODEL_STAGE)
-        callbacks.debug(
-            configure_failure_reason="unsupported_device",
-            discovered_airport_syap=request.selected_record_airport_syap,
-        )
-        raise ConfigureFlowError(
-            unsupported_syap_message(request.selected_record_airport_syap or ""),
-            code=ErrorCode.UNSUPPORTED_DEVICE,
-        )
+        callbacks.debug(configure_failure_reason="unsupported_device")
+        raise ConfigureFlowError(unsupported_syap_message(record_syap or ""), code=ErrorCode.UNSUPPORTED_DEVICE)
 
     values = build_configure_env_values(
         request.existing,
@@ -392,7 +393,7 @@ def run_configure_flow(
 
     identity = observed_device_identity(
         compatibility,
-        discovered_airport_syap=request.discovered_airport_syap,
+        record_airport_syap=record_syap,
     )
     airport_mac = probe.airport_mac if probe.ssh_authenticated else None
     gone = acpd.acpd_quit(connection, acpd.read_processes(connection)) if probe.ssh_authenticated and airport_mac is None else None
@@ -428,6 +429,7 @@ def run_configure_flow(
     callbacks.update(
         configure_id=request.configure_id,
         device_syap=identity.syap,
+        device_syap_source=identity.syap_source,
         device_model=identity.model,
     )
 

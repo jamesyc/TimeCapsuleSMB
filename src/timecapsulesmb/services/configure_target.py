@@ -22,19 +22,9 @@ ConfigureTargetSource = Literal["explicit_host", "selected_record", "existing_co
 class ConfigureTargetResolution:
     host: str
     source: ConfigureTargetSource
+    # The record the host came from. A host typed over a selected record may be
+    # another device, so it gets none.
     selected_record: BonjourResolvedService | None = None
-    discovered_airport_syap: str | None = None
-
-    @property
-    def selected_record_airport_syap(self) -> str | None:
-        # A host typed over a selected record may be another device, so the
-        # record's syAP only describes the target when the host came from it.
-        return self.discovered_airport_syap if self.source == "selected_record" else None
-
-    @property
-    def target_record(self) -> BonjourResolvedService | None:
-        # Likewise, the record only describes the target when the host came from it.
-        return self.selected_record if self.source == "selected_record" else None
 
 
 def selected_record_properties(selected: Mapping[str, object] | None) -> dict[str, str]:
@@ -82,7 +72,6 @@ def resolve_configure_target(
         if isinstance(selected_record, BonjourResolvedService)
         else bonjour_record_from_selected_record(selected_record)
     )
-    discovered_airport_syap = None if record is None else (record.properties.get("syAP") or None)
 
     source: ConfigureTargetSource
     target = explicit_host.strip()
@@ -106,6 +95,5 @@ def resolve_configure_target(
     return ConfigureTargetResolution(
         host=configure_service.configure_ssh_target(target, ssh_opts, validate_config_value=True),
         source=source,
-        selected_record=record,
-        discovered_airport_syap=discovered_airport_syap,
+        selected_record=record if source == "selected_record" else None,
     )

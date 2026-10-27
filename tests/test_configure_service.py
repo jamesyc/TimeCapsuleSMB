@@ -71,6 +71,12 @@ SELECTED_RECORD = BonjourResolvedService(
 )
 
 
+def record_advertising_syap(syap: str | None) -> BonjourResolvedService:
+    return BonjourResolvedService(
+        "Office", "office.local", "_airport._tcp.local.", properties={} if syap is None else {"syAP": syap},
+    )
+
+
 class ConfigureServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         context = mock.patch(
@@ -1088,7 +1094,10 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(stages, ["ssh_probe", "write_env"])
         self.assertIn({"ssh_final_reachable": True}, debug_fields)
         self.assertIn({"ssh_final_reachable": True}, update_fields)
-        self.assertIn({"configure_id": "config-id", "device_syap": "119", "device_model": "TimeCapsule8,119"}, update_fields)
+        self.assertIn(
+            {"configure_id": "config-id", "device_syap": "119", "device_syap_source": "probed", "device_model": "TimeCapsule8,119"},
+            update_fields,
+        )
 
     def test_run_configure_flow_strips_removed_settings_with_one_notice_each(self) -> None:
         probe_state = self.make_probe_state()
@@ -1164,7 +1173,7 @@ class ConfigureServiceTests(unittest.TestCase):
                     ssh_opts="-o foo",
                     configure_id="config-id",
                     persist_password=True,
-                    discovered_airport_syap="119",
+                    selected_record=record_advertising_syap("119"),
                     probe=mock.Mock(return_value=probe_state),
                     write_env=lambda _path, values: written.update(values),
                 ),
@@ -1608,7 +1617,7 @@ class ConfigureServiceTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable_ssh:
                 with self.assertRaises(ConfigureFlowError) as raised:
                     run_configure_flow(
-                        self.configure_request(env_path, probe, selected_record_airport_syap="115"),
+                        self.configure_request(env_path, probe, selected_record=record_advertising_syap("115")),
                         callbacks=callbacks,
                         hooks=ConfigureFlowHooks(before_enable_ssh=before_enable_ssh),
                     )
@@ -1622,7 +1631,7 @@ class ConfigureServiceTests(unittest.TestCase):
         before_enable_ssh.assert_not_called()
         self.assertEqual(stages, ["check_device_model"])
         self.assertIn(
-            {"configure_failure_reason": "unsupported_device", "discovered_airport_syap": "115"},
+            {"configure_failure_reason": "unsupported_device"},
             debug_fields,
         )
 
@@ -1635,29 +1644,12 @@ class ConfigureServiceTests(unittest.TestCase):
                         self.configure_request(
                             Path(tmp) / ".env",
                             probe,
-                            selected_record_airport_syap=syap,
+                            selected_record=record_advertising_syap(syap),
                             write_env=lambda _path, _values: None,
                         )
                     )
                 probe.assert_called_once()
                 self.assertEqual(result.identity.syap, "119")
-
-    def test_run_configure_flow_ignores_unsupported_syap_from_record_the_host_did_not_come_from(self) -> None:
-        # The record's syAP is still the identity fallback, but a typed host may be
-        # another device, so only selected_record_airport_syap may reject it.
-        probe = mock.Mock(return_value=self.make_probe_state())
-        with tempfile.TemporaryDirectory() as tmp:
-            result = run_configure_flow(
-                self.configure_request(
-                    Path(tmp) / ".env",
-                    probe,
-                    discovered_airport_syap="115",
-                    selected_record_airport_syap=None,
-                    write_env=lambda _path, _values: None,
-                )
-            )
-        probe.assert_called_once()
-        self.assertEqual(result.identity.syap, "119")
 
     def test_run_configure_flow_rejects_airport_express_found_by_ssh_probe(self) -> None:
         written: list[Mapping[str, str]] = []

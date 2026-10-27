@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from timecapsulesmb.core.config import (
     CONFIG_VALIDATORS,
     DEFAULTS,
 )
-
-
-@dataclass(frozen=True)
-class ConfigureValueChoice:
-    value: str
-    source: str
 
 
 def validated_value_or_empty(key: str, value: str, label: str) -> str:

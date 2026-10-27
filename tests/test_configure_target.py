@@ -30,7 +30,7 @@ class ConfigureTargetTests(unittest.TestCase):
 
         self.assertEqual(target.host, "root@10.0.0.9")
         self.assertEqual(target.source, "explicit_host")
-        self.assertIs(target.selected_record, record)
+        self.assertIsNone(target.selected_record)
 
     def test_explicit_bare_host_is_canonicalized_before_validation(self) -> None:
         target = resolve_configure_target(
@@ -127,7 +127,7 @@ class ConfigureTargetTests(unittest.TestCase):
 
         self.assertEqual(target.host, "root@10.0.0.80")
         self.assertEqual(target.source, "selected_record")
-        self.assertEqual(target.discovered_airport_syap, "119")
+        self.assertIs(target.selected_record, record)
 
     def test_existing_config_is_used_when_no_explicit_or_selected_host_exists(self) -> None:
         target = resolve_configure_target(
@@ -248,7 +248,7 @@ class ConfigureTargetTests(unittest.TestCase):
         self.assertEqual(target.host, "root@10.0.0.9")
         self.assertEqual(target.source, "explicit_host")
 
-    def test_selected_record_syap_describes_target_only_when_host_came_from_record(self) -> None:
+    def test_selected_record_describes_target_only_when_host_came_from_record(self) -> None:
         record = BonjourResolvedService(
             "Express",
             "express.local.",
@@ -262,17 +262,13 @@ class ConfigureTargetTests(unittest.TestCase):
         saved = resolve_configure_target(explicit_host="", selected_record=None, existing={"TC_HOST": "root@10.0.0.2"}, ssh_opts="")
 
         self.assertEqual(from_record.source, "selected_record")
-        self.assertEqual(from_record.selected_record_airport_syap, "115")
+        self.assertIs(from_record.selected_record, record)
+        # A typed host may be another device, so configure gets none of the
+        # record: not its syAP for the model check or identity, nor its MAC.
         self.assertEqual(typed.source, "explicit_host")
-        self.assertEqual(typed.discovered_airport_syap, "115")
-        self.assertIsNone(typed.selected_record_airport_syap)
+        self.assertIsNone(typed.selected_record)
         self.assertEqual(saved.source, "existing_config")
-        self.assertIsNone(saved.selected_record_airport_syap)
-        # ACP probe telemetry gets the record only when it describes the target.
-        self.assertIs(from_record.target_record, from_record.selected_record)
-        self.assertIsNotNone(from_record.target_record)
-        self.assertIsNone(typed.target_record)
-        self.assertIsNone(saved.target_record)
+        self.assertIsNone(saved.selected_record)
 
     def test_jsonable_selected_record_is_parsed_for_resolution(self) -> None:
         record = bonjour_record_from_selected_record({

@@ -1672,18 +1672,21 @@ class CliConfigureTests(CliTestCase):
         self.assertIn("Using probed TC_AIRPORT_SYAP: 113", result.text)
         self.assertNotIn("Using probed TC_MDNS_DEVICE_MODEL", result.text)
 
-    def test_configure_uses_discovered_airport_syap_without_prompting(self) -> None:
+    def test_configure_typed_host_over_record_enables_ssh_without_the_record(self) -> None:
+        # The user picks a record, then types another host whose SSH is closed.
+        # ACP must not get the record: it would follow the record's MAC to that
+        # other device. The probe's syAP 119 is reported, not the record's 113.
         record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
             services={"_airport._tcp.local.", "_smb._tcp.local."},
-            properties={"syAP": "119"},
+            properties={"syAP": "113"},
         )
         prompt_values = iter([
             "rootpw",
             "bridge0",
-                        "admin",
+            "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -1704,19 +1707,80 @@ class CliConfigureTests(CliTestCase):
             probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
             confirm=True,
         )
-        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.rc, 0, result.text)
+        self._configure_acp_probe_mock.assert_called_once()
+        self.assertIsNone(self._configure_acp_probe_mock.call_args.kwargs["record"])
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
 
-    def test_configure_discovered_syap_beats_invalid_existing_syap(self) -> None:
-        seen_labels: list[str] = []
+    def test_configure_record_syap_stands_in_only_for_the_records_own_host(self) -> None:
+        # The device returns no ACP identity. Its record's syAP 119 describes it
+        # when the user keeps the record's host; a typed host may be another
+        # device, so nothing is reported, in the output or in telemetry.
         record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
             services={"_airport._tcp.local.", "_smb._tcp.local."},
             properties={"syAP": "119"},
+        )
+        for typed_host, expected_syap in ((None, "119"), ("root@10.0.0.2", None)):
+            with self.subTest(typed_host=typed_host):
+                prompt_values = iter([
+                    "rootpw",
+                    "bridge0",
+                    "admin",
+                    "TimeCapsule",
+                    "samba4",
+                    "Time Capsule Samba 4",
+                    "timecapsulesamba4",
+                ])
+
+                def fake_prompt(label, default, _secret):
+                    if label == "Device SSH target":
+                        return typed_host or default
+                    if label == "mDNS device model hint":
+                        return default
+                    return next(prompt_values)
+
+                command_context = FakeCommandContext()
+                result = self.run_configure_cli(
+                    discovered_records=[record],
+                    input_side_effect=["1"],
+                    prompt_side_effect=fake_prompt,
+                    probe_state=self.make_probe_state(self.make_probe_result_netbsd6_no_identity()),
+                    confirm=True,
+                    command_context=command_context,
+                    patch_telemetry=True,
+                )
+                self.assertEqual(result.rc, 0, result.text)
+                command_context.finish.assert_called_once()
+                # The context keeps only fields that are set.
+                finished = command_context.finish.call_args.kwargs
+                if expected_syap is None:
+                    self.assertNotIn("TC_AIRPORT_SYAP", result.text)
+                    self.assertNotIn("TC_AIRPORT_SYAP", result.values)
+                    self.assertNotIn("device_syap", finished)
+                    self.assertNotIn("device_syap_source", finished)
+                    self.assertNotIn("device_model", finished)
+                else:
+                    self.assertEqual(result.values["TC_AIRPORT_SYAP"], expected_syap)
+                    self.assertIn(f"Using TC_AIRPORT_SYAP from the selected device: {expected_syap}", result.text)
+                    self.assertEqual(finished["device_syap"], expected_syap)
+                    self.assertEqual(finished["device_syap_source"], "selected_record")
+                    self.assertEqual(finished["device_model"], "TimeCapsule8,119")
+
+    def test_configure_probed_syap_beats_record_and_invalid_existing_syap(self) -> None:
+        # SSH is closed, so configure enables it over ACP and reprobes; that
+        # probe reads syAP 119, which wins over the record's 113 and the saved 999.
+        seen_labels: list[str] = []
+        record = BonjourResolvedService(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            ipv4=["192.168.1.217"],
+            services={"_airport._tcp.local.", "_smb._tcp.local."},
+            properties={"syAP": "113"},
         )
         prompt_values = iter([
             "rootpw",
@@ -1744,6 +1808,7 @@ class CliConfigureTests(CliTestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
+        self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertNotIn("Airport Utility syAP code", seen_labels)
         self.assertNotIn("mDNS device model hint", seen_labels)
