@@ -1,7 +1,6 @@
 import SwiftUI
 
 struct FlashBootHookSection: View {
-    let profile: DeviceProfile
     @ObservedObject var store: FlashWorkflowStore
     let performAction: (FlashUserAction) -> Void
     let chooseFirmwareTemplate: () -> Void
@@ -11,7 +10,6 @@ struct FlashBootHookSection: View {
     var body: some View {
         let presentation = FlashPresentation(store: store)
         VStack(alignment: .leading, spacing: 12) {
-            Divider()
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(presentation.title)
@@ -28,6 +26,10 @@ struct FlashBootHookSection: View {
                     .background(.quaternary)
                     .clipShape(Capsule())
             }
+
+            Label(presentation.risk, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if !presentation.warnings.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
@@ -94,12 +96,9 @@ struct FlashBootHookSection: View {
                 ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText) { recoveryAction($0, error) }
             }
         }
-        .onAppear {
-            store.refresh(profile: profile)
-        }
-        .onChange(of: profile.id) { _, _ in
-            store.refresh(profile: profile)
-        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
 

@@ -259,6 +259,7 @@
 "deploy.result.verified" = "Geverifieerd";
 "deploy.failure.reboot_guidance" = "Tip voor probleemoplossing: herstart het apparaat en wacht 5 minuten tot het gereed is. Voer daarna ‘Samba installeren / bijwerken’ opnieuw uit.";
 "install.action.install_update" = "Samba installeren / bijwerken";
+"install.action.open_boot_hook" = "Opstart-hook openen";
 "install.action.reinstall" = "Samba opnieuw installeren";
 "install.advanced_options" = "Geavanceerde opties";
 "install.completion.title.finished" = "Installatie/update voltooid";
@@ -515,9 +516,11 @@
 "maintenance.advanced_options" = "Geavanceerde opties";
 "maintenance.presentation.activate.subtitle" = "Start de geïnstalleerde Samba-services op een NetBSD 4-apparaat.";
 "maintenance.presentation.activate.title" = "NetBSD4-activering";
+"maintenance.presentation.boot_hook.subtitle" = "De firmware patchen zodat Samba na elke herstart start, of de Apple-firmware herstellen.";
 "maintenance.presentation.fsck.subtitle" = "Een geselecteerd HFS-volume ontkoppelen en fsck_hfs op het apparaat uitvoeren.";
 "maintenance.presentation.fsck.title" = "Schijfreparatie";
 "maintenance.presentation.risk.destructive" = "Destructief";
+"maintenance.presentation.risk.firmware_write" = "Schrijven naar firmware";
 "maintenance.presentation.risk.remote_write" = "Schrijven op afstand";
 "maintenance.presentation.risk.reboot" = "Herstart";
 "maintenance.presentation.ssh_access.subtitle" = "Controleer of activeer SSH via AirPort ACP.";

@@ -63,6 +63,7 @@ enum FlashUserAction: String, Hashable, Identifiable {
 
 struct FlashPresentation: Equatable {
     let title: String
+    let risk: String
     let message: String
     let stateTitle: String
     let primaryActions: [FlashUserAction]
@@ -75,6 +76,7 @@ struct FlashPresentation: Equatable {
     @MainActor
     init(store: FlashWorkflowStore) {
         self.title = L10n.string("flash.title")
+        self.risk = L10n.string("maintenance.presentation.risk.firmware_write")
         // An error shows in its own box below, not in this line.
         self.message = store.writeResult?.localizedSummary
             // Only while Write Patch can be pressed: during the confirmation

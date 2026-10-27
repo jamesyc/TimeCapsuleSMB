@@ -9,28 +9,24 @@ struct MaintenanceTab: View {
 
     var body: some View {
         let store = session.maintenanceStore
-        let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        let presentation = MaintenanceDashboardPresentation(
+            store: store,
+            flashStore: session.flashStore,
+            profile: profile
+        )
 
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text(L10n.string("dashboard.tab.maintenance"))
                     .font(.title2.weight(.semibold))
 
-                MaintenanceWorkflowCardsView(cards: presentation.cards) { workflow in
-                    session.maintenanceStore.selectedWorkflow = workflow
+                MaintenanceCardsView(cards: presentation.cards) { card in
+                    session.maintenanceStore.select(card)
                 }
 
-                MaintenanceDetailView(
-                    presentation: presentation.detail,
-                    store: store,
-                    performAction: { action in
-                        session.performMaintenanceAction(action, profile: profile, showDiagnostics: showDiagnostics)
-                    }
-                )
-
-                if FlashBootHookVisibilityPolicy.isVisible(for: profile) {
+                switch presentation.selectedCard {
+                case .bootHook:
                     FlashBootHookSection(
-                        profile: profile,
                         store: session.flashStore,
                         performAction: { action in
                             session.performFlashAction(action, profile: profile)
@@ -41,16 +37,38 @@ struct MaintenanceTab: View {
                         recoveryAction: { kind, error in recoveryAction(kind, error: error) },
                         diagnosticsText: diagnosticsText
                     )
-                }
+                case .workflow:
+                    MaintenanceDetailView(
+                        presentation: presentation.detail,
+                        store: store,
+                        performAction: { action in
+                            session.performMaintenanceAction(action, profile: profile, showDiagnostics: showDiagnostics)
+                        }
+                    )
 
-                if let error = store.error(for: presentation.detail.workflow) {
-                    ErrorRecoveryView(
-                        error: error,
-                        diagnosticsText: diagnosticsText
-                    ) { recoveryAction($0, error: error) }
+                    if let error = store.error(for: presentation.detail.workflow) {
+                        ErrorRecoveryView(
+                            error: error,
+                            diagnosticsText: diagnosticsText
+                        ) { recoveryAction($0, error: error) }
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // The flash store's eligibility comes from the profile and the build
+        // policy; refresh it before the boot hook card and panel read it.
+        .onAppear {
+            refreshFlashEligibility()
+        }
+        .onChange(of: profile.id) { _, _ in
+            refreshFlashEligibility()
+        }
+    }
+
+    private func refreshFlashEligibility() {
+        if FlashBootHookVisibilityPolicy.isVisible(for: profile) {
+            session.flashStore.refresh(profile: profile)
         }
     }
 
@@ -75,15 +93,18 @@ struct MaintenanceTab: View {
     }
 }
 
-private struct MaintenanceWorkflowCardsView: View {
-    let cards: [MaintenanceWorkflowCardPresentation]
-    let select: (MaintenanceWorkflow) -> Void
+private struct MaintenanceCardsView: View {
+    let cards: [MaintenanceCardPresentation]
+    let select: (MaintenanceCard) -> Void
+    // The tallest card's content: every card takes it as its minimum, so the
+    // cards stay even when one subtitle wraps further than the rest.
+    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 10)], alignment: .leading, spacing: 10) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 10, alignment: .top)], alignment: .leading, spacing: 10) {
             ForEach(cards) { card in
                 Button {
-                    select(card.workflow)
+                    select(card.card)
                 } label: {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -92,15 +113,22 @@ private struct MaintenanceWorkflowCardsView: View {
                             Spacer()
                             Image(systemName: card.isSelected ? "checkmark.circle.fill" : "circle")
                         }
+                        // No line limit: longer translations need more lines
+                        // in four narrow columns than a fixed limit allows.
                         Text(card.subtitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text(card.stateTitle)
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: MaintenanceCardHeightKey.self, value: proxy.size.height)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: max(92, contentHeight), alignment: .topLeading)
                     .padding(10)
                     .background(card.isSelected ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -108,6 +136,17 @@ private struct MaintenanceWorkflowCardsView: View {
                 .buttonStyle(.plain)
             }
         }
+        .onPreferenceChange(MaintenanceCardHeightKey.self) { height in
+            contentHeight = height
+        }
+    }
+}
+
+private struct MaintenanceCardHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

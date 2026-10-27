@@ -259,6 +259,7 @@
 "deploy.result.verified" = "Patvirtinta";
 "deploy.failure.reboot_guidance" = "Trikčių šalinimo patarimas: bandykite paleisti įrenginį iš naujo ir palaukite 5 minutes, kol jis įsikraus. Tada dar kartą paleiskite „Įdiegti / atnaujinti Samba“.";
 "install.action.install_update" = "Įdiegti / atnaujinti Samba";
+"install.action.open_boot_hook" = "Atidaryti įkrovos įskiepį";
 "install.action.reinstall" = "Iš naujo įdiegti Samba";
 "install.advanced_options" = "Išplėstinės parinktys";
 "install.completion.title.finished" = "Diegimas / atnaujinimas baigtas";
@@ -515,9 +516,11 @@
 "maintenance.advanced_options" = "Išplėstinės parinktys";
 "maintenance.presentation.activate.subtitle" = "Paleisti įdiegtą Samba aplinką NetBSD 4 įrenginyje.";
 "maintenance.presentation.activate.title" = "NetBSD4 aktyvavimas";
+"maintenance.presentation.boot_hook.subtitle" = "Pataisyti programinę įrangą, kad Samba pasileistų po kiekvieno paleidimo iš naujo, arba atkurti Apple programinę įrangą.";
 "maintenance.presentation.fsck.subtitle" = "Atjungti pasirinktą HFS tomą ir paleisti fsck_hfs įrenginyje.";
 "maintenance.presentation.fsck.title" = "Disko taisymas";
 "maintenance.presentation.risk.destructive" = "Destruktyvus";
+"maintenance.presentation.risk.firmware_write" = "Programinės įrangos įrašymas";
 "maintenance.presentation.risk.remote_write" = "Nuotolinis įrašymas";
 "maintenance.presentation.risk.reboot" = "Paleidimas iš naujo";
 "maintenance.presentation.ssh_access.subtitle" = "Patikrinti arba įjungti SSH per AirPort ACP.";

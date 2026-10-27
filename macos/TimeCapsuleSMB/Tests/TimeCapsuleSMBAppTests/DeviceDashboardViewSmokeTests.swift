@@ -90,6 +90,21 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             ],
             expectedState: .deployed
         )
+        // A NetBSD 4 install adds the boot hook warning and its button.
+        try await renderInstallState(
+            responses: [
+                .init(events: [
+                    BackendEvent(
+                        type: "result",
+                        operation: "deploy",
+                        ok: true,
+                        payload: testDeployResultPayload(payloadFamily: "netbsd4_samba4", netbsd4: true)
+                    )
+                ])
+            ],
+            expectedState: .deployed,
+            payloadFamily: "netbsd4_samba4"
+        )
     }
 
     func testRendersCheckupRunningPassedWarningFailedAndRunFailedStates() async throws {
@@ -152,6 +167,15 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             try assertRendersNonBlank(dashboardView(fixture: idleFixture, profile: idleProfile, session: idleSession))
         }
 
+        let netbsd4 = try await AppViewFixture()
+        let netbsd4Profile = try await netbsd4.saveProfile(id: "netbsd4-device", payloadFamily: "netbsd4_samba4")
+        let netbsd4Session = netbsd4.dashboardSession(for: netbsd4Profile)
+        netbsd4Session.selectedTab = .maintenance
+        for card in MaintenanceCardAvailability.cards(for: netbsd4Profile) {
+            netbsd4Session.maintenanceStore.select(card)
+            try assertRendersNonBlank(dashboardView(fixture: netbsd4, profile: netbsd4Profile, session: netbsd4Session))
+        }
+
         let activation = try await AppViewFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
@@ -193,11 +217,12 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
 
     private func renderInstallState(
         responses: [StoreTestRunner.Response],
-        expectedState: DeployWorkflowState
+        expectedState: DeployWorkflowState,
+        payloadFamily: String = "netbsd6_samba4"
     ) async throws {
         let runner = PausingStoreTestRunner(responses: responses)
         let fixture = try await AppViewFixture(runner: runner)
-        let profile = try await fixture.saveProfile(id: "device-one")
+        let profile = try await fixture.saveProfile(id: "device-one", payloadFamily: payloadFamily)
         let session = fixture.dashboardSession(for: profile)
 
         session.runInstall(profile: profile)

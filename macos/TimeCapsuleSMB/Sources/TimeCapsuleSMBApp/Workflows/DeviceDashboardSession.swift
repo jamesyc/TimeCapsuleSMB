@@ -174,6 +174,9 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             selectedTab = .checkup
         case .viewDiagnostics:
             showDiagnostics()
+        case .openBootHook:
+            selectedTab = .maintenance
+            maintenanceStore.select(.bootHook)
         }
     }
 

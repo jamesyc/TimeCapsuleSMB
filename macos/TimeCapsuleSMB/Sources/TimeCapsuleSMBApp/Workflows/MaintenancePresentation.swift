@@ -76,14 +76,14 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
     }
 }
 
-struct MaintenanceWorkflowCardPresentation: Equatable, Identifiable {
-    let workflow: MaintenanceWorkflow
+struct MaintenanceCardPresentation: Equatable, Identifiable {
+    let card: MaintenanceCard
     let title: String
     let subtitle: String
     let stateTitle: String
     let isSelected: Bool
 
-    var id: MaintenanceWorkflow.ID { workflow.id }
+    var id: MaintenanceCard.ID { card.id }
 }
 
 extension MaintenanceWorkflow {
@@ -401,25 +401,55 @@ enum MaintenanceWorkflowAvailability {
     }
 }
 
+enum MaintenanceCardAvailability {
+    static func cards(for profile: DeviceProfile) -> [MaintenanceCard] {
+        var cards = MaintenanceWorkflowAvailability.workflows(for: profile).map(MaintenanceCard.workflow)
+        if FlashBootHookVisibilityPolicy.isVisible(for: profile) {
+            // Right before Activation: with the boot hook installed, Samba
+            // starts on every boot without it.
+            let index = cards.firstIndex(of: .workflow(.activate)) ?? cards.endIndex
+            cards.insert(.bootHook, at: index)
+        }
+        return cards
+    }
+}
+
 struct MaintenanceDashboardPresentation: Equatable {
-    let cards: [MaintenanceWorkflowCardPresentation]
+    let cards: [MaintenanceCardPresentation]
+    let selectedCard: MaintenanceCard
     let detail: MaintenanceWorkflowDetailPresentation
 
     @MainActor
-    init(store: MaintenanceStore, profile: DeviceProfile) {
+    init(store: MaintenanceStore, flashStore: FlashWorkflowStore, profile: DeviceProfile) {
         let workflows = MaintenanceWorkflowAvailability.workflows(for: profile)
         let selectedWorkflow = workflows.contains(store.selectedWorkflow)
             ? store.selectedWorkflow
             : workflows.first ?? store.selectedWorkflow
-        self.cards = workflows.map { workflow in
-            return MaintenanceWorkflowCardPresentation(
-                workflow: workflow,
-                title: workflow.presentationTitle,
-                subtitle: workflow.presentationSubtitle,
-                stateTitle: store.state(for: workflow).title,
-                isSelected: workflow == selectedWorkflow
-            )
+        let cards = MaintenanceCardAvailability.cards(for: profile)
+        let selectedCard = cards.contains(store.selectedCard)
+            ? store.selectedCard
+            : .workflow(selectedWorkflow)
+        self.cards = cards.map { card in
+            switch card {
+            case .workflow(let workflow):
+                return MaintenanceCardPresentation(
+                    card: card,
+                    title: workflow.presentationTitle,
+                    subtitle: workflow.presentationSubtitle,
+                    stateTitle: store.state(for: workflow).title,
+                    isSelected: card == selectedCard
+                )
+            case .bootHook:
+                return MaintenanceCardPresentation(
+                    card: card,
+                    title: L10n.string("flash.title"),
+                    subtitle: L10n.string("maintenance.presentation.boot_hook.subtitle"),
+                    stateTitle: flashStore.state.title,
+                    isSelected: card == selectedCard
+                )
+            }
         }
+        self.selectedCard = selectedCard
         self.detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: selectedWorkflow)
     }
 }

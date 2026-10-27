@@ -259,6 +259,7 @@
 "deploy.result.verified" = "Verified";
 "deploy.failure.reboot_guidance" = "Troubleshooting tip: try rebooting your device and waiting 5 minutes for it to load. Then run “Install / Update Samba” again.";
 "install.action.install_update" = "Install / Update Samba";
+"install.action.open_boot_hook" = "Open Boot Hook";
 "install.action.reinstall" = "Reinstall Samba";
 "install.advanced_options" = "Advanced Options";
 "install.completion.title.finished" = "Install / Update Finished";
@@ -515,9 +516,11 @@
 "maintenance.advanced_options" = "Advanced Options";
 "maintenance.presentation.activate.subtitle" = "Start the installed Samba services on a NetBSD 4 device.";
 "maintenance.presentation.activate.title" = "NetBSD4 Activation";
+"maintenance.presentation.boot_hook.subtitle" = "Patch the firmware so Samba starts after every reboot, or restore Apple firmware.";
 "maintenance.presentation.fsck.subtitle" = "Unmount a selected HFS volume and run fsck_hfs on the device.";
 "maintenance.presentation.fsck.title" = "Disk Repair";
 "maintenance.presentation.risk.destructive" = "Destructive";
+"maintenance.presentation.risk.firmware_write" = "Firmware write";
 "maintenance.presentation.risk.remote_write" = "Remote write";
 "maintenance.presentation.risk.reboot" = "Reboot";
 "maintenance.presentation.ssh_access.subtitle" = "Check or enable SSH through AirPort ACP.";

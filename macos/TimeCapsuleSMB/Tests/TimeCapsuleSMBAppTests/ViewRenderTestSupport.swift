@@ -47,11 +47,12 @@ struct AppViewFixture {
     func saveProfile(
         id: DeviceProfile.ID,
         host: String = "root@10.0.0.2",
+        payloadFamily: String = "netbsd6_samba4",
         passwordState: DevicePasswordState = .available,
         password: String? = "pw"
     ) async throws -> DeviceProfile {
         let profile = try await registry.storeTestProfile(
-            configuredDevice: testConfiguredDevice(host: host),
+            configuredDevice: testConfiguredDevice(host: host, payloadFamily: payloadFamily),
             discoveredDevice: nil,
             passwordState: passwordState,
             preferredID: id

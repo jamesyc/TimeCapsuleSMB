@@ -124,6 +124,37 @@ final class MaintenanceStoreTests: XCTestCase {
         try await waitUntilStoreState { !store.isRunning }
     }
 
+    func testRejectedRunStillLeavesTheBootHookCardForItsWorkflow() async throws {
+        let runner = PausingStoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "flash", ok: true, payload: .object(["ok": .bool(true)]))
+            ], pauseBeforeEvents: true)
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let profile = DeviceProfile.make(
+            id: "device-one",
+            configuredDevice: try testConfiguredDevice(payloadFamily: "netbsd4_samba4"),
+            discoveredDevice: nil,
+            applicationSupportURL: URL(fileURLWithPath: "/tmp/timecapsulesmb-tests", isDirectory: true)
+        )
+        let store = MaintenanceStore(
+            coordinator: coordinator,
+            laneKey: .deviceWorkflow(profile.id, .maintenance)
+        )
+        store.select(.bootHook)
+
+        // A flash run holds the device while the user starts Activation elsewhere.
+        _ = coordinator.run(operation: "flash", profile: profile)
+        try await waitUntilStoreState { runner.calls.count == 1 && coordinator.isDeviceBusy(profile) }
+        let result = store.runActivation(password: "pw", profile: profile)
+
+        XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
+        XCTAssertEqual(store.selectedCard, .workflow(.activate))
+        XCTAssertEqual(store.error(for: .activate)?.code, "operation_already_running")
+        runner.finishAll()
+        try await waitUntilStoreState { !coordinator.isDeviceBusy(profile) }
+    }
+
     func testActivationRunsDirectlyAndHandlesConfirmationReplay() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [

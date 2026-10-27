@@ -7,6 +7,7 @@ enum InstallUserAction: String, Equatable, Identifiable {
     case runCheckup
     case viewCheckup
     case viewDiagnostics
+    case openBootHook
 
     var id: String { rawValue }
 
@@ -24,6 +25,8 @@ enum InstallUserAction: String, Equatable, Identifiable {
             return L10n.string("dashboard.action.view_checkup")
         case .viewDiagnostics:
             return L10n.string("recovery.action.open_diagnostics")
+        case .openBootHook:
+            return L10n.string("install.action.open_boot_hook")
         }
     }
 
@@ -41,6 +44,8 @@ enum InstallUserAction: String, Equatable, Identifiable {
             return "list.bullet.clipboard"
         case .viewDiagnostics:
             return "wrench.and.screwdriver"
+        case .openBootHook:
+            return "memorychip"
         }
     }
 }
@@ -65,7 +70,7 @@ enum InstallActionAvailabilityPolicy {
             return !isDeviceBusy && store.canDeploy
         case .runCheckup:
             return !isDeviceBusy && !store.isBusy
-        case .openFinder, .viewCheckup, .viewDiagnostics:
+        case .openFinder, .viewCheckup, .viewDiagnostics, .openBootHook:
             return true
         }
     }
@@ -129,18 +134,27 @@ enum DeployFailureGuidancePolicy {
     }
 }
 
+/// A warning under a finished install, with the button that acts on it.
+struct InstallCompletionWarning: Equatable, Identifiable {
+    let text: String
+    let action: InstallUserAction?
+
+    var id: String { text }
+}
+
 struct InstallCompletionPresentation: Equatable {
     let title: String
     let rows: [PresentationRow]
-    let warnings: [String]
+    let warnings: [InstallCompletionWarning]
     let actions: [InstallUserAction]
 
-    init(result: DeployResultPayload, isCheckupRunning: Bool = false) {
+    init(result: DeployResultPayload, profile: DeviceProfile, isCheckupRunning: Bool = false) {
         self.init(
             verified: result.verified,
             rebootRequested: result.rebootRequested,
             message: result.localizedSummary,
             netbsd4: result.netbsd4,
+            profile: profile,
             isCheckupRunning: isCheckupRunning
         )
     }
@@ -151,11 +165,19 @@ struct InstallCompletionPresentation: Equatable {
             rebootRequested: snapshot.rebootRequested,
             message: snapshot.localizedSummary,
             netbsd4: Self.isNetBSD4(snapshot: snapshot, profile: profile),
+            profile: profile,
             isCheckupRunning: isCheckupRunning
         )
     }
 
-    private init(verified: Bool?, rebootRequested: Bool?, message: String, netbsd4: Bool, isCheckupRunning: Bool) {
+    private init(
+        verified: Bool?,
+        rebootRequested: Bool?,
+        message: String,
+        netbsd4: Bool,
+        profile: DeviceProfile,
+        isCheckupRunning: Bool
+    ) {
         self.title = verified == true
             ? L10n.string("install.completion.title.verified")
             : L10n.string("install.completion.title.finished")
@@ -164,9 +186,14 @@ struct InstallCompletionPresentation: Equatable {
             PresentationRow(label: L10n.string("deploy.result.reboot_requested"), value: rebootRequested == true ? L10n.string("value.yes") : L10n.string("value.no")),
             PresentationRow(label: L10n.string("deploy.result.message"), value: message)
         ]
-        var warnings: [String] = []
+        var warnings: [InstallCompletionWarning] = []
         if netbsd4 {
-            warnings.append(L10n.string("install.completion.warning.netbsd4"))
+            // The deploy can know NetBSD 4 before the profile does; the
+            // button only goes where the boot hook card can show.
+            warnings.append(InstallCompletionWarning(
+                text: L10n.string("install.completion.warning.netbsd4"),
+                action: FlashBootHookVisibilityPolicy.isVisible(for: profile) ? .openBootHook : nil
+            ))
         }
         self.warnings = warnings
         self.actions = InstallCompletionActionPolicy.actions(isCheckupRunning: isCheckupRunning)
@@ -239,7 +266,9 @@ struct InstallWorkflowPresentation: Equatable {
         let persistedCompletion = restoredSuccess.map {
             InstallCompletionPresentation(snapshot: $0, profile: profile, isCheckupRunning: isCheckupRunning)
         }
-        self.completion = result.map { InstallCompletionPresentation(result: $0, isCheckupRunning: isCheckupRunning) }
+        self.completion = result.map {
+            InstallCompletionPresentation(result: $0, profile: profile, isCheckupRunning: isCheckupRunning)
+        }
             ?? persistedCompletion
         self.stateTitle = persistedCompletion == nil ? effectiveState.title : DeployWorkflowState.deployed.title
         self.error = effectiveError

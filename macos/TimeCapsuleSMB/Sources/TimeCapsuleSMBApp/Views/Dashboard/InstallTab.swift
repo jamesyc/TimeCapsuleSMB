@@ -150,10 +150,21 @@ private struct InstallCompletionView: View {
             Text(presentation.title)
                 .font(.headline)
             SummaryGrid(rows: presentation.rows.map { ($0.label, $0.value) })
-            ForEach(presentation.warnings, id: \.self) { warning in
-                Label(warning, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.yellow)
+            ForEach(presentation.warnings) { warning in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Label(warning.text, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.yellow)
+                    if let action = warning.action {
+                        Button {
+                            performAction(action)
+                        } label: {
+                            Label(action.title, systemImage: action.systemImage)
+                        }
+                        .controlSize(.small)
+                        .disabled(isDisabled(action))
+                    }
+                }
             }
             HStack {
                 ForEach(presentation.actions) { action in

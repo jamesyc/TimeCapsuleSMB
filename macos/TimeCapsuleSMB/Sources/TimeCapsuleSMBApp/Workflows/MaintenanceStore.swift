@@ -3,7 +3,15 @@ import Foundation
 
 @MainActor
 final class MaintenanceStore: ObservableObject {
-    @Published var selectedWorkflow: MaintenanceWorkflow = .activate
+    // Every jump to a workflow, a run's start included, leaves the boot hook card.
+    @Published var selectedWorkflow: MaintenanceWorkflow = .activate {
+        didSet {
+            if isBootHookSelected {
+                isBootHookSelected = false
+            }
+        }
+    }
+    @Published private var isBootHookSelected = false
     @Published var mountWait = "30" {
         didSet { markPlansStaleForOptionChange() }
     }
@@ -28,6 +36,19 @@ final class MaintenanceStore: ObservableObject {
         set {
             guard newValue != fsckStore.selectedTargetID else { return }
             fsckStore.selectTarget(id: newValue, options: currentOptions)
+        }
+    }
+
+    var selectedCard: MaintenanceCard {
+        isBootHookSelected ? .bootHook : .workflow(selectedWorkflow)
+    }
+
+    func select(_ card: MaintenanceCard) {
+        switch card {
+        case .workflow(let workflow):
+            selectedWorkflow = workflow
+        case .bootHook:
+            isBootHookSelected = true
         }
     }
 

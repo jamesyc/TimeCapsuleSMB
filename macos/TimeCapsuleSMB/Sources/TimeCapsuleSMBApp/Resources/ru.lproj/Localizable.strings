@@ -259,6 +259,7 @@
 "deploy.result.verified" = "Проверено";
 "deploy.failure.reboot_guidance" = "Совет по диагностике: перезагрузите устройство и подождите 5 минут. Затем снова запустите «Установить/обновить Samba».";
 "install.action.install_update" = "Установить/обновить Samba";
+"install.action.open_boot_hook" = "Открыть хук запуска";
 "install.action.reinstall" = "Переустановить Samba";
 "install.advanced_options" = "Дополнительные параметры";
 "install.completion.title.finished" = "Установка/обновление завершено";
@@ -515,9 +516,11 @@
 "maintenance.advanced_options" = "Дополнительные параметры";
 "maintenance.presentation.activate.subtitle" = "Запустить установленные службы Samba на устройстве NetBSD 4.";
 "maintenance.presentation.activate.title" = "Активация NetBSD4";
+"maintenance.presentation.boot_hook.subtitle" = "Записать патч в прошивку, чтобы Samba запускалась после каждой перезагрузки, или восстановить прошивку Apple.";
 "maintenance.presentation.fsck.subtitle" = "Размонтировать выбранный том HFS и запустить fsck_hfs на устройстве.";
 "maintenance.presentation.fsck.title" = "Исправление диска";
 "maintenance.presentation.risk.destructive" = "С изменением данных";
+"maintenance.presentation.risk.firmware_write" = "Перезапись прошивки";
 "maintenance.presentation.risk.remote_write" = "Удаленная запись";
 "maintenance.presentation.risk.reboot" = "Перезагрузка";
 "maintenance.presentation.ssh_access.subtitle" = "Проверить или включить SSH через AirPort ACP.";

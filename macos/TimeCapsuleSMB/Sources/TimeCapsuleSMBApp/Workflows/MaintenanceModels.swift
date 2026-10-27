@@ -40,6 +40,22 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
     }
 }
 
+/// A card on the Maintenance tab: one of the maintenance workflows, or the
+/// NetBSD 4 boot hook, which runs on its own flash store.
+enum MaintenanceCard: Hashable, Identifiable {
+    case workflow(MaintenanceWorkflow)
+    case bootHook
+
+    var id: String {
+        switch self {
+        case .workflow(let workflow):
+            return workflow.id
+        case .bootHook:
+            return "bootHook"
+        }
+    }
+}
+
 enum MaintenanceOperationState: String, CaseIterable, Equatable {
     case idle
     case loading

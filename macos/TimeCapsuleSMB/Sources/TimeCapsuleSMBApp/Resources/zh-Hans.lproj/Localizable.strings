@@ -259,6 +259,7 @@
 "deploy.result.verified" = "已验证";
 "deploy.failure.reboot_guidance" = "故障排查提示：尝试重启设备并等待 5 分钟，然后再次运行“安装 / 更新 Samba”。";
 "install.action.install_update" = "安装 / 更新 Samba";
+"install.action.open_boot_hook" = "打开启动钩子";
 "install.action.reinstall" = "重新安装 Samba";
 "install.advanced_options" = "高级选项";
 "install.completion.title.finished" = "安装 / 更新已完成";
@@ -515,9 +516,11 @@
 "maintenance.advanced_options" = "高级选项";
 "maintenance.presentation.activate.subtitle" = "在 NetBSD 4 设备上启动已安装的 Samba 服务。";
 "maintenance.presentation.activate.title" = "NetBSD4 启动";
+"maintenance.presentation.boot_hook.subtitle" = "修补固件，使 Samba 在每次重启后自动启动，或恢复苹果固件。";
 "maintenance.presentation.fsck.subtitle" = "卸载选定的 HFS 卷，并在设备上运行 fsck_hfs。";
 "maintenance.presentation.fsck.title" = "磁盘修复";
 "maintenance.presentation.risk.destructive" = "破坏性";
+"maintenance.presentation.risk.firmware_write" = "固件写入";
 "maintenance.presentation.risk.remote_write" = "远程写入";
 "maintenance.presentation.risk.reboot" = "重启";
 "maintenance.presentation.ssh_access.subtitle" = "通过 AirPort ACP 检查或启用 SSH。";

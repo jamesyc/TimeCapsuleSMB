@@ -1142,6 +1142,57 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertNil(session.profileEditorStore.passwordError)
     }
 
+    func testRecoveryActionLeavesTheBootHookCardForActivation() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", payloadFamily: "netbsd4_samba4"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
+        session.maintenanceStore.select(.bootHook)
+
+        XCTAssertTrue(session.handleRecoveryAction(
+            RecoveryAction(title: "Activate", kind: .startSMB),
+            error: BackendErrorViewModel(operation: "doctor", code: "operation_failed", message: "Needs recovery."),
+            profile: profile
+        ))
+
+        XCTAssertEqual(session.selectedTab, .maintenance)
+        XCTAssertEqual(session.maintenanceStore.selectedCard, .workflow(.activate))
+    }
+
+    func testOpenBootHookInstallActionShowsTheBootHookCard() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", payloadFamily: "netbsd4_samba4"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+        session.selectedTab = .install
+        session.maintenanceStore.select(.workflow(.uninstall))
+        var diagnosticsShown = false
+
+        session.performInstallAction(.openBootHook, profile: profile) {
+            diagnosticsShown = true
+        }
+
+        XCTAssertEqual(session.selectedTab, .maintenance)
+        XCTAssertEqual(session.maintenanceStore.selectedCard, .bootHook)
+        let presentation = MaintenanceDashboardPresentation(
+            store: session.maintenanceStore,
+            flashStore: session.flashStore,
+            profile: profile
+        )
+        XCTAssertEqual(presentation.selectedCard, .bootHook)
+        XCTAssertFalse(diagnosticsShown)
+        XCTAssertTrue(fixture.runner.calls.isEmpty)
+    }
+
     func testRecoveryRunCheckupAndInstallActionsStartBackendOperations() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
