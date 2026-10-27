@@ -103,7 +103,6 @@
     max-width: 13ch;
   }
   .hero .lede { font-size: 1.25rem; color: var(--muted); max-width: 34rem; margin: 0 0 2rem; }
-  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.5rem; }
   .download {
     display: inline-block;
     background: var(--button); color: var(--button-ink);
@@ -111,13 +110,19 @@
     font-weight: 600; font-size: 1.1rem; text-decoration: none;
   }
   .download:hover { opacity: 0.88; }
-  .fineprint { color: var(--muted); font-size: 0.95rem; margin: 1rem 0 0; }
+  .fineprint { color: var(--muted); font-size: 0.85rem; margin: 0.6rem 0 0; }
+  .cli-note { margin: 1.5rem 0 0; }
 
   .stage { display: flex; justify-content: center; }
   /* A photo of the 5th generation Time Capsule with its background
      removed; the status light is drawn over the one in the photo. */
   .device { width: min(15rem, 60vw); height: auto; display: block; overflow: visible; }
-  .tc-shadow { fill: #1c2530; opacity: 0.35; }
+  /* The shadow is the device's footprint, traced from the base outline in
+     the photo and closed behind the device: a soft copy, enlarged, that
+     spreads out on the floor and a tight one where the edges meet it. */
+  .tc-shadow { fill: #1c2530; }
+  .tc-soft { opacity: 0.4; }
+  .tc-contact { opacity: 0.5; }
   .led {
     fill: var(--led-green);
     filter: drop-shadow(0 0 2px var(--led-green));
@@ -132,7 +137,9 @@
     .led { animation: none; }
   }
   @media (prefers-color-scheme: dark) {
-    .tc-shadow { fill: #000; opacity: 0.8; }
+    .tc-shadow { fill: #000; }
+    .tc-soft { opacity: 0.7; }
+    .tc-contact { opacity: 0.9; }
   }
 
   /* Sections */
@@ -232,16 +239,19 @@
     <div>
       <h1>Keep backing up to your Time Capsule.</h1>
       <p class="lede">Apple removed AFP support in macOS 27, which is the protocol AirPort Time Capsules use for Time Machine. TimeCapsuleSMB will directly install Samba on the Time Capsule, so it stays compatible with macOS.</p>
-      <div class="actions">
-        <a class="download" href="https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/TimeCapsuleSMB.app.zip">Download for Mac</a>
-        <span><a href="#command-line">Use the command line instead</a>. Supports Linux and older macOS</span>
-      </div>
-      <p class="fineprint">Free and open source. Needs macOS 14 or later on an Intel or Apple silicon Mac.</p>
+      <a class="download" href="https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/TimeCapsuleSMB.app.zip">Download for Mac</a>
+      <p class="fineprint">Free and open source. Needs macOS 14 or later on an Intel or Apple silicon Mac</p>
+      <p class="cli-note"><a href="#command-line">Use the command line instead</a>. Supports Linux and older macOS</p>
     </div>
     <div class="stage" aria-hidden="true">
       <svg class="device" viewBox="0 0 197 356" xmlns="http://www.w3.org/2000/svg">
-        <defs><filter id="tc-blur" x="-20%" y="-100%" width="140%" height="300%"><feGaussianBlur stdDeviation="5"/></filter></defs>
-        <ellipse class="tc-shadow" cx="99" cy="333.4" rx="80" ry="10" filter="url(#tc-blur)"/>
+        <defs>
+          <filter id="tc-soft" x="-20%" y="-40%" width="140%" height="180%"><feGaussianBlur stdDeviation="6 3.2"/></filter>
+          <filter id="tc-contact" x="-10%" y="-20%" width="120%" height="140%"><feGaussianBlur stdDeviation="1.4 0.8"/></filter>
+          <path id="tc-foot" d="M1.5 290 L7.4 294.2 L14 298.5 L20.5 302.7 L27.1 306.7 L33.7 310.9 L40.2 314.9 L46.8 318.8 L53.4 323.4 L59.9 327.7 L66.5 331.6 L73.1 335.6 L79.6 338.8 L86.2 340.5 L92.8 341.8 L99.3 342.5 L105.9 341.1 L112.5 339.8 L119 337.2 L125.6 333.9 L132.2 330.6 L138.7 326.4 L145.3 322.8 L151.9 318.8 L158.4 314.9 L165 311.3 L171.6 307.3 L178.1 303.7 L184.7 299.8 L191.3 295.8 L195.4 291.5 L99 238Z"/>
+        </defs>
+        <use href="#tc-foot" class="tc-shadow tc-soft" transform="translate(-4.9 -26.6) scale(1.05 1.1)" filter="url(#tc-soft)"/>
+        <use href="#tc-foot" class="tc-shadow tc-contact" transform="translate(0 0.8)" filter="url(#tc-contact)"/>
         <image href="assets/time-capsule.webp" width="197" height="343.4"/>
         <ellipse class="led" cx="69.5" cy="316.9" rx="1.6" ry="1.7"/>
       </svg>
