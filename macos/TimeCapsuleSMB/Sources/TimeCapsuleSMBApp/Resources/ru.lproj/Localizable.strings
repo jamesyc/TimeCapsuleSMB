@@ -66,6 +66,7 @@
 "app_settings.error.mount_wait" = "Ожидание монтирования должно быть неотрицательным целым числом.";
 "app_settings.helper_path" = "Путь к вспомогательной программе";
 "app_settings.language" = "Язык";
+"app_settings.language_relaunch_notice" = "Меню и окна обновлений сменят язык после того, как вы завершите и снова откроете TimeCapsuleSMB.";
 "app_settings.restore_defaults" = "Восстановить настройки по умолчанию";
 "app_settings.reset_saved" = "Восстановить сохраненные настройки";
 "app_settings.save" = "Сохранить настройки";

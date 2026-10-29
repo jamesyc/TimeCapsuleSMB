@@ -66,6 +66,7 @@
 "app_settings.error.mount_wait" = "Mount wait time must be a non-negative integer.";
 "app_settings.helper_path" = "Helper path";
 "app_settings.language" = "Language";
+"app_settings.language_relaunch_notice" = "Menus and update windows change language after you quit and reopen TimeCapsuleSMB.";
 "app_settings.restore_defaults" = "Restore Defaults";
 "app_settings.reset_saved" = "Restore saved settings";
 "app_settings.save" = "Save Settings";

@@ -66,6 +66,7 @@
 "app_settings.error.mount_wait" = "Le délai d’attente du montage doit être un entier positif ou nul.";
 "app_settings.helper_path" = "Chemin du programme auxiliaire";
 "app_settings.language" = "Langue";
+"app_settings.language_relaunch_notice" = "Les menus et les fenêtres de mise à jour changent de langue une fois TimeCapsuleSMB quitté et rouvert.";
 "app_settings.restore_defaults" = "Restaurer les paramètres par défaut";
 "app_settings.reset_saved" = "Rétablir les paramètres enregistrés";
 "app_settings.save" = "Enregistrer les paramètres";

@@ -66,6 +66,7 @@
 "app_settings.error.mount_wait" = "Prijungimo laukimo laikas turi būti neneigiamas sveikasis skaičius.";
 "app_settings.helper_path" = "Pagalbinės programos kelias";
 "app_settings.language" = "Kalba";
+"app_settings.language_relaunch_notice" = "Meniu ir naujinimų langų kalba pasikeis, kai išeisite iš TimeCapsuleSMB ir vėl ją atidarysite. Lietuviškai jie nerodomi, nes macOS neturi lietuvių kalbos.";
 "app_settings.restore_defaults" = "Atkurti numatytuosius";
 "app_settings.reset_saved" = "Atstatyti į išsaugotus";
 "app_settings.save" = "Išsaugoti nustatymus";

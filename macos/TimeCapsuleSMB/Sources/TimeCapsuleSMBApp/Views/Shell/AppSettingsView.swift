@@ -16,15 +16,21 @@ struct AppSettingsView: View {
 
                 SettingsFormSection(title: L10n.string("app_settings.section.general"), contentWidth: contentWidth) {
                     SettingsFormRow(title: L10n.string("app_settings.language")) {
-                        Picker("", selection: $editor.draft.language) {
-                            ForEach(AppLanguage.allCases) { language in
-                                Text(language.title)
-                                    .tag(language)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Picker("", selection: $editor.draft.language) {
+                                ForEach(AppLanguage.allCases) { language in
+                                    Text(language.title)
+                                        .tag(language)
+                                }
                             }
+                            .labelsHidden()
+                            .frame(width: 220, alignment: .leading)
+                            .id("language-\(savedLanguageIdentity)")
+                            Text(L10n.string("app_settings.language_relaunch_notice"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .labelsHidden()
-                        .frame(width: 220, alignment: .leading)
-                        .id("language-\(savedLanguageIdentity)")
                     }
                     SettingsFormRow(title: L10n.string("app_settings.appearance")) {
                         Picker("", selection: $editor.draft.appearance) {

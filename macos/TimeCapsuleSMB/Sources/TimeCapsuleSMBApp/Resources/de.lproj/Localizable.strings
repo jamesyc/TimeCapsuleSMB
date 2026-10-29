@@ -66,6 +66,7 @@
 "app_settings.error.mount_wait" = "Die Wartezeit beim Einbinden muss eine nicht negative ganze Zahl sein.";
 "app_settings.helper_path" = "Pfad zum Hilfsprogramm";
 "app_settings.language" = "Sprache";
+"app_settings.language_relaunch_notice" = "Menüs und Update-Fenster wechseln die Sprache, nachdem Sie TimeCapsuleSMB beendet und erneut geöffnet haben.";
 "app_settings.restore_defaults" = "Standardeinstellungen wiederherstellen";
 "app_settings.reset_saved" = "Gespeicherte Einstellungen wiederherstellen";
 "app_settings.save" = "Einstellungen speichern";

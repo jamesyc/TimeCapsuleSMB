@@ -66,6 +66,7 @@
 "app_settings.error.mount_wait" = "挂载等待时间必须是非负整数。";
 "app_settings.helper_path" = "辅助程序路径";
 "app_settings.language" = "语言";
+"app_settings.language_relaunch_notice" = "退出并重新打开 TimeCapsuleSMB 后，菜单和更新窗口才会切换语言。";
 "app_settings.restore_defaults" = "恢复默认值";
 "app_settings.reset_saved" = "恢复已保存的设置";
 "app_settings.save" = "保存设置";

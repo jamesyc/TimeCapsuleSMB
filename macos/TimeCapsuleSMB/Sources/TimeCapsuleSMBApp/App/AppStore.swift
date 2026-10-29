@@ -24,6 +24,8 @@ final class AppStore: ObservableObject {
     let reachabilityStore: DeviceReachabilityStore
     let sshAccessStore: DeviceSSHAccessStore
     let localNetworkPreflightChecker: LocalNetworkPreflightChecking?
+    /// Nil in tests, which must never write the test runner's own language.
+    let perAppLanguage: PerAppLanguagePreference?
 
     private var cancellables: Set<AnyCancellable> = []
     /// The last finished event of each lane the learner has seen.
@@ -38,7 +40,8 @@ final class AppStore: ObservableObject {
             operationCoordinator: coordinator,
             passwordStore: KeychainPasswordStore(),
             activityStore: ActivityStore(coordinator: coordinator),
-            localNetworkPreflightChecker: BonjourLocalNetworkPreflightChecker()
+            localNetworkPreflightChecker: BonjourLocalNetworkPreflightChecker(),
+            perAppLanguage: Bundle.main.bundleIdentifier.map { PerAppLanguagePreference(defaults: .standard, domain: $0) }
         )
     }
 
@@ -53,7 +56,8 @@ final class AppStore: ObservableObject {
         deviceDiscovery: DeviceDiscoveryStore? = nil,
         reachabilityStore: DeviceReachabilityStore? = nil,
         sshAccessStore: DeviceSSHAccessStore? = nil,
-        localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil
+        localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil,
+        perAppLanguage: PerAppLanguagePreference? = nil
     ) {
         self.appReadinessStore = appReadinessStore
         self.appSettingsStore = appSettingsStore ?? AppSettingsStore()
@@ -74,6 +78,7 @@ final class AppStore: ObservableObject {
         self.reachabilityStore = reachabilityStore ?? DeviceReachabilityStore(coordinator: operationCoordinator)
         self.sshAccessStore = sshAccessStore ?? DeviceSSHAccessStore(coordinator: operationCoordinator)
         self.localNetworkPreflightChecker = localNetworkPreflightChecker
+        self.perAppLanguage = perAppLanguage
 
         deviceRegistry.$profiles
             .sink { [weak self] profiles in
@@ -133,6 +138,7 @@ final class AppStore: ObservableObject {
 
     func start() async {
         await appSettingsStore.load()
+        perAppLanguage?.adopt(appSettingsStore.settings.language)
         applyAppSettings(appSettingsStore.settings)
         await deviceRegistry.load()
         await refreshPasswordStates()
@@ -185,6 +191,12 @@ final class AppStore: ObservableObject {
     func saveAppSettings(_ settings: AppSettings) async throws {
         let previousSettings = appSettingsStore.settings
         try await appSettingsStore.save(settings) { [weak self] settings in
+            // Only on a changed choice, so a language set in System Settings
+            // survives saving anything else; and before applying, so System
+            // is settled without our earlier choice.
+            if previousSettings.language != settings.language {
+                self?.perAppLanguage?.follow(from: previousSettings.language, to: settings.language)
+            }
             self?.applyAppSettings(settings)
         }
         if previousSettings.telemetryEnabled != settings.telemetryEnabled {
@@ -289,7 +301,7 @@ final class AppStore: ObservableObject {
 
     private func applyAppSettings(_ settings: AppSettings) {
         let previousLanguage = L10n.currentLanguage
-        L10n.apply(language: settings.language)
+        L10n.apply(language: settings.language, systemPreferences: perAppLanguage?.languages ?? L10n.macOSLanguages())
         if backend.helperPath != settings.helperPathOverride {
             backend.helperPath = settings.helperPathOverride
         }

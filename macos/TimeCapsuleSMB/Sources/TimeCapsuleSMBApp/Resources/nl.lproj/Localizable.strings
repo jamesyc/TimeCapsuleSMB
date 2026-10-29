@@ -66,6 +66,7 @@
 "app_settings.error.mount_wait" = "De wachttijd voor koppelen moet een niet-negatief geheel getal zijn.";
 "app_settings.helper_path" = "Pad naar hulpprogramma";
 "app_settings.language" = "Taal";
+"app_settings.language_relaunch_notice" = "Menu's en updatevensters wisselen van taal nadat u TimeCapsuleSMB stopt en de app weer opent.";
 "app_settings.restore_defaults" = "Standaardinstellingen herstellen";
 "app_settings.reset_saved" = "Opgeslagen instellingen herstellen";
 "app_settings.save" = "Instellingen opslaan";

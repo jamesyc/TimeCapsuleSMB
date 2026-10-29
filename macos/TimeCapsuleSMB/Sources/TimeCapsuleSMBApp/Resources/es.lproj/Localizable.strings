@@ -66,6 +66,7 @@
 "app_settings.error.mount_wait" = "La espera de montaje debe ser un número entero no negativo.";
 "app_settings.helper_path" = "Ruta del programa auxiliar";
 "app_settings.language" = "Idioma";
+"app_settings.language_relaunch_notice" = "Los menús y las ventanas de actualización cambian de idioma cuando sale de TimeCapsuleSMB y vuelve a abrirlo.";
 "app_settings.restore_defaults" = "Restaurar valores predeterminados";
 "app_settings.reset_saved" = "Restaurar la configuración guardada";
 "app_settings.save" = "Guardar configuración";

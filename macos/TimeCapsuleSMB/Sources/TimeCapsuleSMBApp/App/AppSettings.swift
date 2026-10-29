@@ -75,7 +75,7 @@ enum AppLanguage: String, CaseIterable, Codable, Identifiable, Equatable {
     var locale: Locale {
         switch self {
         case .system:
-            return .current
+            return Self.locale(for: L10n.systemTranslation, keeping: .current)
         case .english:
             return Locale(identifier: "en")
         case .french:
@@ -97,6 +97,22 @@ enum AppLanguage: String, CaseIterable, Codable, Identifiable, Equatable {
         case .simplifiedChinese:
             return Locale(identifier: "zh-Hans-CN")
         }
+    }
+
+    /// The user's own locale while it speaks the translation's language;
+    /// otherwise the same locale, region and format choices (24-hour time,
+    /// first weekday, units) included, in the translation's language. macOS's
+    /// own locale can lag until the app reopens.
+    static func locale(for translation: AppLanguage, keeping current: Locale) -> Locale {
+        let language = translation.locale
+        if current.language.languageCode == language.language.languageCode {
+            return current
+        }
+        var components = Locale.Components(locale: current)
+        let region = components.languageComponents.region
+        components.languageComponents = Locale.Language.Components(identifier: language.identifier)
+        components.languageComponents.region = region ?? components.languageComponents.region
+        return Locale(components: components)
     }
 
     init(from decoder: Decoder) throws {
