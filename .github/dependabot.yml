@@ -9,7 +9,10 @@ updates:
       timezone: America/Los_Angeles
 
   - package-ecosystem: pip
-    directory: /
+    directories:
+      - /
+      # The app's hash-pinned requirements; see RELEASE.md.
+      - /macos/TimeCapsuleSMB/tools
     schedule:
       interval: weekly
       day: monday

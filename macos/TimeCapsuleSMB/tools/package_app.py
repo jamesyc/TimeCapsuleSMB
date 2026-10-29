@@ -50,12 +50,21 @@ SPARKLE_PUBLIC_ED_KEY = "6dvSb76x5br3iXTAGXUzpEhmaTHnXGN6l63nJ+deLGg="
 SPARKLE_FRAMEWORK_NAME = "Sparkle.framework"
 PYTHON_RUNTIME_VERSION = "3.13.13"
 PYTHON_RUNTIME_URL = f"https://www.python.org/ftp/python/{PYTHON_RUNTIME_VERSION}/python-{PYTHON_RUNTIME_VERSION}-macos11.pkg"
+# The package at PYTHON_RUNTIME_URL; change it with PYTHON_RUNTIME_VERSION.
+PYTHON_RUNTIME_SHA256 = "a909cb655af5db67d5a90b3603437a1d58bec3446d624e4034e278ac62023cc9"
 PYTHON_FRAMEWORK_NAME = "Python.framework"
-APP_BUNDLED_PYTHON_REQUIREMENTS = ("certifi>=2024.8.30",)
+# Pinned with hashes by update_python_requirements.py, the only writer: the
+# project's dependencies with their own, and what builds the project.
+BUNDLED_PYTHON_REQUIREMENTS = PACKAGE_ROOT / "tools" / "bundled-requirements.txt"
+PYTHON_BUILD_REQUIREMENTS = PACKAGE_ROOT / "tools" / "build-requirements.txt"
+# Bundled beside the project's dependencies: python.org's Python has no CA
+# certificates of its own, so the helper (main.c) points it at certifi's.
+BUNDLED_EXTRA_PYTHON_REQUIREMENTS = ("certifi",)
 DEFAULT_ARCHITECTURES = ("arm64", "x86_64")
 CACHE_KEY_VERSION = 1
 PYTHON_RUNTIME_CACHE_VERSION = 2
-PYTHON_SITE_PACKAGES_CACHE_VERSION = 2
+# 3: uv installs the pinned requirements files instead of pip.
+PYTHON_SITE_PACKAGES_CACHE_VERSION = 3
 APP_ICON_CACHE_VERSION = 1
 # 2: Homebrew's arm64 samba 4.25.0 links its own libraries through @rpath; cached
 # layers from version 1 left those references pointing into the Cellar.
@@ -516,6 +525,15 @@ def add_framework_rpath(executable: Path) -> None:
     swift build links it as @rpath/Sparkle.framework but gives the executable
     only /usr/lib/swift and the toolchain as rpaths."""
     run_quiet(["install_name_tool", "-add_rpath", "@executable_path/../Frameworks", str(executable)])
+
+
+def strip_debug_map(executable: Path) -> None:
+    """Drop the linker's debug map, which names every source folder and object
+    file under the build Mac's checkout. No dSYM ships to use it, and crash
+    reports name functions from the symbol table, which stays. Done here, not
+    with -Xlinker -S: Swift 6.3's build of several architectures hands that -S
+    to clang, which then compiles the C helper without linking it."""
+    run_quiet(["strip", "-S", str(executable)])
 
 
 def copy_helper_executable(source: Path, destination: Path) -> None:
@@ -1033,6 +1051,16 @@ def python_runtime_pkg(args: argparse.Namespace) -> Path:
     if not destination.is_file():
         print(f"Downloading bundled Python runtime: {args.python_runtime_url}", file=sys.stderr)
         download_file(args.python_runtime_url, destination)
+    # A cached file is checked too: a download cut short or replaced on the
+    # mirror would otherwise ship in every later build.
+    if args.python_runtime_url == PYTHON_RUNTIME_URL:
+        actual = sha256_file(destination)
+        if actual != PYTHON_RUNTIME_SHA256:
+            destination.unlink()
+            raise RuntimeError(
+                f"{destination.name} has SHA-256 {actual}, expected {PYTHON_RUNTIME_SHA256}; "
+                "deleted it, so the next run downloads it again"
+            )
     return destination
 
 
@@ -1317,7 +1345,6 @@ def python_cache_identity(python: str) -> dict[str, object]:
 def python_package_source_fingerprint() -> dict[str, object]:
     inputs = {
         "pyproject.toml": sha256_file(REPO_ROOT / "pyproject.toml"),
-        "requirements.txt": sha256_file(REPO_ROOT / "requirements.txt") if (REPO_ROOT / "requirements.txt").is_file() else None,
         "src/timecapsulesmb": sha256_tree(SRC_ROOT / "timecapsulesmb"),
     }
     return inputs
@@ -1329,31 +1356,58 @@ def python_site_packages_cache_entry(python: str, architectures: tuple[str, ...]
         "version": PYTHON_SITE_PACKAGES_CACHE_VERSION,
         "python": python_cache_identity(python),
         "architectures": architectures,
-        "bundled_requirements": APP_BUNDLED_PYTHON_REQUIREMENTS,
+        "requirements": {path.name: sha256_file(path) for path in (BUNDLED_PYTHON_REQUIREMENTS, PYTHON_BUILD_REQUIREMENTS)},
         "source": python_package_source_fingerprint(),
     })
     return evict_stale_cache_entries(package_cache_dir("python-site-packages") / key)
 
 
+def uv_executable() -> str:
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError(
+            "Packaging installs the app's Python packages with uv, which is not on PATH. "
+            "Install it with `brew install uv` or from https://docs.astral.sh/uv/getting-started/installation/"
+        )
+    return uv
+
+
 def build_python_packages(python: str, site_packages: Path) -> None:
+    """Install the app's Python packages for the bundled interpreter, with
+    nothing downloaded that a requirements file does not pin by hash."""
+    uv = uv_executable()
     major, minor = python_major_minor(python)
     if (major, minor) < (3, 9):
         raise RuntimeError(f"TimeCapsuleSMB.app requires Python 3.9 or newer, got {major}.{minor} from {python}")
 
     with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-python-") as tmp:
-        build_venv = Path(tmp) / "venv"
         env = python_subprocess_env(pycache_prefix=Path(tmp) / "pycache")
-        run([python, "-m", "venv", str(build_venv)], env=env)
-        build_python = build_venv / "bin" / "python"
-        run([str(build_python), "-m", "pip", "install", "-U", "pip"], env=env)
+        install = [uv, "pip", "install", "--python", python, "--target", str(site_packages)]
         generated_build_lib = REPO_ROOT / "build" / "lib"
         build_lib_existed = generated_build_lib.exists()
         try:
-            run([str(build_python), "-m", "pip", "install", "--target", str(site_packages), str(REPO_ROOT)], env=env)
-            run([str(build_python), "-m", "pip", "install", "--target", str(site_packages), *APP_BUNDLED_PYTHON_REQUIREMENTS], env=env)
+            # With dependencies: uv refuses the install if anything it needs
+            # is missing from the file, so the file is complete on every build.
+            # Wheels only: building a source release would fetch its build
+            # tools unpinned.
+            run([*install, "--require-hashes", "--no-build", "-r", str(BUNDLED_PYTHON_REQUIREMENTS)], env=env)
+            # A source directory has no hash, so the project goes in without
+            # its dependencies (just installed), built with pinned tools. The
+            # constraints alone check only the hashes they list; requiring
+            # build hashes refuses a build tool the file does not pin.
+            run([
+                *install, "--no-deps", "--require-build-hashes",
+                "--build-constraints", str(PYTHON_BUILD_REQUIREMENTS), str(REPO_ROOT),
+            ], env=env)
         finally:
             if not build_lib_existed and generated_build_lib.exists():
                 shutil.rmtree(generated_build_lib)
+    # The project's console script names this Mac's build path in its first
+    # line, and direct_url.json names the checkout's; the helper runs Python
+    # in-process and uses neither.
+    shutil.rmtree(site_packages / "bin", ignore_errors=True)
+    for direct_url in site_packages.glob("*.dist-info/direct_url.json"):
+        direct_url.unlink()
     remove_optional_zeroconf_extensions(site_packages)
     remove_python_bytecode(site_packages)
     remove_appledouble_files(site_packages)
@@ -2288,8 +2342,27 @@ def assert_no_external_macho_dependencies(app: Path) -> None:
     assert_no_external_macho_dependencies_for_paths(macho_validation_roots(app), app)
 
 
+@timed_step("Checking for build-machine paths")
+def assert_no_build_machine_paths(app: Path) -> None:
+    """No bundled file may name this checkout: a release would carry the
+    builder's user name and folder layout. Not the whole home folder: on a
+    GitHub runner it is /Users/runner, where the PyPI wheels we bundle were
+    built, and their debug maps name it."""
+    checkout = os.fsencode(str(REPO_ROOT).rstrip("/")) + b"/"
+    found = [
+        path for path in sorted(app.rglob("*"))
+        if path.is_file() and not path.is_symlink() and checkout in path.read_bytes()
+    ]
+    if found:
+        joined = "\n  - ".join(str(path.relative_to(app)) for path in found[:20])
+        extra = "" if len(found) <= 20 else f"\n  - ... and {len(found) - 20} more"
+        raise RuntimeError(f"Bundled file(s) name this checkout {checkout.decode()}:\n  - {joined}{extra}")
+
+
 @timed_step("Checking bundled Python imports")
-def assert_python_dependencies_are_bundled(app: Path) -> None:
+def assert_python_dependencies_are_bundled(app: Path, *, architecture: str | None = None) -> None:
+    """Import the bundled packages with the bundled Python, under
+    ``arch -<architecture>`` when given."""
     site_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
     python_home = bundled_python_home(app)
     env = python_subprocess_env(
@@ -2299,7 +2372,9 @@ def assert_python_dependencies_are_bundled(app: Path) -> None:
     code = (
         "import os\n"
         "from pathlib import Path\n"
-        "import certifi, Crypto, ifaddr, timecapsulesmb, zeroconf, zopfli.gzip\n"
+        # The compiled modules the app runs, loaded for this Mac's architecture:
+        # AES decrypts firmware, zopfli compresses the flash patch, ssl is TLS.
+        "import certifi, Crypto.Cipher.AES, ifaddr, ssl, timecapsulesmb, zeroconf, zopfli.gzip\n"
         f"site = Path({str(site_packages)!r}).resolve()\n"
         "paths = [certifi.__file__, Crypto.__file__, ifaddr.__file__, timecapsulesmb.__file__, zeroconf.__file__, zopfli.__file__]\n"
         "bad = [p for p in paths if not p or not Path(p).resolve().is_relative_to(site)]\n"
@@ -2307,8 +2382,9 @@ def assert_python_dependencies_are_bundled(app: Path) -> None:
         "bad += [] if os.access(askpass, os.X_OK) else [f'{askpass} is not executable']\n"
         "raise SystemExit('\\n'.join(bad) if bad else 0)\n"
     )
+    prefix = ["arch", f"-{architecture}"] if architecture else []
     completed = subprocess.run(
-        [str(bundled_python_executable(app)), "-c", code],
+        [*prefix, str(bundled_python_executable(app)), "-c", code],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -2316,8 +2392,9 @@ def assert_python_dependencies_are_bundled(app: Path) -> None:
         check=False,
     )
     if completed.returncode != 0:
+        label = f" ({architecture})" if architecture else ""
         raise RuntimeError(
-            "Bundled Python dependencies are not importable from the app package:\n"
+            f"Bundled Python dependencies are not importable from the app package{label}:\n"
             f"stdout:\n{completed.stdout}\n"
             f"stderr:\n{completed.stderr}"
         )
@@ -2482,10 +2559,13 @@ def assert_runtime_macho_architectures(app: Path, architectures: tuple[str, ...]
 
 
 @timed_step("Checking app resources")
-def validate_app_resources(app: Path) -> None:
+def validate_app_resources(app: Path, *, architecture: str | None = None) -> None:
+    """Launch the app executable, under ``arch -<architecture>`` when given:
+    it loads its frameworks, Sparkle included, and checks its resources."""
     executable = app / "Contents" / "MacOS" / PRODUCT_NAME
+    prefix = ["arch", f"-{architecture}"] if architecture else []
     completed = subprocess.run(
-        [str(executable), "--validate-resources"],
+        [*prefix, str(executable), "--validate-resources"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -2493,8 +2573,9 @@ def validate_app_resources(app: Path) -> None:
         timeout=10,
     )
     if completed.returncode != 0:
+        label = f" ({architecture})" if architecture else ""
         raise RuntimeError(
-            "App executable resource validation failed:\n"
+            f"App executable resource validation failed{label}:\n"
             f"stdout:\n{completed.stdout}\n"
             f"stderr:\n{completed.stderr}"
         )
@@ -2515,12 +2596,15 @@ def parse_helper_events(stdout: str) -> list[dict[str, object]]:
     return events
 
 
-def smoke_request(helper: Path, operation: str, state_dir: Path) -> None:
+def smoke_request(helper: Path, operation: str, state_dir: Path, *, architecture: str | None = None) -> None:
+    """Run one helper request, under ``arch -<architecture>`` when given."""
     env = os.environ.copy()
     env["TCAPSULE_STATE_DIR"] = str(state_dir)
     env["TCAPSULE_CONFIG"] = str(state_dir / ".env")
     request = json.dumps({"operation": operation, "params": {}})
-    completed = run([str(helper), "api"], input_text=request, env=env)
+    prefix = ["arch", f"-{architecture}"] if architecture else []
+    operation_label = f"{operation} ({architecture})" if architecture else operation
+    completed = run([*prefix, str(helper), "api"], input_text=request, env=env)
     result_event = next(
         (
             event
@@ -2530,9 +2614,9 @@ def smoke_request(helper: Path, operation: str, state_dir: Path) -> None:
         None,
     )
     if result_event is None:
-        raise RuntimeError(f"{operation} smoke test did not emit a result event:\n{completed.stdout}\n{completed.stderr}")
+        raise RuntimeError(f"{operation_label} smoke test did not emit a result event:\n{completed.stdout}\n{completed.stderr}")
     if result_event.get("ok") is not True:
-        raise RuntimeError(f"{operation} smoke test failed:\n{completed.stdout}\n{completed.stderr}")
+        raise RuntimeError(f"{operation_label} smoke test failed:\n{completed.stdout}\n{completed.stderr}")
 
 
 @timed_step("Validating app bundle layout")
@@ -2604,6 +2688,7 @@ def assert_bundle_layout(
     if full_validation:
         assert_no_external_macho_dependencies(app)
         assert_macho_minimum_macos(macho_validation_roots(app))
+        assert_no_build_machine_paths(app)
     # Verify the final signatures once, including when full metadata validation
     # is disabled. ZIP extraction still gets its own independent verification.
     assert_macho_code_signatures_valid(app)
@@ -2611,33 +2696,78 @@ def assert_bundle_layout(
     validate_app_resources(app)
 
 
+def rosetta_available() -> bool:
+    completed = subprocess.run(["arch", "-x86_64", "/usr/bin/true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    return completed.returncode == 0
+
+
+def smoke_architectures(architectures: tuple[str, ...]) -> list[str | None]:
+    """The smoke passes: this Mac's own, then x86_64 under Rosetta
+    for a universal build on Apple silicon. A Mac without Rosetta skips that
+    pass with a note, so a release can still be packaged on it."""
+    passes: list[str | None] = [None]
+    if native_architecture() != "arm64" or set(architectures) != set(DEFAULT_ARCHITECTURES):
+        return passes
+    if rosetta_available():
+        passes.append("x86_64")
+    else:
+        print(
+            "Skipped the x86_64 smoke pass: Rosetta is not installed. "
+            "Install it with `softwareupdate --install-rosetta --agree-to-license` to run it.",
+            file=sys.stderr,
+        )
+    return passes
+
+
 @timed_step("Running helper and native tool smoke tests")
-def smoke_test(app: Path) -> None:
+def smoke_test(app: Path, architectures: tuple[str, ...]) -> None:
     helper = app / "Contents" / "Helpers" / "tcapsule"
-    with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-smoke-") as tmp:
-        state_dir = Path(tmp)
-        smoke_request(helper, "capabilities", state_dir)
-        smoke_request(helper, "validate-install", state_dir)
-    smoke_tools(app)
+    for architecture in smoke_architectures(architectures):
+        with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-smoke-") as tmp:
+            state_dir = Path(tmp)
+            smoke_request(helper, "capabilities", state_dir, architecture=architecture)
+            smoke_request(helper, "validate-install", state_dir, architecture=architecture)
+        smoke_tools(app, architecture=architecture)
+        if architecture:
+            # The native pass's app launch and imports ran in assert_bundle_layout.
+            # The helper's requests load none of the compiled Python modules.
+            validate_app_resources(app, architecture=architecture)
+            assert_python_dependencies_are_bundled(app, architecture=architecture)
 
 
 # Arguments that make each bundled tool print its version and exit 0.
 TOOL_VERSION_ARGS = {"smbclient": ["--version"]}
 
 
-def smoke_tools(app: Path) -> None:
-    """Launch each bundled tool for this Mac's architecture. dyld rejects a
-    library it cannot load only at launch, and only a signed app enforces the
-    Team ID check (v3.1.2's first build shipped an smbclient that aborted)."""
+def smoke_tools(app: Path, *, architecture: str | None = None) -> None:
+    """Launch each bundled tool for this Mac's architecture, or under
+    ``arch -<architecture>``: each architecture's tools come from its own
+    bottles. dyld rejects a library it cannot load only at launch, and only a
+    signed app enforces the Team ID check (v3.1.2's first build shipped an
+    smbclient that aborted)."""
     tools_bin = app / "Contents" / "Resources" / "Tools" / "bin"
+    prefix = ["arch", f"-{architecture}"] if architecture else []
     for tool in REQUIRED_HOST_TOOLS:
-        completed = subprocess.run([str(tools_bin / tool), *TOOL_VERSION_ARGS[tool]], stdout=subprocess.PIPE,
+        completed = subprocess.run([*prefix, str(tools_bin / tool), *TOOL_VERSION_ARGS[tool]], stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, text=True, check=False, timeout=30)
         if completed.returncode != 0:
+            label = f"{tool} ({architecture})" if architecture else tool
             raise RuntimeError(
-                f"Bundled {tool} does not run (rc={completed.returncode}):\n"
+                f"Bundled {label} does not run (rc={completed.returncode}):\n"
                 f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
             )
+
+
+@timed_step("Launching the packaged app's code on this Mac")
+def check_packaged_app(app: Path) -> None:
+    """Run what launches bundled code, against an app built elsewhere: on an
+    Intel Mac this runs the x86_64 half of a universal app, which packaging
+    on Apple silicon only checks is there."""
+    validate_app_resources(app)
+    assert_python_dependencies_are_bundled(app)
+    # The app's own architectures: on Apple silicon with Rosetta, a universal
+    # app gets the x86_64 pass too.
+    smoke_test(app, tuple(sorted(macho_architectures(app / "Contents" / "MacOS" / PRODUCT_NAME))))
 
 
 @timed_step("Extracting and validating distributable ZIP")
@@ -2758,6 +2888,8 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
     if args.notarize and not args.codesign_identity:
         raise RuntimeError("--notarize requires --codesign-identity with a Developer ID Application identity.")
     architectures = resolve_architectures(args.arch)
+    # Before the long Swift build, not after it.
+    uv_executable()
     executable, helper_executable, resource_build_dir = build_swift(args.configuration, architectures)
     output_dir = args.output.resolve()
     app = output_dir / f"{APP_NAME}.app"
@@ -2786,6 +2918,10 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
     if args.icon:
         create_app_icon(args.icon.resolve(), resources, use_cache=not args.no_cache)
     copy_helper_executable(helper_executable, helpers / HELPER_PRODUCT_NAME)
+    if args.configuration == "release":
+        # A debug build keeps its debug map for lldb.
+        for built in (macos / PRODUCT_NAME, helpers / HELPER_PRODUCT_NAME):
+            strip_debug_map(built)
     python_executable = copy_python_runtime(args, resources, architectures)
     create_python_packages(str(python_executable), resources, architectures, use_cache=not args.no_cache)
     finalize_python_bundle(resources, sign=not args.codesign_identity)
@@ -2808,7 +2944,7 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
     )
 
     if not args.skip_smoke:
-        smoke_test(app)
+        smoke_test(app, architectures)
     notarization_archive: Path | None = None
     if args.notarize:
         notarize_app(
@@ -2882,12 +3018,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--zip", action="store_true", help="Create and validate TimeCapsuleSMB.app.zip next to the app bundle.")
     parser.add_argument("--zip-output", type=Path, help="Zip output path; implies --zip.")
+    parser.add_argument(
+        "--check-app",
+        type=Path,
+        help="Build nothing: launch an existing TimeCapsuleSMB.app's code on this Mac (its app, Python and helper checks).",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.check_app:
+        try:
+            check_packaged_app(args.check_app.resolve())
+        except (OSError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"Checked {args.check_app}")
+        return 0
     try:
-        result = package_app(parse_args(sys.argv[1:] if argv is None else argv))
+        result = package_app(args)
     except subprocess.CalledProcessError as exc:
         print(f"command failed with exit code {exc.returncode}: {exc.cmd}", file=sys.stderr)
         if exc.stdout:

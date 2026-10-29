@@ -442,6 +442,24 @@ def test_build_swift_builds_every_architecture_in_one_build(
     assert (resource_build_dir / package_app.RESOURCE_BUNDLE_NAME).is_dir()
 
 
+@pytest.mark.skipif(shutil.which("clang") is None or sys.platform != "darwin", reason="needs Apple's clang, nm and strip")
+def test_strip_debug_map_removes_the_build_paths_and_keeps_symbols(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "main.c").write_text("int helper_entry(void) { return 0; }\nint main(void) { return helper_entry(); }\n", encoding="utf-8")
+    executable = tmp_path / "tcapsule"
+    subprocess.run(["clang", "-g", "-o", str(executable), str(checkout / "main.c")], cwd=checkout, check=True)
+    assert str(checkout).encode() in executable.read_bytes()
+
+    package_app.strip_debug_map(executable)
+
+    assert str(checkout).encode() not in executable.read_bytes()
+    symbols = subprocess.run(["nm", str(executable)], capture_output=True, text=True, check=True).stdout
+    assert "_helper_entry" in symbols
+    assert subprocess.run([str(executable)], check=False).returncode == 0
+
+
 def test_build_swift_keeps_each_architecture_set_in_its_own_scratch_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1187,9 +1205,10 @@ def test_build_python_packages_uses_bytecode_safe_env(
     monkeypatch.setattr(package_app, "run", fake_run)
     monkeypatch.setattr(package_app, "remove_optional_zeroconf_extensions", lambda site_packages: None)
 
+    monkeypatch.setattr(package_app, "uv_executable", lambda: "/opt/uv")
     package_app.build_python_packages("python3", tmp_path / "site-packages")
 
-    assert len(calls) == 4
+    assert len(calls) == 2
     for _cmd, env in calls:
         assert env["PYTHONDONTWRITEBYTECODE"] == "1"
         assert env["PYTHONNOUSERSITE"] == "1"
@@ -2725,6 +2744,41 @@ def test_smoke_tools_rejects_a_tool_dyld_cannot_launch(tmp_path: Path) -> None:
         package_app.smoke_tools(app)
 
 
+def test_smoke_tools_launches_each_tool_under_the_architecture_given(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="Version 4.24.6\n", stderr="")
+
+    monkeypatch.setattr(package_app.subprocess, "run", fake_run)
+
+    package_app.smoke_tools(app, architecture="x86_64")
+
+    tools = app / "Contents" / "Resources" / "Tools" / "bin"
+    assert commands == [["arch", "-x86_64", str(tools / "smbclient"), "--version"]]
+
+
+def test_smoke_tools_names_the_architecture_of_a_tool_that_does_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(
+        package_app.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 134, stdout="", stderr="dyld: Library not loaded"),
+    )
+
+    with pytest.raises(RuntimeError, match=r"Bundled smbclient \(x86_64\) does not run \(rc=134\)"):
+        package_app.smoke_tools(tmp_path / "TimeCapsuleSMB.app", architecture="x86_64")
+
+
 def test_ad_hoc_codesign_macho_bundle_signs_only_macho_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3077,11 +3131,13 @@ def test_ad_hoc_codesign_app_bundle_signs_helper_before_app(
     assert calls == [helper, app]
 
 
+@pytest.mark.parametrize("configuration", ["release", "debug"])
 @pytest.mark.parametrize("identity", [None, "Developer ID Application: Test"])
 def test_package_app_signs_final_bundle_after_native_tools(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     identity: str | None,
+    configuration: str,
 ) -> None:
     package_app = load_package_app_module()
     monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
@@ -3098,6 +3154,7 @@ def test_package_app_signs_final_bundle_after_native_tools(
     calls: list[str] = []
 
     monkeypatch.setattr(package_app, "resolve_architectures", lambda arch: ("arm64",))
+    monkeypatch.setattr(package_app, "uv_executable", lambda: "uv")
     monkeypatch.setattr(package_app, "build_swift", lambda configuration, architectures: (executable, helper_executable, resource_build_dir))
     monkeypatch.setattr(package_app, "copy_resources", lambda source, resources: calls.append("resources"))
     monkeypatch.setattr(package_app, "copy_helper_executable", lambda source, destination: calls.append("helper"))
@@ -3108,6 +3165,7 @@ def test_package_app_signs_final_bundle_after_native_tools(
     monkeypatch.setattr(package_app, "copy_distribution", lambda resources: calls.append("distribution"))
     monkeypatch.setattr(package_app, "copy_native_tools_layer", lambda app, architectures, use_cache=True: calls.append("native"))
     monkeypatch.setattr(package_app, "add_framework_rpath", lambda executable: calls.append("rpath"))
+    monkeypatch.setattr(package_app, "strip_debug_map", lambda executable: calls.append(f"strip {executable.name}"))
     monkeypatch.setattr(package_app, "copy_sparkle_framework", lambda build_dir, app: calls.append("sparkle"))
     monkeypatch.setattr(package_app, "remove_appledouble_files", lambda app: calls.append("clean"))
     monkeypatch.setattr(package_app, "assert_no_appledouble_files", lambda app: calls.append("assert-clean"))
@@ -3120,7 +3178,7 @@ def test_package_app_signs_final_bundle_after_native_tools(
 
     args = SimpleNamespace(
         arch="native",
-        configuration="release",
+        configuration=configuration,
         output=tmp_path / "dist",
         icon=None,
         no_cache=False,
@@ -3140,6 +3198,14 @@ def test_package_app_signs_final_bundle_after_native_tools(
     # whole, and before signing; the rpath goes on the executable right away.
     assert calls[-6:] == ["native", "sparkle", "clean", "assert-clean", "developer-sign" if identity else "app-sign", "assert"]
     assert calls.index("rpath") < calls.index("resources")
+    # A release build's app and helper lose the debug map before signing; a
+    # debug build keeps it for lldb.
+    stripped = [call for call in calls if call.startswith("strip ")]
+    if configuration == "release":
+        assert stripped == ["strip TimeCapsuleSMB", "strip tcapsule"]
+        assert calls.index("strip tcapsule") < calls.index("developer-sign" if identity else "app-sign")
+    else:
+        assert stripped == []
     assert "app-verify" not in calls  # The layout validation owns the final verification.
     assert python_signing == [identity is None]
     assert signature_caching == ([True] if identity else [])
@@ -3165,6 +3231,7 @@ def test_package_app_ships_only_the_app_resource_bundle(monkeypatch: pytest.Monk
     monkeypatch.setattr(package_app, "copy_distribution", lambda resources: None)
     monkeypatch.setattr(package_app, "copy_native_tools_layer", lambda app, architectures, use_cache=True: None)
     monkeypatch.setattr(package_app, "add_framework_rpath", lambda executable: None)
+    monkeypatch.setattr(package_app, "strip_debug_map", lambda executable: None)
     monkeypatch.setattr(package_app, "remove_appledouble_files", lambda app: None)
     monkeypatch.setattr(package_app, "assert_no_appledouble_files", lambda app: None)
     monkeypatch.setattr(package_app, "ad_hoc_codesign_app_bundle", lambda app: None)
@@ -3265,6 +3332,7 @@ def test_package_app_result_includes_zip_and_notarization_archive(
     helper_executable.chmod(0o755)
 
     monkeypatch.setattr(package_app, "resolve_architectures", lambda arch: ("arm64",))
+    monkeypatch.setattr(package_app, "uv_executable", lambda: "uv")
     monkeypatch.setattr(package_app, "build_swift", lambda configuration, architectures: (executable, helper_executable, resource_build_dir))
     monkeypatch.setattr(package_app, "copy_resources", lambda source, resources: None)
     monkeypatch.setattr(package_app, "copy_helper_executable", lambda source, destination: None)
@@ -3274,6 +3342,7 @@ def test_package_app_result_includes_zip_and_notarization_archive(
     monkeypatch.setattr(package_app, "copy_distribution", lambda resources: None)
     monkeypatch.setattr(package_app, "copy_native_tools_layer", lambda app, architectures, use_cache=True: None)
     monkeypatch.setattr(package_app, "add_framework_rpath", lambda executable: None)
+    monkeypatch.setattr(package_app, "strip_debug_map", lambda executable: None)
     monkeypatch.setattr(package_app, "copy_sparkle_framework", lambda build_dir, app: None)
     monkeypatch.setattr(package_app, "remove_appledouble_files", lambda app: None)
     monkeypatch.setattr(package_app, "assert_no_appledouble_files", lambda app: None)
@@ -3566,3 +3635,685 @@ def test_developer_id_signing_signs_sparkle_bundles_after_its_leaves(
 
     # A bundle's main executable is signed with its bundle, never alone first.
     assert calls == [autoupdate, version / "Updater.app", framework, app]
+
+
+def record_smoke_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    package_app,
+    *,
+    failing_prefix: list[str] | None = None,
+) -> list[list[str]]:
+    """Record each helper request smoke_test makes, answering ok unless its
+    command starts with failing_prefix."""
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        operation = json.loads(kwargs["input_text"])["operation"]  # type: ignore[arg-type]
+        ok = failing_prefix is None or cmd[: len(failing_prefix)] != failing_prefix
+        result = json.dumps({"type": "result", "operation": operation, "ok": ok})
+        return subprocess.CompletedProcess(cmd, 0, stdout=result + "\n", stderr="")
+
+    monkeypatch.setattr(package_app, "run", fake_run)
+    monkeypatch.setattr(package_app, "smoke_tools", lambda app, *, architecture=None: commands.append(["tools", str(architecture)]))
+    monkeypatch.setattr(package_app, "validate_app_resources", lambda app, *, architecture=None: commands.append(["app", str(architecture)]))
+    monkeypatch.setattr(
+        package_app,
+        "assert_python_dependencies_are_bundled",
+        lambda app, *, architecture=None: commands.append(["python", str(architecture)]),
+    )
+    return commands
+
+
+def test_smoke_test_runs_the_helper_again_as_x86_64_under_rosetta(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    commands = record_smoke_requests(monkeypatch, package_app)
+    monkeypatch.setattr(package_app, "native_architecture", lambda: "arm64")
+    monkeypatch.setattr(package_app, "rosetta_available", lambda: True)
+
+    package_app.smoke_test(tmp_path / "TimeCapsuleSMB.app", ("arm64", "x86_64"))
+
+    helper = str(tmp_path / "TimeCapsuleSMB.app" / "Contents" / "Helpers" / "tcapsule")
+    assert commands == [
+        [helper, "api"],
+        [helper, "api"],
+        ["tools", "None"],
+        ["arch", "-x86_64", helper, "api"],
+        ["arch", "-x86_64", helper, "api"],
+        ["tools", "x86_64"],
+        # Only the x86_64 pass launches the app and imports: assert_bundle_layout
+        # already did both natively.
+        ["app", "x86_64"],
+        ["python", "x86_64"],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("host", "architectures"),
+    # An x86_64-only build's own pass already runs under Rosetta on Apple silicon.
+    [("arm64", ("arm64",)), ("arm64", ("x86_64",)), ("x86_64", ("arm64", "x86_64")), ("x86_64", ("x86_64",))],
+)
+def test_smoke_test_runs_one_pass_unless_apple_silicon_builds_universal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    host: str,
+    architectures: tuple[str, ...],
+) -> None:
+    package_app = load_package_app_module()
+    commands = record_smoke_requests(monkeypatch, package_app)
+    monkeypatch.setattr(package_app, "native_architecture", lambda: host)
+    monkeypatch.setattr(package_app, "rosetta_available", lambda: pytest.fail("Rosetta was probed"))
+
+    package_app.smoke_test(tmp_path / "TimeCapsuleSMB.app", architectures)
+
+    helper = str(tmp_path / "TimeCapsuleSMB.app" / "Contents" / "Helpers" / "tcapsule")
+    assert commands == [[helper, "api"], [helper, "api"], ["tools", "None"]]
+
+
+def test_smoke_test_without_rosetta_skips_the_x86_64_pass_and_says_how_to_install_it(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    commands = record_smoke_requests(monkeypatch, package_app)
+    monkeypatch.setattr(package_app, "native_architecture", lambda: "arm64")
+    monkeypatch.setattr(package_app, "rosetta_available", lambda: False)
+
+    package_app.smoke_test(tmp_path / "TimeCapsuleSMB.app", ("arm64", "x86_64"))
+
+    helper = str(tmp_path / "TimeCapsuleSMB.app" / "Contents" / "Helpers" / "tcapsule")
+    assert commands == [[helper, "api"], [helper, "api"], ["tools", "None"]]
+    err = capsys.readouterr().err
+    assert "Skipped the x86_64 smoke pass" in err
+    assert "softwareupdate --install-rosetta" in err
+
+
+def test_a_failing_x86_64_request_fails_the_smoke_test(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    commands = record_smoke_requests(monkeypatch, package_app, failing_prefix=["arch", "-x86_64"])
+    monkeypatch.setattr(package_app, "native_architecture", lambda: "arm64")
+    monkeypatch.setattr(package_app, "rosetta_available", lambda: True)
+
+    with pytest.raises(RuntimeError, match=r"capabilities \(x86_64\) smoke test failed"):
+        package_app.smoke_test(tmp_path / "TimeCapsuleSMB.app", ("arm64", "x86_64"))
+    assert commands[-1][:2] == ["arch", "-x86_64"]
+
+
+@pytest.mark.parametrize(("returncode", "available"), [(0, True), (1, False)])
+def test_rosetta_is_available_when_an_x86_64_true_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    available: bool,
+) -> None:
+    package_app = load_package_app_module()
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode)
+
+    monkeypatch.setattr(package_app.subprocess, "run", fake_run)
+
+    assert package_app.rosetta_available() is available
+    assert commands == [["arch", "-x86_64", "/usr/bin/true"]]
+
+
+def python_runtime_args(package_app, **overrides: object) -> SimpleNamespace:
+    values = {"python_runtime_pkg": None, "python_runtime_url": package_app.PYTHON_RUNTIME_URL}
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def fake_python_runtime_download(monkeypatch: pytest.MonkeyPatch, package_app, payload: bytes) -> list[str]:
+    downloads: list[str] = []
+
+    def fake_download(url: str, destination: Path) -> None:
+        downloads.append(url)
+        destination.write_bytes(payload)
+
+    monkeypatch.setattr(package_app, "download_file", fake_download)
+    return downloads
+
+
+def test_python_runtime_package_with_the_pinned_hash_is_used(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(package_app, "PYTHON_RUNTIME_SHA256", hashlib.sha256(b"python").hexdigest())
+    downloads = fake_python_runtime_download(monkeypatch, package_app, b"python")
+
+    first = package_app.python_runtime_pkg(python_runtime_args(package_app))
+    cached = package_app.python_runtime_pkg(python_runtime_args(package_app))
+
+    assert first == cached
+    assert first.read_bytes() == b"python"
+    assert downloads == [package_app.PYTHON_RUNTIME_URL]
+
+
+def test_python_runtime_download_with_another_hash_is_deleted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(package_app, "PYTHON_RUNTIME_SHA256", hashlib.sha256(b"python").hexdigest())
+    fake_python_runtime_download(monkeypatch, package_app, b"truncated")
+
+    with pytest.raises(RuntimeError, match="expected " + hashlib.sha256(b"python").hexdigest()):
+        package_app.python_runtime_pkg(python_runtime_args(package_app))
+    assert list((tmp_path / ".build" / "package-app" / "python-runtime").iterdir()) == []
+
+
+def test_cached_python_runtime_with_another_hash_is_deleted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(package_app, "PYTHON_RUNTIME_SHA256", hashlib.sha256(b"python").hexdigest())
+    downloads = fake_python_runtime_download(monkeypatch, package_app, b"python")
+    cached = package_app.package_cache_dir("python-runtime") / Path(package_app.PYTHON_RUNTIME_URL).name
+    cached.write_bytes(b"corrupted")
+
+    with pytest.raises(RuntimeError, match="next run downloads it again"):
+        package_app.python_runtime_pkg(python_runtime_args(package_app))
+    assert not cached.exists()
+    assert downloads == []
+
+    assert package_app.python_runtime_pkg(python_runtime_args(package_app)).read_bytes() == b"python"
+
+
+def test_a_python_runtime_the_caller_chose_is_not_hashed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(package_app, "PYTHON_RUNTIME_SHA256", hashlib.sha256(b"python").hexdigest())
+    fake_python_runtime_download(monkeypatch, package_app, b"another build")
+    local = tmp_path / "local.pkg"
+    local.write_bytes(b"local build")
+
+    assert package_app.python_runtime_pkg(python_runtime_args(package_app, python_runtime_pkg=local)) == local
+    mirrored = package_app.python_runtime_pkg(python_runtime_args(package_app, python_runtime_url="https://mirror.test/python.pkg"))
+    assert mirrored.read_bytes() == b"another build"
+
+
+def record_python_package_installs(monkeypatch: pytest.MonkeyPatch, package_app, *, fail_first: bool = False) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if fail_first:
+            raise subprocess.CalledProcessError(2, cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_app, "python_major_minor", lambda python: (3, 13))
+    monkeypatch.setattr(package_app, "run", fake_run)
+    monkeypatch.setattr(package_app, "remove_optional_zeroconf_extensions", lambda site_packages: None)
+    return calls
+
+
+def test_python_packages_are_two_uv_installs_for_the_bundled_python(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    calls = record_python_package_installs(monkeypatch, package_app)
+    monkeypatch.setattr(package_app.shutil, "which", lambda name: "/opt/bin/uv" if name == "uv" else None)
+    site_packages = tmp_path / "site-packages"
+
+    package_app.build_python_packages("/App/Python/bin/python3", site_packages)
+
+    install = ["/opt/bin/uv", "pip", "install", "--python", "/App/Python/bin/python3", "--target", str(site_packages)]
+    assert calls == [
+        [*install, "--require-hashes", "--no-build", "-r", str(package_app.BUNDLED_PYTHON_REQUIREMENTS)],
+        [
+            *install, "--no-deps", "--require-build-hashes",
+            "--build-constraints", str(package_app.PYTHON_BUILD_REQUIREMENTS), str(package_app.REPO_ROOT),
+        ],
+    ]
+
+
+def test_python_packages_leave_no_build_machine_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    site_packages = tmp_path / "site-packages"
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        # What the two installs write, build-machine paths included.
+        (site_packages / "bin").mkdir(parents=True, exist_ok=True)
+        (site_packages / "bin" / "tcapsule").write_text("#!/Users/someone/dist/python3\n", encoding="utf-8")
+        for name in ("timecapsulesmb-3.7.0", "zeroconf-0.151.5"):
+            dist_info = site_packages / f"{name}.dist-info"
+            dist_info.mkdir(exist_ok=True)
+            (dist_info / "METADATA").write_text("Name: x\n", encoding="utf-8")
+        (site_packages / "timecapsulesmb-3.7.0.dist-info" / "direct_url.json").write_text('{"url": "file:///Users/someone/repo"}', encoding="utf-8")
+        (site_packages / "timecapsulesmb").mkdir(exist_ok=True)
+        (site_packages / "timecapsulesmb" / "__init__.py").write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_app, "python_major_minor", lambda python: (3, 13))
+    monkeypatch.setattr(package_app, "uv_executable", lambda: "uv")
+    monkeypatch.setattr(package_app, "run", fake_run)
+
+    package_app.build_python_packages("python3", site_packages)
+
+    assert not (site_packages / "bin").exists()
+    assert not (site_packages / "timecapsulesmb-3.7.0.dist-info" / "direct_url.json").exists()
+    assert (site_packages / "timecapsulesmb-3.7.0.dist-info" / "METADATA").is_file()
+    assert (site_packages / "zeroconf-0.151.5.dist-info" / "METADATA").is_file()
+    assert (site_packages / "timecapsulesmb" / "__init__.py").is_file()
+
+
+def test_python_packages_without_uv_stop_before_running_anything(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    calls = record_python_package_installs(monkeypatch, package_app)
+    monkeypatch.setattr(package_app, "python_major_minor", lambda python: pytest.fail("the bundled Python ran"))
+    monkeypatch.setattr(package_app.shutil, "which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match="brew install uv"):
+        package_app.build_python_packages("python3", tmp_path / "site-packages")
+    assert calls == []
+
+
+def test_packaging_without_uv_stops_before_the_swift_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app.shutil, "which", lambda name: None)
+    monkeypatch.setattr(package_app, "build_swift", lambda configuration, architectures: pytest.fail("Swift built"))
+    args = SimpleNamespace(arch=["native"], notarize=False, codesign_identity=None)
+
+    with pytest.raises(RuntimeError, match="uv, which is not on PATH"):
+        package_app.build_app_package(args)
+
+
+def test_a_failing_dependency_install_stops_before_the_project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    calls = record_python_package_installs(monkeypatch, package_app, fail_first=True)
+    monkeypatch.setattr(package_app, "uv_executable", lambda: "uv")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        package_app.build_python_packages("python3", tmp_path / "site-packages")
+    assert len(calls) == 1
+    assert "--require-hashes" in calls[0]
+
+
+def unmet_requirements(declared: list[str], pinned_text: str) -> list[str]:
+    """The requirements in declared that pinned_text, a file of ``name==version``
+    pins, leaves unmet: not pinned at all, or pinned at a version outside the
+    requirement's range. Other pins are allowed: they are the requirements'
+    own dependencies."""
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    pins = {
+        canonicalize_name(name): version
+        for name, version in re.findall(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\]+)", pinned_text, re.MULTILINE)
+    }
+    unmet = []
+    for text in declared:
+        requirement = Requirement(text)
+        pinned = pins.get(canonicalize_name(requirement.name))
+        if pinned is None or not requirement.specifier.contains(pinned, prereleases=True):
+            unmet.append(text)
+    return unmet
+
+
+def declared_dependencies() -> list[str]:
+    import importlib.metadata
+
+    requirements = importlib.metadata.requires("timecapsulesmb") or []
+    return [requirement for requirement in requirements if "extra ==" not in requirement]
+
+
+def test_bundled_requirements_pin_every_declared_dependency_and_certifi() -> None:
+    package_app = load_package_app_module()
+    declared = [*declared_dependencies(), *package_app.BUNDLED_EXTRA_PYTHON_REQUIREMENTS]
+    assert len(declared) > 1
+
+    pinned = package_app.BUNDLED_PYTHON_REQUIREMENTS.read_text(encoding="utf-8")
+
+    assert unmet_requirements(declared, pinned) == []
+
+
+def test_unmet_requirements_names_a_dependency_the_file_lacks() -> None:
+    pinned = "ifaddr==0.2.0 \\\n    --hash=sha256:aa\ncertifi==2026.1.1\n"
+
+    assert unmet_requirements(["ifaddr>=0.2.0", "zopfli>=0.2.3.post1", "certifi"], pinned) == ["zopfli>=0.2.3.post1"]
+
+
+def test_unmet_requirements_names_a_pin_below_a_raised_minimum() -> None:
+    pinned = "zeroconf==0.151.5 \\\n    --hash=sha256:aa\npycryptodome==4.2.0\n"
+
+    unmet = unmet_requirements(["zeroconf>=0.160.0", "pycryptodome>=4.1.0,<5"], pinned)
+
+    assert unmet == ["zeroconf>=0.160.0"]
+
+
+def test_unmet_requirements_allows_indirect_pins_and_normalizes_names() -> None:
+    pinned = "zope-interface==7.0 \\\n    --hash=sha256:aa\nifaddr==0.2.0\n    # via zeroconf\n"
+
+    assert unmet_requirements(["Zope.Interface>=6; python_version >= '3.9'"], pinned) == []
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is new in Python 3.11")
+def test_build_requirements_pin_every_build_system_requirement() -> None:
+    import tomllib
+
+    package_app = load_package_app_module()
+    pyproject = tomllib.loads((package_app.REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    requires = pyproject["build-system"]["requires"]
+
+    pinned = package_app.PYTHON_BUILD_REQUIREMENTS.read_text(encoding="utf-8")
+
+    assert unmet_requirements(requires, pinned) == []
+
+
+def test_site_packages_cache_key_follows_both_requirements_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(package_app, "python_cache_identity", lambda python: {"python": python})
+    monkeypatch.setattr(package_app, "python_package_source_fingerprint", lambda: {})
+    bundled = tmp_path / "bundled-requirements.txt"
+    build = tmp_path / "build-requirements.txt"
+    bundled.write_text("ifaddr==0.2.0\n", encoding="utf-8")
+    build.write_text("setuptools==80.0\n", encoding="utf-8")
+    monkeypatch.setattr(package_app, "BUNDLED_PYTHON_REQUIREMENTS", bundled)
+    monkeypatch.setattr(package_app, "PYTHON_BUILD_REQUIREMENTS", build)
+
+    def key() -> str:
+        return package_app.python_site_packages_cache_entry("python3", ("arm64",)).name
+
+    first = key()
+    assert key() == first
+    bundled.write_text("ifaddr==0.2.1\n", encoding="utf-8")
+    second = key()
+    build.write_text("setuptools==81.0\n", encoding="utf-8")
+    third = key()
+
+    assert len({first, second, third}) == 3
+
+
+UPDATE_REQUIREMENTS_SCRIPT = PACKAGE_SCRIPT.with_name("update_python_requirements.py")
+
+
+def load_update_requirements_module():
+    spec = importlib.util.spec_from_file_location("update_python_requirements", UPDATE_REQUIREMENTS_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def record_requirement_compiles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    fail_first: bool = False,
+):
+    module = load_update_requirements_module()
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[build-system]\nrequires = ["setuptools>=99", "flit_core<4"]\n\n[project]\nname = "demo"\ndependencies = ["ifaddr"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "PYPROJECT", pyproject)
+    monkeypatch.setattr(module, "BUNDLED_PYTHON_REQUIREMENTS", tmp_path / "bundled.txt")
+    monkeypatch.setattr(module, "PYTHON_BUILD_REQUIREMENTS", tmp_path / "build.txt")
+    monkeypatch.setattr(module, "uv_executable", lambda: "/opt/bin/uv")
+    calls: list[dict[str, object]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append({"cmd": cmd, **kwargs})
+        if fail_first:
+            raise subprocess.CalledProcessError(2, cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    return module, calls
+
+
+def output_file(cmd: list[str]) -> str:
+    return cmd[cmd.index("--output-file") + 1]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="the script needs tomllib, new in Python 3.11")
+def test_update_python_requirements_compiles_for_the_bundled_python(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module, calls = record_requirement_compiles(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "PYTHON_RUNTIME_VERSION", "3.14.2")
+
+    assert module.main([]) == 0
+
+    assert len(calls) == 2
+    bundled, build = calls
+    for call in calls:
+        cmd = call["cmd"]
+        assert cmd[:3] == ["/opt/bin/uv", "pip", "compile"]
+        assert "--generate-hashes" in cmd
+        assert cmd[cmd.index("--python-platform") + 1] == "macos"
+        assert cmd[cmd.index("--python-version") + 1] == "3.14"
+        assert "install" not in cmd
+        assert call["cwd"] == tmp_path
+        assert call["env"]["UV_CUSTOM_COMPILE_COMMAND"] == module.COMPILE_COMMAND  # type: ignore[index]
+    assert "pyproject.toml" in bundled["cmd"]
+    assert bundled["input"] == "certifi\n"
+    assert output_file(bundled["cmd"]) == str(tmp_path / "bundled.txt")  # type: ignore[arg-type]
+    assert "pyproject.toml" not in build["cmd"]
+    assert build["input"] == "setuptools>=99\nflit_core<4\n"
+    assert output_file(build["cmd"]) == str(tmp_path / "build.txt")  # type: ignore[arg-type]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="the script needs tomllib, new in Python 3.11")
+def test_update_python_requirements_takes_the_version_from_package_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module, calls = record_requirement_compiles(monkeypatch, tmp_path)
+    expected = ".".join(load_package_app_module().PYTHON_RUNTIME_VERSION.split(".")[:2])
+
+    assert module.main([]) == 0
+
+    assert {call["cmd"][call["cmd"].index("--python-version") + 1] for call in calls} == {expected}  # type: ignore[union-attr,index]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="the script needs tomllib, new in Python 3.11")
+def test_update_python_requirements_upgrades_both_files_only_when_asked(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module, calls = record_requirement_compiles(monkeypatch, tmp_path)
+
+    assert module.main([]) == 0
+    assert module.main(["--upgrade"]) == 0
+
+    kept, upgraded = calls[:2], calls[2:]
+    assert all("--upgrade" not in call["cmd"] for call in kept)  # type: ignore[operator]
+    assert [output_file(call["cmd"]) for call in upgraded] == [str(tmp_path / "bundled.txt"), str(tmp_path / "build.txt")]  # type: ignore[arg-type]
+    assert all("--upgrade" in call["cmd"] for call in upgraded)  # type: ignore[operator]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="the script needs tomllib, new in Python 3.11")
+def test_update_python_requirements_stops_after_a_failed_compile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module, calls = record_requirement_compiles(monkeypatch, tmp_path, fail_first=True)
+
+    assert module.main([]) == 2
+
+    assert len(calls) == 1
+    assert output_file(calls[0]["cmd"]) == str(tmp_path / "bundled.txt")  # type: ignore[arg-type]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="the script needs tomllib, new in Python 3.11")
+def test_update_python_requirements_without_uv_says_how_to_install_it(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    module, calls = record_requirement_compiles(monkeypatch, tmp_path)
+
+    def missing_uv() -> str:
+        raise RuntimeError("Packaging installs the app's Python packages with uv, which is not on PATH.")
+
+    monkeypatch.setattr(module, "uv_executable", missing_uv)
+
+    assert module.main([]) == 1
+    assert calls == []
+    assert "not on PATH" in capsys.readouterr().err
+
+
+def test_update_python_requirements_refuses_python_older_than_3_11() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", (
+            "import runpy, sys\n"
+            "sys.version_info = (3, 10, 0)\n"
+            f"runpy.run_path({str(UPDATE_REQUIREMENTS_SCRIPT)!r}, run_name='__main__')\n"
+        )],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    assert "needs Python 3.11 or newer" in completed.stderr
+
+
+def write_fake_bundled_packages(site_packages: Path) -> None:
+    """Packages laid out as the app bundles them, as plain modules."""
+    modules = [
+        "certifi/__init__.py",
+        "Crypto/__init__.py",
+        "Crypto/Cipher/__init__.py",
+        "Crypto/Cipher/AES.py",
+        "ifaddr/__init__.py",
+        "timecapsulesmb/__init__.py",
+        "zeroconf/__init__.py",
+        "zopfli/__init__.py",
+        "zopfli/gzip.py",
+    ]
+    for module in modules:
+        path = site_packages / module
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    askpass = site_packages / "timecapsulesmb" / "transport" / "ssh-askpass"
+    askpass.parent.mkdir()
+    askpass.write_text("#!/bin/sh\n", encoding="utf-8")
+    askpass.chmod(0o755)
+
+
+def use_this_python_as_bundled(monkeypatch: pytest.MonkeyPatch, package_app, tmp_path: Path) -> None:
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(package_app, "bundled_python_executable", lambda app: Path(sys.executable))
+    monkeypatch.setattr(package_app, "bundled_python_home", lambda app: Path(sys.base_prefix))
+
+
+def test_bundled_python_check_loads_the_compiled_modules_the_app_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    use_this_python_as_bundled(monkeypatch, package_app, tmp_path)
+    app = tmp_path / "TimeCapsuleSMB.app"
+    site_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
+    write_fake_bundled_packages(site_packages)
+
+    package_app.assert_python_dependencies_are_bundled(app)
+
+    # Firmware decryption's AES module, not just its package.
+    (site_packages / "Crypto" / "Cipher" / "AES.py").unlink()
+    with pytest.raises(RuntimeError, match=r"(?s)not importable.*Crypto\.Cipher\.AES"):
+        package_app.assert_python_dependencies_are_bundled(app)
+
+
+def test_check_app_launches_the_apps_code_without_building(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    calls: list[tuple[str, Path]] = []
+    monkeypatch.setattr(package_app, "validate_app_resources", lambda path: calls.append(("app", path)))
+    monkeypatch.setattr(package_app, "assert_python_dependencies_are_bundled", lambda path: calls.append(("python", path)))
+    monkeypatch.setattr(package_app, "smoke_test", lambda path, architectures: calls.append(("helper", path, architectures)))
+    monkeypatch.setattr(package_app, "macho_architectures", lambda path: {"x86_64", "arm64"} if path.name == "TimeCapsuleSMB" else set())
+    monkeypatch.setattr(package_app, "package_app", lambda args: pytest.fail("an app was built"))
+
+    assert package_app.main(["--check-app", str(app)]) == 0
+
+    assert calls == [("app", app.resolve()), ("python", app.resolve()), ("helper", app.resolve(), ("arm64", "x86_64"))]
+    assert capsys.readouterr().out == f"Checked {app}\n"
+
+
+def test_check_app_fails_when_the_app_does_not_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+
+    def crashed(path: Path) -> None:
+        raise RuntimeError("App executable resource validation failed: dyld: Library not loaded")
+
+    monkeypatch.setattr(package_app, "validate_app_resources", crashed)
+    monkeypatch.setattr(package_app, "smoke_test", lambda path, architectures: pytest.fail("the helper ran after the app failed"))
+
+    assert package_app.main(["--check-app", str(tmp_path / "TimeCapsuleSMB.app")]) == 1
+    assert "Library not loaded" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("architecture", [None, "x86_64"])
+def test_app_launch_and_python_imports_run_under_the_architecture_given(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    architecture: str | None,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    app = tmp_path / "TimeCapsuleSMB.app"
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(package_app.subprocess, "run", fake_run)
+
+    package_app.validate_app_resources(app, architecture=architecture)
+    package_app.assert_python_dependencies_are_bundled(app, architecture=architecture)
+
+    prefix = ["arch", f"-{architecture}"] if architecture else []
+    assert commands[0] == [*prefix, str(app / "Contents" / "MacOS" / "TimeCapsuleSMB"), "--validate-resources"]
+    assert commands[1][: len(prefix) + 2] == [*prefix, str(package_app.bundled_python_executable(app)), "-c"]
+
+
+def test_a_failure_under_x86_64_names_the_architecture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        package_app.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="dyld: Library not loaded"),
+    )
+    app = tmp_path / "TimeCapsuleSMB.app"
+
+    with pytest.raises(RuntimeError, match=r"resource validation failed \(x86_64\)"):
+        package_app.validate_app_resources(app, architecture="x86_64")
+    with pytest.raises(RuntimeError, match=r"not importable from the app package \(x86_64\)"):
+        package_app.assert_python_dependencies_are_bundled(app, architecture="x86_64")
+
+
+def test_a_bundled_file_naming_the_checkout_fails_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    runner = tmp_path / "Users" / "runner"
+    checkout = runner / "work" / "TimeCapsuleSMB"
+    monkeypatch.setattr(package_app, "REPO_ROOT", checkout)
+    app = tmp_path / "TimeCapsuleSMB.app"
+    binary = app / "Contents" / "MacOS" / "TimeCapsuleSMB"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"\xcf\xfa\xed\xfe\0SO " + str(checkout / "Sources").encode() + b"\0")
+    # A PyPI wheel built on another runner names that runner's checkout, not ours.
+    wheel_module = app / "Contents" / "Resources" / "Python" / "site-packages" / "Crypto" / "_raw_aes.abi3.so"
+    wheel_module.parent.mkdir(parents=True)
+    wheel_module.write_bytes(b"\xcf\xfa\xed\xfe\0OSO " + str(runner / "work" / "pycryptodome" / "AES.o").encode() + b"\0")
+    # A sibling folder whose name starts the same way is not this checkout.
+    (app / "Contents" / "Info.plist").write_text(f"{checkout}2/elsewhere", encoding="utf-8")
+    # A link is not read through.
+    (app / "Contents" / "Link").symlink_to(binary)
+
+    with pytest.raises(RuntimeError, match=r"(?s)name this checkout.*Contents/MacOS/TimeCapsuleSMB") as raised:
+        package_app.assert_no_build_machine_paths(app)
+    assert "_raw_aes" not in str(raised.value)
+    assert "Info.plist" not in str(raised.value)
+    assert "Link" not in str(raised.value)
+
+    binary.write_bytes(b"\xcf\xfa\xed\xfe\0SO Sources/\0")
+    package_app.assert_no_build_machine_paths(app)

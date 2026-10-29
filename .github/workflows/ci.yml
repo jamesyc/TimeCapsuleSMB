@@ -107,7 +107,9 @@ jobs:
         run: swift test --parallel --package-path macos/TimeCapsuleSMB
 
   package-app:
-    name: Package App (macOS native)
+    # Universal, as releases are: the x86_64 half is checked on every push,
+    # not first on a release tag.
+    name: Package App (macOS universal)
     runs-on: macos-latest
     needs:
       - swift-test
@@ -116,17 +118,57 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
       - name: Restore package cache
         uses: actions/cache@v6
         with:
           path: macos/TimeCapsuleSMB/.build/package-app
-          key: package-app-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/TimeCapsuleSMB/tools/package_app.py', 'macos/TimeCapsuleSMB/Package.swift', 'macos/TimeCapsuleSMB/Package.resolved', 'macos/TimeCapsuleSMB/Assets/AppIcon/tcs.jpg', 'pyproject.toml', 'requirements.txt', 'src/**', 'bin/**') }}
+          key: package-app-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/TimeCapsuleSMB/tools/package_app.py', 'macos/TimeCapsuleSMB/tools/*-requirements.txt', 'macos/TimeCapsuleSMB/Package.swift', 'macos/TimeCapsuleSMB/Package.resolved', 'macos/TimeCapsuleSMB/Assets/AppIcon/tcs.jpg', 'pyproject.toml', 'src/**', 'bin/**') }}
           restore-keys: |
             package-app-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Package and validate native app
+      - name: Package and validate universal app
         run: |
           python3 macos/TimeCapsuleSMB/tools/package_app.py \
             --configuration release \
-            --arch native \
+            --arch universal \
+            --zip \
             --full-validation
+
+      - name: Keep the app for the Intel check
+        uses: actions/upload-artifact@v7
+        with:
+          name: TimeCapsuleSMB-app
+          path: macos/TimeCapsuleSMB/dist/TimeCapsuleSMB.app.zip
+          if-no-files-found: error
+          retention-days: 3
+          # "Re-run all jobs" uploads it again within the same run.
+          overwrite: true
+
+  intel-check:
+    # Runs the x86_64 half of the app on a real Intel Mac, which packaging on
+    # Apple silicon only checks is present. macos-15-intel is GitHub's last
+    # Intel image; remove this job when GitHub retires it (fall 2027).
+    name: Check App on Intel (macOS 15)
+    runs-on: macos-15-intel
+    needs:
+      - package-app
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Download the packaged app
+        uses: actions/download-artifact@v8
+        with:
+          name: TimeCapsuleSMB-app
+          path: ${{ runner.temp }}/app
+
+      - name: Launch the app's code on Intel
+        run: |
+          test "$(uname -m)" = x86_64
+          # ditto keeps the bundle's symlinks and permissions, as a user's unzip does.
+          ditto -x -k "$RUNNER_TEMP/app/TimeCapsuleSMB.app.zip" "$RUNNER_TEMP/app"
+          python3 macos/TimeCapsuleSMB/tools/package_app.py --check-app "$RUNNER_TEMP/app/TimeCapsuleSMB.app"
