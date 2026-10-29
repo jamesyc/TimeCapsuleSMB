@@ -91,14 +91,24 @@ On NetBSD 4 LE, build the tests with `SAMBA4X_BUILD_REGRESSION_TESTS=1 ./build/s
 
 The macOS app packaging flow supports Developer ID signing and notarization when the relevant signing environment is configured. A public release should state whether the attached app zip is notarized. When notarization is enabled, the package validation step should complete successfully before the release asset is uploaded.
 
+## Version Sources
+
+`src/timecapsulesmb/core/release.py` is the only place a version is typed. Every release, hidden builds included, sets `CLI_VERSION` and bumps `CLI_VERSION_CODE`, a plain integer that only goes up; the release tag and the Python package version are derived from `CLI_VERSION`. A hidden build has a `-N` suffix on `CLI_VERSION` and is published as a prerelease.
+
+`.github/scripts/check_release.py TAG --newest-release-py FILE` checks a release before it is built: the tag must be release.py's tag, and `CLI_VERSION_CODE` must be above the code in FILE, the release.py of the newest published release, prereleases included.
+
+`version.json` on `main` is what the apps and the CLI read. Bumping `current_version` and `latest_tag` to the release by hand is optional and always fine: older apps then name the new release in their update notice, and their download link opens the newest release either way. Change `min_supported_version` only to stop unsupported versions. `current_version` must stay at or above `min_supported_version`: clients ignore the file, and so stop blocking unsupported versions, when it does not, so raising the minimum past `current_version` means raising `current_version` with it. `tests/test_release.py` checks this.
+
 ## Release Checklist
 
-- Update `version.json`, `pyproject.toml`, and `src/timecapsulesmb/core/release.py` to the release version.
+- Set `CLI_VERSION` and bump `CLI_VERSION_CODE` in `src/timecapsulesmb/core/release.py`.
+- Optionally bump `current_version` and `latest_tag` in `version.json` to the release, never for a hidden build. Bump it in the release commit, not earlier, or older apps announce a release that is not published yet.
 - Rebuild any changed NetBSD artifacts and update `artifact-manifest.json`.
 - For Samba changes, run the device regression tests on NetBSD 6 (full suite) and NetBSD 4 LE (the cases that fit).
 - Run the artifact manifest tests.
 - Run the Python and Swift test suites.
 - Package and validate the macOS app.
 - Upload `TimeCapsuleSMB.app.zip` to the GitHub release.
+- Publish with "Set as the latest release" ticked, except for a hidden build, which is published as a prerelease.
 - Confirm the uploaded asset SHA256 digest is visible on GitHub.
 - Include user-facing release notes with compatibility or flash-safety warnings when applicable.

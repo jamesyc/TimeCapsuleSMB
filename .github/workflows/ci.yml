@@ -65,7 +65,7 @@ jobs:
 
       - name: Run Ruff
         run: |
-          .venv/bin/python -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
+          .venv/bin/python -m ruff check src tests macos/TimeCapsuleSMB/tools .github/scripts tcapsule
           # One word never goes in this repo; it is split here so the check
           # does not match itself.
           if git grep -n -i 'pony''tail'; then

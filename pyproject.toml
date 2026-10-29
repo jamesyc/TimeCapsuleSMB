@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "timecapsulesmb"
-version = "3.7.0"
+dynamic = ["version"]
 description = "Deploy modern Samba to Apple AirPort Time Capsules."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -73,6 +73,11 @@ tcapsule = "timecapsulesmb.cli.main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+# release.py is the one place a version is typed. Keep CLI_VERSION a plain
+# string literal so setuptools reads it without importing the package.
+[tool.setuptools.dynamic]
+version = {attr = "timecapsulesmb.core.release.CLI_VERSION"}
 
 [tool.setuptools.package-data]
 timecapsulesmb = [
