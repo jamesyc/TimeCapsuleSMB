@@ -34,6 +34,7 @@ from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.configure import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
     SSH_ONLY_PASSWORD_DEBUG,
+    AirportAlreadySavedError,
     ConfigureFlowError,
     ConfigureFlowHooks,
     ConfigureFlowRequest,
@@ -1342,7 +1343,8 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "device_identity_mismatch")
         self.assertEqual(str(raised.exception), "A different AirPort answers at 10.0.0.2.")
 
-    def run_saved_profile_configure(self, reading: AirportAcpReading, located: LocateResult, probe_state=None):
+    def run_saved_profile_configure(self, reading: AirportAcpReading, located: LocateResult, probe_state=None,
+                                    saved_airport_macs: frozenset[str] = frozenset()):
         """Configure for a profile whose saved MAC is DEVICE_AIRPORT_MAC, typed at 10.0.0.2."""
         probed: list[str] = []
 
@@ -1356,7 +1358,8 @@ class ConfigureServiceTests(unittest.TestCase):
                 mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=located) as locate, \
                 mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight") as enable:
             request = self.configure_request(Path(tmp) / ".env", mock.Mock(side_effect=probe), write_env=writer,
-                                             expected_airport_mac=DEVICE_AIRPORT_MAC)
+                                             expected_airport_mac=DEVICE_AIRPORT_MAC,
+                                             saved_airport_macs=saved_airport_macs)
             try:
                 result = run_configure_flow(request)
             except ConfigureFlowError as exc:
@@ -1419,6 +1422,138 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertIsInstance(run.result, ConfigureFlowError)
         self.assertEqual(run.result.code, "device_identity_mismatch")
         run.writer.assert_not_called()
+
+    def run_unmatched_add(self, reading: AirportAcpReading, *, probe_state=None,
+                          saved: frozenset[str] = frozenset({DEVICE_AIRPORT_MAC})):
+        """Configure for a device the app matched to no saved one, typed at
+        10.0.0.2, while the app has saved these MACs."""
+        probed: list[str] = []
+
+        def probe(connection: SshConnection) -> ProbedDeviceState:
+            probed.append(connection.host)
+            return probe_state or self.make_probe_state()
+
+        writer = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=reading) as read, \
+                mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight") as enable:
+            request = self.configure_request(Path(tmp) / ".env", mock.Mock(side_effect=probe), write_env=writer,
+                                             saved_airport_macs=saved)
+            try:
+                result = run_configure_flow(request)
+            except ConfigureFlowError as exc:
+                result = exc
+        return SimpleNamespace(result=result, probed=probed, writer=writer, read=read, enable=enable)
+
+    def test_a_saved_airport_at_the_address_stops_before_anything_changes(self) -> None:
+        run = self.run_unmatched_add(acp_reading(True), probe_state=self.closed_ssh_state())
+
+        self.assertIsInstance(run.result, AirportAlreadySavedError)
+        self.assertEqual(run.result.code, "device_already_saved")
+        self.assertEqual(run.result.airport_mac, DEVICE_AIRPORT_MAC)
+        run.read.assert_called_once_with("root@10.0.0.2", "pw", attempts=1)
+        # Not even the SSH probe: ACP named the device first.
+        self.assertEqual(run.probed, [])
+        run.enable.assert_not_called()
+        run.writer.assert_not_called()
+
+    def test_a_new_airport_is_configured_with_one_acp_read(self) -> None:
+        # The identity read also answers the password check.
+        other = AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:99")
+        run = self.run_unmatched_add(other)
+
+        self.assertEqual(run.result.host, "root@10.0.0.2")
+        run.read.assert_called_once_with("root@10.0.0.2", "pw", attempts=1)
+        run.writer.assert_called_once()
+
+    def test_a_rejected_password_at_an_unmatched_address_still_fails_as_one(self) -> None:
+        run = self.run_unmatched_add(acp_reading(False))
+
+        self.assertIsInstance(run.result, ConfigureFlowError)
+        self.assertEqual(run.result.code, "auth_failed")
+        run.read.assert_called_once()
+        run.writer.assert_not_called()
+
+    def test_where_acp_cannot_name_the_device_its_ssh_probe_stops_at_a_saved_one(self) -> None:
+        probe_state = self.make_probe_state()
+        probe_state = ProbedDeviceState(
+            probe_result=replace(probe_state.probe_result, airport_mac=DEVICE_AIRPORT_MAC),
+            compatibility=probe_state.compatibility,
+        )
+        run = self.run_unmatched_add(acp_reading(None), probe_state=probe_state)
+
+        self.assertIsInstance(run.result, AirportAlreadySavedError)
+        self.assertEqual(run.result.airport_mac, DEVICE_AIRPORT_MAC)
+        self.assertEqual(run.probed, ["root@10.0.0.2"])
+        run.writer.assert_not_called()
+
+    def test_after_acp_turned_ssh_on_the_ssh_probe_still_stops_at_a_saved_airport(self) -> None:
+        # ACP did not answer the first read, but did when turning SSH on.
+        probe_state = self.make_probe_state()
+        saved_state = ProbedDeviceState(
+            probe_result=replace(probe_state.probe_result, airport_mac=DEVICE_AIRPORT_MAC),
+            compatibility=probe_state.compatibility,
+        )
+        writer = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(None)), \
+                mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe",
+                           side_effect=lambda connection, **_kwargs: (connection, saved_state)) as enable:
+            with self.assertRaises(AirportAlreadySavedError) as raised:
+                run_configure_flow(self.configure_request(
+                    Path(tmp) / ".env", mock.Mock(return_value=self.closed_ssh_state()), write_env=writer,
+                    saved_airport_macs=frozenset({DEVICE_AIRPORT_MAC})))
+
+        self.assertEqual(raised.exception.airport_mac, DEVICE_AIRPORT_MAC)
+        enable.assert_called_once()
+        writer.assert_not_called()
+
+    def test_each_run_reads_the_identity_again_so_a_confirmed_run_can_stop(self) -> None:
+        # The first run gets no ACP answer and stops to ask before SSH is turned
+        # on; the confirmed run, with the same saved MACs, reads again.
+        class AskedToConfirm(Exception):
+            pass
+
+        probe = mock.Mock(return_value=self.closed_ssh_state())
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp",
+                           side_effect=[acp_reading(None), acp_reading(True)]) as read, \
+                mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe",
+                           side_effect=AskedToConfirm) as enable:
+            request = self.configure_request(Path(tmp) / ".env", probe, write_env=mock.Mock(),
+                                             saved_airport_macs=frozenset({DEVICE_AIRPORT_MAC}))
+            with self.assertRaises(AskedToConfirm):
+                run_configure_flow(request)
+            with self.assertRaises(AirportAlreadySavedError):
+                run_configure_flow(request)
+
+        self.assertEqual(read.call_count, 2)
+        enable.assert_called_once()
+        probe.assert_called_once()
+
+    def test_a_saved_devices_own_run_never_stops_at_its_own_mac(self) -> None:
+        # Its expected MAC is among the saved ones; SSH names the device too.
+        probe_state = self.make_probe_state()
+        probe_state = ProbedDeviceState(
+            probe_result=replace(probe_state.probe_result, airport_mac=DEVICE_AIRPORT_MAC),
+            compatibility=probe_state.compatibility,
+        )
+        run = self.run_saved_profile_configure(acp_reading(True), LocateResult("not_found"), probe_state=probe_state,
+                                               saved_airport_macs=frozenset({DEVICE_AIRPORT_MAC}))
+
+        self.assertEqual(run.result.airport_mac, DEVICE_AIRPORT_MAC)
+        run.writer.assert_called_once()
+
+    def test_without_saved_macs_a_saved_airport_is_configured_as_before(self) -> None:
+        probe_state = self.make_probe_state()
+        probe_state = ProbedDeviceState(
+            probe_result=replace(probe_state.probe_result, airport_mac=DEVICE_AIRPORT_MAC),
+            compatibility=probe_state.compatibility,
+        )
+        run = self.run_unmatched_add(acp_reading(True), probe_state=probe_state, saved=frozenset())
+
+        self.assertEqual(run.result.airport_mac, DEVICE_AIRPORT_MAC)
+        run.writer.assert_called_once()
 
     QUIT_LISTING = "  107 1 15 S 0 select 0:00.32 sshd\ntcapsule-ps: end\n"
     RUNNING_LISTING = "  107 1 15 S 0 select 0:00.32 sshd\n  190 1 15 Sa 8 kqread 0:00.00 ACPd\ntcapsule-ps: end\n"

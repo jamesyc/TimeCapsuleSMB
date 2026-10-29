@@ -12,7 +12,6 @@ enum AddDeviceFlowState: String, CaseIterable, Equatable {
     case configuring
     case awaitingConfirmation
     case savingProfile
-    case saved
     case authFailed
     case unsupported
     case failed
@@ -39,8 +38,6 @@ enum AddDeviceFlowState: String, CaseIterable, Equatable {
             return L10n.string("add_device.state.awaiting_confirmation")
         case .savingProfile:
             return L10n.string("add_device.state.saving_profile")
-        case .saved:
-            return L10n.string("add_device.state.saved")
         case .authFailed:
             return L10n.string("add_device.state.auth_failed")
         case .unsupported:
@@ -77,7 +74,10 @@ final class AddDeviceFlowStore: ObservableObject {
     @Published private(set) var state: AddDeviceFlowState = .idle
     @Published private(set) var reconnectProfileID: DeviceProfile.ID?
     @Published var selectedDeviceID: DiscoveredDevice.ID?
+    /// The device an add just saved, for the app to open; this page has started over.
     @Published private(set) var savedProfile: DeviceProfile?
+    /// A clicked device that was already saved, for the app to open.
+    @Published private(set) var profileToOpen: DeviceProfile?
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var currentStage: OperationStageState?
 
@@ -134,6 +134,13 @@ final class AddDeviceFlowStore: ObservableObject {
         discovery.state == .discovering || discovery.state == .checkingLocalNetwork || setupWorkflow.isRunning
     }
 
+    /// An add is in progress. Device clicks are ignored until it ends: choosing
+    /// another device would replace the add's progress with a password prompt.
+    /// A helper still exiting after the add saved or failed does not count.
+    var isAdding: Bool {
+        [.checkingLocalNetwork, .configuring, .awaitingConfirmation, .savingProfile].contains(setupWorkflow.state)
+    }
+
     var canCancel: Bool {
         setupWorkflow.canCancel || discovery.state == .discovering || discovery.state == .checkingLocalNetwork
     }
@@ -151,7 +158,7 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     var reconnectMessage: String? {
-        guard savedProfile == nil, let profile = registry.profile(id: reconnectProfileID) else { return nil }
+        guard let profile = registry.profile(id: reconnectProfileID) else { return nil }
         return L10n.format("discovery.reconnect_selected", profile.title)
     }
 
@@ -190,14 +197,13 @@ final class AddDeviceFlowStore: ObservableObject {
         }
         switch mode {
         case .discover:
-            entryMode = .discover
             reconnectProfileID = nil
             selectedDeviceID = nil
             manualHost = ""
-            savedProfile = nil
+            clearHandoffs()
             error = nil
             currentStage = nil
-            syncDiscoveryState()
+            showDiscoveryList()
         case .manual:
             startManualEntry()
         }
@@ -208,7 +214,7 @@ final class AddDeviceFlowStore: ObservableObject {
         state = .manualEntry
         reconnectProfileID = nil
         selectedDeviceID = nil
-        savedProfile = nil
+        clearHandoffs()
         error = nil
         currentStage = nil
     }
@@ -226,7 +232,7 @@ final class AddDeviceFlowStore: ObservableObject {
         reconnectProfileID = nil
         selectedDeviceID = nil
         manualHost = ""
-        savedProfile = nil
+        clearHandoffs()
         error = nil
         currentStage = nil
         state = .discovering
@@ -258,7 +264,7 @@ final class AddDeviceFlowStore: ObservableObject {
         let configureSettings = existing?.settings ?? defaultDeviceSettings
         error = nil
         currentStage = nil
-        savedProfile = nil
+        clearHandoffs()
         setupWorkflow.start(
             target: target,
             password: password,
@@ -271,18 +277,22 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     func select(_ device: DiscoveredDevice) {
-        entryMode = .discover
-        reconnectProfileID = nil
-        selectedDeviceID = device.id
-        manualHost = device.connectionTarget
-        if device.isUnsupportedModel {
-            rejectUnsupportedModel()
+        guard !isAdding else {
             return
         }
-        if let existing = registry.matchingProfile(for: device) {
-            savedProfile = existing
-            state = .saved
-            error = nil
+        // Nothing is saved, and the page stays as it was, a reconnect choice
+        // included: the app opens the saved device.
+        if !device.isUnsupportedModel, let existing = registry.matchingProfile(for: device) {
+            profileToOpen = existing
+            return
+        }
+        reconnectProfileID = nil
+        entryMode = .discover
+        selectedDeviceID = device.id
+        manualHost = device.connectionTarget
+        clearHandoffs()
+        if device.isUnsupportedModel {
+            rejectUnsupportedModel()
             return
         }
         if error?.code == WorkflowLocalError.unsupportedDevice.code {
@@ -291,18 +301,18 @@ final class AddDeviceFlowStore: ObservableObject {
         state = .passwordEntry
     }
 
+    /// Starts the page over. The discovery it shows belongs to the whole app,
+    /// so a Local Network check or a search in progress keeps running.
     func reset() {
-        if discovery.state == .checkingLocalNetwork { discovery.cancel() }
         setupWorkflow.reset()
         reconnectProfileID = nil
         selectedDeviceID = nil
-        entryMode = .discover
         manualHost = ""
         password = ""
-        savedProfile = nil
+        clearHandoffs()
         error = nil
         currentStage = nil
-        syncDiscoveryState()
+        showDiscoveryList()
     }
 
     func cancel() {
@@ -357,11 +367,19 @@ final class AddDeviceFlowStore: ObservableObject {
     /// Stops before the password prompt: configure would only turn on SSH and
     /// reboot this AirPort to find out that it cannot run TimeCapsuleSMB.
     private func rejectUnsupportedModel() {
-        savedProfile = nil
+        clearHandoffs()
         password = ""
         currentStage = nil
         error = BackendErrorViewModel(operation: "add-device", localError: .unsupportedDevice)
         state = .unsupported
+    }
+
+    /// Drops what this page handed the app: a device it saved, or a saved one to
+    /// open. The app calls this once it has opened the device, so the next
+    /// hand-off reaches it even when it is the same device.
+    func clearHandoffs() {
+        savedProfile = nil
+        profileToOpen = nil
     }
 
     private func currentTarget() -> AddDeviceTarget? {
@@ -447,24 +465,26 @@ final class AddDeviceFlowStore: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        setupWorkflow.$savedProfile
-            .sink { [weak self] profile in
-                Task { @MainActor in
-                    self?.savedProfile = profile
-                }
-            }
-            .store(in: &cancellables)
     }
 
     private var isSetupState: Bool {
         switch state {
         case .checkingLocalNetwork:
             return setupWorkflow.state == .checkingLocalNetwork
-        case .configuring, .awaitingConfirmation, .savingProfile, .saved, .authFailed, .unsupported, .failed:
+        case .configuring, .awaitingConfirmation, .savingProfile, .authFailed, .unsupported, .failed:
             return true
         default:
             return false
         }
+    }
+
+    /// Replaces whatever the page shows with the discovery list. Discovery
+    /// updates keep a failed or unsupported add on screen; Reset and choosing
+    /// Discover clear it.
+    private func showDiscoveryList() {
+        entryMode = .discover
+        state = .idle
+        syncDiscoveryState()
     }
 
     private func syncDiscoveryState() {
@@ -495,9 +515,11 @@ final class AddDeviceFlowStore: ObservableObject {
                 self.reconnectProfileID = nil
                 self.selectedDeviceID = nil
             }
-            // An unsupported model is not preselected: its row shows why, and
-            // clicking it explains instead of leaving Save silently disabled.
-            if selectedDeviceID == nil, discovery.devices.count == 1, !discovery.devices[0].isUnsupportedModel {
+            // A lone device is preselected only when it can be added. An unsupported
+            // model's row explains why when clicked, instead of leaving Save
+            // silently disabled; a saved device's row opens its page.
+            if selectedDeviceID == nil, discovery.devices.count == 1, !discovery.devices[0].isUnsupportedModel,
+               registry.matchingProfile(for: discovery.devices[0]) == nil {
                 selectedDeviceID = discovery.devices[0].id
                 manualHost = discovery.devices[0].connectionTarget
             }
@@ -533,10 +555,11 @@ final class AddDeviceFlowStore: ObservableObject {
         case .savingProfile:
             state = .savingProfile
         case .saved:
-            savedProfile = setupWorkflow.savedProfile
-            error = nil
-            currentStage = nil
-            state = .saved
+            // Nothing about the add stays here: the app opens the saved device,
+            // and this page starts over for the next one.
+            let profile = setupWorkflow.savedProfile
+            reset()
+            savedProfile = profile
         case .authFailed:
             error = setupWorkflow.error
             currentStage = nil

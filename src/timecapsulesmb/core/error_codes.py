@@ -41,6 +41,9 @@ class ErrorCode(str, Enum):
     DEVICE_UNREACHABLE = "device_unreachable"
     DEVICE_OFF_NETWORK = "device_off_network"
     DEVICE_IDENTITY_MISMATCH = "device_identity_mismatch"
+    # Configure found an AirPort the app has saved and stopped before writing
+    # a config for it: the app sets that saved device up instead.
+    DEVICE_ALREADY_SAVED = "device_already_saved"
     DEVICE_PROBE_FAILED = "device_probe_failed"
     ACP_UNREACHABLE = "acp_unreachable"
     ACP_NO_ROUTE = "acp_no_route"

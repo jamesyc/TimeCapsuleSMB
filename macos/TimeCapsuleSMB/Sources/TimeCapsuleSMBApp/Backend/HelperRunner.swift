@@ -2,6 +2,9 @@ import Darwin
 import Foundation
 
 public struct HelperRunResult: Equatable, Sendable {
+    /// The exit code of every run cancelled from the app.
+    public static let cancelledExitCode: Int32 = 130
+
     public let exitCode: Int32
     public let sawTerminalEvent: Bool
     public let stderr: String
@@ -127,7 +130,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
                         debug: stderr.isEmpty ? nil : .object(["stderr": .string(stderr)])
                     ))
                 }
-                return HelperRunResult(exitCode: 130, sawTerminalEvent: await terminalTracker.sawTerminalEvent, stderr: stderr)
+                return HelperRunResult(exitCode: HelperRunResult.cancelledExitCode, sawTerminalEvent: await terminalTracker.sawTerminalEvent, stderr: stderr)
             }
             await eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription, requestId: requestID))
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: stderr)
@@ -165,7 +168,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         let finalSawTerminalEvent = await terminalTracker.sawTerminalEvent
 
         return HelperRunResult(
-            exitCode: cancelled ? 130 : process.terminationStatus,
+            exitCode: cancelled ? HelperRunResult.cancelledExitCode : process.terminationStatus,
             sawTerminalEvent: finalSawTerminalEvent,
             stderr: stderrText
         )

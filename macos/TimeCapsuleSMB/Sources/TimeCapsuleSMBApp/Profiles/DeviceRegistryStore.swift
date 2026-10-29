@@ -17,6 +17,17 @@ enum DeviceRegistryError: Error, Equatable, LocalizedError {
     case identityUnverified
     case io(String)
 
+    static let airportMACField = "AirPort MAC"
+
+    /// The saved device a refused save is, by its AirPort MAC. A clash on the
+    /// configured host alone can be another AirPort that only had that address.
+    var profileWithSameAirportMAC: DeviceProfile.ID? {
+        guard case .duplicateProfile(let field, _, let profileID) = self, field == Self.airportMACField else {
+            return nil
+        }
+        return profileID
+    }
+
     var errorDescription: String? {
         switch self {
         case .applicationSupportUnavailable:
@@ -714,7 +725,7 @@ private actor DeviceRegistryRepository {
         for existing in profiles where existing.id != profileID {
             let left = profile.network, right = existing.network
             if let mac = left.airportMAC, mac == right.airportMAC {
-                return .duplicateProfile(field: "AirPort MAC", value: mac, conflictingProfileID: existing.id)
+                return .duplicateProfile(field: DeviceRegistryError.airportMACField, value: mac, conflictingProfileID: existing.id)
             }
             if !left.normalizedConfiguredHost.isEmpty && left.normalizedConfiguredHost == right.normalizedConfiguredHost {
                 return .duplicateProfile(field: "host", value: left.configuredHost, conflictingProfileID: existing.id)

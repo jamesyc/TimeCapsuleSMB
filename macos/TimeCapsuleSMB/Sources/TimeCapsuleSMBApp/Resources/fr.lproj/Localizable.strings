@@ -7,9 +7,11 @@
 "add_device.discovered_devices" = "Appareils détectés";
 "add_device.entry.discover" = "Découvrir";
 "add_device.entry.manual" = "Adresse manuelle";
+"add_device.error.already_saved" = "Cet appareil est déjà enregistré sous le nom « %@ ».";
 "add_device.error.choose_target" = "Choisissez un appareil détecté ou saisissez un hôte.";
 "add_device.error.invalid_bonjour_timeout" = "Le délai de découverte doit être d’au moins 5 secondes.";
 "add_device.error.password_required" = "Le mot de passe de l’appareil est requis.";
+"add_device.error.saved_device_busy" = "Cet appareil est déjà enregistré sous le nom « %@ » et une autre opération est en cours sur celui-ci. Réessayez lorsqu’elle sera terminée.";
 "add_device.host_or_ip" = "Nom d’hôte ou adresse IP";
 "add_device.password" = "Mot de passe de l’appareil";
 "add_device.progress.configuring.message" = "Vérification de l’accès et préparation de cet appareil. Cela peut prendre quelques minutes...";
@@ -35,7 +37,6 @@
 "add_device.state.manual_entry" = "Adresse manuelle";
 "add_device.state.password_entry" = "Mot de passe requis";
 "add_device.state.checking_local_network" = "Vérification du réseau local";
-"add_device.state.saved" = "Enregistré";
 "add_device.state.saving_profile" = "Enregistrement";
 "add_device.state.unsupported" = "Non pris en charge";
 "add_device.title" = "Ajouter un Apple AirPort Time Capsule ou AirPort Extreme";

@@ -16,7 +16,6 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             .configuring,
             .awaitingConfirmation,
             .savingProfile,
-            .saved,
             .authFailed,
             .unsupported,
             .failed
@@ -40,9 +39,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
     func testDiscoverEmptyReadyAndFailureStates() async throws {
         let empty = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
-            ])
+            testDiscoverResponse([])
         ])
         empty.store.runDiscover()
         try await waitUntilStoreState { empty.store.state == .discoveryEmpty }
@@ -163,9 +160,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             fullname: "Office Capsule._airport._tcp.local."
         )
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
-            ])
+            testDiscoverResponse([record])
         ])
 
         fixture.store.runDiscover()
@@ -187,12 +182,8 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             fullname: "IPv6 Capsule._airport._tcp.local."
         )
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@fd00::2"))
-            ])
+            testDiscoverResponse([record]),
+            testConfigureResponse(host: "root@fd00::2")
         ])
 
         fixture.store.runDiscover()
@@ -205,7 +196,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         fixture.store.password = "secret"
         fixture.store.runConfigure()
 
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         let profile = try XCTUnwrap(fixture.store.savedProfile)
         XCTAssertEqual(profile.connectionTarget, "fd00::2")
         XCTAssertEqual(profile.addresses, ["fd00::2"])
@@ -289,9 +280,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             fullname: "Office Capsule._airport._tcp.local."
         )
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
-            ])
+            testDiscoverResponse([record])
         ])
 
         XCTAssertEqual(fixture.store.entryMode, .discover)
@@ -327,11 +316,116 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertNil(fixture.store.selectedDeviceID)
     }
 
-    func testManualHostConfigureSuccessSavesProfileAndPassword() async throws {
+    func testSavingHandsTheDeviceToTheAppAndStartsThePageOver() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([office, den]),
+            testConfigureResponse(host: "root@10.0.0.3")
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.last))
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+        await runQueuedStoreUpdates()
+
+        // The app opens the saved device; nothing of the add stays on this page.
+        XCTAssertEqual(fixture.store.savedProfile?.displayName, "Den Capsule")
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
+        XCTAssertNil(fixture.store.selectedDeviceID)
+        XCTAssertNil(fixture.store.error)
+        XCTAssertNil(fixture.store.currentStage)
+        XCTAssertEqual(fixture.store.password, "")
+        XCTAssertEqual(fixture.store.devices.count, 2)
+        XCTAssertEqual(fixture.registry.profiles.count, 1)
+
+        // The app opens the device and takes it; the list stays.
+        fixture.store.clearHandoffs()
+        await runQueuedStoreUpdates()
+        XCTAssertNil(fixture.store.savedProfile)
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
+        XCTAssertEqual(fixture.store.devices.count, 2)
+    }
+
+    func testResetAfterConfigureFailureClearsTheFailedState() async throws {
         let fixture = try await makeStore(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
+                BackendEvent(type: "result", operation: "discover", ok: true,
+                    payload: testDiscoverPayload(records: [testDeviceRecord(ipv4: ["10.0.0.5"])]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "error", operation: "configure", code: "auth_failed", message: "bad password")
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.password = "bad"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .authFailed && !fixture.store.isRunning }
+
+        fixture.store.reset()
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
+        XCTAssertNil(fixture.store.error)
+        XCTAssertEqual(fixture.store.password, "")
+    }
+
+    func testResetAfterUnsupportedModelClearsTheExplanation() async throws {
+        let express = testDiscoveredDevice(
+            id: "bonjour:express",
+            name: "Living Room Express",
+            host: "10.0.0.40",
+            syap: "115",
+            model: "AirPort10,115",
+            supportedModel: false,
+            fullname: "Living Room Express._airport._tcp.local."
+        )
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [express]))
             ])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
+        XCTAssertEqual(fixture.store.state, .unsupported)
+
+        fixture.store.reset()
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
+        XCTAssertNil(fixture.store.error)
+        XCTAssertNil(fixture.store.selectedDeviceID)
+        XCTAssertEqual(fixture.store.devices.count, 1)
+    }
+
+    func testChoosingDiscoverAfterManualConfigureFailureClearsTheFailedState() async throws {
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: .object(["schema_version": .string("wrong")]))
+            ])
+        ])
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .failed && !fixture.store.isRunning }
+
+        fixture.store.setEntryMode(.discover)
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.entryMode, .discover)
+        XCTAssertEqual(fixture.store.state, .idle)
+        XCTAssertNil(fixture.store.error)
+    }
+
+    func testManualHostConfigureSuccessSavesProfileAndPassword() async throws {
+        let fixture = try await makeStore(responses: [
+            testConfigureResponse(host: "root@10.0.0.2")
         ])
         fixture.store.startManualEntry()
         fixture.store.manualHost = "10.0.0.2"
@@ -339,7 +433,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         fixture.store.runConfigure()
 
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         let profile = try XCTUnwrap(fixture.store.savedProfile)
         XCTAssertEqual(fixture.registry.profiles.count, 1)
         XCTAssertEqual(profile.host, "root@10.0.0.2")
@@ -364,9 +458,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         let checker = FixedLocalNetworkPreflightChecker(status: .allowed)
         let fixture = try await makeStore(
             responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
-                ])
+                testConfigureResponse(host: "root@10.0.0.2")
             ],
             localNetworkPreflightChecker: checker
         )
@@ -387,9 +479,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         let checker = FixedLocalNetworkPreflightChecker(status: .unknown, detail: "timeout")
         let fixture = try await makeStore(
             responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
-                ])
+                testConfigureResponse(host: "root@10.0.0.2")
             ],
             localNetworkPreflightChecker: checker
         )
@@ -448,9 +538,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
     func testPublishesWhenSetupBackendFinishesAfterConfigureResult() async throws {
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
-            ])
+            testConfigureResponse(host: "root@10.0.0.2")
         ])
         fixture.store.startManualEntry()
         fixture.store.manualHost = "10.0.0.2"
@@ -462,7 +550,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             .sink { [weak store = fixture.store] _ in
                 Task { @MainActor in
                     guard !didFulfill,
-                          store?.state == .saved,
+                          store?.savedProfile != nil,
                           store?.isRunning == false else {
                         return
                     }
@@ -474,7 +562,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         fixture.store.runConfigure()
 
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         await fulfillment(of: [finishPublished], timeout: 2)
         XCTAssertFalse(fixture.store.isRunning)
         _ = cancellables
@@ -482,22 +570,8 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
     func testConfigureSSHEnableConfirmationCanBeConfirmedAndSavesProfile() async throws {
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(
-                    type: "error",
-                    operation: "configure",
-                    code: "confirmation_required",
-                    message: "SSH is closed.",
-                    details: .object([
-                        "confirmation_id": .string("confirm-ssh"),
-                        "presentation_id": .string("configure.enable_ssh_reboot"),
-                        "presentation_values": .object(["device_name": .string("Office Capsule")])
-                    ])
-                )
-            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
-            .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
-            ])
+            Self.sshConfirmationRequired(),
+            testConfigureResponse(host: "root@10.0.0.2")
         ])
         fixture.store.startManualEntry()
         fixture.store.manualHost = "10.0.0.2"
@@ -515,7 +589,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         fixture.store.coordinator.confirmPending()
 
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         XCTAssertEqual(fixture.runner.calls.count, 2)
         XCTAssertEqual(fixture.runner.calls[1].params["confirmation_id"], .string("confirm-ssh"))
         XCTAssertEqual(fixture.store.savedProfile?.host, "root@10.0.0.2")
@@ -524,19 +598,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
     func testConfigureSSHEnableConfirmationCancellationReturnsToPasswordEntry() async throws {
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(
-                    type: "error",
-                    operation: "configure",
-                    code: "confirmation_required",
-                    message: "SSH is closed.",
-                    details: .object([
-                        "confirmation_id": .string("confirm-ssh"),
-                        "presentation_id": .string("configure.enable_ssh_reboot"),
-                        "presentation_values": .object(["device_name": .string("Office Capsule")])
-                    ])
-                )
-            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+            Self.sshConfirmationRequired()
         ])
         fixture.store.startManualEntry()
         fixture.store.manualHost = "10.0.0.2"
@@ -562,9 +624,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
     func testNewManualProfileUsesAppDefaultDeviceSettings() async throws {
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
-            ])
+            testConfigureResponse(host: "root@10.0.0.2")
         ])
         let defaultSettings = DeviceProfileSettings(
             internalShareUseDiskRoot: true,
@@ -587,7 +647,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         fixture.store.runConfigure()
 
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         XCTAssertEqual(fixture.store.savedProfile?.settings, defaultSettings)
         XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
@@ -602,9 +662,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
     func testExistingProfileSettingsAreNotClobberedByAppDefaults() async throws {
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "10.0.0.2"))
-            ])
+            testConfigureResponse(host: "10.0.0.2")
         ])
         let existing = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -646,7 +704,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         fixture.store.runConfigure()
 
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         XCTAssertEqual(fixture.store.savedProfile?.settings, editedExisting.settings)
         XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["internal_share_use_disk_root"], .bool(false))
@@ -698,9 +756,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
             ], pauseAfterEvents: true),
-            .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
-            ])
+            testConfigureResponse(host: "root@10.0.0.2")
         ])
         fixture.store.startManualEntry()
         fixture.store.manualHost = "10.0.0.2"
@@ -714,7 +770,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         try await waitUntilStoreState { fixture.runner.calls.count == 2 }
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "configure"])
         XCTAssertTrue(fixture.store.coordinator.appLane.backend.isRunning)
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         XCTAssertEqual(fixture.registry.profiles.count, 1)
         fixture.runner.finishAll()
     }
@@ -727,12 +783,8 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             fullname: "Office Capsule._airport._tcp.local."
         )
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "10.0.0.5"))
-            ])
+            testDiscoverResponse([record]),
+            testConfigureResponse(host: "10.0.0.5")
         ])
 
         fixture.store.runDiscover()
@@ -742,7 +794,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         fixture.store.password = "secret"
         fixture.store.runConfigure()
 
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         let profile = try XCTUnwrap(fixture.store.savedProfile)
         XCTAssertEqual(profile.bonjourFullname, "Office Capsule._airport._tcp.local.")
         XCTAssertEqual(profile.hostname, "office.local.")
@@ -759,9 +811,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             fullname: "Office Capsule._airport._tcp.local."
         )
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
-            ]),
+            testDiscoverResponse([record]),
             .init(events: [
                 BackendEvent(type: "error", operation: "configure", code: "auth_failed", message: "bad password")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
@@ -846,7 +896,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         fixture.store.runConfigure()
 
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         XCTAssertEqual(fixture.registry.profiles.count, 1)
         XCTAssertEqual(fixture.store.savedProfile?.id, existing.id)
         XCTAssertEqual(fixture.store.savedProfile?.model, "Updated Capsule")
@@ -855,9 +905,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
     func testKeychainSaveFailureDoesNotSaveProfile() async throws {
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "10.0.0.2"))
-            ])
+            testConfigureResponse(host: "10.0.0.2")
         ])
         fixture.passwordStore.saveFailure = .save
         fixture.store.startManualEntry()
@@ -879,9 +927,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             fullname: "Office Capsule._airport._tcp.local."
         )
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
-            ])
+            testDiscoverResponse([record])
         ])
         let existing = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -894,9 +940,231 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         try await waitUntilStoreState { fixture.store.state == .discoveryReady }
         fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
 
-        XCTAssertEqual(fixture.store.state, .saved)
-        XCTAssertEqual(fixture.store.savedProfile?.id, existing.id)
+        // Nothing was saved: the app is asked to open the device, and the page is left alone.
+        XCTAssertEqual(fixture.store.profileToOpen?.id, existing.id)
+        XCTAssertNil(fixture.store.savedProfile)
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
         XCTAssertEqual(fixture.runner.calls.count, 1)
+    }
+
+    func testOpeningAlreadySavedDiscoveryLeavesThePageAndTheSameClickOpensItAgain() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([office, den])
+        ])
+        let existing = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: office.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "existing-device"
+        )
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        XCTAssertNil(fixture.store.selectedDeviceID)
+        let device = try XCTUnwrap(fixture.store.devices.first)
+        let unsaved = try XCTUnwrap(fixture.store.devices.last)
+        fixture.store.select(unsaved)
+        fixture.store.password = "secret"
+        fixture.store.select(device)
+        XCTAssertEqual(fixture.store.profileToOpen?.id, existing.id)
+
+        // The app opens the saved profile's page and takes the hand-off.
+        fixture.store.clearHandoffs()
+        await runQueuedStoreUpdates()
+
+        // The AirPort being added is still on the page, ready to save.
+        XCTAssertNil(fixture.store.profileToOpen)
+        XCTAssertNil(fixture.store.savedProfile)
+        XCTAssertEqual(fixture.store.state, .passwordEntry)
+        XCTAssertEqual(fixture.store.selectedDeviceID, unsaved.id)
+        XCTAssertEqual(fixture.store.password, "secret")
+        XCTAssertTrue(fixture.store.canConfigure)
+        XCTAssertEqual(fixture.store.devices.count, 2)
+
+        // The profile changes from nil again, so a second click opens the page again.
+        fixture.store.select(device)
+        await runQueuedStoreUpdates()
+        XCTAssertEqual(fixture.store.profileToOpen?.id, existing.id)
+        XCTAssertNil(fixture.store.savedProfile)
+        XCTAssertEqual(fixture.runner.calls.count, 1)
+    }
+
+    func testALoneSavedAirPortIsNotPreselectedForAdding() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([office])
+        ])
+        let existing = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: office.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "existing-device"
+        )
+
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+
+        // Its row opens its page, so nothing is set up to add it again.
+        XCTAssertNil(fixture.store.selectedDeviceID)
+        XCTAssertEqual(fixture.store.manualHost, "")
+        fixture.store.password = "secret"
+        XCTAssertFalse(fixture.store.canConfigure)
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
+        XCTAssertEqual(fixture.store.profileToOpen?.id, existing.id)
+    }
+
+    func testSavingTheOnlyAirPortLeavesNothingSelected() async throws {
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([den]),
+            testConfigureResponse(host: "root@10.0.0.3")
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        // A lone AirPort that is not saved yet is ready to add.
+        XCTAssertEqual(fixture.store.selectedDevice?.host, "10.0.0.3")
+        fixture.store.password = "secret"
+
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.savedProfile?.displayName, "Den Capsule")
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
+        XCTAssertNil(fixture.store.selectedDeviceID)
+        XCTAssertEqual(fixture.store.manualHost, "")
+        fixture.store.password = "secret"
+        XCTAssertFalse(fixture.store.canConfigure)
+    }
+
+    func testSelectingAnUnsavedDeviceDropsEarlierProfileHandoffs() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let attic = testDeviceRecord(name: "Attic Capsule", ipv4: ["10.0.0.4"], fullname: "Attic Capsule._airport._tcp.local.")
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([office, den, attic]),
+            testConfigureResponse(host: "root@10.0.0.3")
+        ])
+        _ = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: office.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "existing-device"
+        )
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(fixture.store.devices[0])
+        XCTAssertNotNil(fixture.store.profileToOpen)
+
+        fixture.store.select(fixture.store.devices[1])
+
+        XCTAssertNil(fixture.store.profileToOpen)
+        XCTAssertEqual(fixture.store.state, .passwordEntry)
+
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+        XCTAssertNotNil(fixture.store.savedProfile)
+
+        fixture.store.select(fixture.store.devices[2])
+
+        XCTAssertNil(fixture.store.savedProfile)
+        XCTAssertEqual(fixture.store.state, .passwordEntry)
+        XCTAssertEqual(fixture.store.selectedDeviceID, fixture.store.devices[2].id)
+    }
+
+    func testMovingOnFromTheListDropsTheSavedDeviceToOpen() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let discover = StoreTestRunner.Response(events: [
+            BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [office, den]))
+        ])
+        let fixture = try await makeStore(responses: [
+            discover,
+            discover,
+            testConfigureResponse(host: "root@10.0.0.3")
+        ])
+        _ = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: office.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "existing-device"
+        )
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady && !fixture.store.coordinator.appLane.isBusy }
+        let saved = fixture.store.devices[0]
+        let unsaved = fixture.store.devices[1]
+
+        // Manual Address, and back to Discover.
+        fixture.store.select(saved)
+        XCTAssertNotNil(fixture.store.profileToOpen)
+        fixture.store.startManualEntry()
+        XCTAssertNil(fixture.store.profileToOpen)
+        fixture.store.select(saved)
+        XCTAssertNotNil(fixture.store.profileToOpen)
+        fixture.store.setEntryMode(.discover)
+        XCTAssertNil(fixture.store.profileToOpen)
+
+        // Discover again.
+        fixture.store.select(saved)
+        XCTAssertNotNil(fixture.store.profileToOpen)
+        fixture.store.runDiscover()
+        XCTAssertNil(fixture.store.profileToOpen)
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady && !fixture.store.coordinator.appLane.isBusy }
+
+        // The page still has Den selected, as the app leaves it after opening
+        // the saved Office, so Save Device adds Den.
+        fixture.store.select(unsaved)
+        fixture.store.password = "secret"
+        fixture.store.select(saved)
+        XCTAssertNotNil(fixture.store.profileToOpen)
+        fixture.store.runConfigure()
+        XCTAssertNil(fixture.store.profileToOpen)
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+        XCTAssertEqual(fixture.store.savedProfile?.displayName, "Den Capsule")
+        XCTAssertNil(fixture.store.profileToOpen)
+    }
+
+    func testSelectionWaitsWhileAnAddRunsSoOpeningASavedDeviceCannotDropIt() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let attic = testDeviceRecord(name: "Attic Capsule", ipv4: ["10.0.0.4"], fullname: "Attic Capsule._airport._tcp.local.")
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([office, den, attic]),
+            testConfigureResponse(host: "root@10.0.0.3", pauseBeforeEvents: true)
+        ])
+        _ = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: office.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "existing-device"
+        )
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        XCTAssertEqual(fixture.store.devices.count, 3)
+        let denID = fixture.store.devices[1].id
+        fixture.store.select(fixture.store.devices[1])
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .configuring && fixture.runner.calls.count == 2 }
+        // A click comes after the run's own start-up updates have landed.
+        await runQueuedStoreUpdates()
+
+        // The overview's Add for another AirPort, then a click on the saved one.
+        fixture.store.select(fixture.store.devices[2])
+        fixture.store.select(fixture.store.devices[0])
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.state, .configuring)
+        XCTAssertEqual(fixture.store.selectedDeviceID, denID)
+        XCTAssertNil(fixture.store.savedProfile)
+        XCTAssertNil(fixture.store.profileToOpen)
+
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
+        XCTAssertEqual(fixture.store.savedProfile?.displayName, "Den Capsule")
+        XCTAssertEqual(fixture.registry.profiles.count, 2)
     }
 
     func testSelectingUnsupportedModelExplainsAndNeverRunsConfigure() async throws {
@@ -976,6 +1244,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         XCTAssertEqual(fixture.store.state, .unsupported)
         XCTAssertNil(fixture.store.savedProfile)
+        XCTAssertNil(fixture.store.profileToOpen)
     }
 
     func testSelectingSupportedDeviceAfterUnsupportedClearsTheExplanation() async throws {
@@ -1044,31 +1313,397 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80", airportMAC: "02:aa:bb:cc:dd:ee"))
-            ])
+            testDiscoverResponse([currentRecord]),
+            testConfigureResponse(host: "root@10.0.0.80", airportMAC: "02:aa:bb:cc:dd:ee")
         ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
+        // The saved profile turns out to be this AirPort after it was chosen, as
+        // when a profile learns an AirPort's identity while the page is open.
         let existing = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: "02:aa:bb:cc:dd:ee"),
             discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
             preferredID: "existing-device"
         )
-
-        fixture.store.runDiscover()
-        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
-        fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
+        XCTAssertEqual(fixture.store.selectedDevice?.host, "10.0.0.80")
         fixture.store.password = "secret"
         fixture.store.runConfigure()
 
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         XCTAssertEqual(fixture.store.savedProfile?.id, existing.id)
         XCTAssertEqual(fixture.runner.calls[1].params["selected_record"], currentRecord)
         XCTAssertNil(fixture.runner.calls[1].params["host"])
         XCTAssertEqual(fixture.runner.calls[1].context?.profileID, existing.id)
+    }
+
+    func testManualAddressOfAMovedSavedAirPortUpdatesThatSavedDevice() async throws {
+        let mac = "02:aa:bb:cc:dd:ee"
+        let fixture = try await makeStore(responses: [
+            testSavedAirportStopResponse(airportMAC: mac),
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac)
+        ])
+        let saved = try await saveOfficeCapsule(in: fixture, airportMAC: mac)
+        var states: [AddDeviceFlowState] = []
+        let subscription = fixture.store.$state.sink { states.append($0) }
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "new password"
+
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+
+        // Configure stopped at the saved AirPort, then ran again as that saved device.
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["configure", "configure"])
+        let stopped = fixture.runner.calls[0], rerun = fixture.runner.calls[1]
+        XCTAssertEqual(stopped.params["saved_airport_macs"], .array([.string(mac)]))
+        XCTAssertNotEqual(stopped.context?.profileID, saved.id)
+        XCTAssertEqual(stopped.params["debug_logging"], .bool(false))
+        XCTAssertNil(rerun.params["saved_airport_macs"])
+        XCTAssertEqual(rerun.params["host"], .string("root@10.0.0.9"))
+        XCTAssertEqual(rerun.context?.profileID, saved.id)
+        XCTAssertEqual(rerun.context?.airportMAC, mac)
+        XCTAssertEqual(rerun.params["debug_logging"], .bool(true))
+        // Telemetry tells how the new address was found, as Settings does: typed in.
+        XCTAssertNil(stopped.params["address_source"])
+        XCTAssertEqual(rerun.params["address_source"], .string("manual"))
+        // The saved device has the new address and password, and keeps the rest.
+        XCTAssertEqual(fixture.registry.profiles.map(\.id), [saved.id])
+        let updated = try XCTUnwrap(fixture.registry.profile(id: saved.id))
+        XCTAssertEqual(updated.host, "root@10.0.0.9")
+        XCTAssertEqual(updated.displayName, "Office Capsule")
+        XCTAssertTrue(updated.settings.debugLogging)
+        XCTAssertEqual(try fixture.passwordStore.password(for: saved.keychainAccount), "new password")
+        XCTAssertEqual(fixture.store.savedProfile?.id, saved.id)
+        // The add stayed in progress throughout: the stop is not a failure.
+        XCTAssertFalse(states.contains(.failed))
+        XCTAssertNil(fixture.store.error)
+        withExtendedLifetime(subscription) {}
+    }
+
+    func testASavedAirPortThatIsBusyFailsTheAddNamingItAndSaveTriesAgain() async throws {
+        let mac = "02:aa:bb:cc:dd:ee"
+        let fixture = try await makeStore(responses: [
+            // The saved device's own run, as a Settings save or a background check starts it.
+            testConfigureResponse(host: "root@10.0.0.2", airportMAC: mac, pauseBeforeEvents: true),
+            testSavedAirportStopResponse(airportMAC: mac),
+            testSavedAirportStopResponse(airportMAC: mac),
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac)
+        ])
+        defer { fixture.runner.finishAll() }
+        let saved = try await saveOfficeCapsule(in: fixture, airportMAC: mac)
+        guard case .started = fixture.store.coordinator.run(operation: "configure", params: ["password": .string("pw")],
+                                                            profile: saved) else {
+            return XCTFail("The saved device's own run did not start.")
+        }
+        let stoppedLane = fixture.store.coordinator.lane(
+            for: AddDeviceTarget.manual(ManualDeviceTarget(host: "10.0.0.9")).setupLaneKey(existingProfileID: nil))
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "new password"
+
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .failed && !fixture.store.isRunning }
+
+        XCTAssertEqual(fixture.store.error?.message, L10n.format("add_device.error.saved_device_busy", "Office Capsule"))
+        XCTAssertEqual(fixture.runner.calls.count, 2)
+        XCTAssertEqual(fixture.registry.profile(id: saved.id)?.host, saved.host)
+        XCTAssertTrue(stoppedLane.backend.events.isEmpty)
+        // The page keeps what was typed, so Save Device tries again.
+        XCTAssertEqual(fixture.store.entryMode, .manual)
+        XCTAssertEqual(fixture.store.manualHost, "10.0.0.9")
+        XCTAssertEqual(fixture.store.password, "new password")
+        XCTAssertTrue(fixture.store.canConfigure)
+
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { !fixture.store.coordinator.isDeviceBusy(saved) }
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+
+        XCTAssertEqual(fixture.runner.calls.count, 4)
+        XCTAssertEqual(fixture.runner.calls[3].context?.profileID, saved.id)
+        XCTAssertEqual(fixture.registry.profile(id: saved.id)?.host, "root@10.0.0.9")
+        XCTAssertEqual(try fixture.passwordStore.password(for: saved.keychainAccount), "new password")
+    }
+
+    func testADiscoveredAirPortThatIsASavedDeviceUnderAnotherNameUpdatesIt() async throws {
+        // Its record has no MAC and another name, so only configure's ACP read ties it to the saved device.
+        let mac = "02:aa:bb:cc:dd:ee"
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.9"], fullname: "Den Capsule._airport._tcp.local.")
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([den]),
+            testSavedAirportStopResponse(airportMAC: mac),
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac)
+        ])
+        let saved = try await saveOfficeCapsule(in: fixture, airportMAC: mac)
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        XCTAssertEqual(fixture.store.selectedDevice?.host, "10.0.0.9")
+        fixture.store.password = "new password"
+
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+
+        let stopped = fixture.runner.calls[1], rerun = fixture.runner.calls[2]
+        XCTAssertEqual(stopped.params["saved_airport_macs"], .array([.string(mac)]))
+        XCTAssertNotNil(rerun.params["selected_record"])
+        XCTAssertEqual(rerun.context?.profileID, saved.id)
+        // Discovery found the address; its MAC tied it to the saved device.
+        XCTAssertEqual(rerun.params["address_source"], .string("mac"))
+        XCTAssertEqual(fixture.registry.profiles.map(\.id), [saved.id])
+        XCTAssertEqual(fixture.registry.profile(id: saved.id)?.displayName, "Office Capsule")
+    }
+
+    func testTheRerunReusesTheFirstRunsLocalNetworkCheck() async throws {
+        let mac = "02:aa:bb:cc:dd:ee"
+        let checker = FixedLocalNetworkPreflightChecker(status: .allowed)
+        let fixture = try await makeStore(responses: [
+            testSavedAirportStopResponse(airportMAC: mac),
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac)
+        ], localNetworkPreflightChecker: checker)
+        _ = try await saveOfficeCapsule(in: fixture, airportMAC: mac)
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "new password"
+
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+
+        XCTAssertEqual(checker.checkCount, 1)
+        XCTAssertEqual(fixture.runner.calls.map { $0.params["macos_local_network_preflight_result"] },
+                       [.string("allowed"), .string("allowed")])
+    }
+
+    func testAStopAtADeviceForgottenBeforeItsHelperExitsAddsTheAirPortAsNew() async throws {
+        let mac = "02:aa:bb:cc:dd:ee"
+        let fixture = try await makeStore(responses: [
+            testSavedAirportStopResponse(airportMAC: mac, pauseAfterEvents: true),
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac)
+        ])
+        defer { fixture.runner.finishAll() }
+        let forgotten = try await saveOfficeCapsule(in: fixture, airportMAC: mac)
+        let stoppedLane = fixture.store.coordinator.lane(
+            for: AddDeviceTarget.manual(ManualDeviceTarget(host: "10.0.0.9")).setupLaneKey(existingProfileID: nil))
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { stoppedLane.backend.events.contains { $0.code == "device_already_saved" } }
+        await runQueuedStoreUpdates()
+
+        try await fixture.registry.delete(forgotten)
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+
+        // Run again once only, as a new device: it cannot stop there a second time.
+        let stopped = fixture.runner.calls[0], rerun = fixture.runner.calls[1]
+        XCTAssertEqual(fixture.runner.calls.count, 2)
+        XCTAssertEqual(stopped.params["saved_airport_macs"], .array([.string(mac)]))
+        XCTAssertNil(rerun.params["saved_airport_macs"])
+        XCTAssertNil(rerun.params["address_source"])
+        XCTAssertEqual(rerun.context?.profileID, stopped.context?.profileID)
+        XCTAssertNil(rerun.context?.airportMAC)
+        XCTAssertEqual(rerun.params["debug_logging"], .bool(false))
+        XCTAssertEqual(fixture.registry.profiles.map(\.id), [try XCTUnwrap(stopped.context?.profileID)])
+        XCTAssertNotEqual(fixture.store.savedProfile?.id, forgotten.id)
+        XCTAssertEqual(fixture.store.savedProfile?.network.airportMAC, mac)
+    }
+
+    func testAStopAfterTurningSSHOnRunsTheAddAgainAsTheSavedDevice() async throws {
+        // ACP did not name the AirPort before SSH was off; the confirmed run's SSH probe did.
+        let mac = "02:aa:bb:cc:dd:ee"
+        let fixture = try await makeStore(responses: [
+            Self.sshConfirmationRequired(),
+            testSavedAirportStopResponse(airportMAC: mac),
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac)
+        ])
+        let saved = try await saveOfficeCapsule(in: fixture, airportMAC: mac)
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "new password"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState {
+            fixture.store.state == .awaitingConfirmation &&
+            fixture.store.coordinator.pendingConfirmation != nil &&
+            !fixture.store.coordinator.lane(for: .candidateHost("10.0.0.9")).backend.isRunning
+        }
+
+        fixture.store.coordinator.confirmPending()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+
+        XCTAssertEqual(fixture.runner.calls.count, 3)
+        let confirmed = fixture.runner.calls[1], rerun = fixture.runner.calls[2]
+        XCTAssertEqual(confirmed.params["confirmation_id"], .string("confirm-ssh"))
+        XCTAssertEqual(confirmed.params["saved_airport_macs"], .array([.string(mac)]))
+        // SSH is on now: the saved device's run asks nothing again.
+        XCTAssertNil(rerun.params["confirmation_id"])
+        XCTAssertNil(rerun.params["saved_airport_macs"])
+        XCTAssertEqual(rerun.context?.profileID, saved.id)
+        XCTAssertEqual(fixture.store.savedProfile?.id, saved.id)
+        XCTAssertEqual(fixture.registry.profiles.map(\.id), [saved.id])
+        XCTAssertEqual(fixture.registry.profile(id: saved.id)?.host, "root@10.0.0.9")
+        XCTAssertNil(fixture.store.error)
+    }
+
+    func testAnAddOfASavedDeviceSendsNoSavedMACsOrAddressSource() async throws {
+        // Configure runs as the saved device, its MAC check included, so it has
+        // no saved AirPort to stop at, and no address of it to report.
+        let mac = "02:aa:bb:cc:dd:ee"
+        let moved = testDeviceRecord(ipv4: ["10.0.0.9"])
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([moved]),
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac),
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac)
+        ])
+        let saved = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: mac),
+            discoveredDevice: DiscoveredDevice(record: try testDeviceRecord().decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available, preferredID: "existing")
+        // The suggested reconnect of the AirPort found at a new address.
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
+        fixture.store.reconnectSuggestedProfile()
+        XCTAssertEqual(fixture.store.reconnectProfileID, saved.id)
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+        fixture.store.clearHandoffs()
+        // Manual Address of the address it is saved at now.
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+
+        let adds = Array(fixture.runner.calls.dropFirst())
+        XCTAssertEqual(adds.map(\.operation), ["configure", "configure"])
+        for add in adds {
+            XCTAssertEqual(add.context?.profileID, saved.id)
+            XCTAssertEqual(add.context?.airportMAC, mac)
+            XCTAssertNil(add.params["saved_airport_macs"])
+            XCTAssertNil(add.params["address_source"])
+        }
+        XCTAssertEqual(fixture.registry.profiles.map(\.id), [saved.id])
+    }
+
+    func testAStopWithoutAUsableMACFailsTheAdd() async throws {
+        // Configure always names the AirPort; without its MAC the add has no
+        // saved device to run as, so it ends with configure's own message.
+        for details: JSONValue? in [nil, .object(["airport_mac": .string("not a MAC")])] {
+            let fixture = try await makeStore(responses: [
+                .init(events: [
+                    BackendEvent(type: "error", operation: "configure", code: "device_already_saved",
+                                 message: "This AirPort is already saved.", details: details)
+                ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+            ])
+            let saved = try await saveOfficeCapsule(in: fixture, airportMAC: "02:aa:bb:cc:dd:ee")
+            fixture.store.startManualEntry()
+            fixture.store.manualHost = "10.0.0.9"
+            fixture.store.password = "new password"
+
+            fixture.store.runConfigure()
+            try await waitUntilStoreState { fixture.store.state == .failed && !fixture.store.isRunning }
+
+            XCTAssertEqual(fixture.runner.calls.count, 1, "\(String(describing: details))")
+            XCTAssertEqual(fixture.store.error?.code, "device_already_saved")
+            XCTAssertEqual(fixture.store.error?.message, "This AirPort is already saved.")
+            XCTAssertFalse(fixture.store.isAdding)
+            XCTAssertEqual(fixture.registry.profile(id: saved.id)?.host, saved.host)
+        }
+    }
+
+    func testAnAddSendsNoSavedMACsWhenNoDeviceIsSaved() async throws {
+        let fixture = try await makeStore(responses: [
+            testConfigureResponse(host: "root@10.0.0.9")
+        ])
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "secret"
+
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
+
+        XCTAssertNil(fixture.runner.calls.first?.params["saved_airport_macs"])
+    }
+
+    func testASaveRefusedBecauseTheAirPortIsAnotherSavedDeviceNamesIt() async throws {
+        // Configure did not stop at it, as when it was saved while this add ran.
+        let mac = "02:aa:bb:cc:dd:ee"
+        let fixture = try await makeStore(responses: [
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac)
+        ])
+        let saved = try await saveOfficeCapsule(in: fixture, airportMAC: mac)
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "new password"
+
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .failed }
+
+        XCTAssertEqual(fixture.store.error?.message, L10n.format("add_device.error.already_saved", "Office Capsule"))
+        XCTAssertEqual(fixture.registry.profiles.map(\.id), [saved.id])
+        XCTAssertEqual(fixture.registry.profile(id: saved.id)?.host, saved.host)
+    }
+
+    func testAnAddressClashAtSaveTimeKeepsTheRegistrysMessage() async throws {
+        // A saved device got this address while the add ran; it may be another AirPort.
+        let fixture = try await makeStore(responses: [
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: "02:aa:bb:cc:dd:ff", pauseBeforeEvents: true)
+        ])
+        defer { fixture.runner.finishAll() }
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 }
+        let other = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.9", airportMAC: "02:aa:bb:cc:dd:ee"),
+            discoveredDevice: nil, passwordState: .available, preferredID: "other")
+
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { fixture.store.state == .failed }
+
+        let message = try XCTUnwrap(fixture.store.error?.message)
+        XCTAssertNotEqual(message, L10n.format("add_device.error.already_saved", other.title))
+        XCTAssertTrue(message.contains("host"), message)
+        XCTAssertEqual(fixture.registry.profiles.map(\.id), [other.id])
+    }
+
+    /// Configure's answer while SSH is off: it asks to turn SSH on, which restarts the AirPort.
+    private static func sshConfirmationRequired() -> StoreTestRunner.Response {
+        .init(events: [
+            BackendEvent(
+                type: "error",
+                operation: "configure",
+                code: "confirmation_required",
+                message: "SSH is closed.",
+                details: .object([
+                    "confirmation_id": .string("confirm-ssh"),
+                    "presentation_id": .string("configure.enable_ssh_reboot"),
+                    "presentation_values": .object(["device_name": .string("Office Capsule")])
+                ])
+            )
+        ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+    }
+
+    /// A saved "Office Capsule" at 10.0.0.2 with debug logging on, unlike new devices.
+    private func saveOfficeCapsule(
+        in fixture: StoreFixture,
+        airportMAC: String
+    ) async throws -> DeviceProfile {
+        var profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: airportMAC),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "office"
+        )
+        profile.displayName = "Office Capsule"
+        profile.settings.debugLogging = true
+        profile = try await fixture.registry.updateProfile(profile)
+        try fixture.passwordStore.save("old password", for: profile.keychainAccount)
+        return profile
     }
 
     func testSelectingSharedDiscoveryDeviceFromOverviewPromptsForPasswordWithoutRediscovering() async throws {
@@ -1137,8 +1772,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     func testConflictingSavedHardwareStopsBeforeConfigureAndPreservesProfiles() async throws {
         let record = testDeviceRecord(ipv4: ["10.0.0.9"], airportMAC: "02:aa:bb:cc:dd:ee")
         let fixture = try await makeStore(responses: [
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
-                payload: testDiscoverPayload(records: [record]))])
+            testDiscoverResponse([record])
         ])
         // Legacy/imported registries can already contain conflicting identities.
         // Ordinary checkups now reject introducing this state.
@@ -1165,13 +1799,50 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.registry.profiles, originals)
     }
 
+    func testClickingASavedDeviceKeepsTheReconnectChoice() async throws {
+        let moved = testDeviceRecord(ipv4: ["10.0.0.9"])
+        let den = testDeviceRecord(name: "Den Capsule", hostname: "den-capsule.local.", ipv4: ["10.0.0.3"],
+                                   fullname: "Den Capsule._airport._tcp.local.")
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([moved, den]),
+            testConfigureResponse(host: "10.0.0.9")
+        ])
+        let original = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: DiscoveredDevice(record: try testDeviceRecord().decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available, preferredID: "existing")
+        let savedDen = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: DiscoveredDevice(record: try den.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available, preferredID: "den")
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        let movedDevice = try XCTUnwrap(fixture.store.devices.first { $0.host == "10.0.0.9" })
+        let denDevice = try XCTUnwrap(fixture.store.devices.first { $0.host == "10.0.0.3" })
+        fixture.store.select(movedDevice)
+        fixture.store.reconnectSuggestedProfile()
+        XCTAssertEqual(fixture.store.reconnectProfileID, original.id)
+        fixture.store.password = "new password"
+
+        fixture.store.select(denDevice)
+        XCTAssertEqual(fixture.store.profileToOpen?.id, savedDen.id)
+        fixture.store.clearHandoffs()
+
+        // Back from Den's page, Save Device still reconnects the moved AirPort.
+        XCTAssertEqual(fixture.store.reconnectProfileID, original.id)
+        XCTAssertEqual(fixture.store.selectedDeviceID, movedDevice.id)
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+        XCTAssertEqual(fixture.store.savedProfile?.id, original.id)
+        XCTAssertEqual(fixture.runner.calls[1].context?.profileID, original.id)
+        XCTAssertEqual(fixture.registry.profiles.count, 2)
+    }
+
     func testNameOnlyReconnectRequiresChoiceAndPreservesProfileArtifacts() async throws {
         let moved = testDeviceRecord(ipv4: ["10.0.0.9"])
         let fixture = try await makeStore(responses: [
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
-                payload: testDiscoverPayload(records: [moved]))]),
-            .init(events: [BackendEvent(type: "result", operation: "configure", ok: true,
-                payload: testConfigurePayload(host: "10.0.0.9"))])
+            testDiscoverResponse([moved]),
+            testConfigureResponse(host: "10.0.0.9")
         ])
         let original = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -1193,8 +1864,11 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.reconnectMessage, L10n.format("discovery.reconnect_selected", original.title))
         fixture.store.password = "new password"
         fixture.store.runConfigure()
-        try await waitUntilStoreState { fixture.store.state == .saved }
+        try await waitUntilStoreState { fixture.store.savedProfile != nil }
         XCTAssertEqual(fixture.store.savedProfile?.id, original.id)
+        // The page starts over once the device is saved, which ends the reconnect choice.
+        XCTAssertNil(fixture.store.reconnectProfileID)
+        XCTAssertEqual(reconnectChanges, [nil, original.id, nil])
         XCTAssertNil(fixture.store.reconnectMessage)
         XCTAssertEqual(fixture.store.savedProfile?.configPath, original.configPath)
         XCTAssertEqual(fixture.store.savedProfile?.keychainAccount, original.keychainAccount)
@@ -1202,7 +1876,6 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(try fixture.passwordStore.password(for: original.keychainAccount), "new password")
         fixture.store.select(device)
         XCTAssertNil(fixture.store.reconnectProfileID)
-        XCTAssertEqual(reconnectChanges, [nil, original.id, nil])
         withExtendedLifetime(subscription) {}
     }
 
@@ -1218,8 +1891,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 let fixture = try await makeStore(responses: [
                     .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
                         payload: testDiscoverPayload(records: records))]),
-                    .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
-                        payload: testDiscoverPayload(records: [first]))])
+                    testDiscoverResponse([first])
                 ])
                 let legacy = try await fixture.registry.storeTestProfile(
                     configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -1293,16 +1965,18 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.state, .passwordEntry)
     }
 
-    private func makeStore(
-        responses: [StoreTestRunner.Response],
-        localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil,
-        urlOpener: URLOpening = WorkspaceURLOpener()
-    ) async throws -> (
+    private typealias StoreFixture = (
         store: AddDeviceFlowStore,
         runner: PausingStoreTestRunner,
         registry: DeviceRegistryStore,
         passwordStore: InMemoryPasswordStore
-    ) {
+    )
+
+    private func makeStore(
+        responses: [StoreTestRunner.Response],
+        localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil,
+        urlOpener: URLOpening = WorkspaceURLOpener()
+    ) async throws -> StoreFixture {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()

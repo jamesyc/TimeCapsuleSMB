@@ -38,6 +38,81 @@ final class AppRouteTests: XCTestCase {
         XCTAssertNil(fixture.appStore.selectedDeviceID)
     }
 
+    func testJustSavedDeviceIsMarkedUntilItsPageIsLeft() async throws {
+        let fixture = try await makeFixture()
+        let first = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let second = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-two"
+        )
+
+        fixture.appStore.openJustSaved(first)
+        XCTAssertEqual(fixture.appStore.route, .device(first.id))
+        XCTAssertEqual(fixture.appStore.justSavedProfileID, first.id)
+
+        // Reaching the same page again, as a sidebar click does, keeps it.
+        fixture.appStore.navigate(to: .device(first.id))
+        fixture.appStore.select(first)
+        XCTAssertEqual(fixture.appStore.justSavedProfileID, first.id)
+
+        // Another device's page clears it, and coming back does not bring it back.
+        fixture.appStore.select(second)
+        XCTAssertNil(fixture.appStore.justSavedProfileID)
+        fixture.appStore.select(first)
+        XCTAssertNil(fixture.appStore.justSavedProfileID)
+
+        for route in [AppRoute.addDevice, .activity, .appSettings, .allDevices] {
+            fixture.appStore.openJustSaved(first)
+            fixture.appStore.navigate(to: route)
+            XCTAssertNil(fixture.appStore.justSavedProfileID, "\(route)")
+        }
+    }
+
+    func testForgettingTheJustSavedDeviceClearsTheMark() async throws {
+        let fixture = try await makeFixture()
+        let first = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let second = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-two"
+        )
+        fixture.appStore.openJustSaved(first)
+
+        try await fixture.appStore.forget(first)
+
+        XCTAssertEqual(fixture.appStore.route, .device(second.id))
+        XCTAssertNil(fixture.appStore.justSavedProfileID)
+    }
+
+    func testJustSavedMarkNeedsTheDevicesPage() async throws {
+        let fixture = try await makeFixture()
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try await fixture.registry.delete(profile)
+
+        fixture.appStore.openJustSaved(profile)
+
+        XCTAssertEqual(fixture.appStore.route, .allDevices)
+        XCTAssertNil(fixture.appStore.justSavedProfileID)
+    }
+
     func testAllDevicesRouteDoesNotAutoSelectWhenProfilesChange() async throws {
         let fixture = try await makeFixture()
         fixture.appStore.navigate(to: .allDevices)

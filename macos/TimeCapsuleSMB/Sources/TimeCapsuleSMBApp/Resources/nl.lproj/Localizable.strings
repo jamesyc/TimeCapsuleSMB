@@ -7,9 +7,11 @@
 "add_device.discovered_devices" = "Gevonden apparaten";
 "add_device.entry.discover" = "Apparaten zoeken";
 "add_device.entry.manual" = "Handmatig adres";
+"add_device.error.already_saved" = "Dit apparaat is al opgeslagen als ‘%@’.";
 "add_device.error.choose_target" = "Kies een gevonden apparaat of voer een host in.";
 "add_device.error.invalid_bonjour_timeout" = "De time-out voor apparaatdetectie moet minstens 5 seconden zijn.";
 "add_device.error.password_required" = "Apparaatwachtwoord is vereist.";
+"add_device.error.saved_device_busy" = "Dit apparaat is al opgeslagen als ‘%@’ en is bezig met een andere bewerking. Probeer het opnieuw wanneer die klaar is.";
 "add_device.host_or_ip" = "Hostnaam of IP-adres";
 "add_device.password" = "Apparaatwachtwoord";
 "add_device.progress.configuring.message" = "Toegang controleren en het apparaat voorbereiden. Dit kan enkele minuten duren...";
@@ -35,7 +37,6 @@
 "add_device.state.manual_entry" = "Handmatig adres";
 "add_device.state.password_entry" = "Wachtwoord vereist";
 "add_device.state.checking_local_network" = "Lokaal netwerk controleren";
-"add_device.state.saved" = "Opgeslagen";
 "add_device.state.saving_profile" = "Opslaan";
 "add_device.state.unsupported" = "Niet ondersteund";
 "add_device.title" = "Voeg Apple AirPort Time Capsule of AirPort Extreme toe";

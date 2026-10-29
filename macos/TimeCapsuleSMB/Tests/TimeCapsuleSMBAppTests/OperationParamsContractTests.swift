@@ -52,7 +52,8 @@ final class OperationParamsContractTests: XCTestCase {
                 vfsAIOForkEnabled: true,
                 ataIdleSeconds: 600,
                 ataStandby: 5,
-                localNetworkPreflight: preflight
+                localNetworkPreflight: preflight,
+                savedAirportMACs: ["02:aa:bb:cc:dd:ee"]
             )),
             ("configure", OperationParams.Configure.save(
                 selectedRecord: .object(["name": .string("Time Capsule")]),

@@ -30,6 +30,7 @@
       "mdns_advertise_afp",
       "persist_password",
       "require_smb_encryption",
+      "saved_airport_macs",
       "selected_record",
       "smb_browse_compatibility",
       "ssh_opts",

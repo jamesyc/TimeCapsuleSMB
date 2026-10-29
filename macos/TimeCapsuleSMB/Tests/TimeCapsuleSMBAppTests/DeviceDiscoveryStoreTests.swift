@@ -36,7 +36,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
 
     func testDiscoveryEmptyFailedAndMalformedPayloadStatesAreExplicit() async throws {
         let empty = try await makeReadyFixture(responses: [
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))])
+            testDiscoverResponse([])
         ])
         empty.monitor.startMonitoring()
         try await waitUntilStoreState { empty.monitor.state == .empty }
@@ -59,9 +59,9 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
 
     func testSavedProfilesAreFilteredAndReportedAsSeenNow() async throws {
         let fixture = try await makeReadyFixture(responses: [
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
+            testDiscoverResponse([
                 testDeviceRecord()
-            ]))])
+            ])
         ])
         let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -90,9 +90,9 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
             fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await makeReadyFixture(responses: [
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
+            testDiscoverResponse([
                 newRecord
-            ]))])
+            ])
         ])
         let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: "02:aa:bb:cc:dd:ee"),
@@ -127,9 +127,9 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
             fullname: "IPv6 Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await makeReadyFixture(responses: [
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
+            testDiscoverResponse([
                 newRecord
-            ]))])
+            ])
         ])
         let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@fd00::2", airportMAC: "02:aa:bb:cc:dd:ee"),
@@ -157,9 +157,9 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
                     testDoctorCheck(status: "PASS", message: "ok", domain: "device")
                 ]))
             ], pauseAfterEvents: true),
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
+            testDiscoverResponse([
                 testDeviceRecord(hostname: "paused.local.")
-            ]))])
+            ])
         ])
 
         let start = fixture.coordinator.run(operation: "doctor", params: [:], profile: nil)
@@ -179,9 +179,9 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
                     testDoctorCheck(status: "PASS", message: "ok", domain: "device")
                 ]))
             ], pauseAfterEvents: true),
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
+            testDiscoverResponse([
                 testDeviceRecord(hostname: "parallel.local.")
-            ]))])
+            ])
         ])
         let context = DeviceRuntimeContext(
             profileID: "device-one",
@@ -238,9 +238,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
 
     func testDiscoveryPreflightForwardsMetadataAndAirportScope() async throws {
         let checker = FixedLocalNetworkPreflightChecker(status: .allowed)
-        let fixture = try await makeReadyFixture(responses: [.init(events: [
-            BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [testDeviceRecord()]))
-        ])], checker: checker)
+        let fixture = try await makeReadyFixture(responses: [testDiscoverResponse([testDeviceRecord()])], checker: checker)
         fixture.monitor.startMonitoring()
         try await waitUntilStoreState { fixture.monitor.state == .ready }
         let call = try XCTUnwrap(fixture.runner.calls.last)
@@ -252,9 +250,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
 
     func testUnknownPreflightContinuesAndQuietNetworkRetainsWarning() async throws {
         let checker = FixedLocalNetworkPreflightChecker(status: .unknown, detail: "timeout")
-        let fixture = try await makeReadyFixture(responses: [.init(events: [
-            BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
-        ])], checker: checker)
+        let fixture = try await makeReadyFixture(responses: [testDiscoverResponse([])], checker: checker)
         fixture.monitor.startMonitoring()
         try await waitUntilStoreState { fixture.monitor.state == .empty }
         XCTAssertEqual(fixture.monitor.warning, L10n.string("discovery.permission_unknown"))
@@ -284,6 +280,27 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         await Task.yield()
         XCTAssertEqual(fixture.monitor.state, .idle)
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["capabilities", "validate-install"])
+    }
+
+    func testAddDeviceStartingOverLeavesTheAppsPermissionProbeRunning() async throws {
+        let checker = GatedLocalNetworkPreflightChecker()
+        let fixture = try await makeReadyFixture(responses: [
+            testDiscoverResponse([testDeviceRecord()])
+        ], checker: checker)
+        let flow = AddDeviceFlowStore(coordinator: fixture.coordinator, registry: fixture.registry,
+                                      passwordStore: InMemoryPasswordStore(), discovery: fixture.monitor)
+        // A search the app started, as a device page does for an AirPort that moved.
+        fixture.monitor.refresh()
+        try await waitUntilStoreState { checker.isWaiting && flow.state == .checkingLocalNetwork }
+
+        // Add Device starts over, as it does after every save.
+        flow.reset()
+        XCTAssertEqual(fixture.monitor.state, .checkingLocalNetwork)
+        checker.finish(.allowed)
+
+        try await waitUntilStoreState { fixture.monitor.state == .ready && flow.state == .discoveryReady }
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["capabilities", "validate-install", "discover"])
+        XCTAssertEqual(flow.devices.count, 1)
     }
 
     func testToolbarCancelDuringDiscoveryPermissionProbeRestoresAddDeviceControls() async throws {
@@ -316,10 +333,8 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
     func testConfigurePreflightOwnsItsUIWhileDiscoveryRefreshesAndAfterCancellation() async throws {
         let checker = GatedLocalNetworkPreflightChecker()
         let fixture = try await makeReadyFixture(responses: [
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
-                payload: testDiscoverPayload(records: [testDeviceRecord()]))]),
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
-                payload: testDiscoverPayload(records: []))])
+            testDiscoverResponse([testDeviceRecord()]),
+            testDiscoverResponse([])
         ])
         let flow = AddDeviceFlowStore(coordinator: fixture.coordinator, registry: fixture.registry,
             passwordStore: InMemoryPasswordStore(), discovery: fixture.monitor, localNetworkPreflightChecker: checker)
@@ -345,7 +360,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         let checker = GatedLocalNetworkPreflightChecker()
         let fixture = try await makeReadyFixture(responses: [
             .init(events: [BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: []))], pauseAfterEvents: true),
-            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))])
+            testDiscoverResponse([])
         ], checker: checker)
         fixture.monitor.startMonitoring()
         try await waitUntilStoreState { checker.isWaiting }
@@ -362,9 +377,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
 
     func testSavedAddressStillAdvertisedDoesNotBecomeStaleWhenPreferenceChanges() async throws {
         let record = testDeviceRecord(hostname: "office.local.", ipv4: ["10.0.0.80", "10.0.0.2"], fullname: "Office._airport._tcp.local.")
-        let fixture = try await makeReadyFixture(responses: [.init(events: [
-            BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
-        ])])
+        let fixture = try await makeReadyFixture(responses: [testDiscoverResponse([record])])
         let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: try DiscoveredDevice(record: record.decode(BonjourResolvedServicePayload.self), index: 0),
@@ -380,9 +393,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         let fullname = "Office._airport._tcp.local."
         let current = testDeviceRecord(hostname: "office.local.", ipv4: ["10.0.0.80"], ipv6: [], fullname: fullname, airportMAC: "02:aa:bb:cc:dd:ee")
         let previous = testDeviceRecord(hostname: "office.local.", ipv4: [], ipv6: ["fd00::2"], fullname: fullname, airportMAC: "02:aa:bb:cc:dd:ee")
-        let fixture = try await makeReadyFixture(responses: [.init(events: [
-            BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [current]))
-        ])])
+        let fixture = try await makeReadyFixture(responses: [testDiscoverResponse([current])])
         let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "fd00::2", airportMAC: "02:aa:bb:cc:dd:ee"),
             discoveredDevice: try DiscoveredDevice(record: previous.decode(BonjourResolvedServicePayload.self), index: 0),

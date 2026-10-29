@@ -78,6 +78,7 @@ from timecapsulesmb.discovery.bonjour import BonjourQueryDiagnostics, BonjourDis
 from timecapsulesmb.integrations.acp import DBUG_SSH_VALUE, ACPAuthError, ACPConnectionError
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE
 from timecapsulesmb.services.activation import OLDEST_ACTIVATABLE_RELEASE_TAG
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.services.app import AppOperationError, jsonable
 from timecapsulesmb.services.flash import (
     FLASH_UNSUPPORTED_DEVICE_MESSAGE,
@@ -2633,6 +2634,70 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(self.assert_single_terminal_event(run.collector, "error")["code"], "validation_failed")
         run.read.assert_not_called()
         run.probe.assert_not_called()
+
+    def run_configure_of_an_unmatched_device(self, saved_airport_macs: object, reading: AirportAcpReading):
+        """Configure as Add Device sends it for a device it matched to no saved one."""
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            params = {"config": str(path), "host": "root@10.0.0.2", "password": "pw",
+                      "saved_airport_macs": saved_airport_macs}
+            with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=reading) as read, \
+                    mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight") as enable, \
+                    mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state",
+                               return_value=probed_state()) as probe:
+                rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
+            written = path.exists()
+        return SimpleNamespace(rc=rc, collector=collector, read=read, enable=enable, probe=probe, written=written)
+
+    def test_configure_stops_at_a_saved_airport_and_tells_the_app_which(self) -> None:
+        saved = AirportAcpReading(password_matches=True, airport_mac="02:aa:bb:cc:dd:ee")
+        run = self.run_configure_of_an_unmatched_device(["02:00:00:00:00:99", "02-AA-BB-CC-DD-EE"], saved)
+
+        self.assertEqual(run.rc, 1)
+        error = self.assert_single_terminal_event(run.collector, "error")
+        self.assertEqual(error["code"], "device_already_saved")
+        self.assertEqual(error["details"], {"airport_mac": "02:aa:bb:cc:dd:ee"})
+        run.enable.assert_not_called()
+        run.probe.assert_not_called()
+        self.assertFalse(run.written)
+
+    def test_a_stop_at_a_saved_airport_is_told_apart_by_its_code(self) -> None:
+        # The server takes only success, failure, cancelled and
+        # confirmation_required, and refuses a batch with any other result.
+        def stopped(_params: dict[str, object], _context: object) -> object:
+            raise AppOperationError("This AirPort is already saved.", code=ErrorCode.DEVICE_ALREADY_SAVED,
+                                    details={"airport_mac": "02:aa:bb:cc:dd:ee"})
+
+        rc, collector = self.run_with_api_telemetry(
+            {"operation": "configure", "params": {"host": "root@10.0.0.2", "password": "pw"}},
+            {"configure": stopped},
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "device_already_saved")
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["phase"], "finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["error_code"], "device_already_saved")
+
+    def test_configure_adds_an_airport_that_is_not_saved(self) -> None:
+        other = AirportAcpReading(password_matches=True, airport_mac="02:aa:bb:cc:dd:ff")
+        run = self.run_configure_of_an_unmatched_device(["02:aa:bb:cc:dd:ee"], other)
+
+        self.assertEqual(run.rc, 0)
+        self.assert_single_terminal_event(run.collector, "result")
+        self.assertTrue(run.written)
+
+    def test_configure_refuses_malformed_saved_macs(self) -> None:
+        for saved in ("02:aa:bb:cc:dd:ee", ["not-a-mac"], [7]):
+            with self.subTest(saved=saved):
+                run = self.run_configure_of_an_unmatched_device(saved, AirportAcpReading(password_matches=True))
+
+                self.assertEqual(run.rc, 1)
+                self.assertEqual(self.assert_single_terminal_event(run.collector, "error")["code"], "validation_failed")
+                run.read.assert_not_called()
+                run.probe.assert_not_called()
 
     def test_configure_refuses_a_password_ssh_accepts_but_the_device_rejects(self) -> None:
         # SSH checks only 8 characters; the app reports the device's syPW

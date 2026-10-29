@@ -7,9 +7,11 @@
 "add_device.discovered_devices" = "Обнаруженные устройства";
 "add_device.entry.discover" = "Найти устройства";
 "add_device.entry.manual" = "Ручной адрес";
+"add_device.error.already_saved" = "Это устройство уже сохранено как «%@».";
 "add_device.error.choose_target" = "Выберите обнаруженное устройство или введите хост.";
 "add_device.error.invalid_bonjour_timeout" = "Время ожидания обнаружения должно составлять не менее 5 секунд.";
 "add_device.error.password_required" = "Требуется пароль устройства.";
+"add_device.error.saved_device_busy" = "Это устройство уже сохранено как «%@», и на нем выполняется другая операция. Повторите попытку, когда она завершится.";
 "add_device.host_or_ip" = "Имя хоста или IP-адрес";
 "add_device.password" = "Пароль устройства";
 "add_device.progress.configuring.message" = "Проверка доступа и подготовка устройства. Это может занять несколько минут...";
@@ -35,7 +37,6 @@
 "add_device.state.manual_entry" = "Ручной адрес";
 "add_device.state.password_entry" = "Требуется пароль";
 "add_device.state.checking_local_network" = "Проверка локальной сети";
-"add_device.state.saved" = "Сохранено";
 "add_device.state.saving_profile" = "Сохранение";
 "add_device.state.unsupported" = "Не поддерживается";
 "add_device.title" = "Добавить Apple AirPort Time Capsule или AirPort Extreme";

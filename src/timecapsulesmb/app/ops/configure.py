@@ -31,6 +31,7 @@ from timecapsulesmb.services import configure as configure_service
 from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError
 from timecapsulesmb.services.configure import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
+    AirportAlreadySavedError,
     build_managed_config_env_values,
     ConfigureFlowError,
     ConfigureFlowHooks,
@@ -38,7 +39,7 @@ from timecapsulesmb.services.configure import (
     write_configure_env_file,
 )
 from timecapsulesmb.services.configure_target import resolve_configure_target
-from timecapsulesmb.services.credentials import request_airport_mac
+from timecapsulesmb.services.credentials import request_airport_mac, request_saved_airport_macs
 from timecapsulesmb.core.summaries import Summary
 
 
@@ -253,6 +254,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                 persist_password=bool_param(params, "persist_password"),
                 selected_record=target.selected_record,
                 expected_airport_mac=request_airport_mac(params),
+                saved_airport_macs=request_saved_airport_macs(params),
                 enable_ssh=bool_param(params, "enable_ssh", True),
                 internal_share_use_disk_root=bool_param(
                     params,
@@ -297,6 +299,9 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                 confirm_enable_ssh=confirm_enable_ssh,
             ),
         )
+    except AirportAlreadySavedError as exc:
+        raise AppOperationError(str(exc), code=exc.code, detail=exc.detail,
+                                details={"airport_mac": exc.airport_mac}) from exc
     except ConfigureFlowError as exc:
         if exc.code == ErrorCode.AUTH_FAILED:
             raise AppOperationError(

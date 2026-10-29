@@ -19,10 +19,14 @@ class AppOperationError(CodedError):
         detail: str | None = None,
         debug: object | None = None,
         recovery: object | None = None,
+        details: dict[str, object] | None = None,
     ) -> None:
         super().__init__(message, code=code, detail=detail)
         self.debug = debug
         self.recovery = recovery
+        # What the app acts on, sent with the error event: unlike `detail`,
+        # never shown as text.
+        self.details = details
 
 
 @dataclass(frozen=True)

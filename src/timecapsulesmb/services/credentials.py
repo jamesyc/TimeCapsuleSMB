@@ -33,6 +33,27 @@ def saved_airport_mac(config: AppConfig) -> str | None:
     return mac
 
 
+def request_saved_airport_macs(params: Mapping[str, object]) -> frozenset[str]:
+    """The MACs of every AirPort the app has saved, or none.
+
+    The app sends them when it adds a device that matches no saved one by its
+    address or Bonjour record: configure stops at a saved AirPort, and the app
+    sets it up as that device, with its own settings.
+    """
+    value = params.get("saved_airport_macs")
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list):
+        raise ValueError(f"saved_airport_macs is not a list: {value!r}")
+    macs: set[str] = set()
+    for item in value:
+        mac = normalize_airport_mac(item) if isinstance(item, str) else None
+        if mac is None:
+            raise ValueError(f"saved_airport_macs has an entry that is not an AirPort MAC address: {item!r}")
+        macs.add(mac)
+    return frozenset(macs)
+
+
 def request_airport_mac(params: Mapping[str, object]) -> str | None:
     """The MAC the app saved for this request's profile, if it has one.
 

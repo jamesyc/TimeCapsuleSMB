@@ -78,6 +78,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "enable_ssh",
             "host",
             "persist_password",
+            "saved_airport_macs",
             "selected_record",
             "ssh_opts",
         }),

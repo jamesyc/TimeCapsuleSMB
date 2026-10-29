@@ -122,9 +122,18 @@ public struct ContentView: View {
             addDeviceStore.applyAppSettings(appSettingsStore.settings)
             appSettingsEditorStore.sync(settings: appSettingsStore.settings)
         }
+        // Add Device hands over the device it saved, or a saved one clicked in
+        // its list. The app opens it and takes the hand-off; Add Device has
+        // already started over after a save, and a click leaves it as it was.
         .onChange(of: addDeviceStore.savedProfile) { _, profile in
             guard let profile else { return }
+            appStore.openJustSaved(profile)
+            addDeviceStore.clearHandoffs()
+        }
+        .onChange(of: addDeviceStore.profileToOpen) { _, profile in
+            guard let profile else { return }
             appStore.select(profile)
+            addDeviceStore.clearHandoffs()
         }
         .onChange(of: appSettingsStore.settings) { _, settings in
             systemColorScheme = SystemAppearance.currentColorScheme
@@ -391,6 +400,7 @@ public struct ContentView: View {
                     profile: profile,
                     session: dashboardStore.session(for: profile),
                     appStore: appStore,
+                    justSaved: appStore.justSavedProfileID == profile.id,
                     appSettingsStore: appSettingsStore,
                     reachabilityStore: appStore.reachabilityStore,
                     sshAccessStore: appStore.sshAccessStore,
@@ -406,6 +416,7 @@ public struct ContentView: View {
                     deviceRegistry: deviceRegistry,
                     deviceDiscovery: deviceDiscovery,
                     backend: appBackend,
+                    canAddDevice: !addDeviceStore.isAdding,
                     addDiscoveredDevice: { device in
                         addDeviceStore.select(device)
                         appStore.showAddDevice()
@@ -418,6 +429,7 @@ public struct ContentView: View {
                 deviceRegistry: deviceRegistry,
                 deviceDiscovery: deviceDiscovery,
                 backend: appBackend,
+                canAddDevice: !addDeviceStore.isAdding,
                 addDiscoveredDevice: { device in
                     addDeviceStore.select(device)
                     appStore.showAddDevice()

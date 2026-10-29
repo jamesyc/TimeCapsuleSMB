@@ -107,6 +107,93 @@ func renderView<V: View>(_ view: V, size: CGSize) throws -> NSBitmapImageRep {
     return bitmap
 }
 
+/// Keeps a view in an offscreen window, where SwiftUI keeps updating it and runs
+/// its `onChange` handlers as the stores change; `renderView` draws it only once.
+@MainActor
+final class LiveHostedView {
+    private let window: NSWindow
+
+    init<V: View>(_ view: V, size: CGSize = CGSize(width: 1200, height: 800)) {
+        window = NSWindow(
+            contentRect: CGRect(origin: .zero, size: size),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: view)
+    }
+
+    func close() {
+        window.close()
+    }
+}
+
+/// A text or control as VoiceOver reads it, and whether it is enabled.
+struct AccessibleElement: Equatable {
+    let role: NSAccessibility.Role
+    let text: String
+    let isEnabled: Bool
+}
+
+/// The texts and controls a view draws, in order, so a test can check the
+/// words and enabled controls on screen instead of comparing pixels.
+@MainActor
+func accessibleElements<V: View>(_ view: V, size: CGSize = CGSize(width: 1200, height: 800)) -> [AccessibleElement] {
+    // SwiftUI builds its accessibility tree only after assistive software asks
+    // the app for one, as VoiceOver does by setting AXEnhancedUserInterface.
+    // Its getter and setter are deprecated with no replacement, hence perform.
+    // The setting is the whole app's, so it is left as it was found.
+    let app = NSApplication.shared
+    let attribute = "AXEnhancedUserInterface"
+    let setValue = NSSelectorFromString("accessibilitySetValue:forAttribute:")
+    let current = app.perform(NSSelectorFromString("accessibilityAttributeValue:"), with: attribute)?.takeUnretainedValue()
+    let wasOn = (current as? NSNumber)?.boolValue ?? false
+    if !wasOn {
+        app.perform(setValue, with: NSNumber(value: true), with: attribute)
+    }
+    defer {
+        if !wasOn {
+            app.perform(setValue, with: NSNumber(value: false), with: attribute)
+        }
+    }
+    let host = NSHostingView(rootView: view)
+    host.frame = CGRect(origin: .zero, size: size)
+    host.layoutSubtreeIfNeeded()
+
+    var elements: [AccessibleElement] = []
+    func collect(_ node: AnyObject) {
+        if let role = node.accessibilityRole?() ?? nil, let text = accessibleText(of: node) {
+            elements.append(AccessibleElement(role: role, text: text, isEnabled: node.isAccessibilityEnabled?() ?? true))
+        }
+        for child in (node.accessibilityChildren?() ?? nil) ?? [] {
+            collect(child as AnyObject)
+        }
+    }
+    collect(host)
+    return elements
+}
+
+/// The texts on a device's page, read as `accessibleElements` reads them. Fails
+/// when the read shows no device page, so a check that something is missing
+/// from the page cannot pass on a read that found nothing.
+@MainActor
+func devicePageTexts<V: View>(_ view: V, file: StaticString = #filePath, line: UInt = #line) -> [String] {
+    let texts = accessibleElements(view).map(\.text)
+    let missingTabs = DeviceDashboardTab.allCases.map(\.title).filter { !texts.contains($0) }
+    XCTAssertEqual(missingTabs, [], "The read shows no device page", file: file, line: line)
+    return texts
+}
+
+/// A control's label, or a text's string, which SwiftUI gives as its value.
+private func accessibleText(of node: AnyObject) -> String? {
+    if let label = node.accessibilityLabel?() ?? nil, !label.isEmpty {
+        return label
+    }
+    let value = (node.accessibilityValue as (() -> Any?)?)?() ?? nil
+    return (value as? String).flatMap { $0.isEmpty ? nil : $0 }
+}
+
 private enum ViewRenderError: Error {
     case bitmapCreationFailed
 }

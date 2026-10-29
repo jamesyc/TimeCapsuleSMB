@@ -37,7 +37,7 @@ final class DeviceProfilePersistenceService {
         case restore(String)
     }
 
-    private let registry: DeviceRegistryStore
+    let registry: DeviceRegistryStore
     private let passwordStore: PasswordStore
     private let artifacts: DeviceProfileArtifacts
 

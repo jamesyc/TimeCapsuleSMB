@@ -89,6 +89,7 @@ struct AddDeviceView: View {
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .buttonStyle(.plain)
+                                .disabled(store.isAdding)
                             }
                         }
                     }
@@ -146,11 +147,6 @@ struct AddDeviceView: View {
                 .disabled(store.isRunning)
             }
 
-            if let profile = store.savedProfile {
-                Label(L10n.format("add_device.saved", profile.title), systemImage: "checkmark.circle")
-                    .foregroundStyle(.green)
-            }
-
             if let warning = store.discovery.warning {
                 Text(warning).foregroundStyle(.orange)
             }
@@ -168,7 +164,7 @@ struct AddDeviceView: View {
             return "hourglass"
         case .awaitingConfirmation:
             return "questionmark.circle"
-        case .discoveryReady, .saved:
+        case .discoveryReady:
             return "checkmark.circle"
         case .discoveryEmpty:
             return "magnifyingglass"
@@ -179,7 +175,7 @@ struct AddDeviceView: View {
 
     private var statusColor: Color {
         switch store.state {
-        case .discoveryReady, .saved:
+        case .discoveryReady:
             return .green
         case .awaitingConfirmation:
             return .yellow

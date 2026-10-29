@@ -123,9 +123,13 @@ class RecoveryCatalogTests(unittest.TestCase):
                     self.assertIn(RECOVERY_PART.sub("", key.removeprefix("backend.recovery.")), keys)
 
 
-# configure turns ssh_unreachable into another code before the app sees it, and
-# only telemetry records a client that disconnected.
-CODES_THE_APP_NEVER_SHOWS = frozenset({ErrorCode.SSH_UNREACHABLE, ErrorCode.CLIENT_DISCONNECTED})
+# configure turns ssh_unreachable into another code before the app sees it,
+# only telemetry records a client that disconnected, and the app answers
+# device_already_saved by setting up the saved device instead, dropping the
+# stopped run from Activity.
+CODES_THE_APP_NEVER_SHOWS = frozenset({
+    ErrorCode.SSH_UNREACHABLE, ErrorCode.CLIENT_DISCONNECTED, ErrorCode.DEVICE_ALREADY_SAVED,
+})
 
 
 class RecoveryCoverageTests(unittest.TestCase):

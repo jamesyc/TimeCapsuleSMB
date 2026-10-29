@@ -111,6 +111,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             operation,
             str(exc),
             code=exc.code,
+            details=exc.details,
             debug=context.failure_debug(exc),
             recovery=recovery,
         )

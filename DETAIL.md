@@ -639,6 +639,25 @@ with every operation, so the profile's `.env` copy is not trusted.
   with one read, so another AirPort that took the address (households often
   share one admin password) is never given SSH and rebooted. When SSH answers
   at the address that read reached, it is also configure's ACP password check.
+- **Adding a saved device at a new address (app only).** An add that matches
+  no saved device by its address or Bonjour record sends every saved MAC as
+  `saved_airport_macs`. Configure reads the AirPort's identity over ACP before
+  anything changes on it (also its password check) and, at a saved MAC, stops
+  with `device_already_saved`, the MAC in the error's `details`, before writing
+  a config. Where ACP does not answer that read, the SSH probe's MAC stops it,
+  possibly after ACP turned SSH on; a saved profile's own run (an expected MAC)
+  never stops there. Once the stopped run's helper has exited, the app drops
+  that run from Activity and runs configure again as that saved profile: its
+  lane, settings, config and MAC check, with `address_source` `manual` for a
+  typed address or `mac` for a discovered one, and the first run's Local
+  Network result instead of a second check. A profile forgotten meanwhile is
+  added as a new one. A device busy with another operation fails the add,
+  naming it; the page keeps what was typed for another try. A Cancel from any
+  page before the helper exits (it may still be sending telemetry) ends the add
+  as cancelled, with no second run: the app reads the helper's exit code.
+  Telemetry records the stopped run as a failure with the code
+  `device_already_saved`, since the server accepts only the results `success`,
+  `failure`, `cancelled` and `confirmation_required`.
 - **Learning the MAC (app only).** A profile saved before MACs were learns one
   from a read that took the password: the background SSH check reads devices
   seen at their saved address, and doctor and every command that goes through

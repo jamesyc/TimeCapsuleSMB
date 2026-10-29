@@ -7,9 +7,11 @@
 "add_device.discovered_devices" = "Discovered Devices";
 "add_device.entry.discover" = "Discover";
 "add_device.entry.manual" = "Manual Address";
+"add_device.error.already_saved" = "This device is already saved as “%@”.";
 "add_device.error.choose_target" = "Choose a discovered device or enter a host.";
 "add_device.error.invalid_bonjour_timeout" = "Discovery timeout must be at least 5 seconds.";
 "add_device.error.password_required" = "Device password is required.";
+"add_device.error.saved_device_busy" = "This device is already saved as “%@”, and another operation is running on it. Try again when it finishes.";
 "add_device.host_or_ip" = "Hostname or IP address";
 "add_device.password" = "Device password";
 "add_device.progress.configuring.message" = "Verifying access and preparing this device. This can take a few minutes...";
@@ -35,7 +37,6 @@
 "add_device.state.manual_entry" = "Manual Address";
 "add_device.state.password_entry" = "Password Required";
 "add_device.state.checking_local_network" = "Checking Local Network";
-"add_device.state.saved" = "Saved";
 "add_device.state.saving_profile" = "Saving";
 "add_device.state.unsupported" = "Unsupported";
 "add_device.title" = "Add Apple AirPort Time Capsule or AirPort Extreme";

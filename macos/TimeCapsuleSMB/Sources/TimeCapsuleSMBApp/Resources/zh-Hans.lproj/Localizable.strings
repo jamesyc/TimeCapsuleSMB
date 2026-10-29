@@ -7,9 +7,11 @@
 "add_device.discovered_devices" = "发现的设备";
 "add_device.entry.discover" = "发现";
 "add_device.entry.manual" = "手动地址";
+"add_device.error.already_saved" = "此设备已保存为“%@”。";
 "add_device.error.choose_target" = "请选择发现的设备或输入主机地址。";
 "add_device.error.invalid_bonjour_timeout" = "发现超时必须至少为 5 秒。";
 "add_device.error.password_required" = "需要设备密码。";
+"add_device.error.saved_device_busy" = "此设备已保存为“%@”，并且该设备上正在运行另一个操作。请在该操作完成后重试。";
 "add_device.host_or_ip" = "主机名或 IP 地址";
 "add_device.password" = "设备密码";
 "add_device.progress.configuring.message" = "正在验证访问权限并准备此设备。这可能需要几分钟……";
@@ -35,7 +37,6 @@
 "add_device.state.manual_entry" = "手动地址";
 "add_device.state.password_entry" = "需要密码";
 "add_device.state.checking_local_network" = "正在检查本地网络";
-"add_device.state.saved" = "已保存";
 "add_device.state.saving_profile" = "正在保存";
 "add_device.state.unsupported" = "不支持";
 "add_device.title" = "添加 Apple AirPort Time Capsule 或 AirPort Extreme";

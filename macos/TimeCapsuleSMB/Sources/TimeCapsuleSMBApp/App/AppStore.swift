@@ -3,7 +3,15 @@ import Foundation
 
 @MainActor
 final class AppStore: ObservableObject {
-    @Published private(set) var route: AppRoute = .allDevices
+    @Published private(set) var route: AppRoute = .allDevices {
+        didSet {
+            if let justSavedProfileID, route != .device(justSavedProfileID) {
+                self.justSavedProfileID = nil
+            }
+        }
+    }
+    /// The device Add Device just saved: its page says so until you leave it.
+    @Published private(set) var justSavedProfileID: DeviceProfile.ID?
 
     let appReadinessStore: AppReadinessStore
     let appSettingsStore: AppSettingsStore
@@ -144,6 +152,14 @@ final class AppStore: ObservableObject {
 
     func select(_ profile: DeviceProfile) {
         navigate(to: .device(profile.id))
+    }
+
+    /// Opens the device Add Device just saved; its page says so until you leave it.
+    func openJustSaved(_ profile: DeviceProfile) {
+        select(profile)
+        if route == .device(profile.id) {
+            justSavedProfileID = profile.id
+        }
     }
 
     func showAddDevice() {

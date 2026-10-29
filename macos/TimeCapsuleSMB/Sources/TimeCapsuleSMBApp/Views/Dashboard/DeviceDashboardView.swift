@@ -4,10 +4,24 @@ private enum DeviceDashboardLayout {
     static let actionIconSize: CGFloat = 16
 }
 
+private extension View {
+    /// The tinted box each notice above the dashboard's content sits in.
+    func dashboardNotice(_ tint: Color) -> some View {
+        padding(.vertical, 10)
+            .padding(.leading, 14)
+            .padding(.trailing, 18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(tint.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
 struct DeviceDashboardView: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
     let appStore: AppStore
+    /// Add Device just saved this device, and the page has not been left since.
+    let justSaved: Bool
     @ObservedObject var appSettingsStore: AppSettingsStore
     @ObservedObject var reachabilityStore: DeviceReachabilityStore
     @ObservedObject var sshAccessStore: DeviceSSHAccessStore
@@ -26,6 +40,12 @@ struct DeviceDashboardView: View {
             .padding()
 
             Divider()
+
+            if justSaved {
+                DashboardSavedNoticeView(deviceName: profile.title)
+                    .padding(.horizontal)
+                    .padding(.top)
+            }
 
             if let notice = session.staleEndpointNotice(for: profile) {
                 DashboardStaleEndpointNoticeView(
@@ -161,12 +181,22 @@ private struct DashboardSSHAccessNoticeView: View {
                 .controlSize(.small)
             }
         }
-        .padding(.vertical, 10)
-        .padding(.leading, 14)
-        .padding(.trailing, 18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .dashboardNotice(.orange)
+    }
+}
+
+private struct DashboardSavedNoticeView: View {
+    let deviceName: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "checkmark.circle")
+                .foregroundStyle(.green)
+                .frame(width: DeviceDashboardLayout.actionIconSize, height: DeviceDashboardLayout.actionIconSize)
+            Text(L10n.format("add_device.saved", deviceName))
+                .font(.body.weight(.medium))
+        }
+        .dashboardNotice(.green)
     }
 }
 
@@ -198,11 +228,6 @@ private struct DashboardStaleEndpointNoticeView: View {
                 .controlSize(.small)
             }
         }
-        .padding(.vertical, 10)
-        .padding(.leading, 14)
-        .padding(.trailing, 18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .dashboardNotice(.orange)
     }
 }

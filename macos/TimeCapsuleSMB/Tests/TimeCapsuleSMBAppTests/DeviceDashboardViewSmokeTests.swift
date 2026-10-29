@@ -15,6 +15,21 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
         }
     }
 
+    func testSavedNoticeNamesTheDeviceOnlyWhenJustSaved() async throws {
+        let fixture = try await AppViewFixture()
+        let profile = try await fixture.saveProfile(id: "device-one")
+        let session = fixture.dashboardSession(for: profile)
+        let notice = L10n.format("add_device.saved", profile.title)
+
+        for tab in DeviceDashboardTab.allCases {
+            session.selectedTab = tab
+            let saved = devicePageTexts(dashboardView(fixture: fixture, profile: profile, session: session, justSaved: true))
+            XCTAssertEqual(saved.filter { $0 == notice }.count, 1, "\(tab)")
+            let plain = devicePageTexts(dashboardView(fixture: fixture, profile: profile, session: session))
+            XCTAssertFalse(plain.contains(notice), "\(tab)")
+        }
+    }
+
     func testRendersStaleEndpointNoticeAcrossEveryDashboardTab() async throws {
         let oldRecord = testDeviceRecord(
             name: "Office Capsule",
@@ -29,9 +44,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await AppViewFixture(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
-            ])
+            testDiscoverResponse([currentRecord])
         ], discoveryWaitsForReadiness: false)
         let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: "02:aa:bb:cc:dd:ee"),
@@ -257,12 +270,14 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
     private func dashboardView(
         fixture: AppViewFixture,
         profile: DeviceProfile,
-        session: DeviceDashboardSession
+        session: DeviceDashboardSession,
+        justSaved: Bool = false
     ) -> some View {
         DeviceDashboardView(
             profile: profile,
             session: session,
             appStore: fixture.appStore,
+            justSaved: justSaved,
             appSettingsStore: fixture.appStore.appSettingsStore,
             reachabilityStore: fixture.appStore.reachabilityStore,
             sshAccessStore: fixture.appStore.sshAccessStore,

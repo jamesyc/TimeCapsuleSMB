@@ -48,6 +48,251 @@ final class ContentViewSmokeTests: XCTestCase {
         }
     }
 
+    func testClickingASavedDeviceOpensItAndLeavesAddDeviceAsItWas() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let fixture = try await AppViewFixture(responses: [testDiscoverResponse([office, den])], discoveryWaitsForReadiness: false)
+        let existing = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: DiscoveredDevice(record: try office.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available, preferredID: "office")
+        let flow = fixture.composition.addDeviceStore
+        let host = LiveHostedView(fixture.contentView)
+        defer { host.close() }
+        fixture.appStore.showAddDevice()
+        flow.runDiscover()
+        try await waitUntilStoreState { flow.state == .discoveryReady }
+        let saved = try XCTUnwrap(flow.devices.first)
+        let unsaved = try XCTUnwrap(flow.devices.last)
+        flow.select(unsaved)
+        flow.password = "secret"
+
+        flow.select(saved)
+
+        try await waitUntilStoreState { fixture.appStore.route == .device(existing.id) }
+        // Nothing was saved, so its page has no Saved notice.
+        XCTAssertNil(fixture.appStore.justSavedProfileID)
+        XCTAssertFalse(devicePageTexts(fixture.contentView).contains(L10n.format("add_device.saved", existing.title)))
+        XCTAssertNil(flow.profileToOpen)
+        // The AirPort being added is still selected, with its password.
+        XCTAssertEqual(flow.selectedDeviceID, unsaved.id)
+        XCTAssertEqual(flow.password, "secret")
+        XCTAssertEqual(flow.state, .passwordEntry)
+
+        // Back on Add Device, the same click opens the device again.
+        fixture.appStore.showAddDevice()
+        flow.select(saved)
+        try await waitUntilStoreState { fixture.appStore.route == .device(existing.id) }
+        XCTAssertNil(fixture.appStore.justSavedProfileID)
+        XCTAssertNil(flow.profileToOpen)
+        XCTAssertEqual(flow.selectedDeviceID, unsaved.id)
+    }
+
+    func testSavingADeviceOpensItAndStartsAddDeviceOver() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let fixture = try await AppViewFixture(responses: [
+            testDiscoverResponse([office, den]),
+            testConfigureResponse(host: "root@10.0.0.3")
+        ], discoveryWaitsForReadiness: false)
+        let flow = fixture.composition.addDeviceStore
+        let host = LiveHostedView(fixture.contentView)
+        defer { host.close() }
+        fixture.appStore.showAddDevice()
+        flow.runDiscover()
+        try await waitUntilStoreState { flow.state == .discoveryReady }
+        flow.select(try XCTUnwrap(flow.devices.last))
+        flow.password = "secret"
+
+        flow.runConfigure()
+
+        try await waitUntilStoreState { fixture.registry.profiles.count == 1 && fixture.appStore.route != .addDevice }
+        let profile = try XCTUnwrap(fixture.registry.profiles.first)
+        XCTAssertEqual(fixture.appStore.route, .device(profile.id))
+        XCTAssertEqual(fixture.appStore.justSavedProfileID, profile.id)
+        let notice = L10n.format("add_device.saved", profile.title)
+        XCTAssertTrue(devicePageTexts(fixture.contentView).contains(notice))
+        XCTAssertEqual(flow.state, .discoveryReady)
+        XCTAssertNil(flow.savedProfile)
+        XCTAssertNil(flow.selectedDeviceID)
+        XCTAssertEqual(flow.password, "")
+
+        // The Saved notice is for the moment of saving: leaving the page ends it.
+        fixture.appStore.showAddDevice()
+        fixture.appStore.select(profile)
+        XCTAssertNil(fixture.appStore.justSavedProfileID)
+        XCTAssertFalse(devicePageTexts(fixture.contentView).contains(notice))
+    }
+
+    func testSavingAManualAddressOpensItAndStartsAddDeviceOverInDiscover() async throws {
+        let fixture = try await AppViewFixture(responses: [
+            testConfigureResponse(host: "root@10.0.0.9")
+        ], discoveryWaitsForReadiness: false)
+        let flow = fixture.composition.addDeviceStore
+        let host = LiveHostedView(fixture.contentView)
+        defer { host.close() }
+        fixture.appStore.showAddDevice()
+        flow.startManualEntry()
+        flow.manualHost = "10.0.0.9"
+        flow.password = "secret"
+
+        flow.runConfigure()
+
+        try await waitUntilStoreState { fixture.registry.profiles.count == 1 && fixture.appStore.route != .addDevice }
+        let profile = try XCTUnwrap(fixture.registry.profiles.first)
+        XCTAssertEqual(profile.host, "root@10.0.0.9")
+        XCTAssertEqual(fixture.appStore.route, .device(profile.id))
+        XCTAssertTrue(devicePageTexts(fixture.contentView).contains(L10n.format("add_device.saved", profile.title)))
+        XCTAssertNil(flow.savedProfile)
+        XCTAssertEqual(flow.entryMode, .discover)
+        XCTAssertEqual(flow.manualHost, "")
+        XCTAssertEqual(flow.password, "")
+    }
+
+    func testASaveThatFinishesOnAnotherPageOpensTheDeviceWithTheNotice() async throws {
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let runner = PausingStoreTestRunner(responses: [
+            testDiscoverResponse([den]),
+            testConfigureResponse(host: "root@10.0.0.3", pauseBeforeEvents: true)
+        ])
+        let fixture = try await AppViewFixture(runner: runner, discoveryWaitsForReadiness: false)
+        defer { runner.finishAll() }
+        let flow = fixture.composition.addDeviceStore
+        let host = LiveHostedView(fixture.contentView)
+        defer { host.close() }
+        fixture.appStore.showAddDevice()
+        flow.runDiscover()
+        try await waitUntilStoreState { flow.state == .discoveryReady }
+        flow.password = "secret"
+        flow.runConfigure()
+        try await waitUntilStoreState { flow.isAdding && runner.calls.count == 2 }
+
+        fixture.appStore.navigate(to: .activity)
+        runner.finishAll()
+
+        try await waitUntilStoreState { fixture.registry.profiles.count == 1 && fixture.appStore.route != .activity }
+        let profile = try XCTUnwrap(fixture.registry.profiles.first)
+        XCTAssertEqual(fixture.appStore.route, .device(profile.id))
+        // The notice says why the app moved away from the page you were on.
+        XCTAssertTrue(devicePageTexts(fixture.contentView).contains(L10n.format("add_device.saved", profile.title)))
+    }
+
+    func testManualAddressOfAMovedSavedAirPortOpensThatDevice() async throws {
+        let mac = "02:aa:bb:cc:dd:ee"
+        let fixture = try await AppViewFixture(responses: [
+            testSavedAirportStopResponse(airportMAC: mac),
+            testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac)
+        ], discoveryWaitsForReadiness: false)
+        let saved = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: mac),
+            discoveredDevice: nil, passwordState: .available, preferredID: "office")
+        let flow = fixture.composition.addDeviceStore
+        let host = LiveHostedView(fixture.contentView)
+        defer { host.close() }
+        fixture.appStore.showAddDevice()
+        flow.startManualEntry()
+        flow.manualHost = "10.0.0.9"
+        flow.password = "secret"
+
+        flow.runConfigure()
+
+        try await waitUntilStoreState { fixture.appStore.route == .device(saved.id) && !flow.isRunning }
+        XCTAssertEqual(fixture.registry.profiles.map(\.id), [saved.id])
+        XCTAssertEqual(fixture.registry.profile(id: saved.id)?.host, "root@10.0.0.9")
+        XCTAssertTrue(devicePageTexts(fixture.contentView).contains(L10n.format("add_device.saved", saved.title)))
+        XCTAssertNil(flow.error)
+        XCTAssertEqual(flow.entryMode, .discover)
+        XCTAssertEqual(flow.manualHost, "")
+        // Activity and diagnostics keep only the saved device's run: the stopped
+        // one was a step of this add, not a failure.
+        let stoppedLane = AddDeviceTarget.manual(ManualDeviceTarget(host: "10.0.0.9")).setupLaneKey(existingProfileID: nil)
+        XCTAssertTrue(fixture.appStore.operationCoordinator.lane(for: stoppedLane).backend.events.isEmpty)
+        try await waitUntilStoreState {
+            fixture.appStore.activityStore.laneSnapshots.map(\.laneKey) == [.deviceWorkflow(saved.id, .configure)]
+        }
+    }
+
+    func testToolbarCancelBeforeAStoppedRunsHelperExitsEndsTheAddFromAnyPage() async throws {
+        let mac = "02:aa:bb:cc:dd:ee"
+        for page in ["Add Device", "All Devices", "the saved device"] {
+            let runner = PausingStoreTestRunner(responses: [
+                testSavedAirportStopResponse(airportMAC: mac, pauseAfterEvents: true),
+                testConfigureResponse(host: "root@10.0.0.9", airportMAC: mac)
+            ])
+            let fixture = try await AppViewFixture(runner: runner, discoveryWaitsForReadiness: false)
+            defer { runner.finishAll() }
+            let saved = try await fixture.registry.storeTestProfile(
+                configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: mac),
+                discoveredDevice: nil, passwordState: .available, preferredID: "office")
+            try fixture.passwordStore.save("old password", for: saved.keychainAccount)
+            let flow = fixture.composition.addDeviceStore
+            let stoppedLane = fixture.appStore.operationCoordinator.lane(
+                for: AddDeviceTarget.manual(ManualDeviceTarget(host: "10.0.0.9")).setupLaneKey(existingProfileID: nil))
+            fixture.appStore.showAddDevice()
+            flow.startManualEntry()
+            flow.manualHost = "10.0.0.9"
+            flow.password = "secret"
+            flow.runConfigure()
+            // Configure stopped at the saved AirPort; its helper is still sending telemetry.
+            try await waitUntilStoreState { stoppedLane.backend.events.contains { $0.code == "device_already_saved" } }
+            await runQueuedStoreUpdates()
+            XCTAssertTrue(flow.isAdding, page)
+            switch page {
+            case "All Devices": fixture.appStore.navigate(to: .allDevices)
+            case "the saved device": fixture.appStore.select(saved)
+            default: break
+            }
+            XCTAssertTrue(fixture.appStore.canCancelSelectedOperation, page)
+
+            fixture.appStore.cancelSelectedOperation()
+            try await waitUntilStoreState { flow.state == .failed && !flow.isRunning }
+
+            // The add ends as a cancelled one does, and never runs as the saved device.
+            XCTAssertEqual(runner.calls.count, 1, page)
+            XCTAssertEqual(flow.error?.code, "cancelled", page)
+            XCTAssertEqual(flow.error?.message, L10n.string("helper.error.cancelled"), page)
+            XCTAssertEqual(fixture.registry.profile(id: saved.id)?.host, saved.host, page)
+            XCTAssertEqual(try fixture.passwordStore.password(for: saved.keychainAccount), "old password", page)
+            XCTAssertEqual(flow.manualHost, "10.0.0.9", page)
+            XCTAssertFalse(flow.isAdding, page)
+            XCTAssertTrue(stoppedLane.backend.events.isEmpty, page)
+            XCTAssertFalse(fixture.appStore.canCancelSelectedOperation, page)
+        }
+    }
+
+    func testAllDevicesAddButtonsWaitWhileAnAddRuns() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let runner = PausingStoreTestRunner(responses: [
+            testDiscoverResponse([office, den]),
+            testConfigureResponse(host: "root@10.0.0.3", pauseBeforeEvents: true)
+        ])
+        let fixture = try await AppViewFixture(runner: runner, discoveryWaitsForReadiness: false)
+        defer { runner.finishAll() }
+        let flow = fixture.composition.addDeviceStore
+        flow.runDiscover()
+        try await waitUntilStoreState { flow.state == .discoveryReady }
+        fixture.appStore.navigate(to: .allDevices)
+        func addButtonsEnabled() -> [Bool] {
+            accessibleElements(fixture.contentView)
+                .filter { $0.role == .button && $0.text == L10n.string("overview.discovery.add") }
+                .map(\.isEnabled)
+        }
+        XCTAssertEqual(addButtonsEnabled(), [true, true])
+
+        flow.select(try XCTUnwrap(flow.devices.last))
+        flow.password = "secret"
+        flow.runConfigure()
+        try await waitUntilStoreState { flow.isAdding && runner.calls.count == 2 }
+
+        XCTAssertEqual(addButtonsEnabled(), [false, false])
+
+        runner.finishAll()
+        try await waitUntilStoreState { !flow.isAdding && fixture.registry.profiles.count == 1 }
+        // Den is saved, so only Office still has an Add, and it works again.
+        XCTAssertEqual(addButtonsEnabled(), [true])
+    }
+
     func testRendersEmptyShellTopLevelRoutes() async throws {
         let fixture = try await AppViewFixture()
         for route in [AppRoute.allDevices, .activity, .appSettings, .addDevice] {

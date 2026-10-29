@@ -21,6 +21,7 @@ from timecapsulesmb.core.error_codes import CodedError, ErrorCode
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.device import acpd
+from timecapsulesmb.device import probe as device_probe
 from timecapsulesmb.device.compat import (
     DeviceCompatibility,
     airport_syap_supported,
@@ -70,6 +71,21 @@ class ConfigureFlowError(CodedError):
         self.debug = debug
 
 
+class AirportAlreadySavedError(ConfigureFlowError):
+    """The AirPort at the address is one the app has saved (saved_airport_macs).
+
+    Raised before configure writes a config, so the app can set up that saved
+    device instead, with its own settings and checks. ACP names the device
+    before anything changes on it; where ACP did not answer then, SSH names it
+    later, after configure may have turned SSH on there.
+    """
+
+    def __init__(self, airport_mac: str) -> None:
+        super().__init__("This AirPort is already saved.", code=ErrorCode.DEVICE_ALREADY_SAVED,
+                         detail=f"AirPort MAC {airport_mac}.")
+        self.airport_mac = airport_mac
+
+
 # Where ObservedDeviceIdentity.syap came from: the device's own ACP reading, or
 # the selected record standing in when the device gave none.
 SyapSource = Literal["probed", "selected_record"]
@@ -101,6 +117,9 @@ class ConfigureFlowRequest:
     # profile). Another AirPort at the host is refused before ACP enables SSH
     # and reboots it, and the device is looked for where it moved.
     expected_airport_mac: str | None = None
+    # Every saved AirPort's MAC, when the app adds a device it has not matched
+    # to a saved one: configure stops at one of them (AirportAlreadySavedError).
+    saved_airport_macs: frozenset[str] = frozenset()
     enable_ssh: bool = True
     internal_share_use_disk_root: bool | None = None
     smb_browse_compatibility: bool | None = None
@@ -295,6 +314,13 @@ def run_configure_flow(
         except DeviceAccessError as exc:
             raise ConfigureFlowError(str(exc), code=exc.code) from exc
         values["TC_HOST"] = host
+    elif request.saved_airport_macs:
+        # ACP names the device before anything here changes it, SSH included.
+        # The password check below reuses this read.
+        reading = device_probe.read_airport_acp(host, request.password, attempts=1)
+        if reading.password_matches and reading.airport_mac in request.saved_airport_macs:
+            raise AirportAlreadySavedError(reading.airport_mac)
+        confirmed = (host, reading)
     connection = SshConnection(host, request.password, request.ssh_opts)
     probe_connection = request.probe or probe_connection_state
     probed_state = probe_connection(connection)
@@ -405,6 +431,11 @@ def run_configure_flow(
             f"{acpd.acpd_broken_message(gone.what, note=gone.note)} Its AirPort identity cannot be read.",
             code=ErrorCode.ACPD_QUIT,
         )
+    # Where ACP did not name the device first, SSH does. Nothing is written
+    # yet, though SSH may have been turned on if ACP answered only later. A
+    # saved device's own run (an expected MAC) checks that MAC below instead.
+    if not request.expected_airport_mac and airport_mac in request.saved_airport_macs:
+        raise AirportAlreadySavedError(airport_mac)
     expected_mac = request.expected_airport_mac or (
         request.selected_record.airport_mac if request.selected_record is not None else None)
     if expected_mac and airport_mac and expected_mac != airport_mac:

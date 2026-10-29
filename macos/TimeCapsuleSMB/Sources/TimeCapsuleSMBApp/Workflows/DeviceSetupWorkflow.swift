@@ -34,6 +34,26 @@ final class DeviceSetupWorkflow: ObservableObject {
     private var operationObservers: [OperationLaneKey: BackendOperationObserver] = [:]
     private var cancellables: Set<AnyCancellable> = []
     private var observedLaneKeys: Set<OperationLaneKey> = []
+    private var currentRun: ConfigureRun?
+    private var stoppedAtSavedAirport: SavedAirportStop?
+
+    /// An add as runConfigureBackend started it: what running it again needs,
+    /// besides the password, which stays in pendingPassword.
+    private struct ConfigureRun {
+        let target: AddDeviceTarget
+        let preferredID: DeviceProfile.ID
+        let newProfileSettings: DeviceProfileSettings
+        let localNetworkPreflight: LocalNetworkPreflightResult?
+    }
+
+    /// Configure stopped this add at a saved AirPort (device_already_saved), a
+    /// step of the add and not a failure. Once the helper exits, the stopped run
+    /// leaves Activity, and the add runs again as that saved device, or ends as
+    /// cancelled when a Cancel from any page stopped the helper first.
+    private struct SavedAirportStop {
+        let airportMAC: String
+        let run: ConfigureRun
+    }
 
     init(
         coordinator: OperationCoordinator,
@@ -75,6 +95,28 @@ final class DeviceSetupWorkflow: ObservableObject {
         settings: DeviceProfileSettings,
         newProfileSettings: DeviceProfileSettings
     ) {
+        begin(
+            target: target,
+            password: password,
+            existingProfile: existingProfile,
+            preferredID: preferredID,
+            settings: settings,
+            newProfileSettings: newProfileSettings,
+            rerunOf: nil
+        )
+    }
+
+    /// A rerun (`rerunOf`) skips the Local Network check its first run made,
+    /// and never sends saved MACs: it cannot stop at a saved AirPort again.
+    private func begin(
+        target: AddDeviceTarget,
+        password: String,
+        existingProfile: DeviceProfile?,
+        preferredID: DeviceProfile.ID,
+        settings: DeviceProfileSettings,
+        newProfileSettings: DeviceProfileSettings,
+        rerunOf firstRun: ConfigureRun?
+    ) {
         guard !isRunning else { return }
         let profileID = existingProfile?.id ?? preferredID
         let laneKey = target.setupLaneKey(existingProfileID: existingProfile?.id)
@@ -108,8 +150,15 @@ final class DeviceSetupWorkflow: ObservableObject {
             pendingNewProfileSettings = newProfileSettings
         }
         observer(for: laneKey).clear()
+        // A device matched to none saved by address or Bonjour record may still
+        // be one by its MAC: configure stops there before writing a config.
+        let sendsSavedAirportMACs = existingProfile == nil && firstRun == nil
+        // Telemetry's account of how a saved device's new address was found:
+        // typed in, or a discovered record only its MAC tied to it.
+        let addressSource: AddressSource? = firstRun == nil || existingProfile == nil ? nil
+            : target.discoveredDevice == nil ? .manual : .mac
 
-        if let localNetworkPreflightChecker {
+        if firstRun == nil, let localNetworkPreflightChecker {
             state = .checkingLocalNetwork
             localNetworkPreflightTask = Task { [weak self, localNetworkPreflightChecker] in
                 let result = await localNetworkPreflightChecker.check()
@@ -122,10 +171,13 @@ final class DeviceSetupWorkflow: ObservableObject {
                         target: target,
                         password: password,
                         settings: settings,
+                        newProfileSettings: newProfileSettings,
                         existingProfile: existingProfile,
                         configureDraft: configureDraft,
                         laneKey: laneKey,
-                        localNetworkPreflight: result
+                        localNetworkPreflight: result,
+                        sendsSavedAirportMACs: sendsSavedAirportMACs,
+                        addressSource: addressSource
                     )
                 }
             }
@@ -136,10 +188,13 @@ final class DeviceSetupWorkflow: ObservableObject {
             target: target,
             password: password,
             settings: settings,
+            newProfileSettings: newProfileSettings,
             existingProfile: existingProfile,
             configureDraft: configureDraft,
             laneKey: laneKey,
-            localNetworkPreflight: nil
+            localNetworkPreflight: firstRun?.localNetworkPreflight,
+            sendsSavedAirportMACs: sendsSavedAirportMACs,
+            addressSource: addressSource
         )
     }
 
@@ -147,12 +202,18 @@ final class DeviceSetupWorkflow: ObservableObject {
         target: AddDeviceTarget,
         password: String,
         settings: DeviceProfileSettings,
+        newProfileSettings: DeviceProfileSettings,
         existingProfile: DeviceProfile?,
         configureDraft: ConfigureProfileDraft,
         laneKey: OperationLaneKey,
-        localNetworkPreflight: LocalNetworkPreflightResult?
+        localNetworkPreflight: LocalNetworkPreflightResult?,
+        sendsSavedAirportMACs: Bool,
+        addressSource: AddressSource?
     ) {
         let lane = coordinator.lane(for: laneKey)
+        let savedAirportMACs = sendsSavedAirportMACs
+            ? profilePersistence.registry.profiles.compactMap(\.network.airportMAC).sorted()
+            : []
         switch coordinator.run(
             operation: "configure",
             params: OperationParams.Configure.save(
@@ -171,7 +232,9 @@ final class DeviceSetupWorkflow: ObservableObject {
                 ataIdleSeconds: settings.ataIdleSeconds,
                 ataStandby: settings.ataStandby,
                 includeAtaStandby: true,
-                localNetworkPreflight: localNetworkPreflight
+                localNetworkPreflight: localNetworkPreflight,
+                addressSource: addressSource,
+                savedAirportMACs: savedAirportMACs
             ),
             context: configureDraft.context,
             activeDeviceID: existingProfile?.id,
@@ -179,6 +242,12 @@ final class DeviceSetupWorkflow: ObservableObject {
         ) {
         case .started(let operation):
             activeLaneKey = laneKey
+            currentRun = ConfigureRun(
+                target: target,
+                preferredID: configureDraft.profileID,
+                newProfileSettings: newProfileSettings,
+                localNetworkPreflight: localNetworkPreflight
+            )
             observer(for: laneKey).start(operation)
             state = .configuring
             process(lane.backend.events, laneKey: laneKey)
@@ -206,6 +275,7 @@ final class DeviceSetupWorkflow: ObservableObject {
 
     func reset() {
         generation = UUID()
+        stoppedAtSavedAirport = nil
         localNetworkPreflightTask?.cancel()
         localNetworkPreflightTask = nil
         if let activeLaneKey {
@@ -350,6 +420,16 @@ final class DeviceSetupWorkflow: ObservableObject {
     private var pendingPassword = ""
 
     private func applyError(_ event: BackendEvent) {
+        if event.code == "device_already_saved", activeLaneKey != nil, let run = currentRun,
+           case .object(let details)? = event.details, case .string(let reported)? = details["airport_mac"],
+           let airportMAC = DeviceNetworkIdentity.normalizedAirportMAC(reported) {
+            // Configure stopped at a saved AirPort before writing a config. The
+            // add stays in progress and runs again as that saved device.
+            stoppedAtSavedAirport = SavedAirportStop(airportMAC: airportMAC, run: run)
+            currentStage = nil
+            finishActiveOperation()
+            return
+        }
         if event.code == "confirmation_required" {
             error = nil
             state = .awaitingConfirmation
@@ -414,13 +494,25 @@ final class DeviceSetupWorkflow: ObservableObject {
         self.error = BackendErrorViewModel(
             operation: "add-device",
             code: "profile_save_failed",
-            message: error.localizedDescription
+            message: profileSaveFailureMessage(error)
         )
         state = .failed
         finishActiveOperation()
         clearPendingConfigureDraft()
         pendingNewProfileSettings = nil
         pendingPassword = ""
+    }
+
+    /// A save refused because the AirPort is another saved device, by its MAC,
+    /// names that device; configure stops at a saved AirPort first, so this is
+    /// rare. A clash on the address alone can be another AirPort that only had
+    /// it, and keeps the registry's own message.
+    private func profileSaveFailureMessage(_ error: Error) -> String {
+        if let savedID = (error as? DeviceRegistryError)?.profileWithSameAirportMAC,
+           let saved = profilePersistence.registry.profile(id: savedID) {
+            return L10n.format("add_device.error.already_saved", saved.title)
+        }
+        return error.localizedDescription
     }
 
     private func rejectRun(_ message: String) {
@@ -457,9 +549,47 @@ final class DeviceSetupWorkflow: ObservableObject {
 
     private func releaseFinishedLane() {
         guard let key = activeLaneKey, !savingProfile,
-              operationObservers[key]?.activeOperation == nil,
-              !coordinator.lane(for: key).isBusy else { return }
+              operationObservers[key]?.activeOperation == nil else { return }
+        let lane = coordinator.lane(for: key)
+        guard !lane.isBusy else { return }
         activeLaneKey = nil
+        // While a stop waits, no other run can start, so it is this lane's.
+        guard let stop = stoppedAtSavedAirport else { return }
+        stoppedAtSavedAirport = nil
+        // Read before clear(), which forgets it.
+        let cancelled = lane.backend.lastExitCode == HelperRunResult.cancelledExitCode
+        coordinator.clear(laneKey: key)
+        if cancelled {
+            // What a cancelled helper reports, which this one, already
+            // finished, could not.
+            applyError(BackendEvent.error(operation: "configure", code: "cancelled",
+                                          message: L10n.string("helper.error.cancelled")))
+        } else {
+            runAgain(stop)
+        }
+    }
+
+    /// Runs a stopped add again as the saved device with the AirPort's MAC: its
+    /// lane, settings, config and MAC check, as when its address is changed in
+    /// Settings. A device forgotten in the meantime is added as a new one. A
+    /// device runs one operation at a time, so a busy one fails the add with
+    /// its name; the page keeps the address and password for Save Device.
+    private func runAgain(_ stop: SavedAirportStop) {
+        let run = stop.run
+        let saved = profilePersistence.registry.profiles.first { $0.network.airportMAC == stop.airportMAC }
+        if let saved, coordinator.isDeviceBusy(saved) {
+            rejectRun(L10n.format("add_device.error.saved_device_busy", saved.title))
+            return
+        }
+        begin(
+            target: run.target,
+            password: pendingPassword,
+            existingProfile: saved,
+            preferredID: run.preferredID,
+            settings: saved?.settings ?? run.newProfileSettings,
+            newProfileSettings: run.newProfileSettings,
+            rerunOf: run
+        )
     }
 
     private func clearPendingConfigureDraft() {

@@ -529,6 +529,26 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
     }
 }
 
+/// Returns once the main-actor updates the stores' subscriptions have queued
+/// so far have run. It assumes Swift runs main-actor tasks as main-queue jobs
+/// in the order they were queued, as its main executor does today, and checks
+/// that with a task of its own: if that changes, it fails instead of returning
+/// before the updates it waits for.
+@MainActor
+func runQueuedStoreUpdates(file: StaticString = #filePath, line: UInt = #line) async {
+    let earlierTask = QueuedTaskProbe()
+    Task { @MainActor in earlierTask.ran = true }
+    await withCheckedContinuation { continuation in
+        DispatchQueue.main.async { continuation.resume() }
+    }
+    XCTAssertTrue(earlierTask.ran, "A main-actor task queued earlier has not run yet", file: file, line: line)
+}
+
+@MainActor
+private final class QueuedTaskProbe {
+    var ran = false
+}
+
 /// The timeout only guards against a hang, so it is generous: CI runs these
 /// tests with --parallel on a few cores, where a store's next step can wait
 /// seconds for the main actor. A passing test never waits for it.
@@ -778,6 +798,36 @@ extension DiscoveredDevice {
         }
         return trimmed
     }
+}
+
+/// configure's answer that it set up the AirPort at `host`.
+func testConfigureResponse(
+    host: String = "10.0.0.2",
+    airportMAC: String? = nil,
+    pauseBeforeEvents: Bool = false
+) -> StoreTestRunner.Response {
+    StoreTestRunner.Response(
+        events: [BackendEvent(type: "result", operation: "configure", ok: true,
+                              payload: testConfigurePayload(host: host, airportMAC: airportMAC))],
+        pauseBeforeEvents: pauseBeforeEvents
+    )
+}
+
+/// discover's answer listing these Bonjour records.
+func testDiscoverResponse(_ records: [JSONValue]) -> StoreTestRunner.Response {
+    StoreTestRunner.Response(events: [
+        BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: records))
+    ])
+}
+
+/// Configure's answer for an AirPort the app has saved: it stopped before
+/// writing a config. With `pauseAfterEvents` its helper has not exited yet, as
+/// while it sends telemetry.
+func testSavedAirportStopResponse(airportMAC: String, pauseAfterEvents: Bool = false) -> StoreTestRunner.Response {
+    StoreTestRunner.Response(events: [
+        BackendEvent(type: "error", operation: "configure", code: "device_already_saved",
+                     message: "This AirPort is already saved.", details: .object(["airport_mac": .string(airportMAC)]))
+    ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""), pauseAfterEvents: pauseAfterEvents)
 }
 
 func testConfigurePayload(

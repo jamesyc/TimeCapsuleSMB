@@ -7,9 +7,11 @@
 "add_device.discovered_devices" = "Rasti įrenginiai";
 "add_device.entry.discover" = "Ieškoti";
 "add_device.entry.manual" = "Rankinis adresas";
+"add_device.error.already_saved" = "Šis įrenginys jau išsaugotas kaip „%@“.";
 "add_device.error.choose_target" = "Pasirinkite rastą įrenginį arba įveskite kompiuterio pavadinimą.";
 "add_device.error.invalid_bonjour_timeout" = "Paieškos skirtasis laikas turi būti bent 5 sekundės.";
 "add_device.error.password_required" = "Būtinas įrenginio slaptažodis.";
+"add_device.error.saved_device_busy" = "Šis įrenginys jau išsaugotas kaip „%@“ ir jame vykdoma kita operacija. Bandykite dar kartą, kai ji baigsis.";
 "add_device.host_or_ip" = "Kompiuterio vardas arba IP adresas";
 "add_device.password" = "Įrenginio slaptažodis";
 "add_device.progress.configuring.message" = "Tikrinama prieiga ir parengiamas šis įrenginys. Tai gali užtrukti kelias minutes...";
@@ -35,7 +37,6 @@
 "add_device.state.manual_entry" = "Rankinis adresas";
 "add_device.state.password_entry" = "Būtinas slaptažodis";
 "add_device.state.checking_local_network" = "Tikrinamas vietinis tinklas";
-"add_device.state.saved" = "Išsaugota";
 "add_device.state.saving_profile" = "Išsaugoma";
 "add_device.state.unsupported" = "Nepalaikoma";
 "add_device.title" = "Pridėti Apple AirPort Time Capsule arba AirPort Extreme";

@@ -6,6 +6,8 @@ struct DeviceListOverviewView: View {
     @ObservedObject var deviceRegistry: DeviceRegistryStore
     @ObservedObject var deviceDiscovery: DeviceDiscoveryStore
     @ObservedObject var backend: BackendClient
+    /// False while an add runs: Add Device keeps that add on screen until it ends.
+    let canAddDevice: Bool
     let addDiscoveredDevice: (DiscoveredDevice) -> Void
 
     var body: some View {
@@ -143,6 +145,7 @@ struct DeviceListOverviewView: View {
                         ) {
                             addDiscoveredDevice(device)
                         }
+                        .disabled(!canAddDevice)
                         Divider()
                     }
                     ForEach(saved) { device in

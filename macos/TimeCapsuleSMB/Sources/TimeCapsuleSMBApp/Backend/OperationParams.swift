@@ -65,12 +65,16 @@ enum OperationParams {
             ataStandby: Int? = nil,
             includeAtaStandby: Bool = false,
             localNetworkPreflight: LocalNetworkPreflightResult? = nil,
-            addressSource: AddressSource? = nil
+            addressSource: AddressSource? = nil,
+            savedAirportMACs: [String] = []
         ) -> [String: JSONValue] {
             var params: [String: JSONValue] = [
                 "password": .string(password),
                 "persist_password": .bool(false)
             ]
+            if !savedAirportMACs.isEmpty {
+                params["saved_airport_macs"] = .array(savedAirportMACs.map(JSONValue.string))
+            }
             if let addressSource {
                 params["address_source"] = .string(addressSource.rawValue)
             }
