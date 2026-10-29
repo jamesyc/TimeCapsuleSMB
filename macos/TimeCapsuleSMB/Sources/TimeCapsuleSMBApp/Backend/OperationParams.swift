@@ -2,13 +2,8 @@ import Foundation
 
 enum OperationParams {
     enum Readiness {
-        static func versionCheck(url: String) -> [String: JSONValue] {
-            var params: [String: JSONValue] = [:]
-            let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedURL.isEmpty {
-                params["url"] = .string(trimmedURL)
-            }
-            return params
+        static func versionCheck() -> [String: JSONValue] {
+            [:]
         }
 
         static func setTelemetry(enabled: Bool) -> [String: JSONValue] {

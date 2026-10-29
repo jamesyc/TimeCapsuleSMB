@@ -151,8 +151,6 @@ struct AppSettings: Codable, Equatable {
     var telemetryEnabled: Bool
     var helperPathOverride: String
     var showRawBackendEventsByDefault: Bool
-    var checkForUpdatesOnLaunch: Bool
-    var versionCheckURL: String
     var timeMachineWarningsEnabled: Bool
 
     static let `default` = AppSettings(
@@ -163,8 +161,6 @@ struct AppSettings: Codable, Equatable {
         telemetryEnabled: true,
         helperPathOverride: "",
         showRawBackendEventsByDefault: true,
-        checkForUpdatesOnLaunch: true,
-        versionCheckURL: "",
         timeMachineWarningsEnabled: true
     )
 
@@ -176,8 +172,6 @@ struct AppSettings: Codable, Equatable {
         telemetryEnabled: Bool,
         helperPathOverride: String,
         showRawBackendEventsByDefault: Bool,
-        checkForUpdatesOnLaunch: Bool,
-        versionCheckURL: String,
         timeMachineWarningsEnabled: Bool
     ) {
         self.language = language
@@ -187,8 +181,6 @@ struct AppSettings: Codable, Equatable {
         self.telemetryEnabled = telemetryEnabled
         self.helperPathOverride = helperPathOverride
         self.showRawBackendEventsByDefault = showRawBackendEventsByDefault
-        self.checkForUpdatesOnLaunch = checkForUpdatesOnLaunch
-        self.versionCheckURL = versionCheckURL
         self.timeMachineWarningsEnabled = timeMachineWarningsEnabled
     }
 
@@ -200,8 +192,6 @@ struct AppSettings: Codable, Equatable {
         case telemetryEnabled
         case helperPathOverride
         case showRawBackendEventsByDefault
-        case checkForUpdatesOnLaunch
-        case versionCheckURL
         case timeMachineWarningsEnabled
     }
 
@@ -224,9 +214,6 @@ struct AppSettings: Codable, Equatable {
         helperPathOverride = try container.decodeIfPresent(String.self, forKey: .helperPathOverride) ?? defaults.helperPathOverride
         showRawBackendEventsByDefault = try container.decodeIfPresent(Bool.self, forKey: .showRawBackendEventsByDefault)
             ?? defaults.showRawBackendEventsByDefault
-        checkForUpdatesOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .checkForUpdatesOnLaunch)
-            ?? defaults.checkForUpdatesOnLaunch
-        versionCheckURL = try container.decodeIfPresent(String.self, forKey: .versionCheckURL) ?? defaults.versionCheckURL
         timeMachineWarningsEnabled = try container.decodeIfPresent(Bool.self, forKey: .timeMachineWarningsEnabled)
             ?? defaults.timeMachineWarningsEnabled
     }
@@ -251,7 +238,6 @@ enum AppSettingsValidationError: Equatable, LocalizedError {
     case invalidMountWait
     case invalidAtaIdleSeconds
     case invalidAtaStandby
-    case invalidVersionCheckURL
 
     var errorDescription: String? {
         switch self {
@@ -263,8 +249,6 @@ enum AppSettingsValidationError: Equatable, LocalizedError {
             return L10n.string("app_settings.error.ata_idle")
         case .invalidAtaStandby:
             return L10n.string("app_settings.error.ata_standby")
-        case .invalidVersionCheckURL:
-            return L10n.string("app_settings.error.version_url")
         }
     }
 }
@@ -417,8 +401,6 @@ struct AppSettingsDraft: Equatable {
     var telemetryEnabled: Bool
     var helperPathOverride: String
     var showRawBackendEventsByDefault: Bool
-    var checkForUpdatesOnLaunch: Bool
-    var versionCheckURL: String
     var timeMachineWarningsEnabled: Bool
 
     init(settings: AppSettings) {
@@ -441,8 +423,6 @@ struct AppSettingsDraft: Equatable {
         telemetryEnabled = settings.telemetryEnabled
         helperPathOverride = settings.helperPathOverride
         showRawBackendEventsByDefault = settings.showRawBackendEventsByDefault
-        checkForUpdatesOnLaunch = settings.checkForUpdatesOnLaunch
-        versionCheckURL = settings.versionCheckURL
         timeMachineWarningsEnabled = settings.timeMachineWarningsEnabled
     }
 
@@ -464,11 +444,6 @@ struct AppSettingsDraft: Equatable {
             parsedAtaStandby = value
         } else {
             throw AppSettingsValidationError.invalidAtaStandby
-        }
-
-        let trimmedVersionURL = versionCheckURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedVersionURL.isEmpty, !Self.isHTTPURL(trimmedVersionURL) {
-            throw AppSettingsValidationError.invalidVersionCheckURL
         }
 
         return AppSettings(
@@ -493,8 +468,6 @@ struct AppSettingsDraft: Equatable {
             telemetryEnabled: telemetryEnabled,
             helperPathOverride: helperPathOverride.trimmingCharacters(in: .whitespacesAndNewlines),
             showRawBackendEventsByDefault: showRawBackendEventsByDefault,
-            checkForUpdatesOnLaunch: checkForUpdatesOnLaunch,
-            versionCheckURL: trimmedVersionURL,
             timeMachineWarningsEnabled: timeMachineWarningsEnabled
         )
     }
@@ -504,17 +477,6 @@ struct AppSettingsDraft: Equatable {
             return String(value)
         }
         return String(Int(value))
-    }
-
-    private static func isHTTPURL(_ text: String) -> Bool {
-        guard let url = URL(string: text),
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              url.host != nil
-        else {
-            return false
-        }
-        return true
     }
 }
 

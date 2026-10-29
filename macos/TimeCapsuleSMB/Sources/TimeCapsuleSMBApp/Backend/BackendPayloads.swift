@@ -48,17 +48,12 @@ struct InstallValidationPayload: Decodable, Equatable {
     }
 }
 
+// The helper also sends version codes for telemetry; the app reads only these.
 struct VersionCheckPayload: Decodable, Equatable {
     let schemaVersion: Int
     let shouldBlock: Bool
-    let updateAvailable: Bool
-    let checkedURL: String
     let message: String
     let downloadURL: String
-    let localVersionCode: Int
-    let currentVersion: Int?
-    let minSupportedVersion: Int?
-    let latestTag: String?
     let source: String
     let summary: String
     var summaryKey: String? = nil
@@ -67,14 +62,8 @@ struct VersionCheckPayload: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case shouldBlock = "should_block"
-        case updateAvailable = "update_available"
-        case checkedURL = "checked_url"
         case message
         case downloadURL = "download_url"
-        case localVersionCode = "local_version_code"
-        case currentVersion = "current_version"
-        case minSupportedVersion = "min_supported_version"
-        case latestTag = "latest_tag"
         case source
         case summary
         case summaryKey = "summary_key"

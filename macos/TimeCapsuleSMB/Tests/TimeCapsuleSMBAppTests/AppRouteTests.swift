@@ -295,7 +295,6 @@ final class AppRouteTests: XCTestCase {
 
         fixture.appStore.appReadinessStore.objectWillChange.send()
         fixture.appStore.appSettingsStore.objectWillChange.send()
-        fixture.appStore.appUpdateStore.objectWillChange.send()
         fixture.appStore.deviceRegistry.objectWillChange.send()
         fixture.appStore.operationCoordinator.objectWillChange.send()
         fixture.appStore.activityStore.objectWillChange.send()

@@ -25,6 +25,11 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("- Profile vfs_aio_fork: true"))
         XCTAssertTrue(text.contains("- Active device:profile-one: deploy"))
         XCTAssertTrue(text.contains("- Pending Confirmation: none"))
+        XCTAssertTrue(text.contains("- Version Check: This version of TimeCapsuleSMB is supported. Source: network"))
+        // The update notice and its settings are gone; Sparkle owns updates.
+        XCTAssertFalse(text.contains("Check Updates On Launch"))
+        XCTAssertFalse(text.contains("Version Check URL"))
+        XCTAssertFalse(text.contains("Latest Tag"))
     }
 
     func testExportShowsTheLastCheckupAndEachSection() {
@@ -181,9 +186,6 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
                 summary: "Install validation passed."
             ),
             runtimeIssues: [],
-            updateState: .current,
-            updatePayload: versionPayload(),
-            updateError: nil,
             selectedProfile: profile(),
             selectedProfileIsFallback: false,
             activeOperations: [.device("profile-one"): ActiveOperation(operation: "deploy", profileID: "profile-one", context: nil)],
@@ -198,16 +200,10 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         VersionCheckPayload(
             schemaVersion: 1,
             shouldBlock: false,
-            updateAvailable: false,
-            checkedURL: "https://example.invalid/version.json",
             message: "Current.",
             downloadURL: "https://example.invalid/download",
-            localVersionCode: 20125,
-            currentVersion: 20125,
-            minSupportedVersion: 20000,
-            latestTag: "v2.1.4",
             source: source,
-            summary: source == "unavailable" ? "Version metadata is unavailable." : "TimeCapsuleSMB is up to date."
+            summary: source == "unavailable" ? "Version metadata is unavailable." : "This version of TimeCapsuleSMB is supported."
         )
     }
 

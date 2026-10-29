@@ -19,7 +19,11 @@ from . import (
 from timecapsulesmb.app.ops import KEEP_AWAKE_OPERATIONS
 from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.core.paths import DistributionRootError
-from timecapsulesmb.services.version_check import check_client_version, render_version_block_message
+from timecapsulesmb.services.version_check import (
+    DEFAULT_DOWNLOAD_URL,
+    check_client_version,
+    render_version_block_message,
+)
 
 
 COMMANDS = {
@@ -52,10 +56,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
     if args.command != "api" and "-h" not in args.args and "--help" not in args.args:
         try:
-            version_check = check_client_version()
+            version_check = check_client_version(appcast=True)
             if version_check.should_block:
                 print(render_version_block_message(version_check), file=sys.stderr)
                 return 1
+            available = version_check.available_version_code
+            if available is not None and available > version_check.local_version_code:
+                print(
+                    f"TimeCapsuleSMB v{version_check.available_version} is available: {DEFAULT_DOWNLOAD_URL}",
+                    file=sys.stderr,
+                )
         except Exception:
             pass
     # The app's operation registry names the long device commands for both

@@ -93,22 +93,16 @@ def telemetry_preference_payload(*, install_id: str, telemetry_enabled: bool, bo
 
 
 def version_check_payload(result: VersionCheckResult) -> dict[str, object]:
-    update_available = (
-        result.current_version is not None
-        and result.current_version > result.local_version_code
-    )
+    # version.json says only whether this version is still supported; the app
+    # learns of newer releases from its update feed, not from this check.
     if result.source == "unavailable":
         summary = Summary("version_metadata_unavailable", "Version metadata is unavailable.")
     elif result.should_block:
         summary = Summary("update_required", "Update required.")
-    elif update_available:
-        summary = Summary("update_available", "Update available.")
     else:
-        summary = Summary("up_to_date", "TimeCapsuleSMB is up to date.")
+        summary = Summary("version_supported", "This version of TimeCapsuleSMB is supported.")
     return _with_schema({
         "should_block": result.should_block,
-        "update_available": update_available,
-        "checked_url": result.checked_url,
         "message": result.message,
         "download_url": result.download_url,
         "local_version_code": result.local_version_code,

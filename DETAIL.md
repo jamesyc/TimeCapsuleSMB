@@ -1185,7 +1185,7 @@ The top-level command dispatcher supports:
 - `validate-install`
 
 Shared command behavior:
-- all commands except `api` perform the client version check before running, unless the invocation is only asking for `-h` or `--help`
+- all commands except `api` perform the client version check before running, unless the invocation is only asking for `-h` or `--help`: they stop when `version.json` says this version is no longer supported (`min_supported_version`), and print one line naming a newer release when the app's update feed (`appcast.xml` on the latest release) lists one. The app's readiness `version-check` operation makes the same minimum-version check and refuses to run below it.
 - commands that read the device config accept `--config PATH`, which overrides `TCAPSULE_CONFIG` and the repo-local `.env`
 - commands that can prompt usually accept `--no-input`; in that mode they fail instead of asking for missing input or confirmation
 - commands that can make destructive or rebooting changes use `--yes` to skip confirmation in interactive and non-interactive runs

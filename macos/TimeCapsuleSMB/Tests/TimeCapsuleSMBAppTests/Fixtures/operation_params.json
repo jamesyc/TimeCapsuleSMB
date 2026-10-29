@@ -128,9 +128,7 @@
       "vfs_aio_fork_enabled"
     ],
     "validate-install": [],
-    "version-check": [
-      "url"
-    ],
+    "version-check": [],
     "wipe-disk": []
   }
 }

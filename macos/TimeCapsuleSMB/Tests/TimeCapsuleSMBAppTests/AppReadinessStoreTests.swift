@@ -66,15 +66,15 @@ final class AppReadinessStoreTests: XCTestCase {
         ])
         let store = makeStore(
             runner: runner,
-            versionCheck: AppReadinessVersionCheck(url: "https://example.invalid/version.json")
+            checksVersion: true
         )
 
         store.start()
 
         try await waitUntilStoreState { store.state.kind == .ready }
         XCTAssertEqual(runner.calls.map(\.operation), ["version-check", "capabilities", "validate-install"])
-        XCTAssertEqual(runner.calls.first?.params["url"], .string("https://example.invalid/version.json"))
-        XCTAssertNil(runner.calls.first?.params["local_version_code"])
+        // The helper checks the project's own version.json; the app sends nothing.
+        XCTAssertEqual(runner.calls.first?.params, [:])
     }
 
     func testBlockingVersionCheckStopsReadinessBeforeCapabilities() async throws {
@@ -85,7 +85,7 @@ final class AppReadinessStoreTests: XCTestCase {
         ])
         let store = makeStore(
             runner: runner,
-            versionCheck: AppReadinessVersionCheck(url: "https://example.invalid/version.json")
+            checksVersion: true
         )
 
         store.start()
@@ -108,7 +108,7 @@ final class AppReadinessStoreTests: XCTestCase {
         ])
         let store = makeStore(
             runner: runner,
-            versionCheck: AppReadinessVersionCheck(url: "https://example.invalid/version.json")
+            checksVersion: true
         )
         let finishPublished = expectation(description: "AppReadinessStore publishes after backend running state clears")
         var didFulfill = false
@@ -149,7 +149,7 @@ final class AppReadinessStoreTests: XCTestCase {
         ])
         let store = makeStore(
             runner: runner,
-            versionCheck: AppReadinessVersionCheck(url: "")
+            checksVersion: true
         )
 
         store.start()
@@ -175,7 +175,7 @@ final class AppReadinessStoreTests: XCTestCase {
         ])
         let store = makeStore(
             runner: runner,
-            versionCheck: AppReadinessVersionCheck(url: "https://example.invalid/version.json")
+            checksVersion: true
         )
 
         store.start()
@@ -367,7 +367,7 @@ final class AppReadinessStoreTests: XCTestCase {
         runner: StoreTestRunner,
         issues: [BundleRuntimeIssue] = [],
         resolveError: Error? = nil,
-        versionCheck: AppReadinessVersionCheck? = nil
+        checksVersion: Bool = false
     ) -> AppReadinessStore {
         let backend = BackendClient(runner: runner)
         let resolver = TestRuntimeResolver(issues: issues, resolveError: resolveError)
@@ -376,7 +376,9 @@ final class AppReadinessStoreTests: XCTestCase {
             runtimeResolver: resolver,
             helperPathProvider: { "" }
         )
-        store.applyVersionCheck(versionCheck)
+        if checksVersion {
+            store.enableVersionCheck()
+        }
         return store
     }
 
@@ -418,8 +420,6 @@ final class AppReadinessStoreTests: XCTestCase {
         .object([
             "schema_version": .number(1),
             "should_block": .bool(shouldBlock),
-            "update_available": .bool(shouldBlock),
-            "checked_url": .string("https://example.invalid/version.json"),
             "message": .string("Please update."),
             "download_url": .string("https://example.invalid/download"),
             "local_version_code": .number(20000),
@@ -427,7 +427,7 @@ final class AppReadinessStoreTests: XCTestCase {
             "min_supported_version": .number(20125),
             "latest_tag": .string("v2.1.4"),
             "source": .string(source),
-            "summary": .string(source == "unavailable" ? "Version metadata is unavailable." : (shouldBlock ? "Update required." : "TimeCapsuleSMB is up to date."))
+            "summary": .string(source == "unavailable" ? "Version metadata is unavailable." : (shouldBlock ? "Update required." : "This version of TimeCapsuleSMB is supported."))
         ])
     }
 }

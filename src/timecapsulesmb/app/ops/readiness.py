@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from urllib.parse import urlparse
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import (
@@ -24,9 +23,8 @@ from timecapsulesmb.services.app import (
     OperationResult,
     bool_param,
     config_path,
-    string_param,
 )
-from timecapsulesmb.services.version_check import VERSION_CHECK_URL, check_client_version
+from timecapsulesmb.services.version_check import check_client_version
 
 
 def capabilities_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
@@ -80,14 +78,10 @@ def set_telemetry_operation(params: dict[str, object], context: AppOperationCont
 
 
 def version_check_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
-    url = string_param(params, "url", VERSION_CHECK_URL).strip() or VERSION_CHECK_URL
-    parsed_url = urlparse(url)
-    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-        raise AppOperationError("url must be an HTTP/HTTPS URL", code=ErrorCode.VALIDATION_FAILED)
     context.stage("resolve_paths")
     app_paths = resolve_app_paths(config_path=config_path(params))
     context.stage("check_version")
-    result = check_client_version(url=url, cache_path=app_paths.version_check_cache_path)
+    result = check_client_version(cache_path=app_paths.version_check_cache_path)
     return OperationResult(True, version_check_payload(result))
 
 

@@ -32,7 +32,7 @@ final class OperationParamsContractTests: XCTestCase {
         var settingsWithoutStandby = DeviceProfileSettings.default
         settingsWithoutStandby.ataStandby = nil
         return [
-            ("version-check", OperationParams.Readiness.versionCheck(url: "https://example.com/version.json")),
+            ("version-check", OperationParams.Readiness.versionCheck()),
             ("set-telemetry", OperationParams.Readiness.setTelemetry(enabled: true)),
             ("discover", OperationParams.Discovery.discover(timeout: 5)),
             ("reachability", OperationParams.Reachability.check(profile: profile)),

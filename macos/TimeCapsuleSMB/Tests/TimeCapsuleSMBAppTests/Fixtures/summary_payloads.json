@@ -159,7 +159,6 @@
       "ok": true,
       "operation": "version-check",
       "payload": {
-        "checked_url": "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json",
         "current_version": 10,
         "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
         "latest_tag": null,
@@ -171,8 +170,7 @@
         "source": "remote",
         "summary": "Update required.",
         "summary_args": [],
-        "summary_key": "update_required",
-        "update_available": true
+        "summary_key": "update_required"
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -185,33 +183,6 @@
       "ok": true,
       "operation": "version-check",
       "payload": {
-        "checked_url": "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json",
-        "current_version": 10,
-        "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
-        "latest_tag": null,
-        "local_version_code": 5,
-        "message": "This version is no longer supported. Please update before continuing.",
-        "min_supported_version": null,
-        "schema_version": 1,
-        "should_block": false,
-        "source": "remote",
-        "summary": "Update available.",
-        "summary_args": [],
-        "summary_key": "update_available",
-        "update_available": true
-      },
-      "request_id": "fixture",
-      "schema_version": 1,
-      "type": "result"
-    },
-    "name": "version_available"
-  },
-  {
-    "event": {
-      "ok": true,
-      "operation": "version-check",
-      "payload": {
-        "checked_url": "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json",
         "current_version": 5,
         "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
         "latest_tag": null,
@@ -221,10 +192,9 @@
         "schema_version": 1,
         "should_block": false,
         "source": "remote",
-        "summary": "TimeCapsuleSMB is up to date.",
+        "summary": "This version of TimeCapsuleSMB is supported.",
         "summary_args": [],
-        "summary_key": "up_to_date",
-        "update_available": false
+        "summary_key": "version_supported"
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -237,7 +207,6 @@
       "ok": true,
       "operation": "version-check",
       "payload": {
-        "checked_url": "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json",
         "current_version": null,
         "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
         "latest_tag": null,
@@ -249,8 +218,7 @@
         "source": "unavailable",
         "summary": "Version metadata is unavailable.",
         "summary_args": [],
-        "summary_key": "version_metadata_unavailable",
-        "update_available": false
+        "summary_key": "version_metadata_unavailable"
       },
       "request_id": "fixture",
       "schema_version": 1,

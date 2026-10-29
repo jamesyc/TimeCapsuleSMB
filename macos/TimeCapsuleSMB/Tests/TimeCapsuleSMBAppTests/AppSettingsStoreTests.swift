@@ -39,8 +39,6 @@ final class AppSettingsStoreTests: XCTestCase {
             telemetryEnabled: false,
             helperPathOverride: "/tmp/tcapsule",
             showRawBackendEventsByDefault: false,
-            checkForUpdatesOnLaunch: false,
-            versionCheckURL: "https://example.invalid/version.json",
             timeMachineWarningsEnabled: false
         )
 
@@ -66,6 +64,28 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.settings.appearance, .system)
         XCTAssertFalse(store.settings.defaultDeviceSettings.mdnsAdvertiseAFP)
         XCTAssertFalse(store.settings.telemetryEnabled)
+    }
+
+    func testSettingsSavedWithTheRetiredUpdateKeysLoadAndDropThem() async throws {
+        // Earlier apps saved an update-check toggle and a version URL; the
+        // app no longer has either, and must load such a file unchanged otherwise.
+        let temp = try TemporaryDirectory()
+        let settingsURL = temp.url.appendingPathComponent("settings.json")
+        try #"{"telemetryEnabled":false,"checkForUpdatesOnLaunch":false,"versionCheckURL":"https://example.invalid/version.json"}"#
+            .write(to: settingsURL, atomically: true, encoding: .utf8)
+        let store = AppSettingsStore(settingsURL: settingsURL)
+
+        await store.load()
+
+        XCTAssertEqual(store.state, .loaded)
+        var expected = AppSettings.default
+        expected.telemetryEnabled = false
+        XCTAssertEqual(store.settings, expected)
+
+        try await store.save(store.settings)
+        let saved = try String(contentsOf: settingsURL, encoding: .utf8)
+        XCTAssertFalse(saved.contains("checkForUpdatesOnLaunch"))
+        XCTAssertFalse(saved.contains("versionCheckURL"))
     }
 
     func testLegacyDeviceSettingsWithoutOptionalKeysUseDefaults() throws {
@@ -115,12 +135,6 @@ final class AppSettingsStoreTests: XCTestCase {
         draft.ataStandby = "abc"
         XCTAssertThrowsError(try draft.validatedSettings()) { error in
             XCTAssertEqual(error as? AppSettingsValidationError, .invalidAtaStandby)
-        }
-
-        draft = AppSettingsDraft(settings: .default)
-        draft.versionCheckURL = "file:///tmp/version.json"
-        XCTAssertThrowsError(try draft.validatedSettings()) { error in
-            XCTAssertEqual(error as? AppSettingsValidationError, .invalidVersionCheckURL)
         }
 
         draft = AppSettingsDraft(settings: .default)

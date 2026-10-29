@@ -3,7 +3,6 @@ import SwiftUI
 struct AppSettingsView: View {
     let appStore: AppStore
     @ObservedObject var appSettingsStore: AppSettingsStore
-    @ObservedObject var appUpdateStore: AppUpdateStore
     @ObservedObject var editor: AppSettingsEditorStore
 
     private let contentWidth: CGFloat = 760
@@ -67,36 +66,6 @@ struct AppSettingsView: View {
                             .frame(maxWidth: 420)
                     }
                     Toggle(L10n.string("app_settings.show_raw_events"), isOn: $editor.draft.showRawBackendEventsByDefault)
-                }
-
-                SettingsFormSection(title: L10n.string("app_settings.section.updates"), contentWidth: contentWidth) {
-                    Toggle(L10n.string("app_settings.check_updates_on_launch"), isOn: $editor.draft.checkForUpdatesOnLaunch)
-                    SettingsFormRow(title: L10n.string("app_settings.version_url")) {
-                        TextField(L10n.string("value.auto"), text: $editor.draft.versionCheckURL)
-                            .frame(maxWidth: 420)
-                    }
-                    HStack(spacing: 10) {
-                        Button {
-                            appUpdateStore.checkNow(settings: appSettingsStore.settings)
-                        } label: {
-                            Label(L10n.string("app_settings.check_now"), systemImage: "arrow.clockwise")
-                        }
-                        .disabled(appUpdateStore.isChecking)
-
-                        if appUpdateStore.isChecking {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(updateStatusText)
-                            .font(.caption)
-                            .foregroundStyle(updateStatusColor)
-                    }
-                    if let error = appUpdateStore.error {
-                        // Retry is the one action this screen carries out.
-                        ErrorRecoveryView(error: error) { kind in
-                            kind == .retry ? { appUpdateStore.checkNow(settings: appSettingsStore.settings) } : nil
-                        }
-                    }
                 }
 
                 SettingsFormSection(title: L10n.string("app_settings.section.privacy"), contentWidth: contentWidth) {
@@ -168,24 +137,6 @@ struct AppSettingsView: View {
                 ProgressView()
                     .controlSize(.small)
             }
-        }
-    }
-
-    private var updateStatusText: String {
-        if let payload = appUpdateStore.payload {
-            return payload.localizedSummary
-        }
-        return appUpdateStore.state.title
-    }
-
-    private var updateStatusColor: Color {
-        switch appUpdateStore.state {
-        case .updateAvailable, .unavailable, .failed:
-            return .yellow
-        case .current:
-            return .green
-        default:
-            return .secondary
         }
     }
 }

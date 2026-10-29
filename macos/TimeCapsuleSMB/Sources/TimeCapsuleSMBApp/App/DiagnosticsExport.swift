@@ -12,9 +12,6 @@ struct DiagnosticsExportContext {
     var capabilities: CapabilitiesPayload?
     var validation: InstallValidationPayload?
     var runtimeIssues: [BundleRuntimeIssue]
-    var updateState: AppUpdateState
-    var updatePayload: VersionCheckPayload?
-    var updateError: BackendErrorViewModel?
     var selectedProfile: DeviceProfile?
     var selectedProfileIsFallback: Bool
     var activeOperations: [OperationLaneKey: ActiveOperation]
@@ -46,8 +43,6 @@ struct DiagnosticsExportBuilder {
             append("Appearance", value: context.appSettings.appearance.rawValue, to: &lines)
             append("Telemetry Enabled", value: context.appSettings.telemetryEnabled, to: &lines)
             append("Raw Events Default", value: context.appSettings.showRawBackendEventsByDefault, to: &lines)
-            append("Check Updates On Launch", value: context.appSettings.checkForUpdatesOnLaunch, to: &lines)
-            append("Version Check URL", value: context.appSettings.versionCheckURL.isEmpty ? "auto" : context.appSettings.versionCheckURL, to: &lines)
             append("Time Machine Warnings", value: context.appSettings.timeMachineWarningsEnabled, to: &lines)
             appendDeviceSettings(context.appSettings.defaultDeviceSettings, prefix: "Default", to: &lines)
         }
@@ -76,22 +71,6 @@ struct DiagnosticsExportBuilder {
                 for issue in context.runtimeIssues {
                     append("Runtime Issue", value: "\(issue.severity.rawValue)/\(issue.code.rawValue): \(issue.message) Recovery: \(issue.recovery)", to: &lines)
                 }
-            }
-        }
-
-        appendSection("Updates", to: &lines) { lines in
-            append("State", value: context.updateState.title, to: &lines)
-            if let payload = context.updatePayload {
-                append("Summary", value: payload.summary, to: &lines)
-                append("Source", value: payload.source, to: &lines)
-                append("Local Version Code", value: payload.localVersionCode, to: &lines)
-                append("Current Version", value: payload.currentVersion.map(String.init) ?? "unknown", to: &lines)
-                append("Minimum Supported Version", value: payload.minSupportedVersion.map(String.init) ?? "unknown", to: &lines)
-                append("Latest Tag", value: payload.latestTag ?? "unknown", to: &lines)
-                append("Download URL", value: payload.downloadURL, to: &lines)
-            }
-            if let error = context.updateError {
-                append("Error", value: "\(error.operation) \(error.code): \(error.diagnosticMessage ?? error.message)", to: &lines)
             }
         }
 

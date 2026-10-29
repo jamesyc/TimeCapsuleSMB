@@ -389,7 +389,6 @@ public struct ContentView: View {
             AppSettingsView(
                 appStore: appStore,
                 appSettingsStore: appSettingsStore,
-                appUpdateStore: appStore.appUpdateStore,
                 editor: appSettingsEditorStore
             )
         case .addDevice:

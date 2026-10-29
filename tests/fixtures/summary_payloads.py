@@ -155,7 +155,6 @@ def _skipped_logs() -> list[tuple[str, str, str, bool, object]]:
 def cases() -> list[tuple[str, str, str, bool, object]]:
     """(name, event type, operation, ok, payload or Summary) for every branch."""
     version_blocked = VersionCheckResult(should_block=True, source="remote", current_version=10, local_version_code=5)
-    version_update = VersionCheckResult(should_block=False, source="remote", current_version=10, local_version_code=5)
     version_current = VersionCheckResult(should_block=False, source="remote", current_version=5, local_version_code=5)
     version_unavailable = VersionCheckResult(should_block=False, source="unavailable")
     doctor_fail = [CheckResult("FAIL", "smbd is not running")]
@@ -173,7 +172,6 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         ("telemetry_disabled", result, "set-telemetry", True, contracts.telemetry_preference_payload(
             install_id="id", telemetry_enabled=False, bootstrap_path="/tmp/b")),
         ("version_required", result, "version-check", True, contracts.version_check_payload(version_blocked)),
-        ("version_available", result, "version-check", True, contracts.version_check_payload(version_update)),
         ("version_current", result, "version-check", True, contracts.version_check_payload(version_current)),
         ("version_unavailable", result, "version-check", True, contracts.version_check_payload(version_unavailable)),
         ("configure", result, "configure", True, contracts.configure_payload(

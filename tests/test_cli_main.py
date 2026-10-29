@@ -53,14 +53,13 @@ class CliMainTests(CliTestCase):
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": mock.Mock(return_value=7)}):
             rc = main(["doctor", "--skip-smb"])
         self.assertEqual(rc, 7)
-        self._version_check.assert_called_once_with()
+        self._version_check.assert_called_once_with(appcast=True)
 
     def test_main_blocks_outdated_client_before_dispatch(self) -> None:
         stderr = io.StringIO()
         command = mock.Mock(return_value=7)
         self._version_check.return_value = VersionCheckResult(
             should_block=True,
-            checked_url=VERSION_CHECK_URL,
             message="This version is no longer supported. Please update before continuing.",
             download_url=DEFAULT_DOWNLOAD_URL,
         )
@@ -74,6 +73,52 @@ class CliMainTests(CliTestCase):
         output = stderr.getvalue()
         self.assertIn(f"Checking current version from: {VERSION_CHECK_URL}", output)
         self.assertIn(f"Client version is out of date, download the latest version from: {DEFAULT_DOWNLOAD_URL}", output)
+        self.assertNotIn("is available", output)
+
+    def test_main_names_a_newer_release_and_still_runs_the_command(self) -> None:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        command = mock.Mock(return_value=7)
+        self._version_check.return_value = VersionCheckResult(
+            should_block=False,
+            local_version_code=30800,
+            available_version_code=30900,
+            available_version="3.9.0",
+            source="network",
+        )
+
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": command}):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = main(["doctor", "--skip-smb"])
+
+        self.assertEqual(rc, 7)
+        command.assert_called_once_with(["--skip-smb"])
+        self.assertEqual(stderr.getvalue(), f"TimeCapsuleSMB v3.9.0 is available: {DEFAULT_DOWNLOAD_URL}\n")
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_main_names_no_release_when_current_or_unknown(self) -> None:
+        cases = {
+            "same_release": (30800, "3.8.0"),
+            "older_release": (30700, "3.7.0"),
+            "unknown": (None, None),
+        }
+        for name, (code, version) in cases.items():
+            with self.subTest(name=name):
+                stderr = io.StringIO()
+                command = mock.Mock(return_value=0)
+                self._version_check.return_value = VersionCheckResult(
+                    should_block=False,
+                    local_version_code=30800,
+                    available_version_code=code,
+                    available_version=version,
+                    source="network",
+                )
+
+                with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": command}):
+                    with redirect_stderr(stderr):
+                        rc = main(["doctor"])
+
+                self.assertEqual(rc, 0)
+                self.assertEqual(stderr.getvalue(), "")
 
     def test_main_skips_version_check_for_command_help(self) -> None:
         command = mock.Mock(return_value=0)

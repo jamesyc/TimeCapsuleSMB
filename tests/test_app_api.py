@@ -1243,7 +1243,6 @@ class AppApiTests(unittest.TestCase):
             collector = CollectingSink()
             result = VersionCheckResult(
                 should_block=True,
-                checked_url="https://example.invalid/version.json",
                 message="Please update.",
                 download_url="https://example.invalid/download",
                 local_version_code=20000,
@@ -1256,55 +1255,41 @@ class AppApiTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.app.ops.readiness.resolve_app_paths", return_value=app_paths):
                 with mock.patch("timecapsulesmb.app.ops.readiness.check_client_version", return_value=result) as check:
                     rc = service.run_api_request(
-                        {
-                            "operation": "version-check",
-                            "params": {"url": "https://example.invalid/version.json"},
-                        },
+                        {"operation": "version-check", "params": {}},
                         collector.sink,
                     )
 
             self.assertEqual(rc, 0)
-            check.assert_called_once_with(
-                url="https://example.invalid/version.json",
-                cache_path=app_paths.version_check_cache_path,
-            )
+            # The app never names a URL or asks the update feed: only the
+            # project's own version.json decides whether it may run.
+            check.assert_called_once_with(cache_path=app_paths.version_check_cache_path)
             payload = self.assert_single_terminal_event(collector, "result")["payload"]
             self.assertTrue(payload["should_block"])
-            self.assertTrue(payload["update_available"])
+            self.assertNotIn("update_available", payload)
             self.assertEqual(payload["current_version"], 20005)
             self.assertEqual(payload["latest_tag"], "v2.0.5")
             self.assertEqual(payload["source"], "network")
             self.assertEqual(payload["summary"], "Update required.")
 
-    def test_version_check_payload_reports_optional_update(self) -> None:
-        payload = contracts.version_check_payload(
-            VersionCheckResult(
-                should_block=False,
-                local_version_code=20000,
-                current_version=20005,
-                min_supported_version=19999,
-                source="network",
-            )
-        )
+    def test_version_check_payload_reports_a_supported_version_without_naming_updates(self) -> None:
+        # version.json is not bumped every release, so its current_version
+        # cannot say whether a newer release exists; the update feed does.
+        for current_version in (20005, 20000):
+            with self.subTest(current_version=current_version):
+                payload = contracts.version_check_payload(
+                    VersionCheckResult(
+                        should_block=False,
+                        local_version_code=20000,
+                        current_version=current_version,
+                        min_supported_version=19999,
+                        source="network",
+                    )
+                )
 
-        self.assertFalse(payload["should_block"])
-        self.assertTrue(payload["update_available"])
-        self.assertEqual(payload["summary"], "Update available.")
-
-    def test_version_check_payload_reports_current_when_versions_match(self) -> None:
-        payload = contracts.version_check_payload(
-            VersionCheckResult(
-                should_block=False,
-                local_version_code=20005,
-                current_version=20005,
-                min_supported_version=19999,
-                source="network",
-            )
-        )
-
-        self.assertFalse(payload["should_block"])
-        self.assertFalse(payload["update_available"])
-        self.assertEqual(payload["summary"], "TimeCapsuleSMB is up to date.")
+                self.assertFalse(payload["should_block"])
+                self.assertNotIn("update_available", payload)
+                self.assertEqual(payload["summary_key"], "version_supported")
+                self.assertEqual(payload["summary"], "This version of TimeCapsuleSMB is supported.")
 
     def test_version_check_payload_preserves_unavailable_summary(self) -> None:
         payload = contracts.version_check_payload(
@@ -1318,20 +1303,22 @@ class AppApiTests(unittest.TestCase):
         )
 
         self.assertFalse(payload["should_block"])
-        self.assertFalse(payload["update_available"])
         self.assertEqual(payload["summary"], "Version metadata is unavailable.")
 
-    def test_version_check_operation_rejects_non_http_url(self) -> None:
+    def test_version_check_operation_rejects_a_url(self) -> None:
+        # The app's custom version URL setting is gone; a request naming one
+        # fails loudly instead of being ignored.
         collector = CollectingSink()
 
         rc = service.run_api_request(
-            {"operation": "version-check", "params": {"url": "file:///tmp/version.json"}},
+            {"operation": "version-check", "params": {"url": "https://example.invalid/version.json"}},
             collector.sink,
         )
 
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
-        self.assertEqual(error["code"], "validation_failed")
+        self.assertEqual(error["code"], "unknown_param")
+        self.assertEqual(error["message"], "unknown parameter for version-check: url")
 
     def test_missing_params_defaults_to_empty_object(self) -> None:
         collector = CollectingSink()

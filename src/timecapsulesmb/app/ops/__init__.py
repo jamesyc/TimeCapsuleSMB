@@ -130,7 +130,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec("set-telemetry", set_telemetry_operation, frozenset({"enabled"})),
     OperationSpec("uninstall", uninstall_operation, REBOOT_PARAMS, telemetry=True, keep_awake=True),
     OperationSpec("validate-install", validate_install_operation),
-    OperationSpec("version-check", version_check_operation, frozenset({"url"})),
+    OperationSpec("version-check", version_check_operation),
     # Not REBOOT_PARAMS: Wipe Internal Disk never mounts, and always reboots
     # and waits.
     OperationSpec("wipe-disk", wipe_disk_operation, frozenset(), telemetry=True, keep_awake=True),

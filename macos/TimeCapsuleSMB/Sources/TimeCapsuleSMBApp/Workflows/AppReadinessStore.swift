@@ -73,14 +73,6 @@ enum AppReadinessState: Equatable {
     }
 }
 
-struct AppReadinessVersionCheck: Equatable {
-    var url: String
-
-    func params() -> [String: JSONValue] {
-        OperationParams.Readiness.versionCheck(url: url)
-    }
-}
-
 protocol AppRuntimeResolving {
     func resolve(helperPath: String?) throws -> HelperResolution
     func runtimeIssues(for resolution: HelperResolution) -> [BundleRuntimeIssue]
@@ -102,7 +94,7 @@ final class AppReadinessStore: ObservableObject {
     private let runtimeResolver: any AppRuntimeResolving
     private let helperPathProvider: () -> String
     private var runtimeMode: BundleRuntimeMode = .developmentCheckout
-    private var versionCheck: AppReadinessVersionCheck?
+    private var checksVersion = false
     private var pendingOperation: PendingReadinessOperation?
     private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
@@ -146,8 +138,9 @@ final class AppReadinessStore: ObservableObject {
         !backend.isRunning
     }
 
-    func applyVersionCheck(_ versionCheck: AppReadinessVersionCheck?) {
-        self.versionCheck = versionCheck
+    /// Start each readiness run with the minimum-version check.
+    func enableVersionCheck() {
+        checksVersion = true
     }
 
     func start() {
@@ -180,8 +173,8 @@ final class AppReadinessStore: ObservableObject {
             return
         }
 
-        if let versionCheck {
-            pendingOperation = PendingReadinessOperation(operation: "version-check", params: versionCheck.params())
+        if checksVersion {
+            pendingOperation = PendingReadinessOperation(operation: "version-check", params: OperationParams.Readiness.versionCheck())
         } else {
             pendingOperation = PendingReadinessOperation(operation: "capabilities")
         }

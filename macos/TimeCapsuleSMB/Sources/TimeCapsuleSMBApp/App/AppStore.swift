@@ -15,7 +15,6 @@ final class AppStore: ObservableObject {
 
     let appReadinessStore: AppReadinessStore
     let appSettingsStore: AppSettingsStore
-    let appUpdateStore: AppUpdateStore
     let deviceRegistry: DeviceRegistryStore
     let operationCoordinator: OperationCoordinator
     let passwordStore: PasswordStore
@@ -51,7 +50,6 @@ final class AppStore: ObservableObject {
         passwordStore: PasswordStore,
         profilePersistence: DeviceProfilePersistenceService? = nil,
         activityStore: ActivityStore? = nil,
-        appUpdateStore: AppUpdateStore? = nil,
         deviceDiscovery: DeviceDiscoveryStore? = nil,
         reachabilityStore: DeviceReachabilityStore? = nil,
         sshAccessStore: DeviceSSHAccessStore? = nil,
@@ -67,7 +65,6 @@ final class AppStore: ObservableObject {
             passwordStore: passwordStore
         )
         self.activityStore = activityStore ?? ActivityStore(coordinator: operationCoordinator)
-        self.appUpdateStore = appUpdateStore ?? AppUpdateStore(coordinator: operationCoordinator)
         self.deviceDiscovery = deviceDiscovery ?? DeviceDiscoveryStore(
             coordinator: operationCoordinator,
             readinessStore: appReadinessStore,
@@ -141,9 +138,6 @@ final class AppStore: ObservableObject {
         await refreshPasswordStates()
         appReadinessStore.start()
         deviceDiscovery.startMonitoring()
-        if appSettingsStore.settings.checkForUpdatesOnLaunch {
-            appUpdateStore.checkNow(settings: appSettingsStore.settings)
-        }
     }
 
     func navigate(to route: AppRoute) {
@@ -196,9 +190,7 @@ final class AppStore: ObservableObject {
         if previousSettings.telemetryEnabled != settings.telemetryEnabled {
             syncTelemetryPreference(settings.telemetryEnabled)
         }
-        if previousSettings.helperPathOverride != settings.helperPathOverride
-            || readinessVersionCheck(for: previousSettings) != readinessVersionCheck(for: settings)
-        {
+        if previousSettings.helperPathOverride != settings.helperPathOverride {
             appReadinessStore.start()
         }
     }
@@ -268,9 +260,6 @@ final class AppStore: ObservableObject {
             capabilities: appReadinessStore.capabilities,
             validation: appReadinessStore.validation,
             runtimeIssues: appReadinessStore.issues,
-            updateState: appUpdateStore.state,
-            updatePayload: appUpdateStore.payload,
-            updateError: appUpdateStore.error,
             selectedProfile: exportProfile,
             selectedProfileIsFallback: fallbackProfile != nil,
             activeOperations: operationCoordinator.activeOperations,
@@ -303,16 +292,12 @@ final class AppStore: ObservableObject {
         if backend.helperPath != settings.helperPathOverride {
             backend.helperPath = settings.helperPathOverride
         }
-        appReadinessStore.applyVersionCheck(readinessVersionCheck(for: settings))
+        appReadinessStore.enableVersionCheck()
         deviceDiscovery.applyAppSettings(settings)
         if previousLanguage != settings.language {
             activityStore.refresh()
             objectWillChange.send()
         }
-    }
-
-    private func readinessVersionCheck(for settings: AppSettings) -> AppReadinessVersionCheck {
-        AppReadinessVersionCheck(url: settings.versionCheckURL)
     }
 
     private func syncTelemetryPreference(_ enabled: Bool) {

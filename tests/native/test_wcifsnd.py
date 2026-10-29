@@ -238,8 +238,12 @@ def adds(discovery):
     return [request for _, request in add_events(discovery)]
 
 
+def children_in(lines):
+    return [int(line.split()[1]) for line in lines if line.startswith("START ")]
+
+
 def children(discovery):
-    return [int(line.split()[1]) for line in event_lines(discovery.events) if line.startswith("START ")]
+    return children_in(event_lines(discovery.events))
 
 
 def first_added_child(discovery):
@@ -689,12 +693,17 @@ def test_losing_ipv4_cancels_pending_inspection_without_restarting(rig, dnssd):
     discovery = Discovery(rig, shares=True, fstat_mode="hang")
     try:
         assert wait_for(lambda: any(line.startswith("HANG ") for line in event_lines(discovery.events)))
-        helper = int(next(line.split()[1] for line in event_lines(discovery.events) if line.startswith("HANG ")))
+        lines = event_lines(discovery.events)
+        hang = next(i for i, line in enumerate(lines) if line.startswith("HANG "))
+        helper = int(lines[hang].split()[1])
+        # The child under inspection. On a loaded host an earlier child can
+        # fail at startup and be replaced first; that one is not under test.
+        inspected = children_in(lines[:hang])[-1]
         discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
         assert wait_for(lambda: "STOP" in event_lines(discovery.events))
         assert wait_for(lambda: not process_exists(helper), timeout=3)
         time.sleep(PAST_FIRST_RETRY)
-        assert len(children(discovery)) == 1
+        assert children(discovery)[-1] == inspected
         assert not adds(discovery)
         assert discovery.proc.poll() is None
     finally:
