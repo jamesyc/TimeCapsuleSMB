@@ -18,14 +18,15 @@ public struct ContentView: View {
     @State private var deleteErrorMessage: String?
     @State private var systemColorScheme = SystemAppearance.currentColorScheme
     private let startsAutomatically: Bool
+    private let updater: AppUpdater
 
     @MainActor
-    public init() {
-        self.init(composition: .production())
+    public init(updater: AppUpdater) {
+        self.init(composition: .production(), updater: updater)
     }
 
     @MainActor
-    init(composition: AppViewComposition, startsAutomatically: Bool = true) {
+    init(composition: AppViewComposition, startsAutomatically: Bool = true, updater: AppUpdater? = nil) {
         _appStore = StateObject(wrappedValue: composition.appStore)
         _appReadinessStore = ObservedObject(wrappedValue: composition.appStore.appReadinessStore)
         _appSettingsStore = ObservedObject(wrappedValue: composition.appStore.appSettingsStore)
@@ -38,6 +39,8 @@ public struct ContentView: View {
         _addDeviceStore = StateObject(wrappedValue: composition.addDeviceStore)
         _dashboardStore = StateObject(wrappedValue: composition.dashboardStore)
         self.startsAutomatically = startsAutomatically
+        // Tests and previews get Sparkle unstarted: it never checks or shows anything.
+        self.updater = updater ?? AppUpdater()
     }
 
     public var body: some View {
@@ -389,7 +392,8 @@ public struct ContentView: View {
             AppSettingsView(
                 appStore: appStore,
                 appSettingsStore: appSettingsStore,
-                editor: appSettingsEditorStore
+                editor: appSettingsEditorStore,
+                updater: updater
             )
         case .addDevice:
             AddDeviceView(store: addDeviceStore)

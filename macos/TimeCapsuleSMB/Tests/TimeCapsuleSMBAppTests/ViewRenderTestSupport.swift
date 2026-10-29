@@ -124,6 +124,10 @@ final class LiveHostedView {
         window.contentView = NSHostingView(rootView: view)
     }
 
+    var contentView: NSView {
+        window.contentView!
+    }
+
     func close() {
         window.close()
     }
@@ -140,6 +144,15 @@ struct AccessibleElement: Equatable {
 /// words and enabled controls on screen instead of comparing pixels.
 @MainActor
 func accessibleElements<V: View>(_ view: V, size: CGSize = CGSize(width: 1200, height: 800)) -> [AccessibleElement] {
+    let host = NSHostingView(rootView: view)
+    host.frame = CGRect(origin: .zero, size: size)
+    return accessibleElements(in: host)
+}
+
+/// The texts and controls a view already on screen draws now, such as a
+/// `LiveHostedView`'s after its stores change.
+@MainActor
+func accessibleElements(in host: NSView) -> [AccessibleElement] {
     // SwiftUI builds its accessibility tree only after assistive software asks
     // the app for one, as VoiceOver does by setting AXEnhancedUserInterface.
     // Its getter and setter are deprecated with no replacement, hence perform.
@@ -157,8 +170,6 @@ func accessibleElements<V: View>(_ view: V, size: CGSize = CGSize(width: 1200, h
             app.perform(setValue, with: NSNumber(value: false), with: attribute)
         }
     }
-    let host = NSHostingView(rootView: view)
-    host.frame = CGRect(origin: .zero, size: size)
     host.layoutSubtreeIfNeeded()
 
     var elements: [AccessibleElement] = []

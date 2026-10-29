@@ -75,6 +75,7 @@
 "app_settings.section.privacy" = "Privacy";
 "app_settings.section.time_machine" = "Time Machine";
 "app_settings.section.updates" = "Updates";
+"app_settings.automatic_updates" = "Zoek automatisch naar updates";
 "app_settings.show_raw_events" = "Onbewerkte backendgebeurtenissen tonen in Diagnostiek";
 "app_settings.subtitle" = "Standaardwaarden voor nieuwe apparaten en gedrag op app-niveau.";
 "app_settings.telemetry_deploy_notice" = "Wordt op apparaten van kracht bij de volgende keer ‘Samba installeren / bijwerken’.";
@@ -1435,3 +1436,4 @@
 "backend.recovery.ssh_client_failed.message" = "Het SSH-programma op deze Mac kon niet afronden.";
 "backend.recovery.ssh_client_failed.action.1" = "Probeer het opnieuw.";
 "backend.recovery.ssh_client_failed.action.2" = "Mislukt het nog steeds, klik dan op ‘Diagnostische gegevens kopiëren’ en meld het probleem op https://github.com/jamesyc/TimeCapsuleSMB/issues.";
+"app_menu.check_for_updates" = "Zoek naar updates...";

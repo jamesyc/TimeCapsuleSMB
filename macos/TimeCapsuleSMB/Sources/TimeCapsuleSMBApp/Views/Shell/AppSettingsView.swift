@@ -4,6 +4,7 @@ struct AppSettingsView: View {
     let appStore: AppStore
     @ObservedObject var appSettingsStore: AppSettingsStore
     @ObservedObject var editor: AppSettingsEditorStore
+    @ObservedObject var updater: AppUpdater
 
     private let contentWidth: CGFloat = 760
 
@@ -66,6 +67,12 @@ struct AppSettingsView: View {
                             .frame(maxWidth: 420)
                     }
                     Toggle(L10n.string("app_settings.show_raw_events"), isOn: $editor.draft.showRawBackendEventsByDefault)
+                }
+
+                // Sparkle keeps this setting itself, so it applies at once
+                // rather than with Save.
+                SettingsFormSection(title: L10n.string("app_settings.section.updates"), contentWidth: contentWidth) {
+                    Toggle(L10n.string("app_settings.automatic_updates"), isOn: $updater.automaticallyChecksForUpdates)
                 }
 
                 SettingsFormSection(title: L10n.string("app_settings.section.privacy"), contentWidth: contentWidth) {

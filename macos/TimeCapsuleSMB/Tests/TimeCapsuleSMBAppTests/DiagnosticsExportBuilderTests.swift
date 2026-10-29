@@ -32,6 +32,23 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertFalse(text.contains("Latest Tag"))
     }
 
+    func testExportSaysWhetherAndWhenSparkleChecksForUpdates() {
+        let text = DiagnosticsExportBuilder().build(context: makeContext())
+        XCTAssertTrue(text.contains("- Automatic Update Checks: on"))
+        XCTAssertTrue(text.contains("- Automatic Update Installs: off"))
+        XCTAssertTrue(text.contains("- Last Update Check: 2026-05-26T10:06:40Z"))
+
+        var installs = makeContext()
+        installs.updateChecks.automaticInstalls = true
+        XCTAssertTrue(DiagnosticsExportBuilder().build(context: installs).contains("- Automatic Update Installs: on"))
+
+        var neverChecked = makeContext()
+        neverChecked.updateChecks = UpdateCheckDiagnostics(automaticChecks: false, lastCheck: nil)
+        let offText = DiagnosticsExportBuilder().build(context: neverChecked)
+        XCTAssertTrue(offText.contains("- Automatic Update Checks: off"))
+        XCTAssertTrue(offText.contains("- Last Update Check: never"))
+    }
+
     func testExportShowsTheLastCheckupAndEachSection() {
         var context = makeContext()
         context.selectedProfile?.lastCheckup = DeviceCheckupSnapshot(
@@ -165,6 +182,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
             applicationSupportPath: "/Users/test/Library/Application Support/TimeCapsuleSMB",
             helperPath: "",
             appSettings: .default,
+            updateChecks: UpdateCheckDiagnostics(automaticChecks: true, lastCheck: Date(timeIntervalSince1970: 1_779_790_000)),
             readinessState: .ready,
             readinessVersionPayload: versionPayload(),
             capabilities: CapabilitiesPayload(

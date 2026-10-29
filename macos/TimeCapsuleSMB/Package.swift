@@ -19,9 +19,15 @@ let package = Package(
         .executable(name: "TimeCapsuleSMB", targets: ["TimeCapsuleSMBExecutable"]),
         .executable(name: "tcapsule", targets: ["TimeCapsuleSMBHelper"])
     ],
+    dependencies: [
+        // The app's updater. Exact, so a release builds the version its
+        // packaging and signing were checked against; Dependabot proposes bumps.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1")
+    ],
     targets: [
         .target(
             name: "TimeCapsuleSMBApp",
+            dependencies: [.product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/TimeCapsuleSMBApp",
             resources: [.process("Resources")]
         ),

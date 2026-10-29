@@ -255,6 +255,7 @@ final class AppStore: ObservableObject {
             applicationSupportPath: appSettingsStore.settingsURL.deletingLastPathComponent().path,
             helperPath: backend.helperPath,
             appSettings: appSettingsStore.settings,
+            updateChecks: UpdateCheckDiagnostics.read(),
             readinessState: appReadinessStore.state.kind,
             readinessVersionPayload: appReadinessStore.versionCheckPayload,
             capabilities: appReadinessStore.capabilities,
@@ -297,6 +298,7 @@ final class AppStore: ObservableObject {
         if previousLanguage != settings.language {
             activityStore.refresh()
             objectWillChange.send()
+            AppLanguageChanges.shared.objectWillChange.send()
         }
     }
 

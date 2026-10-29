@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -104,6 +105,24 @@ def create_fake_app_executable_and_resources(app: Path) -> None:
     create_fake_python_runtime(app)
     (resource_bundle / "Localizable.strings").write_text('"screen.readiness" = "Readiness";\n', encoding="utf-8")
     (resource_bundle / "Localizable.stringsdict").write_text(PLURALS_PLIST, encoding="utf-8")
+    create_fake_sparkle(app / "Contents" / "Frameworks", xpc_services=False)
+
+
+def create_fake_sparkle(directory: Path, *, xpc_services: bool = True) -> Path:
+    """Sparkle.framework as swift build leaves it: a versioned bundle whose
+    top level is symlinks into Versions/Current."""
+    framework = directory / "Sparkle.framework"
+    version = framework / "Versions" / "B"
+    (version / "Updater.app" / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
+    (version / "Sparkle").write_text("sparkle", encoding="utf-8")
+    (version / "Autoupdate").write_text("autoupdate", encoding="utf-8")
+    (version / "Updater.app" / "Contents" / "MacOS" / "Updater").write_text("updater", encoding="utf-8")
+    (framework / "Versions" / "Current").symlink_to("B")
+    (framework / "Sparkle").symlink_to("Versions/Current/Sparkle")
+    if xpc_services:
+        (version / "XPCServices" / "Installer.xpc").mkdir(parents=True)
+        (framework / "XPCServices").symlink_to("Versions/Current/XPCServices")
+    return framework
 
 
 def create_fake_python_runtime(app: Path) -> None:
@@ -390,6 +409,8 @@ def fake_swift_build(package_app, layout: str, calls: list[list[str]]):
             executable.write_text(f"{product} {architectures}", encoding="utf-8")
             executable.chmod(0o755)
         (bin_dir(cmd) / package_app.RESOURCE_BUNDLE_NAME).mkdir(exist_ok=True)
+        if not (bin_dir(cmd) / "Sparkle.framework").exists():
+            create_fake_sparkle(bin_dir(cmd))
         fixtures = bin_dir(cmd) / TEST_RESOURCE_BUNDLE_NAME / "Contents" / "Resources" / "Fixtures"
         fixtures.mkdir(parents=True, exist_ok=True)
         (fixtures / "fixture.json").write_text("{}", encoding="utf-8")
@@ -1621,6 +1642,7 @@ def test_assert_bundle_layout_uses_full_macho_validation_only_when_requested(
         "Helper executable",
         "Bundled Python executable",
         "Bundled Python framework",
+        "Sparkle framework",
     ]
     assert calls == ["codesign", "app-codesign"]
 
@@ -3071,6 +3093,8 @@ def test_package_app_signs_final_bundle_after_native_tools(
     executable.chmod(0o755)
     helper_executable.write_text("helper", encoding="utf-8")
     helper_executable.chmod(0o755)
+    for language in ("de", "en"):
+        (resource_build_dir / package_app.RESOURCE_BUNDLE_NAME / "Contents" / "Resources" / f"{language}.lproj").mkdir(parents=True)
     calls: list[str] = []
 
     monkeypatch.setattr(package_app, "resolve_architectures", lambda arch: ("arm64",))
@@ -3083,6 +3107,8 @@ def test_package_app_signs_final_bundle_after_native_tools(
     monkeypatch.setattr(package_app, "finalize_python_bundle", lambda resources, *, sign: python_signing.append(sign))
     monkeypatch.setattr(package_app, "copy_distribution", lambda resources: calls.append("distribution"))
     monkeypatch.setattr(package_app, "copy_native_tools_layer", lambda app, architectures, use_cache=True: calls.append("native"))
+    monkeypatch.setattr(package_app, "add_framework_rpath", lambda executable: calls.append("rpath"))
+    monkeypatch.setattr(package_app, "copy_sparkle_framework", lambda build_dir, app: calls.append("sparkle"))
     monkeypatch.setattr(package_app, "remove_appledouble_files", lambda app: calls.append("clean"))
     monkeypatch.setattr(package_app, "assert_no_appledouble_files", lambda app: calls.append("assert-clean"))
     monkeypatch.setattr(package_app, "ad_hoc_codesign_app_bundle", lambda app: calls.append("app-sign"))
@@ -3110,13 +3136,19 @@ def test_package_app_signs_final_bundle_after_native_tools(
 
     result = package_app.package_app(args)
 
-    assert calls[-5:] == ["native", "clean", "assert-clean", "developer-sign" if identity else "app-sign", "assert"]
+    # Sparkle goes in after the tools layer, which replaces Contents/Frameworks
+    # whole, and before signing; the rpath goes on the executable right away.
+    assert calls[-6:] == ["native", "sparkle", "clean", "assert-clean", "developer-sign" if identity else "app-sign", "assert"]
+    assert calls.index("rpath") < calls.index("resources")
     assert "app-verify" not in calls  # The layout validation owns the final verification.
     assert python_signing == [identity is None]
     assert signature_caching == ([True] if identity else [])
     assert result.app == tmp_path / "dist" / "TimeCapsuleSMB.app"
     assert result.zip_path is None
     assert result.notarization_archive is None
+    # The plist declares the languages of the resource bundle the build made.
+    with (result.app / "Contents" / "Info.plist").open("rb") as handle:
+        assert plistlib.load(handle)["CFBundleLocalizations"] == ["de", "en"]
 
 
 def test_package_app_ships_only_the_app_resource_bundle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -3132,6 +3164,7 @@ def test_package_app_ships_only_the_app_resource_bundle(monkeypatch: pytest.Monk
     monkeypatch.setattr(package_app, "finalize_python_bundle", lambda resources, *, sign: None)
     monkeypatch.setattr(package_app, "copy_distribution", lambda resources: None)
     monkeypatch.setattr(package_app, "copy_native_tools_layer", lambda app, architectures, use_cache=True: None)
+    monkeypatch.setattr(package_app, "add_framework_rpath", lambda executable: None)
     monkeypatch.setattr(package_app, "remove_appledouble_files", lambda app: None)
     monkeypatch.setattr(package_app, "assert_no_appledouble_files", lambda app: None)
     monkeypatch.setattr(package_app, "ad_hoc_codesign_app_bundle", lambda app: None)
@@ -3240,6 +3273,8 @@ def test_package_app_result_includes_zip_and_notarization_archive(
     monkeypatch.setattr(package_app, "finalize_python_bundle", lambda resources, *, sign: None)
     monkeypatch.setattr(package_app, "copy_distribution", lambda resources: None)
     monkeypatch.setattr(package_app, "copy_native_tools_layer", lambda app, architectures, use_cache=True: None)
+    monkeypatch.setattr(package_app, "add_framework_rpath", lambda executable: None)
+    monkeypatch.setattr(package_app, "copy_sparkle_framework", lambda build_dir, app: None)
     monkeypatch.setattr(package_app, "remove_appledouble_files", lambda app: None)
     monkeypatch.setattr(package_app, "assert_no_appledouble_files", lambda app: None)
     monkeypatch.setattr(package_app, "ad_hoc_codesign_app_bundle", lambda app: None)
@@ -3417,3 +3452,117 @@ def test_validate_app_resources_rejects_swift_resource_bundle_crash(tmp_path: Pa
 
     with pytest.raises(RuntimeError, match="App executable resource validation failed"):
         package_app.validate_app_resources(app)
+
+
+def test_info_plist_names_the_sparkle_feed_and_key(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+
+    package_app.write_info_plist(tmp_path, languages=["de", "en"])
+
+    with (tmp_path / "Info.plist").open("rb") as handle:
+        info = plistlib.load(handle)
+    assert info["CFBundleLocalizations"] == ["de", "en"]
+    assert info["SUFeedURL"] == package_app.SPARKLE_FEED_URL
+    assert info["SUPublicEDKey"] == package_app.SPARKLE_PUBLIC_ED_KEY
+    assert info["SUEnableAutomaticChecks"] is True
+    assert info["SUVerifyUpdateBeforeExtraction"] is True
+
+
+@pytest.mark.parametrize("layout", ["Contents/Resources", "."])
+def test_the_app_declares_every_language_its_resource_bundle_has(tmp_path: Path, layout: str) -> None:
+    # Swift Build nests the lproj folders in Contents/Resources; the native
+    # build system leaves them at the bundle's top level.
+    package_app = load_package_app_module()
+    bundle = tmp_path / package_app.RESOURCE_BUNDLE_NAME
+    for language in ("zh-Hans", "en", "lt"):
+        (bundle / layout / f"{language}.lproj").mkdir(parents=True)
+    (bundle / layout / "Assets.car").write_bytes(b"")
+
+    assert package_app.resource_bundle_languages(bundle) == ["en", "lt", "zh-Hans"]
+
+
+def test_sparkle_is_copied_as_symlinks_without_its_xpc_services(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    build_dir = tmp_path / "build"
+    create_fake_sparkle(build_dir)
+    app = tmp_path / "TimeCapsuleSMB.app"
+
+    package_app.copy_sparkle_framework(build_dir, app)
+
+    framework = package_app.sparkle_framework(app)
+    assert (framework / "Versions" / "Current").is_symlink()
+    assert os.readlink(framework / "Versions" / "Current") == "B"
+    assert (framework / "Sparkle").is_symlink()
+    assert (framework / "Versions" / "B" / "Sparkle").read_text(encoding="utf-8") == "sparkle"
+    assert (framework / "Versions" / "B" / "Updater.app" / "Contents" / "MacOS" / "Updater").is_file()
+    assert not os.path.lexists(framework / "XPCServices")
+    assert not os.path.lexists(framework / "Versions" / "B" / "XPCServices")
+    # The build output keeps its own copy whole.
+    assert (build_dir / "Sparkle.framework" / "Versions" / "B" / "XPCServices").is_dir()
+
+
+def test_sparkle_copy_fails_when_swift_build_made_no_framework(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+
+    with pytest.raises(RuntimeError, match="did not produce .*Sparkle.framework"):
+        package_app.copy_sparkle_framework(tmp_path / "build", tmp_path / "TimeCapsuleSMB.app")
+
+
+def test_app_executable_gets_the_frameworks_rpath(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    commands: list[list[str]] = []
+    monkeypatch.setattr(package_app, "run_quiet", lambda cmd: commands.append(cmd))
+    executable = tmp_path / "TimeCapsuleSMB"
+
+    package_app.add_framework_rpath(executable)
+
+    assert commands == [["install_name_tool", "-add_rpath", "@executable_path/../Frameworks", str(executable)]]
+
+
+def test_ad_hoc_signing_signs_sparkle_inside_out_before_the_helper_and_app(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    helper = app / "Contents" / "Helpers" / "tcapsule"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    framework = create_fake_sparkle(app / "Contents" / "Frameworks", xpc_services=False)
+    create_fake_python_runtime(app)
+    calls: list[Path] = []
+    monkeypatch.setattr(package_app, "ad_hoc_codesign", lambda path: calls.append(path))
+
+    package_app.ad_hoc_codesign_app_bundle(app)
+
+    # Python.framework is signed where it is added, not here.
+    assert calls == [
+        framework / "Versions" / "B" / "Autoupdate",
+        framework / "Versions" / "B" / "Updater.app",
+        framework,
+        helper,
+        app,
+    ]
+
+
+def test_developer_id_signing_signs_sparkle_bundles_after_its_leaves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    framework = create_fake_sparkle(app / "Contents" / "Frameworks", xpc_services=False)
+    executable = app / "Contents" / "MacOS" / "TimeCapsuleSMB"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("macho", encoding="utf-8")
+    version = framework / "Versions" / "B"
+    autoupdate = version / "Autoupdate"
+    updater_main = version / "Updater.app" / "Contents" / "MacOS" / "Updater"
+    sparkle_main = version / "Sparkle"
+    calls: list[Path] = []
+    monkeypatch.setattr(package_app, "macho_validation_roots", lambda app: [executable, autoupdate, updater_main, sparkle_main])
+    monkeypatch.setattr(package_app, "macho_architectures", lambda path: {"arm64"})
+    monkeypatch.setattr(package_app, "developer_id_codesign", lambda path, identity: calls.append(path))
+
+    package_app.developer_id_codesign_app_bundle(app, "identity")
+
+    # A bundle's main executable is signed with its bundle, never alone first.
+    assert calls == [autoupdate, version / "Updater.app", framework, app]

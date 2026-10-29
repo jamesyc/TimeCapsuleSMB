@@ -43,6 +43,11 @@ APP_ICON_NAME = PRODUCT_NAME
 DEFAULT_ICON_SOURCE = PACKAGE_ROOT / "Assets" / "AppIcon" / "tcs.jpg"
 ARTIFACT_MANIFEST = REPO_ROOT / "src" / "timecapsulesmb" / "assets" / "artifact-manifest.json"
 RESOURCE_BUNDLE_NAME = "TimeCapsuleSMBMac_TimeCapsuleSMBApp.bundle"
+# Sparkle reads its feed and the key that signs updates from Info.plist. The
+# feed redirects to the newest published release's appcast.xml.
+SPARKLE_FEED_URL = "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/appcast.xml"
+SPARKLE_PUBLIC_ED_KEY = "6dvSb76x5br3iXTAGXUzpEhmaTHnXGN6l63nJ+deLGg="
+SPARKLE_FRAMEWORK_NAME = "Sparkle.framework"
 PYTHON_RUNTIME_VERSION = "3.13.13"
 PYTHON_RUNTIME_URL = f"https://www.python.org/ftp/python/{PYTHON_RUNTIME_VERSION}/python-{PYTHON_RUNTIME_VERSION}-macos11.pkg"
 PYTHON_FRAMEWORK_NAME = "Python.framework"
@@ -381,6 +386,12 @@ def resource_bundle_localization(resource_bundle: Path, language: str) -> Path:
     return deep if deep.is_dir() else resource_bundle / f"{language}.lproj"
 
 
+def resource_bundle_languages(resource_bundle: Path) -> list[str]:
+    """The languages the app is translated into: the resource bundle's lproj names."""
+    english = resource_bundle_localization(resource_bundle, "en")
+    return sorted(path.stem for path in english.parent.glob("*.lproj"))
+
+
 @timed_step("Copying Swift resources")
 def copy_resources(build_dir: Path, resources_dir: Path) -> None:
     # Swift Build also writes the test target's bundle, with its fixtures, to
@@ -394,9 +405,13 @@ def copy_resources(build_dir: Path, resources_dir: Path) -> None:
     shutil.copytree(resource_bundle, destination)
 
 
-def write_info_plist(contents_dir: Path, *, icon_name: str | None = None) -> None:
+def write_info_plist(contents_dir: Path, *, languages: list[str], icon_name: str | None = None) -> None:
     info = {
         "CFBundleDevelopmentRegion": "en",
+        # The app's own bundle holds no lproj, so without this list macOS
+        # picks English for every bundle the app loads: the app's resource
+        # bundle when Settings says System, Sparkle's windows and AppKit's menus.
+        "CFBundleLocalizations": languages,
         "CFBundleDisplayName": APP_NAME,
         "CFBundleExecutable": PRODUCT_NAME,
         "CFBundleIdentifier": "com.timecapsulesmb.TimeCapsuleSMB",
@@ -408,6 +423,12 @@ def write_info_plist(contents_dir: Path, *, icon_name: str | None = None) -> Non
         "NSBonjourServices": BONJOUR_SERVICE_TYPES,
         "NSHighResolutionCapable": True,
         "NSLocalNetworkUsageDescription": "TimeCapsuleSMB discovers and connects to Apple AirPort devices on your local network.",
+        "SUFeedURL": SPARKLE_FEED_URL,
+        "SUPublicEDKey": SPARKLE_PUBLIC_ED_KEY,
+        # On by default without Sparkle's second-launch prompt; the Settings
+        # toggle overrides it per user.
+        "SUEnableAutomaticChecks": True,
+        "SUVerifyUpdateBeforeExtraction": True,
     }
     if icon_name:
         info["CFBundleIconFile"] = icon_name
@@ -464,6 +485,37 @@ def create_app_icon(source: Path, resources_dir: Path, *, use_cache: bool = True
         cached_icon = app_icon_cache_entry(source)
         cached_icon.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(icon_path, cached_icon)
+
+
+def sparkle_framework(app: Path) -> Path:
+    return app / "Contents" / "Frameworks" / SPARKLE_FRAMEWORK_NAME
+
+
+@timed_step("Copying Sparkle")
+def copy_sparkle_framework(build_dir: Path, app: Path) -> None:
+    """Copy the Sparkle.framework swift build put next to the executable.
+
+    Its XPC services exist for sandboxed apps only; the app is not sandboxed,
+    so they are removed (Sparkle's sandboxing guide allows this). That breaks
+    the framework's seal, so both signing paths sign Sparkle again.
+    """
+    source = build_dir / SPARKLE_FRAMEWORK_NAME
+    if not source.is_dir():
+        raise RuntimeError(f"Swift build did not produce {source}")
+    destination = sparkle_framework(app)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # The framework is a bundle of symlinks; following them would double it
+    # and leave a layout codesign rejects.
+    shutil.copytree(source, destination, symlinks=True)
+    shutil.rmtree(destination / "Versions" / "B" / "XPCServices")
+    (destination / "XPCServices").unlink(missing_ok=True)
+
+
+def add_framework_rpath(executable: Path) -> None:
+    """Let the app executable find Sparkle.framework in Contents/Frameworks:
+    swift build links it as @rpath/Sparkle.framework but gives the executable
+    only /usr/lib/swift and the toolchain as rpaths."""
+    run_quiet(["install_name_tool", "-add_rpath", "@executable_path/../Frameworks", str(executable)])
 
 
 def copy_helper_executable(source: Path, destination: Path) -> None:
@@ -1737,6 +1789,28 @@ def developer_id_signature_cache(identity: str) -> DeveloperIdSignatureCache | N
     return DeveloperIdSignatureCache(package_cache_dir(DEVELOPER_ID_SIGNATURE_CACHE_DIR), certificate)
 
 
+def nested_bundles(app: Path) -> list[Path]:
+    """The bundles inside the app that are signed as bundles, inside out."""
+    sparkle = sparkle_framework(app)
+    candidates = [
+        sparkle / "Versions" / "B" / "Updater.app",
+        sparkle,
+        bundled_python_framework(app),
+    ]
+    return [bundle for bundle in candidates if bundle.is_dir()]
+
+
+def nested_bundle_main_executables(app: Path) -> list[Path]:
+    """Signing a bundle signs its main executable, and signing that
+    executable alone first would seal the bundle too early."""
+    sparkle = sparkle_framework(app)
+    return [
+        sparkle / "Versions" / "B" / "Updater.app" / "Contents" / "MacOS" / "Updater",
+        sparkle / "Versions" / "B" / "Sparkle",
+        bundled_python_dylib(app),
+    ]
+
+
 def nested_helper_code_paths(app: Path) -> list[Path]:
     helper = app / "Contents" / "Helpers" / "tcapsule"
     return [helper] if helper.is_file() else []
@@ -1744,7 +1818,13 @@ def nested_helper_code_paths(app: Path) -> list[Path]:
 
 @timed_step("Ad-hoc signing app and helper")
 def ad_hoc_codesign_app_bundle(app: Path) -> None:
-    for path in nested_helper_code_paths(app):
+    # Python.framework and the tool libraries are signed where they are added;
+    # Sparkle is copied in last and its seal broken, so it is signed here.
+    # Autoupdate is Sparkle's one executable that no bundle signs for it.
+    autoupdate = sparkle_framework(app) / "Versions" / "B" / "Autoupdate"
+    sparkle_bundles = [bundle for bundle in nested_bundles(app) if is_inside(bundle, sparkle_framework(app))]
+    leaves = [autoupdate] if autoupdate.is_file() else []
+    for path in [*leaves, *sparkle_bundles, *nested_helper_code_paths(app)]:
         ad_hoc_codesign(path)
     ad_hoc_codesign(app)
 
@@ -1822,7 +1902,7 @@ def developer_id_codesign_app_bundle(app: Path, identity: str, *, use_cache: boo
     # Let the container signing below cover those binaries after all its leaves.
     container_executables = {
         (app / "Contents" / "MacOS" / PRODUCT_NAME).resolve(),
-        bundled_python_dylib(app).resolve(),
+        *(path.resolve() for path in nested_bundle_main_executables(app)),
     }
     paths = [
         path for path in macho_validation_roots(app)
@@ -1839,9 +1919,8 @@ def developer_id_codesign_app_bundle(app: Path, identity: str, *, use_cache: boo
             reused = sum(pool.map(functools.partial(cache.sign, identity=identity), paths))
             print(f"Reused {reused} of {len(paths)} Developer ID signatures from earlier runs.", file=sys.stderr, flush=True)
             cache.evict(len(paths))
-    framework = bundled_python_framework(app)
-    if framework.is_dir():
-        developer_id_codesign(framework, identity)
+    for bundle in nested_bundles(app):
+        developer_id_codesign(bundle, identity)
     developer_id_codesign(app, identity)
 
 
@@ -2335,6 +2414,11 @@ def runtime_architecture_roots(app: Path, architectures: tuple[str, ...]) -> lis
     helper = contents / "Helpers" / HELPER_PRODUCT_NAME
     roots.extend((executable, architecture) for architecture in architectures)
     roots.extend((helper, architecture) for architecture in architectures)
+    roots.extend(
+        (path, architecture)
+        for path in macho_files_under([contents / "Frameworks" / SPARKLE_FRAMEWORK_NAME])
+        for architecture in architectures
+    )
     python_runtime = contents / "Resources" / "Python" / "Runtime"
     roots.extend(
         (path, architecture)
@@ -2483,6 +2567,7 @@ def assert_bundle_layout(
         assert_macho_has_architectures(helper, architectures, "Helper executable")
         assert_macho_has_architectures(python_executable, architectures, "Bundled Python executable")
         assert_macho_has_architectures(python_dylib, architectures, "Bundled Python framework")
+        assert_macho_has_architectures(sparkle_framework(app) / "Versions" / "B" / "Sparkle", architectures, "Sparkle framework")
         assert_python_extension_architectures(app, architectures)
         assert_tool_architectures(app, architectures)
         if full_validation:
@@ -2689,9 +2774,14 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
     resources.mkdir()
 
     icon_name = APP_ICON_NAME if args.icon else None
-    write_info_plist(contents, icon_name=icon_name)
+    write_info_plist(
+        contents,
+        languages=resource_bundle_languages(resource_build_dir / RESOURCE_BUNDLE_NAME),
+        icon_name=icon_name,
+    )
     shutil.copy2(executable, macos / PRODUCT_NAME)
     (macos / PRODUCT_NAME).chmod(0o755)
+    add_framework_rpath(macos / PRODUCT_NAME)
     copy_resources(resource_build_dir, resources)
     if args.icon:
         create_app_icon(args.icon.resolve(), resources, use_cache=not args.no_cache)
@@ -2701,6 +2791,8 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
     finalize_python_bundle(resources, sign=not args.codesign_identity)
     copy_distribution(resources)
     copy_native_tools_layer(app, architectures, use_cache=not args.no_cache)
+    # After the tools layer, which replaces Contents/Frameworks whole.
+    copy_sparkle_framework(resource_build_dir, app)
     with timed_step("Cleaning and checking app metadata sidecars"):
         remove_appledouble_files(app)
         assert_no_appledouble_files(app)

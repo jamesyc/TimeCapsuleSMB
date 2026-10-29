@@ -75,6 +75,7 @@
 "app_settings.section.privacy" = "Privacy";
 "app_settings.section.time_machine" = "Time Machine";
 "app_settings.section.updates" = "Aggiornamenti";
+"app_settings.automatic_updates" = "Verifica automaticamente gli aggiornamenti";
 "app_settings.show_raw_events" = "Mostra gli eventi grezzi del backend in Diagnostica";
 "app_settings.subtitle" = "Impostazioni predefinite per nuovi dispositivi e comportamento a livello di app.";
 "app_settings.telemetry_deploy_notice" = "Si applica ai dispositivi alla prossima esecuzione di “Installa/aggiorna Samba”.";
@@ -1435,3 +1436,4 @@
 "backend.recovery.ssh_client_failed.message" = "Il programma SSH di questo Mac non è riuscito a terminare.";
 "backend.recovery.ssh_client_failed.action.1" = "Riprova.";
 "backend.recovery.ssh_client_failed.action.2" = "Se continua a non riuscire, fai clic su “Copia diagnostica” e segnala il problema su https://github.com/jamesyc/TimeCapsuleSMB/issues.";
+"app_menu.check_for_updates" = "Verifica aggiornamenti...";

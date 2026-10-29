@@ -1,5 +1,12 @@
 import Foundation
 
+/// Announces a change of the in-app language to views no store refreshes,
+/// such as the menu commands on the executable's Scene.
+@MainActor
+final class AppLanguageChanges: ObservableObject {
+    static let shared = AppLanguageChanges()
+}
+
 enum L10n {
     private static let lock = NSLock()
     private static var selectedLanguage: AppLanguage = .system

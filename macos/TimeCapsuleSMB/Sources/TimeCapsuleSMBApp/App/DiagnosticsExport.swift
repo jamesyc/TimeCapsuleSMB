@@ -7,6 +7,7 @@ struct DiagnosticsExportContext {
     var applicationSupportPath: String
     var helperPath: String
     var appSettings: AppSettings
+    var updateChecks: UpdateCheckDiagnostics
     var readinessState: AppReadinessStateKind
     var readinessVersionPayload: VersionCheckPayload?
     var capabilities: CapabilitiesPayload?
@@ -20,6 +21,34 @@ struct DiagnosticsExportContext {
 
     var events: [BackendEvent] {
         eventLanes.flatMap { $0.events }
+    }
+}
+
+/// Whether Sparkle checks for updates and installs them on its own, and when
+/// it last checked, from what Sparkle saves in the app's defaults: support
+/// can then tell whether a user can have been offered an update at all, and
+/// whether one can have replaced the app without a click.
+struct UpdateCheckDiagnostics: Equatable {
+    var automaticChecks: Bool
+    /// The checkbox in Sparkle's update window, "Automatically download and
+    /// install updates in the future".
+    var automaticInstalls = false
+    var lastCheck: Date?
+
+    /// Each setting is the user's own choice when they made one, else the
+    /// packaged default from the Info.plist, else off.
+    static func read(
+        defaults: UserDefaults = .standard,
+        info: [String: Any]? = Bundle.main.infoDictionary
+    ) -> UpdateCheckDiagnostics {
+        func setting(_ key: String) -> Bool {
+            defaults.object(forKey: key) as? Bool ?? info?[key] as? Bool ?? false
+        }
+        return UpdateCheckDiagnostics(
+            automaticChecks: setting("SUEnableAutomaticChecks"),
+            automaticInstalls: setting("SUAutomaticallyUpdate"),
+            lastCheck: defaults.object(forKey: "SULastCheckTime") as? Date
+        )
     }
 }
 
@@ -44,6 +73,9 @@ struct DiagnosticsExportBuilder {
             append("Telemetry Enabled", value: context.appSettings.telemetryEnabled, to: &lines)
             append("Raw Events Default", value: context.appSettings.showRawBackendEventsByDefault, to: &lines)
             append("Time Machine Warnings", value: context.appSettings.timeMachineWarningsEnabled, to: &lines)
+            append("Automatic Update Checks", value: context.updateChecks.automaticChecks ? "on" : "off", to: &lines)
+            append("Automatic Update Installs", value: context.updateChecks.automaticInstalls ? "on" : "off", to: &lines)
+            append("Last Update Check", value: context.updateChecks.lastCheck.map { format(date: $0) } ?? "never", to: &lines)
             appendDeviceSettings(context.appSettings.defaultDeviceSettings, prefix: "Default", to: &lines)
         }
 

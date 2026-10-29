@@ -75,6 +75,7 @@
 "app_settings.section.privacy" = "Privatumas";
 "app_settings.section.time_machine" = "Time Machine";
 "app_settings.section.updates" = "Naujinimai";
+"app_settings.automatic_updates" = "Automatiškai ieškoti naujinimų";
 "app_settings.show_raw_events" = "Rodyti neapdorotus pagalbinės programos įvykius diagnostikoje";
 "app_settings.subtitle" = "Naujų įrenginių numatytieji ir programos lygio elgesio nustatymai.";
 "app_settings.telemetry_deploy_notice" = "Įrenginiuose įsigalios kitą kartą paleidus „Įdiegti / atnaujinti Samba“.";
@@ -1435,3 +1436,4 @@
 "backend.recovery.ssh_client_failed.message" = "Šio Mac SSH programa negalėjo užbaigti darbo.";
 "backend.recovery.ssh_client_failed.action.1" = "Bandykite dar kartą.";
 "backend.recovery.ssh_client_failed.action.2" = "Jei vis tiek nepavyksta, spustelėkite „Kopijuoti diagnostiką“ ir praneškite apie problemą adresu https://github.com/jamesyc/TimeCapsuleSMB/issues.";
+"app_menu.check_for_updates" = "Ieškoti naujinimų...";
