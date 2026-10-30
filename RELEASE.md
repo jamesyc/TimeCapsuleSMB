@@ -146,6 +146,6 @@ A universal build on Apple silicon runs the smoke test (the helper's requests, t
 
 ## Updating And Pulling Releases
 
-Sparkle offers a release whose `CFBundleVersion` (`CLI_VERSION_CODE`) is above the running app's. Its Install and Relaunch quits the app the normal way, so during a device operation the app asks first. After Keep Open, Sparkle's documented behavior is to install the update when the app next quits.
+Sparkle offers a release whose `CFBundleVersion` (`CLI_VERSION_CODE`) is above the running app's. Its Install and Relaunch quits the app the normal way, so during a device operation the app asks first. After Keep Open, Sparkle installs the update when the app next quits, and relaunches it. While one of the app's own confirmation dialogs is open, such as Install / Update's, macOS refuses the quit without asking, and the update likewise waits for the next quit.
 
 To pull a bad release, delete it, or mark the previous release as the latest: the feed then follows that release. That only stops new installs. Sparkle never downgrades, so apps that already installed the bad release need a fixed release with a higher `CLI_VERSION_CODE`.
