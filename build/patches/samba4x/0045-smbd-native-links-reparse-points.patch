@@ -173,7 +173,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  	if (open_fd) {
  		int ret;
  
-@@ -6453,6 +6467,14 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6460,6 +6474,14 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  		case S_IFDIR:
  			break;
  		case S_IFLNK:
@@ -188,7 +188,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  			/*
  			 * We should never get this far with a symlink
  			 * "as such". Report as not existing.
-@@ -6761,6 +6783,19 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6768,6 +6790,19 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  		}
  	}
  

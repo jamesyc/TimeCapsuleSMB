@@ -7,7 +7,10 @@ or does not."""
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
+import logging
+import types
 import unittest
 from unittest import mock
 
@@ -785,6 +788,266 @@ class ShortWriteHelpersTest(unittest.TestCase):
             conn._t_worker.is_alive.side_effect = None
             conn._t_worker.is_alive.return_value = True
             self.assertIsNone(durable_device._ended_within(conn, clock[0], 2.0))
+
+
+STALE_BREAK_CHECKS = ["lease:stale-break: the holder gets a durable open",
+                      "lease:stale-break: the conflicting open breaks the holder's lease",
+                      "lease:stale-break: the conflicting open is granted at once"]
+
+
+class SecondOpen:
+    """smbprotocol's Open for the second client's CREATE, built and not sent;
+    records the arguments it is created with."""
+
+    creates: list[tuple] = []
+
+    def __init__(self, tree, path) -> None:
+        pass
+
+    def create(self, *args, send=True):
+        SecondOpen.creates.append(args)
+        return ("create request",)
+
+
+def answer(command: int) -> dict:
+    """The part of an SMB2HeaderResponse that _is_break reads."""
+    return {"command": mock.Mock(get_value=lambda: command)}
+
+
+class StaleBreakCaseTest(unittest.TestCase):
+    def run_case(self, *, durable: bool = True, breaks: bool = True,
+                 response: dict | None = answer(durable_device.SMB2_OPLOCK_BREAK),
+                 grant: Exception | None = None, holder_open=None):
+        """Run stale_break_case. The holder's open is durable if durable. Once
+        the second client sends its CREATE, the awaited request's event is set
+        with response if breaks; that CREATE's answer raises grant, if given."""
+        from smbprotocol.open import CreateDisposition, FilePipePrinterAccessMask
+
+        clock = FakeClock()
+        holder_conn, other_conn = mock.Mock(), mock.Mock()
+        holder, other = mock.Mock(), mock.Mock()
+        holder.connect.return_value = (holder_conn, mock.Mock(session_id=5), mock.Mock())
+        holder.open_durable.side_effect = holder_open
+        holder.open_durable.return_value = (mock.Mock(), durable)
+        other.connect.return_value = (other_conn, mock.Mock(session_id=7), mock.Mock(tree_connect_id=3))
+        sent: list[bool] = []
+        events: list[str] = []
+        lease_break = mock.Mock(response=None)
+
+        def wait(seconds):
+            # Set as soon as the CREATE is sent; otherwise the wait runs out.
+            if not sent:
+                clock.now += seconds
+                return False
+            lease_break.response = response
+            return True
+
+        lease_break.response_event.wait.side_effect = wait
+
+        def awaited_break(conn, session_id):
+            self.assertEqual((conn, session_id), (holder_conn, 5))
+            # The break is awaited before the second client's CREATE can cause it.
+            self.assertEqual(other_conn.send.call_count, 0)
+            return lease_break
+
+        def send(create, session_id, tree_id):
+            self.assertEqual((create, session_id, tree_id), ("create request", 7, 3))
+            if breaks:
+                sent.append(True)
+            return "request"
+
+        def receive(request, timeout):
+            self.assertEqual((request, timeout), ("request", durable_device.FREE_OPEN_SECONDS))
+            events.append("receive")
+            if grant is not None:
+                raise grant
+
+        other_conn.send.side_effect = send
+        other_conn.receive.side_effect = receive
+        clients = iter((holder, other))
+        SecondOpen.creates = []
+        results = Results()
+        with mock.patch.object(durable_device, "time", clock), \
+                mock.patch.object(durable_device, "DurableClient", lambda _device: next(clients)), \
+                mock.patch.object(durable_device, "_awaited_break", awaited_break), \
+                mock.patch.object(durable_device, "_reset", lambda conn: events.append(
+                    "reset" if conn is holder_conn else "reset other")), \
+                mock.patch("smbprotocol.open.Open", SecondOpen), \
+                contextlib.redirect_stdout(io.StringIO()):
+            try:
+                durable_device.stale_break_case(results, mock.Mock())
+            finally:
+                holder_conn.disconnect.assert_called()
+        self.assertEqual(holder.lease_state, durable_device.LEASE_RH)
+        if SecondOpen.creates:
+            args = SecondOpen.creates[0]
+            # The second client asks to write, which the holder's read-only
+            # sharing refuses, and opens without overwriting.
+            self.assertTrue(args[1] & FilePipePrinterAccessMask.GENERIC_WRITE)
+            self.assertEqual(args[4], CreateDisposition.FILE_OPEN_IF)
+            other_conn.disconnect.assert_called()
+        return results, clock, events
+
+    def test_an_open_granted_once_the_holder_vanishes_passes(self) -> None:
+        results, clock, events = self.run_case()
+
+        self.assertEqual(results.failed, [])
+        self.assertEqual(results.passed, 3)
+        # The holder vanishes only after its break, before the open is answered.
+        self.assertEqual(events, ["reset", "receive"])
+        self.assertEqual(clock.now, 1000.0)
+
+    def test_an_open_that_is_not_durable_stops_the_case_before_the_second_client(self) -> None:
+        # The reset would close it, and the open would be granted with or
+        # without 0078: a pass would prove nothing.
+        results, _, events = self.run_case(durable=False)
+
+        self.assertEqual(results.failed, STALE_BREAK_CHECKS[:1])
+        self.assertEqual(results.passed, 0)
+        self.assertEqual((events, SecondOpen.creates), ([], []))
+
+    def test_an_open_still_waiting_or_refused_fails_the_grant(self) -> None:
+        from smbprotocol.exceptions import SMBException
+
+        # Before 0078 the open waits out its 70 s timeout; the answer's wait
+        # gives up first.
+        for grant in (SMBException("Connection timeout of 15 seconds exceeded"),
+                      SMBException("STATUS_SHARING_VIOLATION")):
+            with self.subTest(grant=str(grant)):
+                results, _, _ = self.run_case(grant=grant)
+                self.assertEqual(results.failed, STALE_BREAK_CHECKS[2:])
+
+    def test_no_break_stops_the_case_without_dropping_the_holder(self) -> None:
+        cases = {"none within the bound": dict(breaks=False),
+                 "the connection closed, no answer": dict(response=None),
+                 "another message": dict(response=answer(0x0D))}  # SMB2 ECHO
+        for name, kwargs in cases.items():
+            with self.subTest(name):
+                results, _, events = self.run_case(**kwargs)
+                self.assertEqual(results.failed, STALE_BREAK_CHECKS[1:2])
+                self.assertEqual(results.passed, 1)
+                self.assertEqual(events, [])
+        # With none, it waited the whole bound.
+        _, clock, _ = self.run_case(breaks=False)
+        self.assertEqual(clock.now, 1000.0 + durable_device.FREE_OPEN_SECONDS)
+
+    def test_a_failed_holder_open_closes_the_connection(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self.run_case(holder_open=RuntimeError("refused"))
+
+
+class AwaitedBreakTest(unittest.TestCase):
+    """_awaited_break and _is_break against smbprotocol's own receive loop,
+    fed a lease break notification as the server sends it."""
+
+    def lease_break(self) -> bytes:
+        from smbprotocol.header import SMB2HeaderResponse
+
+        header = SMB2HeaderResponse()
+        header["command"] = durable_device.SMB2_OPLOCK_BREAK
+        header["message_id"] = durable_device.UNSOLICITED_MESSAGE_ID
+        header["data"] = b"\x2c\x00" + bytes(42)  # a lease break notification's body
+        return header.pack()
+
+    def receive(self, messages: list[bytes], awaited: bool = True):
+        import uuid
+
+        from smbprotocol.connection import Connection
+
+        conn = Connection(uuid.uuid4(), "device")
+        conn.transport = mock.Mock()
+        conn.transport.recv.side_effect = messages + [b""]  # then the server closes
+        request = durable_device._awaited_break(conn, 5) if awaited else None
+        conn._process_message_thread()
+        return conn, request
+
+    def test_smbprotocols_receive_loop_hands_the_break_to_the_request(self) -> None:
+        conn, request = self.receive([self.lease_break()])
+
+        self.assertTrue(request.response_event.is_set())
+        self.assertTrue(durable_device._is_break(request))
+        self.assertEqual(request.session_id, 5)
+        # The loop ended at the close, not on the break.
+        self.assertIsNone(conn._t_exc)
+
+    def test_a_close_sets_the_event_with_no_answer(self) -> None:
+        _, request = self.receive([])
+        self.assertTrue(request.response_event.is_set())
+        self.assertIsNone(request.response)
+        self.assertFalse(durable_device._is_break(request))
+
+    def test_without_it_a_lease_break_ends_the_receive_loop(self) -> None:
+        # Why _awaited_break exists: smbprotocol has no request for the
+        # unsolicited message ID, and its receive loop dies on the lookup.
+        conn, _ = self.receive([self.lease_break()], awaited=False)
+        self.assertIsInstance(conn._t_exc, KeyError)
+
+
+class LeaseStateTest(unittest.TestCase):
+    def lease_state(self, client) -> int:
+        from smbprotocol.create_contexts import CreateContextName, SMB2CreateDurableHandleRequestV2
+
+        contexts = client._contexts((CreateContextName.SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2,
+                                     SMB2CreateDurableHandleRequestV2()))
+        # SMB2_CREATE_REQUEST_LEASE_V2: the lease key, then the lease state.
+        return int.from_bytes(contexts[0]["buffer_data"].get_value()[16:20], "little")
+
+    def test_a_client_asks_for_read_handle_and_write_caching_unless_told_otherwise(self) -> None:
+        # stale-break needs RH on the wire: with write caching the retry has
+        # something to break, and the case passes with or without 0078.
+        client = durable_device.DurableClient(mock.Mock())
+        self.assertEqual(self.lease_state(client), 0x7)
+        client.lease_state = durable_device.LEASE_RH
+        self.assertEqual(self.lease_state(client), 0x3)
+
+
+class QuietDroppedSocketTest(unittest.TestCase):
+    """What smbprotocol's receive thread does once _reset closes its socket,
+    and what main() keeps quiet of it."""
+
+    def reset_connection(self):
+        import uuid
+
+        from smbprotocol.connection import Connection
+
+        conn = Connection(uuid.uuid4(), "device")
+        conn.transport = mock.Mock()
+        conn.transport.recv.side_effect = OSError(errno.EBADF, "Bad file descriptor")
+        conn.transport.close.side_effect = OSError(errno.EBADF, "Bad file descriptor")
+        return conn
+
+    def hook_args(self, error: BaseException, thread_name: str = "msg_worker-device:445"):
+        """What threading.excepthook is given for an exception that ends a thread."""
+        return types.SimpleNamespace(exc_value=error, thread=types.SimpleNamespace(name=thread_name))
+
+    def test_the_cleanup_of_a_reset_socket_raises_out_of_the_receive_thread(self) -> None:
+        # The loop's own handler closes the closed socket again: that EBADF
+        # escapes the thread, so threading.excepthook sees it.
+        with self.assertRaises(OSError) as raised:
+            self.reset_connection()._process_message_thread()
+        self.assertEqual(raised.exception.errno, errno.EBADF)
+
+    def test_the_hook_drops_only_a_receive_threads_oserror(self) -> None:
+        with mock.patch.object(durable_device, "_default_excepthook") as default:
+            durable_device._quiet_dropped_socket(self.hook_args(OSError(errno.EBADF, "Bad file descriptor")))
+            default.assert_not_called()
+            for args in (self.hook_args(KeyError(1)), self.hook_args(OSError(errno.EBADF, "x"), "Thread-1")):
+                durable_device._quiet_dropped_socket(args)
+                default.assert_called_with(args)
+
+
+class QuietDroppedSocketLogTest(unittest.TestCase):
+    def record(self, error: BaseException | None) -> logging.LogRecord:
+        exc_info = (type(error), error, None) if error is not None else None
+        return logging.LogRecord("smbprotocol.connection", logging.ERROR, __file__, 1,
+                                 "SMB receive worker died", None, exc_info)
+
+    def test_only_the_ebadf_of_a_socket_closed_on_purpose_is_dropped(self) -> None:
+        quiet = durable_device._QuietDroppedSocketLog()
+        self.assertFalse(quiet.filter(self.record(OSError(errno.EBADF, "Bad file descriptor"))))
+        self.assertTrue(quiet.filter(self.record(OSError(errno.ECONNRESET, "Connection reset"))))
+        self.assertTrue(quiet.filter(self.record(KeyError(1))))
+        self.assertTrue(quiet.filter(self.record(None)))
 
 
 if __name__ == "__main__":

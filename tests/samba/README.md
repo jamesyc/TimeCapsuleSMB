@@ -427,7 +427,16 @@ must go within 60 s, not stay for good, and the new client's must stay.
 dropped open's file over SSH so its reconnect fails after reattaching the
 share entry and taking over the open's byte-range lock: the lease must go at
 once, another client must get the same lock at once, and the open must keep
-its own disconnect time until it expires (up to 5.5 minutes). The
+its own disconnect time until it expires (up to 5.5 minutes).
+`lease:stale-break` holds a durable open with a read and handle lease and
+read-only sharing (a holder refused a durable open stops the case: its reset
+would close the open, and the file would be free with or without 0078), then
+opens the file for writing from a second client. Once
+the lease break reaches the holder, the holder resets its connection, and its
+open becomes a disconnected durable one while the lease is still breaking. The
+waiting open must then be granted within 15 s; before patch 0078 it waited out
+its 70 s timeout (smbtorture's `smb2.durable-open.open2-lease` when the open
+won that race). The
 macOS case stops the smbd serving a mount for `--stall` seconds (default 60; 0 skips it) while a write is pending
 and checks that the Mac's reconnect keeps the handle and its data. It works in a
 `__tc_durable_test__` folder and removes it at the end.

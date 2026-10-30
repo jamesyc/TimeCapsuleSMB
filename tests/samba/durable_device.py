@@ -1,6 +1,7 @@
 """Durable-handle, shutdown-close, short-WRITE and handle-time device suite
-(Samba patches 0019, 0024, 0029, 0062, 0072, 0074, NetBSD 4's futimens in 0002, and
-the scavenger 0008 still forks), run from a Mac against a deployed device.
+(Samba patches 0019, 0024, 0029, 0062, 0072, 0074, 0078, NetBSD 4's futimens in
+0002, and the scavenger 0008 still forks), run from a Mac against a deployed
+device.
 
     .venv/bin/python -m tests.samba.durable_device --env .env [--stall SECONDS]
         [--case NAME ...]
@@ -101,6 +102,18 @@ their owner (issue 384, patch 0077), reading its tdb files over SSH:
   must stay disconnected with its own disconnect time (not 0) until it
   expires.
 
+The lease:stale-break case opens a file with a durable open, a read and
+handle lease, and read-only sharing; then a second client opens it for writing
+without overwriting it (as smbtorture's smb2.durable-open.open2-lease does).
+(The holder must be granted the durable open: otherwise its reset closes the
+open, and the file is free with or without 0078.) That open conflicts, so it
+asks the holder's smbd to break the lease's handle caching and waits; the holder's smbd marks the lease breaking and sends the
+break. Once the break arrives the holder resets its connection, as a client
+that vanishes mid-break does; its smbd disconnects the durable open, and the
+waiting open retries. That open must be granted at once: before patch 0078 the
+retry waited on the break no one would acknowledge, until its 70-second
+timeout.
+
 The macOS case holds a file open on a mount, stops the smbd serving it long
 enough for macOS to open a new session, resumes it, and checks the pending
 write and the data. It works inside a `__tc_durable_test__` folder that it
@@ -110,7 +123,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import functools
+import logging
 import os
 import shlex
 import socket
@@ -148,7 +163,7 @@ ORPHAN_MODES = ("killed", "superseded", "failed-reconnect")
 CASES = (DROP_MODES + ("stopped+previous",) + WRITE_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
          + tuple(f"settime:{mode}" for mode in SETTIME_MODES) + ("timemachine", "expiry")
          + tuple(f"rename:{mode}" for mode in RENAME_MODES)
-         + tuple(f"orphan:{mode}" for mode in ORPHAN_MODES))
+         + tuple(f"orphan:{mode}" for mode in ORPHAN_MODES) + ("lease:stale-break",))
 # A dead smbd's records go as soon as the scavenger walks them; allow for
 # the parent forking a scavenger and waiting for its hello (0075's 30 s).
 ORPHAN_RELEASE_SECONDS = 60
@@ -174,10 +189,20 @@ SESSION_SETUP_SECONDS = 60
 # stopped+previous resumes the old smbd after this: past 0074's wait, and
 # late enough that a server waiting for the old session misses macOS's limit.
 OLD_SMBD_STOP_SECONDS = 70
-# An exclusive open that has to break a stale lease waits for the break
-# timeout (35 s); one that finds the file free answers well within this, even
-# when the data disk spun down during the wait and has to spin up again.
+# An open that waits on a break waits out a timeout: an exclusive open
+# breaking a stale lease the break timeout (35 s), a deferred open's retry
+# OPLOCK_BREAK_TIMEOUT * 2 (70 s). One that finds the file free answers well
+# within this, even when the data disk spun down during the wait and has to
+# spin up again.
 FREE_OPEN_SECONDS = 15
+# The message ID of a server's unsolicited message, such as a lease break
+# notification (MS-SMB2 3.3.4.7), whose command is OPLOCK_BREAK.
+UNSOLICITED_MESSAGE_ID = 0xFFFFFFFFFFFFFFFF
+SMB2_OPLOCK_BREAK = 0x12
+# Lease states (MS-SMB2 2.2.13.2.8): read, handle and write caching, as macOS
+# asks for, and read and handle only, as smbtorture's open2-lease asks for.
+LEASE_RWH = 0x7
+LEASE_RH = 0x3
 # 2001-02-03 04:05:06 UTC as an SMB FILETIME (100 ns units since 1601).
 SETTIME_FILETIME = (981173106 + 11644473600) * 10_000_000
 
@@ -190,6 +215,7 @@ class DurableClient:
         self.client_guid = uuid.uuid4()
         self.lease_key = uuid.uuid4().bytes
         self.create_guid = uuid.uuid4()
+        self.lease_state = LEASE_RWH
 
     def connect(self, previous_session_id: int = 0, encrypt: bool = True):
         """A connection, session and tree. smbprotocol encrypts an SMB3
@@ -209,15 +235,14 @@ class DurableClient:
         return conn, sess, tree
 
     def _contexts(self, durable):
-        from smbprotocol.create_contexts import (CreateContextName, LeaseState,
-                                                 SMB2CreateContextRequest, SMB2CreateRequestLeaseV2)
+        from smbprotocol.create_contexts import (CreateContextName, SMB2CreateContextRequest,
+                                                 SMB2CreateRequestLeaseV2)
 
         lease = SMB2CreateRequestLeaseV2()
         lease["lease_key"] = self.lease_key
         lease["parent_lease_key"] = b"\0" * 16
         lease["epoch"] = 0
-        lease["lease_state"] = (LeaseState.SMB2_LEASE_READ_CACHING | LeaseState.SMB2_LEASE_HANDLE_CACHING
-                                | LeaseState.SMB2_LEASE_WRITE_CACHING)
+        lease["lease_state"] = self.lease_state
         contexts = []
         for name, data in ((CreateContextName.SMB2_CREATE_REQUEST_LEASE_V2, lease), durable):
             context = SMB2CreateContextRequest()
@@ -290,13 +315,28 @@ def _previous_session(session_id: int):
         session_module.SMB2SessionSetupRequest = original
 
 
+# threading.__excepthook__ arrived only in Python 3.10.
+_default_excepthook = threading.excepthook
+
+
 def _quiet_dropped_socket(args) -> None:
     """smbprotocol's receive thread fails with EBADF once a test closes the
     socket under it on purpose; that is the point of the test, not an error."""
     if isinstance(args.exc_value, OSError) and args.thread is not None and \
             args.thread.name.startswith("msg_worker"):
         return
-    threading.__excepthook__(args)
+    _default_excepthook(args)
+
+
+class _QuietDroppedSocketLog(logging.Filter):
+    """smbprotocol's receive thread logs the EBADF it gets once a test closes
+    the socket under it on purpose (_reset); that is the point of the test,
+    not an error. Anything else it logs still shows. Its cleanup then fails
+    with EBADF too, which _quiet_dropped_socket drops."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        error = record.exc_info[1] if record.exc_info else None
+        return not (isinstance(error, OSError) and error.errno == errno.EBADF)
 
 
 def _ipc_connect_disconnect(device: Device, session) -> None:
@@ -827,6 +867,68 @@ def orphan_case(r: Results, device: Device, mode: str) -> None:
                 c.disconnect()
 
 
+def _awaited_break(conn, session_id: int):
+    """A request that the server's next unsolicited message on conn answers.
+    smbprotocol has no handler for one: without it, a lease break ends the
+    connection's receive thread, which closes the connection."""
+    from smbprotocol.connection import Request
+    from smbprotocol.header import SMB2HeaderRequest
+
+    header = SMB2HeaderRequest()
+    header["message_id"] = UNSOLICITED_MESSAGE_ID
+    request = Request(header, None, conn, session_id)
+    conn.outstanding_requests[UNSOLICITED_MESSAGE_ID] = request
+    return request
+
+
+def _is_break(request) -> bool:
+    """Whether request (from _awaited_break) was answered by a break. Its
+    event is also set, with no answer, when the connection closes."""
+    return request.response is not None and request.response["command"].get_value() == SMB2_OPLOCK_BREAK
+
+
+def stale_break_case(r: Results, device: Device) -> None:
+    from smbprotocol.exceptions import SMBException
+
+    holder = DurableClient(device)
+    # With no write caching in the lease, the retry has nothing to break.
+    holder.lease_state = LEASE_RH
+    path = f"{TEST_DIR}\\stale-break.bin"
+    conn, sess, tree = holder.connect()
+    conn2 = None
+    try:
+        _, durable = holder.open_durable(tree, path)
+        # Without it the reset closes the open, and the retry finds the file
+        # free with or without 0078.
+        r.check("lease:stale-break: the holder gets a durable open", lambda: durable)
+        if not durable:
+            return
+        lease_break = _awaited_break(conn, sess.session_id)
+        conn2, sess2, tree2 = DurableClient(device).connect()
+        # An overwrite would break the lease to none, which the retry does not
+        # wait for.
+        _, create = _plain_open(tree2, path, send=False, overwrite=False)
+        request = conn2.send(create, sess2.session_id, tree2.tree_connect_id)
+        broken = lease_break.response_event.wait(FREE_OPEN_SECONDS) and _is_break(lease_break)
+        r.check("lease:stale-break: the conflicting open breaks the holder's lease", lambda: broken)
+        if not broken:
+            return
+        _reset(conn)
+
+        def granted() -> bool:
+            try:
+                conn2.receive(request, timeout=FREE_OPEN_SECONDS)
+            except SMBException:
+                return False
+            return True
+
+        r.check("lease:stale-break: the conflicting open is granted at once", granted)
+    finally:
+        for c in (conn2, conn):
+            with contextlib.suppress(Exception):
+                c.disconnect()
+
+
 def _smb2_frame(conn, session_id: int, tree_id: int, message, mid: int) -> bytes:
     """One request as it goes on the wire: NBT session header, then the PDU."""
     from smbprotocol.header import SMB2HeaderRequest
@@ -932,9 +1034,9 @@ def _status(conn, request, timeout: float = 15) -> int:
     return conn.receive(request, timeout=timeout)["status"].get_value()
 
 
-def _plain_open(tree, path: str, send: bool = True, delete: bool = False):
-    """An Open of path, created now; with send=False, the Open and its CREATE
-    request, not sent."""
+def _plain_open(tree, path: str, send: bool = True, delete: bool = False, overwrite: bool = True):
+    """An Open of path, created now (overwriting it unless told not to); with
+    send=False, the Open and its CREATE request, not sent."""
     from smbprotocol.open import (CreateDisposition, CreateOptions, FilePipePrinterAccessMask,
                                   ImpersonationLevel, Open, ShareAccess)
 
@@ -945,8 +1047,8 @@ def _plain_open(tree, path: str, send: bool = True, delete: bool = False):
     created = handle.create(ImpersonationLevel.Impersonation, access, 0x80,
                             ShareAccess.FILE_SHARE_READ | ShareAccess.FILE_SHARE_WRITE
                             | ShareAccess.FILE_SHARE_DELETE,
-                            CreateDisposition.FILE_OVERWRITE_IF, CreateOptions.FILE_NON_DIRECTORY_FILE,
-                            send=send)
+                            CreateDisposition.FILE_OVERWRITE_IF if overwrite else CreateDisposition.FILE_OPEN_IF,
+                            CreateOptions.FILE_NON_DIRECTORY_FILE, send=send)
     return handle if send else (handle, created[0])
 
 
@@ -1484,6 +1586,7 @@ def main() -> int:
     test_dir = f"{device.root}/{TEST_DIR}"
     results = Results()
     threading.excepthook = _quiet_dropped_socket
+    logging.getLogger("smbprotocol.connection").addFilter(_QuietDroppedSocketLog())
     work = Path(tempfile.mkdtemp(prefix="tc-durable-"))
     device.sh(f"rm -rf {shlex.quote(test_dir)} && mkdir {shlex.quote(test_dir)} && chmod 777 {shlex.quote(test_dir)}")
     try:
@@ -1511,6 +1614,8 @@ def main() -> int:
         for mode in ORPHAN_MODES:
             if f"orphan:{mode}" in wanted:
                 orphan_case(results, device, mode)
+        if "lease:stale-break" in wanted:
+            stale_break_case(results, device)
         if args.stall and "mac" in wanted:
             mac_stall_case(results, device, work / "smb", args.stall)
     finally:

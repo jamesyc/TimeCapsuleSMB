@@ -67,6 +67,18 @@
 # Compare complete UTF-8 parent names, and broadcast directory renames so
 # clients holding descendants also refresh them when another client renames.
 0076-smbd-dir-rename-posix-opens-below.patch|a directory rename skips POSIX opens below it
+# delay_for_oplock_fn() waits for a lease break already under way before it
+# asks whether the open holding the lease is stale. An open that conflicted
+# with a live durable open sends the break and defers; the holder's smbd marks
+# the lease breaking, finds its client gone and disconnects the durable open,
+# which wakes the deferred open. The retry no longer conflicts, so nothing is
+# left to break, but the lease is still breaking: it deferred again and waited
+# out the 70-second timeout, though the stale entry was dropped in the same
+# traverse and no one could acknowledge the break (smbtorture
+# smb2.durable-open.open2-lease, when the open arrives before the old smbd has
+# seen its client leave). Skip the wait for a stale entry, as the code below
+# it does.
+0078-smbd-open-stale-breaking-lease.patch|no wait on a breaking lease whose open is stale
 
 # Upstream proposals.
 # Changes upstream would have to agree to; they need no appliance patch.

@@ -1,0 +1,19 @@
+diff --git a/source3/smbd/open.c b/source3/smbd/open.c
+--- a/source3/smbd/open.c
++++ b/source3/smbd/open.c
+@@ -2461,7 +2461,14 @@ static bool delay_for_oplock_fn(
+ 		  (unsigned)state->will_overwrite);
+ 
+ 	if ((e_lease_type & ~break_to) == 0) {
+-		if (lease_is_breaking) {
++		/*
++		 * Wait for a break already under way, unless its open is
++		 * stale: a dead smbd or a disconnected durable open never
++		 * acknowledges the break, and the stale entry goes with
++		 * this traverse, so nothing would wake the deferred open
++		 * before its timeout.
++		 */
++		if (lease_is_breaking && !share_entry_stale_pid(e)) {
+ 			state->delay = true;
+ 		}
+ 		return false;

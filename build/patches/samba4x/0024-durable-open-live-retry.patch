@@ -1,7 +1,7 @@
 diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 --- a/source3/smbd/open.c
 +++ b/source3/smbd/open.c
-@@ -3035,7 +3035,7 @@ static void poll_open_setup_watcher_fn(struct share_mode_lock *lck,
+@@ -3042,7 +3042,7 @@ static void poll_open_setup_watcher_fn(struct share_mode_lock *lck,
  /**
   * Reschedule an open for 1 second from now, if not timed out.
   **/
