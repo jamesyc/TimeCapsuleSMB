@@ -371,9 +371,12 @@ final class ActivityStoreTests: XCTestCase {
             laneKey: .device("device-one")
         )
 
+        // The confirmation arrives before the deploy run that sent it ends.
         try await waitUntilStoreState {
             activity.activeLaneSnapshots.contains { $0.laneKey == .app && $0.snapshot.isRunning }
-                && activity.activeLaneSnapshots.contains { $0.laneKey == .device("device-one") && $0.isPendingConfirmation }
+                && activity.activeLaneSnapshots.contains {
+                    $0.laneKey == .device("device-one") && $0.isPendingConfirmation && !$0.snapshot.isRunning
+                }
         }
 
         let status = activity.compactStatus(for: ActivityDisplayContext(
