@@ -390,7 +390,10 @@ def test_startup_hup_ipv4_loss_and_child_death_lifecycle(rig, dnssd):
             ("MACHINE", 0), ("WORKGROUP", 0), ("MACHINE", 0x20)]
         time.sleep(0.35)
         assert len(adds(discovery)) == 3
-        assert len([line for line in event_lines(discovery.events) if line.startswith("FSTAT ")]) == 1
+        # Inspections stop once the child owns its ports.
+        lines = event_lines(discovery.events)
+        inspections = [i for i, line in enumerate(lines) if line.startswith("FSTAT ")]
+        assert inspections and inspections[-1] < next(i for i, line in enumerate(lines) if line.startswith("ADD "))
         assert wait_for(lambda: event_lines(discovery.events).count("HUP") >= 1)
         assert len(adds(discovery)) == 3
 
@@ -463,6 +466,26 @@ def adds_per_child(discovery):
     for pid, _ in add_events(discovery):
         counts[pid] = counts.get(pid, 0) + 1
     return counts
+
+
+def test_a_child_that_binds_late_is_inspected_until_it_owns_its_ports(rig, dnssd):
+    # Discovery never binds the control port to test whether the child is
+    # up: a child binding at that moment would fail and be replaced. It
+    # inspects the starting child again until the child owns its ports. The
+    # fake binds only after its first inspection, so that one finds no ports.
+    discovery = Discovery(rig, mode="slow-bind")
+    try:
+        assert wait_for(lambda: len(adds(discovery)) == 3,
+                        timeout=hang_guard(CHILD_START_MS, CHILD_START_MS, CHILD_START_MS))
+        lines = event_lines(discovery.events)
+        child = children(discovery)
+        assert len(child) == 1 and "BIND_FAILED" not in lines
+        bound = lines.index(f"BOUND {child[0]}")
+        assert any(line.startswith("FSTAT ") for line in lines[:bound])
+        assert adds_per_child(discovery) == {child[0]: 3}
+    finally:
+        log = discovery.stop()[1]
+    assert "replacing native child" not in log
 
 
 def test_defended_names_register_without_resend_or_replacement(rig, dnssd):
@@ -600,15 +623,17 @@ def test_child_exit_status_zero_names_the_likely_port_collision(rig, dnssd):
 
 
 @pytest.mark.parametrize("fstat_mode,reason", [
-    ("foreign", "native child does not own UDP 137/138/922"),
-    ("missing-control", "native child does not own UDP 137/138/922"),
+    ("foreign", "native child did not bind UDP 137/138/922 before the start deadline"),
+    ("missing-control", "native child did not bind UDP 137/138/922 before the start deadline"),
     ("error", "native socket ownership inspection failed"),
 ])
 def test_unverified_native_listener_never_receives_an_add(rig, dnssd, fstat_mode, reason):
     discovery = Discovery(rig, shares=True, fstat_mode=fstat_mode)
     try:
         connections = bonjour_connections(dnssd)
-        assert wait_for(lambda: "STOP" in event_lines(discovery.events), timeout=10)
+        # An unowned port may still be the child starting: it fails at the start deadline.
+        assert wait_for(lambda: "STOP" in event_lines(discovery.events),
+                        timeout=hang_guard(CHILD_START_MS, START_MS, STOP_MS))
         assert not adds(discovery)
         first = children(discovery)[0]
         assert_reaped(first, discovery.proc.pid)
@@ -738,8 +763,8 @@ def test_native_child_exit_status_and_port_collision_recover(rig, dnssd):
         assert wait_for(lambda: len(children(discovery)) >= 2, timeout=12)
         assert not adds(discovery)
         # Another process now holds the control port, so fstat truthfully
-        # names that process. The child stays alive without binding, which
-        # forces the ownership check instead of racing the child's own bind.
+        # names that process. The child stays alive without binding, so the
+        # ownership check fails at the start deadline.
         set_text(discovery.fstat_mode, "foreign")
         foreign.bind(("127.0.0.1", port))
         set_text(discovery.mode, "no-listener")
@@ -757,7 +782,7 @@ def test_native_child_exit_status_and_port_collision_recover(rig, dnssd):
         foreign.close()
         log = discovery.stop()[1]
     assert "exited with status 7" in log
-    assert "native child does not own UDP 137/138/922" in log
+    assert "native child did not bind UDP 137/138/922 before the start deadline" in log
 
 
 def test_wack_then_success_and_workgroup_collision(rig, dnssd):

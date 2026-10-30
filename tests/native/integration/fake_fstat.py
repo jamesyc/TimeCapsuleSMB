@@ -22,5 +22,10 @@ if mode == "hang":
     time.sleep(60)
 owner = pid + 1 if mode == "foreign" else pid
 ports = (137, 138) if mode == "missing-control" else (137, 138, int(os.environ["TC_FAKE_WCIFSND_PORT"]))
+# Like fstat, list the child's sockets only once it has bound them.
+with open(os.environ["TC_FAKE_WCIFSND_EVENTS"], encoding="ascii") as stream:
+    bound = f"BOUND {pid}\n" in stream.read()
+if owner == pid and not bound:
+    ports = ()
 for index, port in enumerate(ports, 3):
     print(f"root wcifsnd {owner} {index}* internet dgram udp *:{port}")

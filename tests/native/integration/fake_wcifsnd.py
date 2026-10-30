@@ -71,6 +71,17 @@ if mode_now() == "exit-0":
     raise SystemExit(0)
 while running and mode_now() == "no-listener":
     time.sleep(0.1)
+
+
+def inspected():
+    with open(EVENTS, encoding="ascii") as stream:
+        return f"FSTAT {os.getpid()}\n" in stream.read()
+
+
+# A child still starting up, as on a loaded runner: it binds only after
+# discovery has inspected it once, then answers.
+while running and mode_now() == "slow-bind" and not inspected():
+    time.sleep(0.02)
 if not running:
     record("STOP")
     raise SystemExit(0)
@@ -80,6 +91,7 @@ try:
 except OSError:
     record("BIND_FAILED")
     raise
+record(f"BOUND {os.getpid()}")
 sock.settimeout(0.1)
 adds = 0
 while running:

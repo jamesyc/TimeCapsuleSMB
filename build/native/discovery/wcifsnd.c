@@ -210,25 +210,20 @@ static void spawn_child(struct wcifsnd *w, long long now) {
     }
     if (child < 0) { fail(w, "fork failed", now); return; }
     w->child = child; w->phase = WC_STARTING;
-    w->deadline = now + WCIFSND_START_MS; w->wake = now + 100;
+    w->deadline = now + WCIFSND_START_MS; w->wake = now + 100; w->inspect_ms = 100;
     w->record = 0; w->sent = 0; w->active_since = -1;
 }
 
-static int ready_socket(struct wcifsnd *w) {
-    struct sockaddr_in a = endpoint(WCIFSND_PORT);
-    int fd = socket(AF_INET, SOCK_DGRAM, 0), rc, error;
-    if (fd < 0) return -1;
-    rc = bind(fd, (struct sockaddr *)&a, sizeof(a)); error = errno;
-    close(fd);
-    if (rc == 0) return 0;
-    if (error != EADDRINUSE) return -1;
+/* The registration client: an ephemeral port connected to the child's
+ * control port, opened once the child owns that port. */
+static int open_client(struct wcifsnd *w) {
+    struct sockaddr_in a = endpoint(0);
     w->fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (w->fd < 0 || w->fd >= FD_SETSIZE) return -1;
-    a = endpoint(0);
     if (fcntl(w->fd, F_SETFD, FD_CLOEXEC) || fcntl(w->fd, F_SETFL, O_NONBLOCK) ||
         bind(w->fd, (struct sockaddr *)&a, sizeof(a))) return -1;
     a = endpoint(WCIFSND_PORT);
-    return connect(w->fd, (struct sockaddr *)&a, sizeof(a)) ? -1 : 1;
+    return connect(w->fd, (struct sockaddr *)&a, sizeof(a));
 }
 
 static int observe_child(struct wcifsnd *w, long long now) {
@@ -270,12 +265,23 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
             }
             tc_child_close(&w->inspection);
             if (w->phase == WC_INSPECTING) {
-                if (!inspected || !owned) {
-                    fail(w, inspected ? "native child does not own UDP 137/138/922" :
-                                        "native socket ownership inspection failed", now);
+                if (!inspected) {
+                    fail(w, "native socket ownership inspection failed", now);
+                } else if (!owned) {
+                    /* A starting child may not have bound every port yet.
+                     * The doubling wait bounds how many fstats a slow start
+                     * costs; the last inspection falls on the deadline. On
+                     * a port another process holds, Apple's child exits. */
+                    if (now >= w->deadline) {
+                        fail(w, "native child did not bind UDP 137/138/922 before the start deadline", now);
+                    } else {
+                        w->phase = WC_STARTING; w->inspect_ms *= 2; w->wake = now + w->inspect_ms;
+                        if (w->wake > w->deadline) w->wake = w->deadline;
+                    }
                 } else {
                     if (observe_child(w, now) < 0) return -1;
                     if (w->phase == WC_INSPECTING) {
+                        if (open_client(w)) { fail(w, "registration socket unavailable", now); return 0; }
                         w->phase = WC_REGISTERING; w->deadline = now + reply_ms(w);
                         w->wake = now; request_name(w);
                     }
@@ -313,14 +319,12 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
         return 0;
     }
     if (w->phase == WC_STARTING && now >= w->wake) {
-        int ready = ready_socket(w);
-        if (ready < 0 || (ready == 0 && now >= w->deadline)) {
-            fail(w, "control listener unavailable", now); return 0;
-        }
-        w->wake = now + 100;
-        if (!ready) return 0;
-        /* Inspect once in our process group without blocking Bonjour's loop.
-         * A bound control port alone may belong to ACPd's wcifsnd. */
+        /* The child is ready once fstat shows it owns UDP 137, 138 and the
+         * control port; a bound control port alone may belong to ACPd's
+         * wcifsnd. Binding the control port to test it would hold the port
+         * for an instant, and a child binding then fails (Apple's exits 0).
+         * Inspect in our process group without blocking Bonjour's loop,
+         * again until the start deadline. */
         char pid[32];
         char *argv[] = {TC_FSTAT_PATH, "-p", pid, NULL};
         snprintf(pid, sizeof(pid), "%ld", (long)w->child);

@@ -3,7 +3,7 @@
 
 /* Drive production dispatch with synthetic time and syscall outcomes. Real
  * process/socket ownership is covered separately by test_wcifsnd.py. */
-static int forks, signals, last_signal, wait_error, fork_error, socket_error;
+static int forks, signals, last_signal, wait_error, fork_error, socket_error, sockets;
 static pid_t waited;
 static pid_t fake_fork(void) { forks++; errno = fork_error; return fork_error ? -1 : 42; }
 static pid_t fake_waitpid(pid_t pid, int *status, int options) {
@@ -15,31 +15,43 @@ static int fake_kill(pid_t pid, int sig) {
     assert(pid == 42); signals++; last_signal = sig; return 0;
 }
 static int fake_socket(int domain, int type, int protocol) {
-    (void)domain; (void)type; (void)protocol;
-    errno = socket_error; return -1;
+    sockets++;
+    if (socket_error) { errno = socket_error; return -1; }
+    return socket(domain, type, protocol);
 }
-static int inspection_done;
+static int inspection_done, inspections, exec_error, owned;
 static int fake_inspection_poll(struct tc_child *child, long long now) {
-    (void)child; (void)now;
+    (void)now;
+    if (inspection_done) child->exited = 1; /* exit status 0 */
     return inspection_done;
+}
+static int fake_command_exec(struct tc_child *child, char *const argv[], void *out, size_t capacity) {
+    (void)argv; (void)out; (void)capacity;
+    inspections++;
+    if (exec_error) return -1;
+    child->group = 77; child->nested = 1;
+    return 0;
 }
 #define fork fake_fork
 #define waitpid fake_waitpid
 #define kill fake_kill
 #define socket fake_socket
 #define tc_child_poll fake_inspection_poll
+#define tc_command_exec fake_command_exec
 #include "../../../build/native/discovery/wcifsnd.c"
 #undef tc_child_poll
+#undef tc_command_exec
 
 int tc_native_nbns_sockets_present(const char *text, pid_t pid, unsigned control_port) {
     (void)text; (void)pid; (void)control_port;
-    return 1;
+    return owned;
 }
 
 static void init(struct wcifsnd *w) {
     wcifsnd_init(w, "machine");
     w->desired = w->validated = 1;
-    forks = signals = last_signal = wait_error = fork_error = socket_error = inspection_done = 0;
+    forks = signals = last_signal = wait_error = fork_error = socket_error = sockets = 0;
+    inspection_done = inspections = exec_error = 0; owned = 1;
     waited = 0;
 }
 
@@ -121,6 +133,63 @@ static void stopped_inspection_defers_retry(void) {
     assert(!w.inspection.group && forks == 1 && w.child == 42);
 }
 
+/* A starting child is ready once fstat shows it owns its ports. Discovery
+ * never binds the control port to test it: a child binding at that moment
+ * would fail. Until the start deadline it inspects again after a wait that
+ * starts at 200 ms and doubles. */
+static void starting_child_is_inspected_until_it_owns_its_ports(void) {
+    struct wcifsnd w;
+    init(&w);
+    assert(!wcifsnd_dispatch(&w, NULL, 1000) && forks == 1);
+    assert(w.phase == WC_STARTING && w.deadline == 6000 && w.wake == 1100);
+    assert(!wcifsnd_dispatch(&w, NULL, 1099) && !inspections);
+    assert(!wcifsnd_dispatch(&w, NULL, 1100) && inspections == 1 && w.phase == WC_INSPECTING);
+    assert(!wcifsnd_dispatch(&w, NULL, 1200) && inspections == 1); /* one at a time */
+
+    owned = 0; inspection_done = 1;            /* not bound yet */
+    assert(!wcifsnd_dispatch(&w, NULL, 1300));
+    assert(w.phase == WC_STARTING && w.wake == 1500 && !w.failed && !w.inspection.group);
+    inspection_done = 0;
+    assert(!wcifsnd_dispatch(&w, NULL, 1499) && inspections == 1);
+    assert(!wcifsnd_dispatch(&w, NULL, 1500) && inspections == 2);
+    inspection_done = 1;                       /* still not bound: twice the wait */
+    assert(!wcifsnd_dispatch(&w, NULL, 1600) && w.phase == WC_STARTING && w.wake == 2000);
+    inspection_done = 0;
+    assert(!wcifsnd_dispatch(&w, NULL, 2000) && inspections == 3);
+
+    owned = 1; inspection_done = 1;            /* bound: register */
+    assert(!sockets);
+    assert(!wcifsnd_dispatch(&w, NULL, 2100));
+    assert(w.phase == WC_REGISTERING && w.fd >= 0 && sockets == 1 && !w.failed);
+    assert(w.deadline == 2100 + reply_ms(&w) && forks == 1);
+    close(w.fd); w.fd = -1;
+
+    w.child = 0; w.phase = WC_OFF; w.wake = 0; /* the next child starts at 100 ms again */
+    assert(!wcifsnd_dispatch(&w, NULL, 3000) && forks == 2 && w.inspect_ms == 100 && w.wake == 3100);
+
+    init(&w);                                  /* never owned by the deadline */
+    assert(!wcifsnd_dispatch(&w, NULL, 1000) && forks == 1);
+    owned = 0;
+    long long at = 1100, wait = 100;
+    while (1) {                                /* 1100, 1300, 1700, 2500, 4100, 6000 */
+        inspection_done = 0;
+        assert(!wcifsnd_dispatch(&w, NULL, at) && w.phase == WC_INSPECTING);
+        inspection_done = 1;
+        assert(!wcifsnd_dispatch(&w, NULL, at));
+        if (at == 6000) break;
+        wait *= 2;
+        assert(w.phase == WC_STARTING && !w.failed && w.wake == (at + wait < 6000 ? at + wait : 6000));
+        at = w.wake;
+    }
+    assert(w.failed && w.phase == WC_STOPPING); /* on the deadline, not after it */
+    assert(last_signal == SIGTERM && !sockets && inspections == 6);
+
+    init(&w); exec_error = 1;                  /* fstat cannot start */
+    assert(!wcifsnd_dispatch(&w, NULL, 1000) && forks == 1);
+    assert(!wcifsnd_dispatch(&w, NULL, 1100) && w.failed && w.phase == WC_STOPPING);
+    assert(inspections == 1 && !sockets);
+}
+
 static void errors_and_stale_replies(void) {
     struct wcifsnd w;
     init(&w); fork_error = EAGAIN;
@@ -135,9 +204,11 @@ static void errors_and_stale_replies(void) {
     wait_error = ECHILD;
     assert(!wcifsnd_dispatch(&w, NULL, 2102) && !w.child && w.wake == 6102);
 
-    init(&w); w.phase = WC_STARTING; w.child = 42; socket_error = EMFILE;
+    init(&w); w.phase = WC_INSPECTING; w.child = 42; w.inspection.group = 77; w.inspection.nested = 1;
+    w.inspection.lifetime = w.inspection.output = -1; w.inspection_limit = 20000;
+    inspection_done = 1; socket_error = EMFILE;
     assert(!wcifsnd_dispatch(&w, NULL, 100) && w.phase == WC_STOPPING && w.failed);
-    assert(last_signal == SIGTERM && !forks);
+    assert(last_signal == SIGTERM && !forks && sockets == 1);
 
     init(&w); w.phase = WC_REGISTERING; w.child = 42; w.deadline = 10000;
     assert(!wcifsnd_dispatch(&w, NULL, 100)); /* send(-1) fails. */
@@ -238,9 +309,11 @@ static void reply_wait_lengthens_after_a_timeout(void) {
     /* Any other failure keeps the long wait. */
     waited = 42;
     assert(!wcifsnd_dispatch(&w, NULL, 30200) && !w.child);
-    w.child = 42; w.phase = WC_STARTING; socket_error = EMFILE; waited = 0;
+    w.child = 42; w.phase = WC_INSPECTING; w.inspection.group = 77; w.inspection.nested = 1;
+    w.inspection.lifetime = w.inspection.output = -1; w.inspection_limit = 60000;
+    inspection_done = 1; socket_error = EMFILE; waited = 0;
     assert(!wcifsnd_dispatch(&w, NULL, 40000) && w.failed && w.patient);
-    socket_error = 0;
+    socket_error = 0; inspection_done = 0;
 
     /* A child that stays registered for a minute resets it at its next failure. */
     init(&w); w.patient = 1; w.child = 42; w.phase = WC_ACTIVE; w.active_since = 100;
@@ -329,6 +402,7 @@ static void no_eligible_address_starts_nothing_until_a_lease(void) {
 
 int main(void) {
     retry_deadlines(); cleanup_before_retry(); stopped_inspection_defers_retry();
+    starting_child_is_inspected_until_it_owns_its_ports();
     errors_and_stale_replies(); eligibility_and_shutdown(); reply_wait_lengthens_after_a_timeout();
     apple_nbns_address_rule(); no_eligible_address_starts_nothing_until_a_lease();
     return 0;

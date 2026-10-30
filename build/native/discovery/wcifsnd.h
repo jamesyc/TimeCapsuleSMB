@@ -25,6 +25,9 @@ struct wcifsnd {
      * is no longer wanted. */
     int patient;
     uint16_t transaction;
+    /* The wait before re-inspecting a starting child that does not yet own
+     * its ports; it doubles each time. */
+    long long inspect_ms;
     long long deadline, wake, active_since, inspection_limit;
     char name[16];
     unsigned char request[68];
