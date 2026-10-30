@@ -95,6 +95,25 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         appStore.sshAccessStore.refresh(profile: latestProfile(for: profile))
     }
 
+    /// What the page checks on every visit: SSH access, then, once that check
+    /// has ended, reachability with the installed version. A device runs one
+    /// background check at a time, so started together the second would be
+    /// refused. Returns early when the task is cancelled, as when the user
+    /// switches to another device.
+    func refreshDeviceStatus(profile: DeviceProfile) async {
+        refreshSSHAccessStatus(profile: profile)
+        let sshCheck = appStore.operationCoordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus))
+        for await isRunning in sshCheck.backend.$isRunning.values where !isRunning {
+            break
+        }
+        guard !Task.isCancelled else { return }
+        // Without a password the store skips the check, whose failed login
+        // would blame the password on every visit: none is saved, it is
+        // invalid, or reading it would show a keychain prompt.
+        let current = latestProfile(for: profile)
+        appStore.reachabilityStore.refreshIfNeeded(profile: current, password: self.appStore.passwordWithoutPrompt(for: current))
+    }
+
     func openSSHAccess(profile: DeviceProfile) {
         selectedTab = .maintenance
         maintenanceStore.selectedWorkflow = .sshAccess
@@ -570,9 +589,10 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             pendingSSHRefresh = nil
             return
         }
-        // A background check still running answers it once it finishes.
+        // Waits out a background check too: the device refuses a second one
+        // meanwhile, and a running SSH check answers this one once it ends.
         guard !appStore.operationCoordinator.isDeviceBusy(id),
-              !appStore.operationCoordinator.lane(for: .deviceWorkflow(id, .sshStatus)).isBusy else { return }
+              !appStore.operationCoordinator.isRunningBackgroundCheck(id) else { return }
         pendingSSHRefresh = nil
         appStore.sshAccessStore.refresh(profile: profile)
     }

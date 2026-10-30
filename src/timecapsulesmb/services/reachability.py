@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import shlex
 import shutil
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
@@ -9,7 +10,9 @@ from typing import Callable
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host, parse_endpoint, resolve_host_ips
+from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.summaries import Summary
+from timecapsulesmb.device.probe import DeployedVersionProbeResult, deployed_version_script, parse_deployed_version
 from timecapsulesmb.transport.errors import SshAuthenticationError, TransportError
 from timecapsulesmb.core.process import run_process
 from timecapsulesmb.transport.local import tcp_connect_error
@@ -29,12 +32,26 @@ class ReachabilityCheck:
 
 
 @dataclass(frozen=True)
+class InstalledVersion:
+    """What the SSH login read from the device's Flash config, against the
+    release this helper installs."""
+    release_tag: str | None
+    version_code: int | None
+    # "current", "outdated" or "newer"; "unknown" when the config has no
+    # version code (an install before v2.1, or none at all).
+    state: str
+    app_release_tag: str
+
+
+@dataclass(frozen=True)
 class ReachabilityResult:
     status: str
     summary: Summary
     ssh_host: str | None
     smb_host: str | None
     checks: list[ReachabilityCheck] = field(default_factory=list)
+    # None when no SSH login happened.
+    installed: InstalledVersion | None = None
 
 
 def run_reachability(
@@ -75,7 +92,7 @@ def run_reachability(
     ssh_port = check_ssh_port(ssh_host, timeout=tcp_timeout)
     checks.append(ssh_port)
     emit_stage(stage, "check_ssh_auth")
-    ssh_auth = check_ssh_auth(
+    ssh_auth, deployed = check_ssh_auth(
         ssh_target,
         config,
         password=password,
@@ -87,7 +104,25 @@ def run_reachability(
     smb_port = check_smb_port(smb_hosts, timeout=tcp_timeout)
     checks.append(smb_port)
 
-    return result_from_checks(ssh_target=ssh_target, smb_hosts=smb_hosts, checks=checks)
+    return result_from_checks(
+        ssh_target=ssh_target,
+        smb_hosts=smb_hosts,
+        checks=checks,
+        installed=installed_version(deployed) if deployed is not None else None,
+    )
+
+
+def installed_version(deployed: DeployedVersionProbeResult) -> InstalledVersion:
+    code = deployed.cli_version_code
+    if code is None:
+        state = "unknown"
+    elif code < CLI_VERSION_CODE:
+        state = "outdated"
+    elif code > CLI_VERSION_CODE:
+        state = "newer"
+    else:
+        state = "current"
+    return InstalledVersion(deployed.release_tag, code, state, RELEASE_TAG)
 
 
 def ssh_target_from_params(config: AppConfig, params: Mapping[str, object]) -> str:
@@ -234,11 +269,13 @@ def check_ssh_auth(
     password: str,
     port_check: ReachabilityCheck,
     timeout: int,
-) -> ReachabilityCheck:
+) -> tuple[ReachabilityCheck, DeployedVersionProbeResult | None]:
+    """The login check, and the installed version that login read: None
+    whenever the login did not work."""
     if not ssh_target:
-        return ReachabilityCheck(id="ssh_auth", status="SKIP", message="No SSH target is configured.")
+        return ReachabilityCheck(id="ssh_auth", status="SKIP", message="No SSH target is configured."), None
     if port_check.status == "FAIL":
-        return ReachabilityCheck(id="ssh_auth", status="SKIP", message="SSH authentication skipped because the SSH port is closed.")
+        return ReachabilityCheck(id="ssh_auth", status="SKIP", message="SSH authentication skipped because the SSH port is closed."), None
 
     connection = SshConnection(
         host=ssh_target,
@@ -246,9 +283,11 @@ def check_ssh_auth(
         ssh_opts=config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]),
     )
     try:
+        # The version read rides on the login; the token last proves the
+        # login ran the whole command.
         proc = run_ssh(
             connection,
-            f"/bin/sh -c 'printf {REACHABILITY_OK_TOKEN}'",
+            f"/bin/sh -c {shlex.quote(f'{deployed_version_script()}; printf {REACHABILITY_OK_TOKEN}')}",
             check=False,
             timeout=timeout,
         )
@@ -259,7 +298,7 @@ def check_ssh_auth(
             message="SSH authentication failed.",
             host=endpoint_host(ssh_target),
             detail=str(exc),
-        )
+        ), None
     except TransportError as exc:
         return ReachabilityCheck(
             id="ssh_auth",
@@ -267,21 +306,22 @@ def check_ssh_auth(
             message="SSH authentication could not be checked.",
             host=endpoint_host(ssh_target),
             detail=str(exc),
-        )
-    if proc.returncode == 0 and proc.stdout.strip().endswith(REACHABILITY_OK_TOKEN):
+        ), None
+    output = proc.stdout.strip()
+    if proc.returncode == 0 and output.endswith(REACHABILITY_OK_TOKEN):
         return ReachabilityCheck(
             id="ssh_auth",
             status="PASS",
             message="SSH authentication worked.",
             host=endpoint_host(ssh_target),
-        )
+        ), parse_deployed_version(output[: -len(REACHABILITY_OK_TOKEN)])
     return ReachabilityCheck(
         id="ssh_auth",
         status="FAIL",
         message="SSH authentication failed.",
         host=endpoint_host(ssh_target),
-        detail=proc.stdout.strip() or f"rc={proc.returncode}",
-    )
+        detail=output or f"rc={proc.returncode}",
+    ), None
 
 
 def check_smb_port(hosts: Sequence[str], *, timeout: float) -> ReachabilityCheck:
@@ -309,6 +349,7 @@ def result_from_checks(
     ssh_target: str,
     smb_hosts: Sequence[str],
     checks: Sequence[ReachabilityCheck],
+    installed: InstalledVersion | None = None,
 ) -> ReachabilityResult:
     by_id = {check.id: check for check in checks}
     ssh_auth = by_id.get("ssh_auth")
@@ -342,6 +383,7 @@ def result_from_checks(
         ssh_host=ssh_target or None,
         smb_host=smb_host,
         checks=list(checks),
+        installed=installed,
     )
 
 

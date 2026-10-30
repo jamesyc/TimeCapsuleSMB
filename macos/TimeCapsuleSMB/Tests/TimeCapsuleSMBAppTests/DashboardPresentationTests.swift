@@ -986,6 +986,143 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertFalse(running.isPrimaryActionEnabled)
     }
 
+    func testInstalledVersionRowFollowsTheLoginAndTheRuntimeState() throws {
+        let label = L10n.string("dashboard.overview.installed_version")
+        let notInstalled = L10n.string("dashboard.overview.installed_version.not_installed")
+        let notChecked = L10n.string("dashboard.overview.installed_version.not_checked")
+        let outdated = L10n.format("dashboard.overview.installed_version.outdated", "v4.0.0", "v5.0.0")
+        let newer = L10n.string("dashboard.overview.installed_version.newer")
+        let unknown = L10n.string("value.unknown")
+        let expected: [(String?, [DeviceRuntimeState?: String])] = [
+            ("current", [.notInstalled: notInstalled, .installedVerified: "v4.0.0", .unknown: "v4.0.0"]),
+            ("outdated", [.notInstalled: notInstalled, .installedVerified: outdated, .unknown: outdated]),
+            ("newer", [.notInstalled: notInstalled, .installedVerified: newer, .unknown: newer]),
+            // A login that read no version: an install before versions were recorded, or another one.
+            ("unknown", [.notInstalled: notInstalled, .installedVerified: unknown, .unknown: unknown]),
+            ("not_checked", [.notInstalled: notInstalled, .installedVerified: notChecked, .unknown: notChecked]),
+            (nil, [.notInstalled: notInstalled, .installedVerified: notChecked, .unknown: notChecked])
+        ]
+        for (installState, byRuntime) in expected {
+            for (runtime, value) in byRuntime {
+                var profile = try makeProfile()
+                profile.runtimeState = runtime.map { testRuntimeState(state: $0) }
+                let snapshot = try installState.map { state in
+                    DeviceReachabilitySnapshot(refreshedAt: Date(timeIntervalSince1970: 1), payload: try testReachabilityPayload(
+                        installState: state, installedReleaseTag: "v4.0.0", installedVersionCode: 40000, appReleaseTag: "v5.0.0"
+                    ).decode(ReachabilityPayload.self))
+                }
+                let presentation = DeviceDashboardOverviewPresentation(summary: summary(for: profile), reachabilitySnapshot: snapshot)
+                XCTAssertEqual(try headerValue(label, in: presentation), value, "\(installState ?? "no snapshot") / \(String(describing: runtime))")
+            }
+        }
+        // Without a snapshot at all, as before the first check.
+        var profile = try makeProfile()
+        profile.runtimeState = testRuntimeState()
+        XCTAssertEqual(try headerValue(label, in: DeviceDashboardOverviewPresentation(summary: summary(for: profile))), notChecked)
+        // In English, both tags.
+        XCTAssertEqual(String(format: L10n.string("dashboard.overview.installed_version.outdated", language: .english), "v4.0.0", "v5.0.0"),
+                       "v4.0.0 (this app installs v5.0.0)")
+    }
+
+    func testRuntimeRowOffersInstallForAnOlderOrUnknownInstall() throws {
+        for runtime in [DeviceRuntimeState.installedVerified, .installedUnverified] {
+            for (installState, detailKey) in [("outdated", "dashboard.health.runtime.outdated"), ("unknown", "dashboard.health.runtime.version_unknown")] {
+                let row = try runtimeRow(runtime: runtime, installState: installState)
+                XCTAssertEqual(row.status, .warning, "\(runtime) \(installState)")
+                XCTAssertEqual(row.action, .installUpdate)
+                XCTAssertEqual(row.detail, L10n.string(detailKey))
+            }
+            // A current or newer install, or none checked, keeps the usual row.
+            let usual = try runtimeRow(runtime: runtime, installState: nil)
+            for installState in ["current", "newer", "not_checked"] {
+                XCTAssertEqual(try runtimeRow(runtime: runtime, installState: installState), usual, "\(runtime) \(installState)")
+            }
+        }
+        // Only for an install the profile knows of.
+        for runtime in [DeviceRuntimeState.notInstalled, .installFailed, .unknown] {
+            let usual = try runtimeRow(runtime: runtime, installState: nil)
+            for installState in ["outdated", "unknown"] {
+                XCTAssertEqual(try runtimeRow(runtime: runtime, installState: installState), usual, "\(runtime) \(installState)")
+            }
+        }
+    }
+
+    func testAnInstallStartedAfterTheCheckLeavesTheVersionNotChecked() throws {
+        var profile = try makeProfile()
+        profile.runtimeState = testRuntimeState()
+        let snapshot = DeviceReachabilitySnapshot(refreshedAt: Date(timeIntervalSince1970: 100), payload: try testReachabilityPayload(
+            installState: "outdated", installedReleaseTag: "v4.0.0", installedVersionCode: 40000, appReleaseTag: "v5.0.0"
+        ).decode(ReachabilityPayload.self))
+        let label = L10n.string("dashboard.overview.installed_version")
+
+        // An install from before the check: the check read its result.
+        profile.lastDeployState = testDeployState(startedAt: Date(timeIntervalSince1970: 50), updatedAt: Date(timeIntervalSince1970: 60),
+                                                  finishedAt: Date(timeIntervalSince1970: 60))
+        let before = DeviceDashboardOverviewPresentation(summary: summary(for: profile), reachabilitySnapshot: snapshot)
+        XCTAssertEqual(try headerValue(label, in: before), L10n.format("dashboard.overview.installed_version.outdated", "v4.0.0", "v5.0.0"))
+        XCTAssertEqual(try row(.runtime, in: before).action, .installUpdate)
+
+        // Install / Update started after it, finished or not: the version may have changed.
+        for finishedAt in [Date(timeIntervalSince1970: 300), nil] {
+            profile.lastDeployState = testDeployState(startedAt: Date(timeIntervalSince1970: 150), updatedAt: Date(timeIntervalSince1970: 300),
+                                                      finishedAt: finishedAt)
+            let after = DeviceDashboardOverviewPresentation(summary: summary(for: profile), reachabilitySnapshot: snapshot)
+            XCTAssertEqual(try headerValue(label, in: after), L10n.string("dashboard.overview.installed_version.not_checked"))
+            XCTAssertNotEqual(try row(.runtime, in: after).action, .installUpdate)
+            // The connection row still reads the same check.
+            XCTAssertEqual(try row(.connection, in: after), try row(.connection, in: before))
+        }
+
+        // A check that was running when the install started read the old
+        // version, although its result arrived afterwards.
+        let overlapping = DeviceReachabilitySnapshot(refreshedAt: Date(timeIntervalSince1970: 140), payload: snapshot.payload)
+        profile.lastDeployState = testDeployState(startedAt: Date(timeIntervalSince1970: 150), updatedAt: Date(timeIntervalSince1970: 300),
+                                                  finishedAt: Date(timeIntervalSince1970: 300))
+        let afterOverlap = DeviceDashboardOverviewPresentation(summary: summary(for: profile), reachabilitySnapshot: overlapping)
+        XCTAssertEqual(try headerValue(label, in: afterOverlap), L10n.string("dashboard.overview.installed_version.not_checked"))
+        XCTAssertNotEqual(try row(.runtime, in: afterOverlap).action, .installUpdate)
+    }
+
+    func testInstalledVersionStringsInEveryLanguage() {
+        let keys = [
+            "dashboard.overview.installed_version",
+            "dashboard.overview.installed_version.newer",
+            "dashboard.overview.installed_version.not_installed",
+            "dashboard.overview.installed_version.not_checked",
+            "dashboard.health.runtime.outdated",
+            "dashboard.health.runtime.version_unknown"
+        ]
+        for language in AppLanguage.allCases where language != .system {
+            for key in keys {
+                XCTAssertNotEqual(L10n.strings(language: language)[key], nil, "\(language) \(key)")
+            }
+            let outdated = String(format: L10n.string("dashboard.overview.installed_version.outdated", language: language), "v4.0.0", "v5.0.0")
+            XCTAssertTrue(outdated.contains("v4.0.0") && outdated.contains("v5.0.0"), "\(language): \(outdated)")
+            XCTAssertLessThan(outdated.range(of: "v4.0.0")!.lowerBound, outdated.range(of: "v5.0.0")!.lowerBound, "\(language)")
+        }
+    }
+
+    private func summary(for profile: DeviceProfile) -> DeviceDashboardSummary {
+        DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .available,
+            displayStatus: .healthy,
+            primaryAction: .runCheckup,
+            hostWarning: nil
+        )
+    }
+
+    private func runtimeRow(runtime: DeviceRuntimeState, installState: String?) throws -> DashboardHealthRow {
+        var profile = try makeProfile()
+        profile.runtimeState = testRuntimeState(state: runtime)
+        let snapshot = try installState.map { state in
+            DeviceReachabilitySnapshot(refreshedAt: Date(timeIntervalSince1970: 1), payload: try testReachabilityPayload(
+                installState: state, installedReleaseTag: "v4.0.0", installedVersionCode: 40000, appReleaseTag: "v5.0.0"
+            ).decode(ReachabilityPayload.self))
+        }
+        return try row(.runtime, in: DeviceDashboardOverviewPresentation(summary: summary(for: profile), reachabilitySnapshot: snapshot))
+    }
+
     func testOverviewShowsTheDevicesOwnHealthAndCheckupSectionsUnderCheckup() throws {
         var profile = try makeProfile()
         profile.lastDeployState = testDeployState(

@@ -2565,8 +2565,10 @@ def flash_runtime_config_present_conn(connection: SshConnection) -> bool:
     return proc.returncode == 0
 
 
-def read_deployed_version_conn(connection: SshConnection) -> DeployedVersionProbeResult:
-    script = (
+def deployed_version_script() -> str:
+    """Shell that prints the installed release tag and version code from the
+    Flash config, each empty when the config or the key is missing."""
+    return (
         f"config={shlex.quote(FLASH_RUNTIME_CONFIG)}; "
         "TC_DEPLOY_RELEASE_TAG=; "
         "TC_DEPLOY_CLI_VERSION_CODE=; "
@@ -2574,14 +2576,21 @@ def read_deployed_version_conn(connection: SshConnection) -> DeployedVersionProb
         'printf "release_tag=%s\\n" "$TC_DEPLOY_RELEASE_TAG"; '
         'printf "cli_version_code=%s\\n" "$TC_DEPLOY_CLI_VERSION_CODE"'
     )
+
+
+def read_deployed_version_conn(connection: SshConnection) -> DeployedVersionProbeResult:
     proc = run_ssh(
         connection,
-        f"/bin/sh -c {shlex.quote(script)}",
+        f"/bin/sh -c {shlex.quote(deployed_version_script())}",
         check=False,
         timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
     )
+    return parse_deployed_version(proc.stdout)
+
+
+def parse_deployed_version(stdout: str) -> DeployedVersionProbeResult:
     values: dict[str, str] = {}
-    for raw_line in proc.stdout.splitlines():
+    for raw_line in stdout.splitlines():
         key, sep, value = raw_line.partition("=")
         if sep:
             values[key.strip()] = value.strip()

@@ -44,10 +44,9 @@ final class DeviceSSHAccessStore: ObservableObject {
     /// `password` lets the check also read the MAC of a profile without one.
     /// It is read from the keychain only when the check runs.
     func refreshIfNeeded(profile: DeviceProfile, password: @autoclosure () -> String? = nil) {
-        // A check already running answers this one; skipping it here, not in
-        // runRefresh, also skips the keychain read.
+        // Skipped here too, not only in runRefresh, so the keychain is not read.
         guard !coordinator.isDeviceBusy(profile.id),
-              !coordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus)).isBusy else {
+              !coordinator.isRunningBackgroundCheck(profile.id) else {
             return
         }
         if let snapshot = snapshots[profile.id],
@@ -61,8 +60,9 @@ final class DeviceSSHAccessStore: ObservableObject {
         let laneKey = OperationLaneKey.deviceWorkflow(profile.id, .sshStatus)
         let lane = coordinator.lane(for: laneKey)
         observeLane(for: profile.id, lane: lane)
-        // The check already running answers this request too.
-        guard !lane.isBusy else {
+        // A device runs one background check at a time: a running SSH check
+        // answers this request, and the next visit checks again after another.
+        guard !coordinator.isRunningBackgroundCheck(profile.id) else {
             return
         }
         lane.clear()

@@ -219,6 +219,8 @@
 "dashboard.health.runtime.activation_needed" = "Die Dateifreigabe läuft nicht. „Aktivieren“ startet sie.";
 "dashboard.health.runtime.installing" = "Installation / Aktualisierung läuft.";
 "dashboard.health.runtime.not_installed" = "Samba wurde nicht über diese App installiert.";
+"dashboard.health.runtime.outdated" = "Eine ältere Version ist installiert. „Samba installieren / aktualisieren“ aktualisiert sie.";
+"dashboard.health.runtime.version_unknown" = "Die installierte Version ist unbekannt. „Samba installieren / aktualisieren“ installiert die Version dieser App.";
 "dashboard.health.status.failed" = "Fehlgeschlagen";
 "dashboard.health.status.good" = "Gut";
 "dashboard.health.status.running" = "Wird ausgeführt";
@@ -239,6 +241,11 @@
 "dashboard.overview.model" = "Modell";
 "dashboard.overview.password" = "Passwort";
 "dashboard.overview.payload" = "Installationsdateien";
+"dashboard.overview.installed_version" = "Installierte Version";
+"dashboard.overview.installed_version.outdated" = "%1$@ (diese App installiert %2$@)";
+"dashboard.overview.installed_version.newer" = "Neuer als diese App";
+"dashboard.overview.installed_version.not_installed" = "Nicht installiert";
+"dashboard.overview.installed_version.not_checked" = "Nicht geprüft";
 "dashboard.password.title" = "Gespeichertes Passwort";
 "dashboard.replacement_password" = "Gespeichertes Passwort aktualisieren";
 "dashboard.tab.settings" = "Einstellungen";

@@ -81,6 +81,13 @@ struct ReachabilityPayload: Decodable, Equatable {
     let summary: String
     var summaryKey: String? = nil
     var summaryArgs: [JSONValue]? = nil
+    // The version the SSH login read, against the release this app's helper
+    // installs. `installState` is "current", "outdated", "newer", "unknown"
+    // or "not_checked"; all are nil from a helper that does not report them.
+    var installedReleaseTag: String? = nil
+    var installedVersionCode: Int? = nil
+    var installState: String? = nil
+    var appReleaseTag: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -92,6 +99,10 @@ struct ReachabilityPayload: Decodable, Equatable {
         case summary
         case summaryKey = "summary_key"
         case summaryArgs = "summary_args"
+        case installedReleaseTag = "installed_release_tag"
+        case installedVersionCode = "installed_version_code"
+        case installState = "install_state"
+        case appReleaseTag = "app_release_tag"
     }
 }
 

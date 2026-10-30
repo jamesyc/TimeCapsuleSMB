@@ -219,6 +219,8 @@
 "dashboard.health.runtime.activation_needed" = "Bestandsdeling is niet actief. ‘Activeren’ start deze.";
 "dashboard.health.runtime.installing" = "Installatie/update wordt uitgevoerd.";
 "dashboard.health.runtime.not_installed" = "Samba is niet geïnstalleerd vanaf deze app.";
+"dashboard.health.runtime.outdated" = "Er is een oudere versie geïnstalleerd. ‘Samba installeren / bijwerken’ werkt deze bij.";
+"dashboard.health.runtime.version_unknown" = "De geïnstalleerde versie is onbekend. ‘Samba installeren / bijwerken’ installeert de versie van deze app.";
 "dashboard.health.status.failed" = "Mislukt";
 "dashboard.health.status.good" = "Goed";
 "dashboard.health.status.running" = "Bezig";
@@ -239,6 +241,11 @@
 "dashboard.overview.model" = "Model";
 "dashboard.overview.password" = "Wachtwoord";
 "dashboard.overview.payload" = "Installatiebestanden";
+"dashboard.overview.installed_version" = "Geïnstalleerde versie";
+"dashboard.overview.installed_version.outdated" = "%1$@ (deze app installeert %2$@)";
+"dashboard.overview.installed_version.newer" = "Nieuwer dan deze app";
+"dashboard.overview.installed_version.not_installed" = "Niet geïnstalleerd";
+"dashboard.overview.installed_version.not_checked" = "Niet gecontroleerd";
 "dashboard.password.title" = "Opgeslagen wachtwoord";
 "dashboard.replacement_password" = "Opgeslagen wachtwoord bijwerken";
 "dashboard.tab.settings" = "Instellingen";

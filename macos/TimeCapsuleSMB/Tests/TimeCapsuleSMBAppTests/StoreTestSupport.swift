@@ -37,6 +37,8 @@ final class InMemoryPasswordStore: PasswordStore {
     var deleteFailure: Failure?
     private(set) var passwordReadCount = 0
     private(set) var availabilityReadCount = 0
+    /// Saved items that, like a keychain item needing approval, a read would prompt for.
+    var requiresAuthentication = false
 
     private var passwords: [String: String]
     private var invalidAccounts: Set<String>
@@ -82,7 +84,10 @@ final class InMemoryPasswordStore: PasswordStore {
         if readFailure != nil {
             return .unavailable("In-memory password store read failed.")
         }
-        return passwords[account] == nil ? .missing : .available
+        if passwords[account] == nil {
+            return .missing
+        }
+        return requiresAuthentication ? .authenticationRequired : .available
     }
 
     func resetTracking() {
@@ -953,7 +958,27 @@ func testDoctorCheck(
 func testReachabilityPayload(
     status: String = "reachable",
     summary: String = "SSH reachable; SMB port reachable.",
-    summaryKey: String = "reachability.all_reachable"
+    summaryKey: String = "reachability.all_reachable",
+    installState: String? = nil,
+    installedReleaseTag: String? = nil,
+    installedVersionCode: Int? = nil,
+    appReleaseTag: String? = nil
+) -> JSONValue {
+    guard case .object(var payload) = testReachabilityPayloadWithoutVersion(
+        status: status, summary: summary, summaryKey: summaryKey
+    ) else { return .null }
+    // Left out unless given, as an older helper's payload does.
+    if let installState { payload["install_state"] = .string(installState) }
+    if let installedReleaseTag { payload["installed_release_tag"] = .string(installedReleaseTag) }
+    if let installedVersionCode { payload["installed_version_code"] = .number(Double(installedVersionCode)) }
+    if let appReleaseTag { payload["app_release_tag"] = .string(appReleaseTag) }
+    return .object(payload)
+}
+
+private func testReachabilityPayloadWithoutVersion(
+    status: String,
+    summary: String,
+    summaryKey: String
 ) -> JSONValue {
     .object([
         "schema_version": .number(1),

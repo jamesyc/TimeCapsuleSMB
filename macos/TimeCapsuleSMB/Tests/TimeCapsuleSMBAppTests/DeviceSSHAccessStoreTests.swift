@@ -149,6 +149,31 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
         XCTAssertNil(store.error(for: profile))
     }
 
+    func testRequestsWaitOutTheBackgroundReachabilityCheck() async throws {
+        let runner = PausingStoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+            ], pauseBeforeEvents: true)
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let reachability = DeviceReachabilityStore(coordinator: coordinator)
+        let store = DeviceSSHAccessStore(coordinator: coordinator)
+        let profile = try makeProfile(host: "10.0.0.2")
+        defer { runner.finishAll() }
+
+        reachability.refreshIfNeeded(profile: profile, password: "pw")
+        try await waitUntilStoreState { runner.calls.count == 1 }
+        XCTAssertTrue(coordinator.isRunningBackgroundCheck(profile.id))
+        // The device would refuse a second background check: no run, no "already running".
+        store.refreshIfNeeded(profile: profile)
+        store.refresh(profile: profile)
+
+        XCTAssertEqual(runner.calls.map(\.operation), ["reachability"])
+        XCTAssertNil(store.error(for: profile))
+        runner.finishAll()
+        try await waitUntilStoreState { !coordinator.isRunningBackgroundCheck(profile.id) }
+    }
+
     func testApplyMaintenancePayloadUpdatesSnapshot() async throws {
         let coordinator = OperationCoordinator(backend: BackendClient(runner: StoreTestRunner(responses: [])))
         let store = DeviceSSHAccessStore(coordinator: coordinator, now: { Date(timeIntervalSince1970: 200) })

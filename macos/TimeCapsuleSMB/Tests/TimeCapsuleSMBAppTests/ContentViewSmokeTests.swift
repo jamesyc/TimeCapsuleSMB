@@ -125,6 +125,141 @@ final class ContentViewSmokeTests: XCTestCase {
         XCTAssertEqual(runner.calls.filter { $0.operation == "set-ssh" }.map { $0.params["action"] }, Array(repeating: .string("status"), count: 3))
     }
 
+    func testEachDevicePageChecksSSHThenReachabilityWithItsOwnPassword() async throws {
+        let ssh = BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+        let reachable = BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload(
+            installState: "current", installedReleaseTag: "v5.0.0", installedVersionCode: 50000, appReleaseTag: "v5.0.0"
+        ))
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("set-ssh"): Array(repeating: .init(events: [ssh]), count: 3),
+            .init("reachability"): Array(repeating: .init(events: [reachable]), count: 2)
+        ])
+        let fixture = try await AppViewFixture(runner: runner)
+        let office = try await fixture.saveProfile(id: "office", host: "root@10.0.0.2", password: "pw-office")
+        let den = try await fixture.saveProfile(id: "den", host: "root@10.0.0.3", password: "pw-den")
+        let host = LiveHostedView(fixture.contentView)
+        defer { host.close() }
+        func runs() -> [String] {
+            runner.calls.map { "\($0.operation):\($0.context?.profileID ?? "-")" }
+        }
+
+        fixture.appStore.navigate(to: .device(office.id))
+        try await waitUntilStoreState { runs() == ["set-ssh:office", "reachability:office"] }
+        fixture.appStore.navigate(to: .device(den.id))
+        try await waitUntilStoreState { runs().count == 4 }
+        XCTAssertEqual(runs(), ["set-ssh:office", "reachability:office", "set-ssh:den", "reachability:den"])
+        // Back within a minute: SSH again, reachability not.
+        fixture.appStore.navigate(to: .allDevices)
+        let allDevicesTitle = L10n.string("overview.saved_devices.title")
+        try await waitUntilStoreState { accessibleElements(in: host.contentView).contains { $0.text == allDevicesTitle } }
+        await runQueuedStoreUpdates()
+        fixture.appStore.navigate(to: .device(den.id))
+        try await waitUntilStoreState { runs().count == 5 && !fixture.appStore.operationCoordinator.lane(for: .deviceWorkflow(den.id, .sshStatus)).isBusy }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(runs(), ["set-ssh:office", "reachability:office", "set-ssh:den", "reachability:den", "set-ssh:den"])
+        let passwords = runner.calls.filter { $0.operation == "reachability" }.map { $0.params["credentials"] }
+        XCTAssertEqual(passwords, [.object(["password": .string("pw-office")]), .object(["password": .string("pw-den")])])
+        // The page shows the version the login read.
+        XCTAssertTrue(devicePageTexts(fixture.contentView).contains("v5.0.0"))
+    }
+
+    func testAPageWithoutAWorkingPasswordRunsNoAutomaticReachability() async throws {
+        for state in [DevicePasswordState.missing, .invalid] {
+            let runner = OperationKeyedStoreTestRunner(responses: [
+                .init("set-ssh"): [.init(events: [
+                    BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+                ])]
+            ])
+            let fixture = try await AppViewFixture(runner: runner)
+            let office = try await fixture.saveProfile(id: "office", host: "root@10.0.0.2",
+                                                       passwordState: state, password: state == .missing ? nil : "pw")
+
+            // What the page awaits on each visit; a check it starts holds its lane at once.
+            await fixture.dashboardSession(for: office).refreshDeviceStatus(profile: office)
+
+            let background = fixture.appStore.operationCoordinator.lane(for: .deviceWorkflow(office.id, .reachabilityStatus))
+            XCTAssertFalse(background.isBusy, "\(state)")
+            await runQueuedStoreUpdates()
+            XCTAssertEqual(runner.calls.map(\.operation), ["set-ssh"], "\(state)")
+            XCTAssertNil(fixture.appStore.reachabilityStore.snapshot(for: office), "\(state)")
+        }
+    }
+
+    func testThePageNeverPromptsForTheKeychain() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("set-ssh"): [.init(events: [
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+            ])]
+        ])
+        let fixture = try await AppViewFixture(runner: runner)
+        let office = try await fixture.saveProfile(id: "office", host: "root@10.0.0.2")
+        // Reading the saved password would show a keychain prompt.
+        fixture.passwordStore.requiresAuthentication = true
+        let readsBefore = fixture.passwordStore.passwordReadCount
+
+        await fixture.dashboardSession(for: office).refreshDeviceStatus(profile: office)
+
+        XCTAssertFalse(fixture.appStore.operationCoordinator.lane(for: .deviceWorkflow(office.id, .reachabilityStatus)).isBusy)
+        XCTAssertEqual(fixture.passwordStore.passwordReadCount, readsBefore)
+        await runQueuedStoreUpdates()
+        XCTAssertEqual(runner.calls.map(\.operation), ["set-ssh"])
+    }
+
+    func testReachabilityWaitsForTheSSHCheck() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("set-ssh", profileID: "office"): [.init(events: [
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+            ], pauseBeforeEvents: true)],
+            .init("reachability"): [.init(events: [
+                BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+            ])]
+        ])
+        let fixture = try await AppViewFixture(runner: runner)
+        let office = try await fixture.saveProfile(id: "office", host: "root@10.0.0.2")
+        let host = LiveHostedView(fixture.contentView)
+        defer { host.close(); runner.finishAll() }
+
+        fixture.appStore.navigate(to: .device(office.id))
+        try await waitUntilStoreState { runner.calls.count == 1 }
+        await runQueuedStoreUpdates()
+        // Started together, the device would refuse the second background check.
+        XCTAssertEqual(runner.calls.map(\.operation), ["set-ssh"])
+
+        runner.finish(.init("set-ssh", profileID: "office"))
+        try await waitUntilStoreState { runner.calls.map(\.operation) == ["set-ssh", "reachability"] }
+    }
+
+    func testLeavingADeviceDuringItsSSHCheckStartsNoReachabilityForIt() async throws {
+        let ssh = BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("set-ssh", profileID: "office"): [.init(events: [ssh], pauseBeforeEvents: true)],
+            .init("set-ssh", profileID: "den"): [.init(events: [ssh])],
+            .init("reachability"): [.init(events: [
+                BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+            ])]
+        ])
+        let fixture = try await AppViewFixture(runner: runner)
+        let office = try await fixture.saveProfile(id: "office", host: "root@10.0.0.2")
+        let den = try await fixture.saveProfile(id: "den", host: "root@10.0.0.3")
+        let host = LiveHostedView(fixture.contentView)
+        defer { host.close(); runner.finishAll() }
+        func runs() -> [String] {
+            runner.calls.map { "\($0.operation):\($0.context?.profileID ?? "-")" }
+        }
+
+        fixture.appStore.navigate(to: .device(office.id))
+        try await waitUntilStoreState { runs() == ["set-ssh:office"] }
+        fixture.appStore.navigate(to: .device(den.id))
+        try await waitUntilStoreState { runs().contains("reachability:den") }
+        // Office's check ends after the switch: its page's task is gone.
+        runner.finish(.init("set-ssh", profileID: "office"))
+        try await waitUntilStoreState { !fixture.appStore.operationCoordinator.lane(for: .deviceWorkflow(office.id, .sshStatus)).isBusy }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(Set(runs()), ["set-ssh:office", "set-ssh:den", "reachability:den"])
+    }
+
     func testABackgroundSSHCheckLeavesTheEnableSSHRunAlone() async throws {
         let sshResult = BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
         let fixture = try await AppViewFixture(responses: [

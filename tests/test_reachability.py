@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from timecapsulesmb.core.summaries import Summary
@@ -9,6 +11,9 @@ from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app import service
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
 from timecapsulesmb.core.net import endpoint_host
+from timecapsulesmb.app import contracts
+from timecapsulesmb.device import probe
+from timecapsulesmb.device.probe import DeployedVersionProbeResult
 from timecapsulesmb.services import reachability
 from timecapsulesmb.transport.errors import SshAuthenticationError, SshNetworkError
 
@@ -312,7 +317,7 @@ class ReachabilityTests(unittest.TestCase):
             "timecapsulesmb.services.reachability.run_ssh",
             return_value=subprocess.CompletedProcess(["ssh"], 0, stdout="login banner only", stderr=""),
         ):
-            result = reachability.check_ssh_auth(
+            result, installed = reachability.check_ssh_auth(
                 "root@10.0.0.2",
                 config,
                 password="pw",
@@ -322,6 +327,7 @@ class ReachabilityTests(unittest.TestCase):
 
         self.assertEqual(result.status, "FAIL")
         self.assertEqual(result.detail, "login banner only")
+        self.assertIsNone(installed)
 
     def test_ssh_auth_accepts_ok_token_after_login_noise(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
@@ -336,7 +342,7 @@ class ReachabilityTests(unittest.TestCase):
                 stderr="",
             ),
         ):
-            result = reachability.check_ssh_auth(
+            result, installed = reachability.check_ssh_auth(
                 "root@10.0.0.2",
                 config,
                 password="pw",
@@ -345,6 +351,8 @@ class ReachabilityTests(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "PASS")
+        # A login whose output has no version lines read no version.
+        self.assertEqual((installed.release_tag, installed.cli_version_code), (None, None))
 
     def test_ssh_auth_rejection_downgrades_reachability_to_partial(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
@@ -373,7 +381,7 @@ class ReachabilityTests(unittest.TestCase):
             "timecapsulesmb.services.reachability.run_ssh",
             side_effect=SshNetworkError("Connection reset by peer"),
         ):
-            result = reachability.check_ssh_auth(
+            result, installed = reachability.check_ssh_auth(
                 "root@10.0.0.2",
                 config,
                 password="pw",
@@ -384,6 +392,105 @@ class ReachabilityTests(unittest.TestCase):
         self.assertEqual(result.status, "SKIP")
         self.assertEqual(result.message, "SSH authentication could not be checked.")
         self.assertEqual(result.detail, "Connection reset by peer")
+        self.assertIsNone(installed)
+
+    def reachable_device(self, ssh):
+        """Every probe but the login passes; `ssh` stands in for run_ssh."""
+        return (
+            mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"),
+            mock.patch(
+                "timecapsulesmb.services.reachability.run_process",
+                return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
+            ),
+            mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None),
+            mock.patch("timecapsulesmb.services.reachability.run_ssh", side_effect=ssh),
+        )
+
+    def run_reachable(self, ssh, config: AppConfig | None = None) -> reachability.ReachabilityResult:
+        config = config or AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+        which, ping, tcp, run_ssh = self.reachable_device(ssh)
+        with which, ping, tcp, run_ssh:
+            return reachability.run_reachability(config, {}, password="pw")
+
+    def test_the_login_reads_the_installed_version_through_the_device_shell(self) -> None:
+        def device_shell(_connection, command, **_kwargs):
+            # The command the device's sh would run, here under /bin/sh.
+            proc = subprocess.run(command, shell=True, capture_output=True, text=True)
+            return subprocess.CompletedProcess(["ssh"], proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "tcapsulesmb.conf"
+            config.write_text("TC_DEPLOY_RELEASE_TAG=v4.0.0\nTC_DEPLOY_CLI_VERSION_CODE=40000\n")
+            with mock.patch.object(probe, "FLASH_RUNTIME_CONFIG", str(config)):
+                with mock.patch.object(reachability, "CLI_VERSION_CODE", 50000), mock.patch.object(reachability, "RELEASE_TAG", "v5.0.0"):
+                    result = self.run_reachable(device_shell)
+
+        self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], "PASS")
+        self.assertEqual(result.installed, reachability.InstalledVersion("v4.0.0", 40000, "outdated", "v5.0.0"))
+
+    def test_the_installed_version_is_compared_with_this_release(self) -> None:
+        with mock.patch.object(reachability, "CLI_VERSION_CODE", 50000), mock.patch.object(reachability, "RELEASE_TAG", "v5.0.0"):
+            for code, state in ((40000, "outdated"), (50000, "current"), (60000, "newer"), (None, "unknown")):
+                with self.subTest(code=code):
+                    installed = reachability.installed_version(DeployedVersionProbeResult("v4.0.0", code, ""))
+                    self.assertEqual((installed.version_code, installed.state, installed.app_release_tag), (code, state, "v5.0.0"))
+
+    def test_the_payload_carries_the_installed_version(self) -> None:
+        stdout = f"release_tag=v6.0.0\ncli_version_code=60000\n{reachability.REACHABILITY_OK_TOKEN}"
+        with mock.patch.object(reachability, "CLI_VERSION_CODE", 50000), mock.patch.object(reachability, "RELEASE_TAG", "v5.0.0"):
+            result = self.run_reachable(lambda *_a, **_k: subprocess.CompletedProcess(["ssh"], 0, stdout=stdout, stderr=""))
+
+        payload = contracts.reachability_payload(result)
+        self.assertEqual(
+            {key: payload[key] for key in ("installed_release_tag", "installed_version_code", "install_state", "app_release_tag")},
+            {"installed_release_tag": "v6.0.0", "installed_version_code": 60000, "install_state": "newer", "app_release_tag": "v5.0.0"},
+        )
+
+    def test_a_config_without_version_keys_is_unknown(self) -> None:
+        stdout = f"release_tag=\ncli_version_code=\n{reachability.REACHABILITY_OK_TOKEN}"
+        result = self.run_reachable(lambda *_a, **_k: subprocess.CompletedProcess(["ssh"], 0, stdout=stdout, stderr=""))
+
+        self.assertEqual(result.installed.state, "unknown")
+        self.assertEqual(contracts.reachability_payload(result)["install_state"], "unknown")
+
+    def test_no_login_means_the_version_was_not_checked(self) -> None:
+        def port(host: str, port: int, *_args, **_kwargs) -> str | None:
+            return "connection refused" if port == 22 else None
+
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+        which, ping, _tcp, _ssh = self.reachable_device(None)
+        with which, ping, mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", side_effect=port):
+            with mock.patch("timecapsulesmb.services.reachability.run_ssh") as run_ssh:
+                closed = reachability.run_reachability(config, {}, password="pw")
+        run_ssh.assert_not_called()
+        rejected = self.run_reachable(SshAuthenticationError("Permission denied"))
+
+        for result, auth in ((closed, "SKIP"), (rejected, "FAIL")):
+            with self.subTest(auth=auth):
+                self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], auth)
+                self.assertIsNone(result.installed)
+                payload = contracts.reachability_payload(result)
+                self.assertEqual(payload["install_state"], "not_checked")
+                self.assertEqual(
+                    [payload[key] for key in ("installed_release_tag", "installed_version_code", "app_release_tag")],
+                    [None, None, None],
+                )
+
+    def test_version_lines_without_the_token_last_still_fail_the_login(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+        port_check = reachability.ReachabilityCheck("ssh_port", "PASS", "ok", host="10.0.0.2")
+        stdout = f"{reachability.REACHABILITY_OK_TOKEN}\nrelease_tag=v4.0.0\ncli_version_code=40000\n"
+
+        with mock.patch(
+            "timecapsulesmb.services.reachability.run_ssh",
+            return_value=subprocess.CompletedProcess(["ssh"], 0, stdout=stdout, stderr=""),
+        ):
+            result, installed = reachability.check_ssh_auth(
+                "root@10.0.0.2", config, password="pw", port_check=port_check, timeout=8,
+            )
+
+        self.assertEqual(result.status, "FAIL")
+        self.assertIsNone(installed)
 
     def test_app_operation_uses_effective_config_password(self) -> None:
         base = AppConfig.from_values(

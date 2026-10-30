@@ -211,6 +211,15 @@ final class AppStore: ObservableObject {
         profilePersistence.credential(for: profile).password
     }
 
+    /// The saved password, only when reading it shows no keychain prompt: for
+    /// checks the app starts on its own, which must never ask the user.
+    func passwordWithoutPrompt(for profile: DeviceProfile) -> String? {
+        guard passwordStore.credentialAvailability(for: profile.keychainAccount) == .available else {
+            return nil
+        }
+        return password(for: profile)
+    }
+
     @discardableResult
     func saveProfileEdits(
         profile: DeviceProfile,

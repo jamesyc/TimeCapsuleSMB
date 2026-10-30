@@ -63,7 +63,7 @@ struct DeviceDashboardHeaderPresentation: Equatable {
     let lastChecked: String
     let rows: [PresentationRow]
 
-    init(summary: DeviceDashboardSummary) {
+    init(summary: DeviceDashboardSummary, reachabilitySnapshot: DeviceReachabilitySnapshot? = nil) {
         let profile = summary.profile
         self.title = profile.title
         self.connectionTarget = profile.displayTarget
@@ -80,8 +80,50 @@ struct DeviceDashboardHeaderPresentation: Equatable {
             PresentationRow(label: L10n.string("dashboard.overview.generation"), value: Self.generationValue(for: profile)),
             PresentationRow(label: L10n.string("dashboard.overview.payload"), value: profile.payloadFamily ?? L10n.string("value.unknown")),
             PresentationRow(label: L10n.string("dashboard.overview.password"), value: summary.passwordState.title),
+            PresentationRow(label: L10n.string("dashboard.overview.installed_version"), value: Self.installedVersionValue(
+                runtimeState: profile.runtimeState?.state,
+                payload: Self.currentVersionPayload(reachabilitySnapshot, profile: profile)
+            )),
             PresentationRow(label: L10n.string("dashboard.overview.last_install"), value: Self.lastInstallValue(for: profile))
         ]
+    }
+
+    /// The snapshot's payload while it can still say what is installed: an
+    /// install started after its check did may have changed the version,
+    /// which then reads as not checked until the next check.
+    static func currentVersionPayload(_ snapshot: DeviceReachabilitySnapshot?, profile: DeviceProfile) -> ReachabilityPayload? {
+        guard let snapshot else { return nil }
+        if let deploy = profile.lastDeployState, deploy.startedAt > snapshot.refreshedAt {
+            return nil
+        }
+        return snapshot.payload
+    }
+
+    /// The version the last reachability login read. A device with nothing
+    /// installed is "not installed" whatever the login read: its empty config
+    /// would otherwise read as an unknown version.
+    static func installedVersionValue(runtimeState: DeviceRuntimeState?, payload: ReachabilityPayload?) -> String {
+        if runtimeState == .notInstalled {
+            return L10n.string("dashboard.overview.installed_version.not_installed")
+        }
+        let unknown = L10n.string("value.unknown")
+        let tag = payload?.installedReleaseTag ?? unknown
+        switch payload?.installState {
+        case "current":
+            return tag
+        case "outdated":
+            return L10n.format("dashboard.overview.installed_version.outdated", tag, payload?.appReleaseTag ?? unknown)
+        case "newer":
+            return L10n.string("dashboard.overview.installed_version.newer")
+        case "unknown":
+            // No version in the device's config: an install from before
+            // versions were recorded, or another one.
+            return unknown
+        case "not_checked", nil:
+            return L10n.string("dashboard.overview.installed_version.not_checked")
+        default:
+            return unknown
+        }
     }
 
     private static func lastInstallValue(for profile: DeviceProfile) -> String {
@@ -273,7 +315,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         isReachabilityRunning: Bool = false
     ) {
         let secondaryActions = DashboardActionPolicy.secondaryActions(for: summary)
-        self.header = DeviceDashboardHeaderPresentation(summary: summary)
+        self.header = DeviceDashboardHeaderPresentation(summary: summary, reachabilitySnapshot: reachabilitySnapshot)
         self.primaryAction = summary.primaryAction
         self.isPrimaryActionEnabled = DashboardActionPolicy.isEnabled(summary.primaryAction, for: summary)
             && !(isReachabilityRunning && summary.primaryAction.isMutatingOverviewAction)
@@ -308,7 +350,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                     isReachabilityRunning: isReachabilityRunning
                 )
             ]),
-            DashboardHealthSection(domain: .runtime, rows: [runtimeRow(for: summary)]),
+            DashboardHealthSection(domain: .runtime, rows: [runtimeRow(for: summary, reachabilitySnapshot: reachabilitySnapshot)]),
             DashboardHealthSection(domain: .checkup, rows: [checkupRow(summary: summary)] + checkupSectionRows(for: summary))
         ]
     }
@@ -439,8 +481,33 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         )
     }
 
+    /// An older install, or one whose version is unknown: offer Install /
+    /// Update Samba. Only for a device the profile says is installed.
+    private static func installedVersionRow(state: DeviceRuntimeState, payload: ReachabilityPayload?) -> DashboardHealthRow? {
+        guard state == .installedVerified || state == .installedUnverified else {
+            return nil
+        }
+        let detailKey: String
+        switch payload?.installState {
+        case "outdated":
+            detailKey = "dashboard.health.runtime.outdated"
+        case "unknown":
+            detailKey = "dashboard.health.runtime.version_unknown"
+        default:
+            return nil
+        }
+        return DashboardHealthRow(
+            id: "runtime-version-\(payload?.installState ?? "")",
+            title: DashboardHealthDomain.runtime.title,
+            detail: L10n.string(detailKey),
+            status: .warning,
+            action: .installUpdate
+        )
+    }
+
     private static func runtimeRow(
-        for summary: DeviceDashboardSummary
+        for summary: DeviceDashboardSummary,
+        reachabilitySnapshot: DeviceReachabilitySnapshot?
     ) -> DashboardHealthRow {
         if summary.displayStatus == .installing {
             return DashboardHealthRow(
@@ -461,6 +528,12 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         }
         guard let runtimeState = summary.profile.runtimeState else {
             return runtimeNotInstalledRow()
+        }
+        if let versionRow = installedVersionRow(
+            state: runtimeState.state,
+            payload: DeviceDashboardHeaderPresentation.currentVersionPayload(reachabilitySnapshot, profile: summary.profile)
+        ) {
+            return versionRow
         }
         switch runtimeState.state {
         case .notInstalled:

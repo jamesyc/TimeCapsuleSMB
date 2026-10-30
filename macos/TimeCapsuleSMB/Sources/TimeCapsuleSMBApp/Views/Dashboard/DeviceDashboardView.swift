@@ -118,7 +118,7 @@ struct DeviceDashboardView: View {
         // Keyed by device: switching straight from one device to another keeps
         // this view, so onAppear would not run for the second.
         .task(id: profile.id) {
-            session.refreshSSHAccessStatus(profile: profile)
+            await session.refreshDeviceStatus(profile: profile)
         }
         .alert(
             session.flashStore.manualPowerCycleNotice?.title ?? "",

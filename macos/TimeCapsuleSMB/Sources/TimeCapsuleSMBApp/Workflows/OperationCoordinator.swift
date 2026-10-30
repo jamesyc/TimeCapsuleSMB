@@ -44,6 +44,9 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
     case deploy
     case doctor
     case reachability
+    /// The reachability check the device page starts on its own
+    /// (DeviceReachabilityStore), apart from Refresh Status's `.reachability`.
+    case reachabilityStatus = "reachability_status"
     case sshAccess = "ssh_access"
     /// The SSH status check the app starts on its own (DeviceSSHAccessStore),
     /// apart from Check and Enable SSH so it never clears their history.
@@ -126,10 +129,12 @@ enum OperationLaneKey: Hashable, Equatable, Identifiable, CustomStringConvertibl
     /// it. It gives way to a run you start: it never starts while one runs,
     /// and one may start while it runs.
     var isBackground: Bool {
-        if case .deviceWorkflow(_, .sshStatus) = self {
+        switch self {
+        case .deviceWorkflow(_, .sshStatus), .deviceWorkflow(_, .reachabilityStatus):
             return true
+        default:
+            return false
         }
-        return false
     }
 }
 
@@ -303,6 +308,14 @@ final class OperationCoordinator: ObservableObject {
     /// Work that quitting asks about first.
     var hasBlockingWork: Bool {
         allLanes.contains { !$0.key.isBackground && $0.isBusy }
+    }
+
+    /// Whether a background check runs on the device: it refuses another
+    /// until that one ends.
+    func isRunningBackgroundCheck(_ profileID: DeviceProfile.ID) -> Bool {
+        allLanes.contains { lane in
+            lane.key.isBackground && resourceKey(for: lane) == .device(profileID) && lane.isBusy
+        }
     }
 
     func activeOperation(for key: OperationLaneKey) -> ActiveOperation? {

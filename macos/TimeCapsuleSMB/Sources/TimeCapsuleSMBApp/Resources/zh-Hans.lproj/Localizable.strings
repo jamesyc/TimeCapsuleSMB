@@ -219,6 +219,8 @@
 "dashboard.health.runtime.activation_needed" = "文件共享未运行。“启动 SMB”会启动它。";
 "dashboard.health.runtime.installing" = "安装 / 更新正在运行。";
 "dashboard.health.runtime.not_installed" = "尚未通过此应用安装 Samba。";
+"dashboard.health.runtime.outdated" = "已安装较旧的版本。“安装 / 更新 Samba”会将其更新。";
+"dashboard.health.runtime.version_unknown" = "已安装的版本未知。“安装 / 更新 Samba”会安装此应用的版本。";
 "dashboard.health.status.failed" = "失败";
 "dashboard.health.status.good" = "良好";
 "dashboard.health.status.running" = "运行中";
@@ -239,6 +241,11 @@
 "dashboard.overview.model" = "型号";
 "dashboard.overview.password" = "密码";
 "dashboard.overview.payload" = "安装文件";
+"dashboard.overview.installed_version" = "已安装版本";
+"dashboard.overview.installed_version.outdated" = "%1$@（此应用安装 %2$@）";
+"dashboard.overview.installed_version.newer" = "比此应用的版本新";
+"dashboard.overview.installed_version.not_installed" = "未安装";
+"dashboard.overview.installed_version.not_checked" = "未检查";
 "dashboard.password.title" = "已保存密码";
 "dashboard.replacement_password" = "更新已保存密码";
 "dashboard.tab.settings" = "设置";

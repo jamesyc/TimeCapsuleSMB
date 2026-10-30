@@ -1167,6 +1167,8 @@ The appcast has one item, written by `macos/TimeCapsuleSMB/tools/sparkle_appcast
 
 The CLI reads the same appcast and prints one line when it lists a newer version code than the CLI's own.
 
+The device page shows the version installed on the device. Each visit runs the SSH status check, then, once it has ended, the reachability check, at most once a minute per device. The reachability login reads `TC_DEPLOY_RELEASE_TAG` and `TC_DEPLOY_CLI_VERSION_CODE` from `/mnt/Flash/tcapsulesmb.conf` and compares the code with the app's own release (`install_state`: `current`, `outdated`, `newer`, `unknown` when the config has no version, `not_checked` without a login). An older install, or one without a version, gets a warning with "Install / Update Samba"; once an install starts, the row reads "Not checked" until a check that started after it. The reachability check runs only with a saved, working password that the keychain gives without a prompt: a failed login would blame the password, and the page never asks the user for anything. Both checks run in the background, one at a time per device: Activity does not list them, quitting does not ask about them, and a run you start does not wait for them.
+
 ## CLI Command Reference
 
 The CLI entrypoint is `tcapsule COMMAND [ARGS...]`. In a normal checkout the first command is usually run through the repo-local launcher:

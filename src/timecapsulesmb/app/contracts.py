@@ -125,12 +125,18 @@ def reachability_payload(result: ReachabilityResult) -> dict[str, object]:
         status = str(check.get("status") or "").upper()
         if status:
             counts[status] = counts.get(status, 0) + 1
+    installed = result.installed
     return _with_schema({
         "status": result.status,
         "ssh_host": result.ssh_host,
         "smb_host": result.smb_host,
         "checks": checks,
         "counts": counts,
+        # The version the login read; "not_checked" and nulls without a login.
+        "installed_release_tag": installed.release_tag if installed else None,
+        "installed_version_code": installed.version_code if installed else None,
+        "install_state": installed.state if installed else "not_checked",
+        "app_release_tag": installed.app_release_tag if installed else None,
         **result.summary.fields(),
     })
 

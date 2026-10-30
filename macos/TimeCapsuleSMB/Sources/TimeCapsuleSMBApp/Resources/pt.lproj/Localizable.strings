@@ -219,6 +219,8 @@
 "dashboard.health.runtime.activation_needed" = "O compartilhamento de arquivos não está ativo. “Ativar” o inicia.";
 "dashboard.health.runtime.installing" = "A instalação/atualização está em execução.";
 "dashboard.health.runtime.not_installed" = "Samba não foi instalado a partir deste app.";
+"dashboard.health.runtime.outdated" = "Uma versão anterior está instalada. “Instalar/atualizar Samba” a atualiza.";
+"dashboard.health.runtime.version_unknown" = "A versão instalada é desconhecida. “Instalar/atualizar Samba” instala a versão deste app.";
 "dashboard.health.status.failed" = "Falha";
 "dashboard.health.status.good" = "Bom";
 "dashboard.health.status.running" = "Em execução";
@@ -239,6 +241,11 @@
 "dashboard.overview.model" = "Modelo";
 "dashboard.overview.password" = "Senha";
 "dashboard.overview.payload" = "Arquivos de instalação";
+"dashboard.overview.installed_version" = "Versão instalada";
+"dashboard.overview.installed_version.outdated" = "%1$@ (este app instala %2$@)";
+"dashboard.overview.installed_version.newer" = "Mais recente que este app";
+"dashboard.overview.installed_version.not_installed" = "Não instalada";
+"dashboard.overview.installed_version.not_checked" = "Não verificada";
 "dashboard.password.title" = "Senha salva";
 "dashboard.replacement_password" = "Atualizar senha salva";
 "dashboard.tab.settings" = "Configurações";

@@ -219,6 +219,8 @@
 "dashboard.health.runtime.activation_needed" = "Failų bendrinimas neveikia. „Aktyvuoti“ jį paleidžia.";
 "dashboard.health.runtime.installing" = "Vyksta diegimas / atnaujinimas.";
 "dashboard.health.runtime.not_installed" = "Samba nebuvo įdiegta iš šios programos.";
+"dashboard.health.runtime.outdated" = "Įdiegta senesnė versija. Paleidus „Įdiegti / atnaujinti Samba“, ji bus atnaujinta.";
+"dashboard.health.runtime.version_unknown" = "Įdiegta versija nežinoma. Paleidus „Įdiegti / atnaujinti Samba“, bus įdiegta šios programos versija.";
 "dashboard.health.status.failed" = "Nepavyko";
 "dashboard.health.status.good" = "Gerai";
 "dashboard.health.status.running" = "Vykdoma";
@@ -239,6 +241,11 @@
 "dashboard.overview.model" = "Modelis";
 "dashboard.overview.password" = "Slaptažodis";
 "dashboard.overview.payload" = "Diegimo failai";
+"dashboard.overview.installed_version" = "Įdiegta versija";
+"dashboard.overview.installed_version.outdated" = "%1$@ (ši programa įdiegia %2$@)";
+"dashboard.overview.installed_version.newer" = "Naujesnė nei šios programos";
+"dashboard.overview.installed_version.not_installed" = "Neįdiegta";
+"dashboard.overview.installed_version.not_checked" = "Nepatikrinta";
 "dashboard.password.title" = "Išsaugotas slaptažodis";
 "dashboard.replacement_password" = "Atnaujinti išsaugotą slaptažodį";
 "dashboard.tab.settings" = "Nustatymai";

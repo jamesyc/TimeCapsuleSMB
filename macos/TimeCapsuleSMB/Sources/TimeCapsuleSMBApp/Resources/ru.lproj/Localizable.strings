@@ -219,6 +219,8 @@
 "dashboard.health.runtime.activation_needed" = "Общий доступ к файлам не работает. «Активировать» запускает его.";
 "dashboard.health.runtime.installing" = "Выполняется установка/обновление.";
 "dashboard.health.runtime.not_installed" = "Samba не установлен через это приложение.";
+"dashboard.health.runtime.outdated" = "Установлена более старая версия. «Установить/обновить Samba» обновляет ее.";
+"dashboard.health.runtime.version_unknown" = "Установленная версия неизвестна. «Установить/обновить Samba» устанавливает версию этого приложения.";
 "dashboard.health.status.failed" = "Ошибка";
 "dashboard.health.status.good" = "Хорошо";
 "dashboard.health.status.running" = "Выполняется";
@@ -239,6 +241,11 @@
 "dashboard.overview.model" = "Модель";
 "dashboard.overview.password" = "Пароль";
 "dashboard.overview.payload" = "Файлы установки";
+"dashboard.overview.installed_version" = "Установленная версия";
+"dashboard.overview.installed_version.outdated" = "%1$@ (это приложение устанавливает %2$@)";
+"dashboard.overview.installed_version.newer" = "Новее, чем в этом приложении";
+"dashboard.overview.installed_version.not_installed" = "Не установлена";
+"dashboard.overview.installed_version.not_checked" = "Не проверена";
 "dashboard.password.title" = "Сохраненный пароль";
 "dashboard.replacement_password" = "Обновить сохраненный пароль";
 "dashboard.tab.settings" = "Настройки";

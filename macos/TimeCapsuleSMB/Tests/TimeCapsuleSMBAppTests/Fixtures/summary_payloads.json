@@ -276,6 +276,7 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
+        "app_release_tag": null,
         "checks": [
           {
             "detail": null,
@@ -295,6 +296,9 @@
         "counts": {
           "PASS": 2
         },
+        "install_state": "not_checked",
+        "installed_release_tag": null,
+        "installed_version_code": null,
         "schema_version": 1,
         "smb_host": "10.0.0.2",
         "ssh_host": "root@10.0.0.2",
@@ -314,6 +318,7 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
+        "app_release_tag": null,
         "checks": [
           {
             "detail": null,
@@ -334,6 +339,9 @@
           "FAIL": 1,
           "PASS": 1
         },
+        "install_state": "not_checked",
+        "installed_release_tag": null,
+        "installed_version_code": null,
         "schema_version": 1,
         "smb_host": "10.0.0.2",
         "ssh_host": "root@10.0.0.2",
@@ -353,6 +361,7 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
+        "app_release_tag": null,
         "checks": [
           {
             "detail": null,
@@ -373,6 +382,9 @@
           "FAIL": 1,
           "PASS": 1
         },
+        "install_state": "not_checked",
+        "installed_release_tag": null,
+        "installed_version_code": null,
         "schema_version": 1,
         "smb_host": "10.0.0.2",
         "ssh_host": "root@10.0.0.2",
@@ -392,6 +404,7 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
+        "app_release_tag": null,
         "checks": [
           {
             "detail": null,
@@ -411,6 +424,9 @@
         "counts": {
           "FAIL": 2
         },
+        "install_state": "not_checked",
+        "installed_release_tag": null,
+        "installed_version_code": null,
         "schema_version": 1,
         "smb_host": "10.0.0.2",
         "ssh_host": "root@10.0.0.2",
@@ -430,6 +446,7 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
+        "app_release_tag": null,
         "checks": [
           {
             "detail": null,
@@ -457,6 +474,9 @@
           "FAIL": 1,
           "PASS": 2
         },
+        "install_state": "not_checked",
+        "installed_release_tag": null,
+        "installed_version_code": null,
         "schema_version": 1,
         "smb_host": "10.0.0.2",
         "ssh_host": "root@10.0.0.2",
@@ -476,6 +496,7 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
+        "app_release_tag": null,
         "checks": [
           {
             "detail": null,
@@ -488,6 +509,9 @@
         "counts": {
           "SKIP": 1
         },
+        "install_state": "not_checked",
+        "installed_release_tag": null,
+        "installed_version_code": null,
         "schema_version": 1,
         "smb_host": null,
         "ssh_host": null,

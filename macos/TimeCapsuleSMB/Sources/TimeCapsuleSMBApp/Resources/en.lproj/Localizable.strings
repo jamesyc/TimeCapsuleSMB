@@ -219,6 +219,8 @@
 "dashboard.health.runtime.activation_needed" = "File sharing is not running. “Activate” starts it.";
 "dashboard.health.runtime.installing" = "Install / Update is running.";
 "dashboard.health.runtime.not_installed" = "Samba has not been installed from this app.";
+"dashboard.health.runtime.outdated" = "An older version is installed. “Install / Update Samba” updates it.";
+"dashboard.health.runtime.version_unknown" = "The installed version is unknown. “Install / Update Samba” installs this app's version.";
 "dashboard.health.status.failed" = "Failed";
 "dashboard.health.status.good" = "Good";
 "dashboard.health.status.running" = "Running";
@@ -239,6 +241,11 @@
 "dashboard.overview.model" = "Model";
 "dashboard.overview.password" = "Password";
 "dashboard.overview.payload" = "Payload";
+"dashboard.overview.installed_version" = "Installed Version";
+"dashboard.overview.installed_version.outdated" = "%1$@ (this app installs %2$@)";
+"dashboard.overview.installed_version.newer" = "Newer than this app";
+"dashboard.overview.installed_version.not_installed" = "Not installed";
+"dashboard.overview.installed_version.not_checked" = "Not checked";
 "dashboard.password.title" = "Saved Password";
 "dashboard.replacement_password" = "Update saved password";
 "dashboard.tab.settings" = "Settings";

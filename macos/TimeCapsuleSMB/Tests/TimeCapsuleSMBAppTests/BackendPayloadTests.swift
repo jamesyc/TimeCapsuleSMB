@@ -47,6 +47,31 @@ final class BackendPayloadTests: XCTestCase {
 
         XCTAssertEqual(reachability.status, "partial")
         XCTAssertEqual(reachability.checks[0].id, "ping")
+        // An older helper reports no installed version.
+        XCTAssertNil(reachability.installState)
+        XCTAssertNil(reachability.installedReleaseTag)
+        XCTAssertNil(reachability.installedVersionCode)
+        XCTAssertNil(reachability.appReleaseTag)
+
+        let withVersion = try jsonValue("""
+        {
+          "schema_version": 1,
+          "status": "reachable",
+          "ssh_host": "root@10.0.0.2",
+          "smb_host": "10.0.0.2",
+          "checks": [],
+          "counts": {},
+          "summary": "SSH reachable; SMB port reachable.",
+          "installed_release_tag": "v4.0.0",
+          "installed_version_code": 40000,
+          "install_state": "outdated",
+          "app_release_tag": "v5.0.0"
+        }
+        """).decode(ReachabilityPayload.self)
+        XCTAssertEqual(withVersion.installedReleaseTag, "v4.0.0")
+        XCTAssertEqual(withVersion.installedVersionCode, 40000)
+        XCTAssertEqual(withVersion.installState, "outdated")
+        XCTAssertEqual(withVersion.appReleaseTag, "v5.0.0")
 
         let sshAccess = try jsonValue("""
         {

@@ -273,6 +273,33 @@ final class OperationCompletionTests: XCTestCase {
         withExtendedLifetime(session) {}
     }
 
+    func testTheSSHRecheckAfterAFailureWaitsForABackgroundReachabilityCheck() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init("reachability"): [.init(events: [
+                BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+            ], pauseBeforeEvents: true)],
+            .init("deploy"): [.init(events: [failure("deploy")])],
+            .init("set-ssh"): [.init(events: [sshResult()])]
+        ])
+        defer { fixture.runner.finishAll() }
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+
+        fixture.app.reachabilityStore.refreshIfNeeded(profile: fixture.profile, password: "pw")
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 }
+        // Your deploy starts beside the check and fails while it still runs.
+        session.runInstall(profile: fixture.profile)
+        try await waitUntilStoreState {
+            session.deployStore.error != nil && !fixture.coordinator.isDeviceBusy(fixture.profile.id)
+        }
+        await runQueuedStoreUpdates()
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["reachability", "deploy"])
+
+        // The recheck runs once the check has ended, instead of being refused and lost.
+        fixture.runner.finish(.init("reachability"))
+        try await waitUntilStoreState { fixture.runner.calls.map(\.operation) == ["reachability", "deploy", "set-ssh"] }
+        withExtendedLifetime(session) {}
+    }
+
     func testAnSSHOutcomeWithoutARequestIDDoesNotAnswerALaterFailure() async throws {
         let fixture = try await makeFixture(responses: [
             .init("set-ssh", profileID: "device-one"): [
