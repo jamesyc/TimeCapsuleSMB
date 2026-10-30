@@ -240,12 +240,7 @@ final class HelperRunnerTests: XCTestCase {
                 await recorder.append($0)
             }
         }
-        for _ in 0..<200 {
-            if await recorder.events.contains(where: { $0.message == "native children ready" }) { break }
-            try await Task.sleep(nanoseconds: 50_000_000)
-        }
-        let ready = await recorder.events.contains { $0.message == "native children ready" }
-        XCTAssertTrue(ready)
+        try await waitUntilStoreState { recorder.events.contains { $0.message == "native children ready" } }
         task.cancel()
         let result = await task.value
         let events = await recorder.events
@@ -285,14 +280,9 @@ final class HelperRunnerTests: XCTestCase {
                 await recorder.append($0)
             }
         }
-        for _ in 0..<200 {
-            if await recorder.events.contains(where: { $0.type == "stage" && $0.stage == "ready" }) {
-                break
-            }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        let sawReady = await recorder.events.contains(where: { $0.type == "stage" && $0.stage == "ready" })
-        XCTAssertTrue(sawReady)
+        // Cancel only once the helper's handler is in place, however long a
+        // loaded runner takes to start it.
+        try await waitUntilStoreState { recorder.events.contains { $0.type == "stage" && $0.stage == "ready" } }
         task.cancel()
         let result = await task.value
 
@@ -337,8 +327,12 @@ final class HelperRunnerTests: XCTestCase {
     }
 }
 
-private actor EventRecorder {
+/// On the main actor so `waitUntilStoreState` can read it.
+@MainActor
+private final class EventRecorder {
     private var storage: [BackendEvent] = []
+
+    nonisolated init() {}
 
     var events: [BackendEvent] {
         storage
