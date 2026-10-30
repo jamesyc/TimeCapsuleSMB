@@ -1155,6 +1155,18 @@ Default: off. Writes `server smb encrypt = required`, `server min protocol = SMB
 
 Default: off. Writes `server signing = disabled` and `server smb encrypt = off`. This may improve throughput when a client would otherwise require signing, but it weakens SMB transport security and cannot be combined with **Require SMB Encryption**.
 
+## App Updates
+
+The macOS app updates itself with Sparkle. It checks `https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/appcast.xml` once a day by default (Settings, "Check for updates automatically") and on the app menu's Check for Updates.... GitHub redirects that URL to the newest published release that is not a prerelease, so drafts, prereleases and hidden builds are never offered.
+
+The appcast has one item, written by `macos/TimeCapsuleSMB/tools/sparkle_appcast.py` in the release job from the Info.plist inside the release zip: the version code (`sparkle:version`, which Sparkle compares with the app's `CFBundleVersion`), the version, the minimum macOS, a link to the release page as release notes, and the zip's URL with its length and EdDSA signature. Sparkle installs the zip only when that signature matches the app's `SUPublicEDKey`. An app that stops supporting Intel would carry `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`, so Intel Macs keep the last release that runs on them.
+
+`version.json` on `main` still matters beside the appcast:
+- apps from before Sparkle read it for their update notice and follow its download link to the newest release;
+- every app and the CLI stop when their version is below `min_supported_version`.
+
+The CLI reads the same appcast and prints one line when it lists a newer version code than the CLI's own.
+
 ## CLI Command Reference
 
 The CLI entrypoint is `tcapsule COMMAND [ARGS...]`. In a normal checkout the first command is usually run through the repo-local launcher:

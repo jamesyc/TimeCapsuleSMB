@@ -2838,10 +2838,25 @@ def notarize_archive(zip_path: Path, profile: str, timeout: str) -> str:
     submission_id = str(payload.get("id") or "")
     if status != "Accepted":
         detail = payload.get("message") or completed.stdout
-        raise RuntimeError(f"Notarization failed with status {status!r} for submission {submission_id}: {detail}")
+        raise RuntimeError(
+            f"Notarization failed with status {status!r} for submission {submission_id}: {detail}"
+            + notarization_log(submission_id, profile)
+        )
     if submission_id:
         print(f"Notarization accepted: {submission_id}", file=sys.stderr)
     return submission_id
+
+
+def notarization_log(submission_id: str, profile: str) -> str:
+    """Apple's log for a refused submission, which names each file it refused
+    and why: the status message alone does not. Empty without a submission."""
+    if not submission_id:
+        return ""
+    try:
+        completed = run_quiet(["xcrun", "notarytool", "log", submission_id, "--keychain-profile", profile])
+    except subprocess.CalledProcessError as exc:
+        return f"\nApple's log could not be fetched: {(exc.stderr or exc.stdout or '').strip()}"
+    return f"\nApple's log:\n{completed.stdout.strip()}"
 
 
 @timed_step("Stapling and validating notarization ticket")

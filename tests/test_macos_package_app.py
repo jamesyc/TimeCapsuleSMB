@@ -3057,6 +3057,20 @@ def test_validate_app_zip_rejects_root_appledouble_sidecar(
         package_app.validate_app_zip(zip_path, "TimeCapsuleSMB.app")
 
 
+# What notarytool log prints for a refused submission (abridged).
+NOTARY_LOG = """{
+  "status": "Invalid",
+  "issues": [
+    {
+      "severity": "error",
+      "path": "TimeCapsuleSMB-notary.zip/TimeCapsuleSMB.app/Contents/Helpers/tcapsule",
+      "message": "The signature does not include a secure timestamp."
+    }
+  ]
+}
+"""
+
+
 def test_notarize_archive_requires_accepted_status(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3068,6 +3082,8 @@ def test_notarize_archive_requires_accepted_status(
 
     def fake_run_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
+        if cmd[2] == "log":
+            return subprocess.CompletedProcess(cmd, 0, stdout=NOTARY_LOG, stderr="")
         return subprocess.CompletedProcess(
             cmd,
             0,
@@ -3077,11 +3093,53 @@ def test_notarize_archive_requires_accepted_status(
 
     monkeypatch.setattr(package_app, "run_quiet", fake_run_quiet)
 
-    with pytest.raises(RuntimeError, match="bad signature"):
+    with pytest.raises(RuntimeError, match="bad signature") as raised:
         package_app.notarize_archive(archive, "release-profile", "30m")
     assert calls[0][:4] == ["xcrun", "notarytool", "submit", str(archive)]
     assert "--keychain-profile" in calls[0]
     assert "release-profile" in calls[0]
+    # Apple's log names the file it refused, which the status message does not.
+    assert calls[1] == ["xcrun", "notarytool", "log", "submission-id", "--keychain-profile", "release-profile"]
+    assert "does not include a secure timestamp" in str(raised.value)
+
+
+def test_a_refused_notarization_still_fails_when_its_log_cannot_be_fetched(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    archive = tmp_path / "TimeCapsuleSMB-notary.zip"
+    archive.write_bytes(b"zip")
+
+    def fake_run_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[2] == "log":
+            raise subprocess.CalledProcessError(69, cmd, output="", stderr="Submission log is not available yet.")
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"status":"Invalid","id":"submission-id","message":"bad signature"}')
+
+    monkeypatch.setattr(package_app, "run_quiet", fake_run_quiet)
+
+    with pytest.raises(RuntimeError, match=r"(?s)bad signature.*log could not be fetched: Submission log is not available yet"):
+        package_app.notarize_archive(archive, "release-profile", "30m")
+
+
+def test_a_notarization_without_a_submission_asks_for_no_log(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    archive = tmp_path / "TimeCapsuleSMB-notary.zip"
+    archive.write_bytes(b"zip")
+    calls: list[list[str]] = []
+
+    def fake_run_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"status":"In Progress","message":"timed out"}')
+
+    monkeypatch.setattr(package_app, "run_quiet", fake_run_quiet)
+
+    with pytest.raises(RuntimeError, match="'In Progress'"):
+        package_app.notarize_archive(archive, "release-profile", "30m")
+    assert [cmd[2] for cmd in calls] == ["submit"]
 
 
 def test_notarize_archive_returns_submission_id_on_accept(

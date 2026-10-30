@@ -30,6 +30,8 @@ shasum -a 256 TimeCapsuleSMB.app.zip
 
 The digest printed by `shasum` should match the `sha256:` value shown for the asset on GitHub.
 
+Each release also carries `appcast.xml`, the feed the app's updater reads; it is not for users to download.
+
 ## Checked-In Device Artifacts
 
 The deploy flow uses the binaries checked into `bin/`:
@@ -89,9 +91,32 @@ SAMBA4X_CROSS_EXEC_REMOTE_DIR=/Volumes/dkN SAMBA4X_RUN_REGRESSION_TESTS=1 ./buil
 
 On NetBSD 4 LE, build the tests with `SAMBA4X_BUILD_REGRESSION_TESTS=1 ./build/samba4xoldle.sh` and run every case except the `tc_xattr_migrate_test` `tdb`, `resume`, `resource` and `all` cases (they need more space than NetBSD 4's root RAM disk has) through `./build/samba4-cross-exec.sh` with `CROSS_EXEC_REMOTE_DIR=/Volumes/dkN`. Check that the NetBSD 4 host, password and SSH ProxyCommand in the `.env` it uses are current first.
 
-## Signing And Notarization
+## Release Builds
 
-The macOS app packaging flow supports Developer ID signing and notarization when the relevant signing environment is configured. A public release should state whether the attached app zip is notarized. When notarization is enabled, the package validation step should complete successfully before the release asset is uploaded.
+A pushed `v*` tag builds the release in CI (`.github/workflows/ci.yml`), after the tests, the packaging check and the Intel check pass for that commit:
+
+1. **Build Release** (`macos-26`) checks the tag with `check_release.py`, sets up a temporary signing keychain and the `tcapsulesmb-notary` profile from the `release` environment's secrets, checks that the Sparkle key belongs to the app (so a wrong certificate, notary key or Sparkle key fails in the first minute), and runs the release command:
+
+   ```bash
+   python3 macos/TimeCapsuleSMB/tools/package_app.py --configuration release --arch universal --zip --full-validation --codesign-identity "Developer ID Application: Yushen Chang (M22Z394H44)" --notarize --notary-profile tcapsulesmb-notary
+   ```
+
+   It then writes `appcast.xml` with `sparkle_appcast.py`, signing the zip with the Sparkle key. That refuses a key that does not belong to the app's `SUPublicEDKey` and an app that is not universal.
+2. **Check Release on Intel** (`macos-15-intel`) launches the signed, notarized app's code on a real Intel Mac (`package_app.py --check-app`) and runs Gatekeeper's assessment (`spctl -a -t exec`) on it.
+3. **Create Draft Release** makes a draft release for the tag with `TimeCapsuleSMB.app.zip` and `appcast.xml`. A hidden build's draft is a prerelease.
+
+Nothing reaches users until the draft is published. Never push a `v*` tag to try the workflow: every one starts a release. A run that fails or builds something wrong publishes nothing; fix it, delete the draft (and the tag, if the fix needs a new commit) and push the tag again.
+
+The app checks `https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/appcast.xml`, which follows the newest published release that is not a prerelease. Publishing a release with "Set as the latest release" ticked is what offers it to the apps; drafts and prereleases are never offered.
+
+### One-time setup
+
+- A `release` environment in the repository settings whose deployment rule admits only `v*` tags, so only tag runs get its secrets.
+- Its secrets: `MACOS_CERTIFICATE_P12` (base64 of the Developer ID Application certificate and key, exported as `.p12`) and `MACOS_CERTIFICATE_PASSWORD`; `NOTARY_KEY_P8` (base64 of an App Store Connect team API key with the Developer role), `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID`; `SPARKLE_ED_PRIVATE_KEY`, the one line `generate_keys -x` exported.
+- Keep the exported Sparkle key backed up outside GitHub. Without it no release can ever update the installed apps again; a new key would need a new `SUPublicEDKey` that installed apps do not trust.
+- A tag ruleset that lets only admins create, move or delete `v*` tags, since pushing one is what reaches the `release` environment's secrets.
+
+The Developer ID Application certificate expires. Renew it in the Apple Developer account before then, under the same team, export the new one as `.p12`, and set `MACOS_CERTIFICATE_P12` and `MACOS_CERTIFICATE_PASSWORD` again. Apps signed with the old one keep working: their signatures are timestamped. Build Release fails at its signing keychain step when the secret holds no valid identity.
 
 ## Packaging The App
 
@@ -113,10 +138,14 @@ A universal build on Apple silicon runs the smoke test (the helper's requests, t
 - Optionally bump `current_version` and `latest_tag` in `version.json` to the release, never for a hidden build. Bump it in the release commit, not earlier, or older apps announce a release that is not published yet.
 - Rebuild any changed NetBSD artifacts and update `artifact-manifest.json`.
 - For Samba changes, run the device regression tests on NetBSD 6 (full suite) and NetBSD 4 LE (the cases that fit).
-- Run the artifact manifest tests.
-- Run the Python and Swift test suites.
-- Package and validate the macOS app.
-- Upload `TimeCapsuleSMB.app.zip` to the GitHub release.
-- Publish with "Set as the latest release" ticked, except for a hidden build, which is published as a prerelease.
-- Confirm the uploaded asset SHA256 digest is visible on GitHub.
-- Include user-facing release notes with compatibility or flash-safety warnings when applicable.
+- Push the release commit to `main`, then push its tag (`git tag v<version> && git push origin v<version>`).
+- When the run has made the draft, download its `TimeCapsuleSMB.app.zip`, unzip it, move the app out of Downloads with Finder (macOS runs a downloaded app from a read-only copy until Finder moves it, and Sparkle cannot update that copy), open it, and check that Check for Updates... is enabled.
+- Write the release notes in the draft, with compatibility or flash-safety warnings when applicable.
+- Publish with "Set as the latest release" ticked. A hidden build's draft is a prerelease: publish it as a prerelease, never as the latest release, so it never becomes the feed.
+- Confirm the asset SHA256 digests are visible on GitHub.
+
+## Updating And Pulling Releases
+
+Sparkle offers a release whose `CFBundleVersion` (`CLI_VERSION_CODE`) is above the running app's. Its Install and Relaunch quits the app the normal way, so during a device operation the app asks first. After Keep Open, Sparkle's documented behavior is to install the update when the app next quits.
+
+To pull a bad release, delete it, or mark the previous release as the latest: the feed then follows that release. That only stops new installs. Sparkle never downgrades, so apps that already installed the bad release need a fixed release with a higher `CLI_VERSION_CODE`.

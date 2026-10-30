@@ -172,3 +172,221 @@ jobs:
           # ditto keeps the bundle's symlinks and permissions, as a user's unzip does.
           ditto -x -k "$RUNNER_TEMP/app/TimeCapsuleSMB.app.zip" "$RUNNER_TEMP/app"
           python3 macos/TimeCapsuleSMB/tools/package_app.py --check-app "$RUNNER_TEMP/app/TimeCapsuleSMB.app"
+
+  # A pushed v* tag builds the release: signed, notarized, its appcast
+  # written, checked on a real Intel Mac, then left as a draft release for the
+  # maintainer to check and publish. Nothing reaches users before that. Never
+  # push a v* tag to test this: every one starts a release.
+  release:
+    name: Build Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-26
+    # Packaging takes minutes and notarization waits up to 30 of them.
+    timeout-minutes: 90
+    needs:
+      - samba-regressions
+      - test
+      - swift-test
+      - intel-check
+    # Only this job gets the signing secrets; the environment admits v* tags only.
+    environment: release
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SIGNING_IDENTITY: "Developer ID Application: Yushen Chang (M22Z394H44)"
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      prerelease: ${{ steps.gate.outputs.prerelease }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The gate reads release.py at the newest published release's tag.
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
+      - name: Check the tag against release.py and the newest release
+        id: gate
+        run: |
+          newest=$(gh release list --exclude-drafts --json tagName,publishedAt -q 'max_by(.publishedAt).tagName')
+          git show "${newest}:src/timecapsulesmb/core/release.py" > "$RUNNER_TEMP/newest_release.py"
+          python3 .github/scripts/check_release.py "$GITHUB_REF_NAME" --newest-release-py "$RUNNER_TEMP/newest_release.py"
+
+      - name: Set up the signing keychain
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          password=$(openssl rand -base64 32)
+          security create-keychain -p "$password" "$keychain"
+          # Locked again only after six hours, longer than the job may run.
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          # Lets codesign use the key without a dialog no one can click.
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          # notarytool stores its profile in the default keychain.
+          security default-keychain -s "$keychain"
+          # A wrong or expired certificate fails here, not after the build.
+          if ! security find-identity -v -p codesigning "$keychain" | grep -F "\"$SIGNING_IDENTITY\"" > /dev/null; then
+            echo "::error title=Signing keychain::MACOS_CERTIFICATE_P12 holds no valid $SIGNING_IDENTITY (another certificate, or an expired one)"
+            exit 1
+          fi
+
+      - name: Store the notary profile
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          (umask 077; printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8")
+          # The profile name the release command passes.
+          xcrun notarytool store-credentials tcapsulesmb-notary \
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID"
+
+      - name: Check the Sparkle key
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          # A wrong key fails here, not after the build: the appcast step's own
+          # check, against the public key packaging writes into the app.
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 -c '
+          import sys
+          sys.path.insert(0, "macos/TimeCapsuleSMB/tools")
+          import package_app, sparkle_appcast
+          try:
+              sparkle_appcast.check_key_matches_app(sys.stdin.buffer.read(), package_app.SPARKLE_PUBLIC_ED_KEY)
+          except RuntimeError as exc:
+              # On stdout, where GitHub reads workflow commands, as the gate does.
+              print(f"::error title=Sparkle key::SPARKLE_ED_PRIVATE_KEY: {exc}")
+              sys.exit(1)
+          '
+
+      # The maintainer's release command, unchanged. No package cache is
+      # restored: branch runs write it, and a release builds everything itself.
+      - name: Package, sign and notarize the app
+        run: |
+          python3 macos/TimeCapsuleSMB/tools/package_app.py \
+            --configuration release \
+            --arch universal \
+            --zip \
+            --full-validation \
+            --codesign-identity "$SIGNING_IDENTITY" \
+            --notarize \
+            --notary-profile tcapsulesmb-notary
+
+      - name: Write the appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          # Refused before signing if the key is not the app's or the app is not universal.
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 macos/TimeCapsuleSMB/tools/sparkle_appcast.py \
+            --zip macos/TimeCapsuleSMB/dist/TimeCapsuleSMB.app.zip \
+            --tag "$GITHUB_REF_NAME" \
+            --out macos/TimeCapsuleSMB/dist/appcast.xml \
+            --ed-key-file -
+
+      - name: Keep the release files for the Intel check and the draft
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            macos/TimeCapsuleSMB/dist/TimeCapsuleSMB.app.zip
+            macos/TimeCapsuleSMB/dist/appcast.xml
+          if-no-files-found: error
+          # Long enough to re-run a failed draft job after a weekend.
+          retention-days: 7
+          # "Re-run all jobs" uploads them again within the same run.
+          overwrite: true
+
+      - name: Remove the signing keychain and keys
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true
+          rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/AuthKey.p8"
+
+  release-intel-check:
+    # The signed, notarized app's x86_64 half (hardened runtime, library
+    # validation, Gatekeeper) on a real Intel Mac, which the ad-hoc intel-check
+    # cannot show. Remove with intel-check when GitHub retires macos-15-intel.
+    name: Check Release on Intel (macOS 15)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    needs:
+      - release
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/release
+
+      - name: Launch the release on Intel and assess it with Gatekeeper
+        run: |
+          test "$(uname -m)" = x86_64
+          ditto -x -k "$RUNNER_TEMP/release/TimeCapsuleSMB.app.zip" "$RUNNER_TEMP/release/app"
+          app="$RUNNER_TEMP/release/app/TimeCapsuleSMB.app"
+          python3 macos/TimeCapsuleSMB/tools/package_app.py --check-app "$app"
+          spctl -a -t exec -vvv "$app"
+
+  release-draft:
+    name: Create Draft Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - release
+      - release-intel-check
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # A hidden build (a -N version) is a prerelease draft: publishing it
+      # never moves Latest, so never the feed either.
+      PRERELEASE: ${{ needs.release.outputs.prerelease }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Download the release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: release
+
+      - name: Create the draft
+        run: |
+          prerelease=()
+          if [ "$PRERELEASE" = true ]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes "### macOS GUI installer app (for macOS 14+)" \
+            "${prerelease[@]}" \
+            release/TimeCapsuleSMB.app.zip \
+            release/appcast.xml
