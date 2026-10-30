@@ -239,7 +239,17 @@ jobs:
           security default-keychain -s "$keychain"
           # A wrong or expired certificate fails here, not after the build.
           if ! security find-identity -v -p codesigning "$keychain" | grep -F "\"$SIGNING_IDENTITY\"" > /dev/null; then
-            echo "::error title=Signing keychain::MACOS_CERTIFICATE_P12 holds no valid $SIGNING_IDENTITY (another certificate, or an expired one)"
+            # What the import brought in, and macOS's reason for each identity
+            # it does not accept. Names, hashes and dates only; no key leaves
+            # the keychain. find-certificate exits non-zero when it finds none.
+            echo "::group::Signing keychain contents"
+            echo "Certificates:"
+            security find-certificate -a "$keychain" | sed -n 's/^ *"labl"<blob>=/  /p' || true
+            security find-identity -p codesigning "$keychain" || true
+            security find-certificate -c "$SIGNING_IDENTITY" -p "$keychain" 2> /dev/null |
+              openssl x509 -noout -subject -enddate 2> /dev/null || true
+            echo "::endgroup::"
+            echo "::error title=Signing keychain::MACOS_CERTIFICATE_P12 holds no valid $SIGNING_IDENTITY; see Signing keychain contents above. A certificate with another name means the wrong certificate was exported; a certificate with no identity means the .p12 lacks its private key; an identity listed with a reason is expired or untrusted."
             exit 1
           fi
 
@@ -250,9 +260,13 @@ jobs:
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
           (umask 077; printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8")
+          # An ID set through echo ends in a newline, and notarytool rejects
+          # the issuer ID as not a UUID. Neither ID holds whitespace.
+          key_id=$(printf '%s' "$NOTARY_KEY_ID" | tr -d '[:space:]')
+          issuer_id=$(printf '%s' "$NOTARY_ISSUER_ID" | tr -d '[:space:]')
           # The profile name the release command passes.
           xcrun notarytool store-credentials tcapsulesmb-notary \
-            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID"
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$key_id" --issuer "$issuer_id"
 
       - name: Check the Sparkle key
         env:
