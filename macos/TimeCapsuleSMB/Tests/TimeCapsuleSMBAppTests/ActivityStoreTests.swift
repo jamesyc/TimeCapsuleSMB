@@ -547,6 +547,40 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertNil(activity.snapshot.latestMessage)
     }
 
+    func testActivityLeavesOutTheBackgroundSSHCheck() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("set-ssh", profileID: "device-one"): [.init(events: [
+                BackendEvent(type: "stage", operation: "set-ssh", stage: "probe_ssh"),
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+            ], pauseAfterEvents: true)]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+        let profile = DeviceProfile.make(
+            id: "device-one",
+            configuredDevice: try testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            applicationSupportURL: URL(fileURLWithPath: "/tmp/timecapsulesmb-tests", isDirectory: true)
+        )
+        let selected = ActivityDisplayContext(selectedDeviceID: profile.id, showingAddDevice: false, showingActivity: false)
+        let lane = coordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus))
+
+        DeviceSSHAccessStore(coordinator: coordinator).refresh(profile: profile)
+        // Running, with a timeline of its own.
+        try await waitUntilStoreState { lane.backend.events.count == 2 && lane.backend.isRunning }
+        activity.refresh()
+        XCTAssertTrue(activity.laneSnapshots.isEmpty)
+        XCTAssertFalse(activity.hasActiveActivity)
+        XCTAssertFalse(activity.compactStatus(for: selected).isRunning)
+        XCTAssertEqual(activity.compactStatus(for: selected).operationTitle, L10n.string("activity.no_active_operation"))
+
+        runner.finishAll()
+        try await waitUntilStoreState { !lane.backend.isRunning }
+        activity.refresh()
+        XCTAssertTrue(activity.laneSnapshots.isEmpty)
+        XCTAssertEqual(activity.compactStatus(for: selected).operationTitle, L10n.string("activity.no_active_operation"))
+    }
+
     private func context(_ profileID: String) -> DeviceRuntimeContext {
         DeviceRuntimeContext(
             profileID: profileID,

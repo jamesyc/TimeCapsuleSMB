@@ -714,16 +714,19 @@ final class DashboardStoreTests: XCTestCase {
         defer { fixture.runner.finishAll() }
         session.runInstall(profile: profile)
         // A failed install also refreshes SSH access status in the background;
-        // its result is observable before it releases the device.
+        // its result is observable before its lane stops. The device stays
+        // free for you meanwhile.
+        let recheck = fixture.appStore.operationCoordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus))
         try await waitUntilStoreState {
             session.deployStore.state == .deployFailed
                 && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .installFailed
                 && fixture.runner.calls.map(\.operation) == ["deploy", "set-ssh"]
                 && fixture.appStore.sshAccessStore.snapshot(for: profile) != nil
         }
-        XCTAssertTrue(fixture.appStore.operationCoordinator.isDeviceBusy(profile))
+        XCTAssertTrue(recheck.isBusy)
+        XCTAssertFalse(fixture.appStore.operationCoordinator.isDeviceBusy(profile))
         fixture.runner.finishAll()
-        try await waitUntilStoreState { !fixture.appStore.operationCoordinator.isDeviceBusy(profile) }
+        try await waitUntilStoreState { !recheck.isBusy }
         let failed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: failed).displayStatus, .failed)
 

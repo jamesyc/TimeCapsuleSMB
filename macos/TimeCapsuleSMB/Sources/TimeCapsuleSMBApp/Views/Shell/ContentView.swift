@@ -257,7 +257,7 @@ public struct ContentView: View {
 
     private func configureCloseGuard() {
         AppCloseGuard.shared.configure { [weak operationCoordinator] in
-            operationCoordinator?.hasActiveWork ?? false
+            operationCoordinator?.hasBlockingWork ?? false
         }
     }
 

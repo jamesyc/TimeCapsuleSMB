@@ -45,6 +45,9 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
     case doctor
     case reachability
     case sshAccess = "ssh_access"
+    /// The SSH status check the app starts on its own (DeviceSSHAccessStore),
+    /// apart from Check and Enable SSH so it never clears their history.
+    case sshStatus = "ssh_status"
     case maintenance
     case activate
     case uninstall
@@ -116,6 +119,17 @@ enum OperationLaneKey: Hashable, Equatable, Identifiable, CustomStringConvertibl
         case .app, .appWorkflow, .candidateHost, .localPath:
             return nil
         }
+    }
+
+    /// A read-only check the app starts on its own. Activity leaves it out,
+    /// quitting does not ask about it and the toolbar's Cancel does not stop
+    /// it. It gives way to a run you start: it never starts while one runs,
+    /// and one may start while it runs.
+    var isBackground: Bool {
+        if case .deviceWorkflow(_, .sshStatus) = self {
+            return true
+        }
+        return false
     }
 }
 
@@ -286,8 +300,9 @@ final class OperationCoordinator: ObservableObject {
         cancellableDeviceLane(for: profileID)?.canCancel ?? false
     }
 
-    var hasActiveWork: Bool {
-        allLanes.contains { $0.isBusy }
+    /// Work that quitting asks about first.
+    var hasBlockingWork: Bool {
+        allLanes.contains { !$0.key.isBackground && $0.isBusy }
     }
 
     func activeOperation(for key: OperationLaneKey) -> ActiveOperation? {
@@ -298,9 +313,11 @@ final class OperationCoordinator: ObservableObject {
         activeDeviceLane(for: profile.id)?.activeOperation
     }
 
+    /// Whether the device runs something you started. A background check
+    /// does not count: a run you start does not wait for one.
     func isDeviceBusy(_ profileID: DeviceProfile.ID) -> Bool {
         allLanes.contains { lane in
-            resourceKey(for: lane) == .device(profileID) && lane.isBusy
+            !lane.key.isBackground && resourceKey(for: lane) == .device(profileID) && lane.isBusy
         }
     }
 
@@ -470,7 +487,7 @@ final class OperationCoordinator: ObservableObject {
 
     private func primaryLane() -> OperationLane? {
         if let runningDevice = allLanes.first(where: { lane in
-            lane.key != .app && lane.backend.isRunning
+            lane.key != .app && !lane.key.isBackground && lane.backend.isRunning
         }) {
             return runningDevice
         }
@@ -485,24 +502,27 @@ final class OperationCoordinator: ObservableObject {
         if appLane.backend.pendingConfirmation != nil {
             return appLane
         }
-        return allLanes.first { $0.activeOperation != nil }
+        return allLanes.first { !$0.key.isBackground && $0.activeOperation != nil }
     }
 
     private func activeDeviceLane(for profileID: DeviceProfile.ID) -> OperationLane? {
         allLanes.first { lane in
-            resourceKey(for: lane) == .device(profileID) && lane.activeOperation != nil
+            !lane.key.isBackground && resourceKey(for: lane) == .device(profileID) && lane.activeOperation != nil
         }
     }
 
     private func cancellableDeviceLane(for profileID: DeviceProfile.ID) -> OperationLane? {
         allLanes.first { lane in
-            resourceKey(for: lane) == .device(profileID) && lane.canCancel
+            !lane.key.isBackground && resourceKey(for: lane) == .device(profileID) && lane.canCancel
         }
     }
 
     private func conflictingLane(for resourceKey: OperationResourceKey, excluding laneKey: OperationLaneKey) -> OperationLane? {
         allLanes.first { lane in
-            lane.key != laneKey && self.resourceKey(for: lane) == resourceKey && lane.isBusy
+            lane.key != laneKey
+                // A background check gives way to a run you start, never the reverse.
+                && (laneKey.isBackground || !lane.key.isBackground)
+                && self.resourceKey(for: lane) == resourceKey && lane.isBusy
         }
     }
 

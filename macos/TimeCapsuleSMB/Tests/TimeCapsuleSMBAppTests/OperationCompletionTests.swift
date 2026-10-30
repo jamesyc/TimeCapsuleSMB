@@ -245,6 +245,61 @@ final class OperationCompletionTests: XCTestCase {
         }
     }
 
+    func testRetryStartsWhileTheSSHRecheckAfterAFailureRuns() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init("deploy"): [
+                .init(events: [failure("deploy")]),
+                .init(events: [BackendEvent(type: "result", operation: "deploy", ok: true, payload: .object([:]))], pauseBeforeEvents: true)
+            ],
+            .init("set-ssh"): [.init(events: [sshResult()], pauseBeforeEvents: true)]
+        ])
+        defer { fixture.runner.finishAll() }
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        let recheck = fixture.coordinator.lane(for: .deviceWorkflow(fixture.profile.id, .sshStatus))
+
+        session.runInstall(profile: fixture.profile)
+        try await waitUntilStoreState { session.deployStore.error != nil }
+        let error = try XCTUnwrap(session.deployStore.error)
+        // The failure queues an SSH check, which starts once the deploy is done.
+        try await waitUntilStoreState { recheck.isBusy && fixture.runner.calls.count == 2 }
+
+        // Retry from the error box while that check runs.
+        let retry = try XCTUnwrap(session.retryAction(for: error, profile: fixture.profile))
+        retry()
+
+        try await waitUntilStoreState { fixture.runner.calls.map(\.operation) == ["deploy", "set-ssh", "deploy"] }
+        XCTAssertTrue(fixture.coordinator.lane(for: .deviceWorkflow(fixture.profile.id, .deploy)).isBusy)
+        XCTAssertNotEqual(session.deployStore.error?.code, "operation_rejected")
+        withExtendedLifetime(session) {}
+    }
+
+    func testAnSSHOutcomeWithoutARequestIDDoesNotAnswerALaterFailure() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init("set-ssh", profileID: "device-one"): [
+                .init(events: [], pauseBeforeEvents: true),
+                .init(events: [sshResult()])
+            ],
+            .init("deploy"): [.init(events: [failure("deploy")])]
+        ])
+        defer { fixture.runner.finishAll() }
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        let check = OperationLaneKey.deviceWorkflow(fixture.profile.id, .sshStatus)
+
+        // A check whose result carries no request ID, as an event may.
+        fixture.app.sshAccessStore.refresh(profile: fixture.profile)
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 }
+        let requestID = try XCTUnwrap(fixture.coordinator.activeOperation(for: check)?.id.uuidString)
+        await fixture.runner.send(BackendEvent(requestId: nil, type: "result", operation: "set-ssh", ok: true,
+                                               payload: testSSHAccessPayload(sshPortReachable: true)), to: requestID)
+        fixture.runner.finish(.init("set-ssh", profileID: "device-one"))
+        try await waitUntilStoreState { !fixture.coordinator.lane(for: check).isBusy }
+
+        // That earlier outcome does not answer the failure: the recheck runs.
+        session.runInstall(profile: fixture.profile)
+        try await waitUntilStoreState { fixture.runner.calls.map(\.operation) == ["set-ssh", "deploy", "set-ssh"] }
+        withExtendedLifetime(session) {}
+    }
+
     func testAddDeviceFailureKeepsOwnershipUntilHelperStops() async throws {
         let fixture = try await makeFixture(responses: [
             .init("configure"): [
@@ -371,7 +426,7 @@ final class OperationCompletionTests: XCTestCase {
         fixture.coordinator.cancel(displayed)
         XCTAssertEqual(fixture.coordinator.readyConfirmation?.id, second.id)
         fixture.coordinator.cancel(second)
-        XCTAssertFalse(fixture.coordinator.hasActiveWork)
+        XCTAssertFalse(fixture.coordinator.hasBlockingWork)
     }
 
     func testPersistenceAndHelperMustBothFinishBeforeRetry() async throws {

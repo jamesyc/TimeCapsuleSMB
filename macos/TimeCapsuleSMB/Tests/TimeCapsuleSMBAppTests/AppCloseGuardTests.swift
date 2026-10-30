@@ -74,6 +74,53 @@ final class AppCloseGuardTests: XCTestCase {
         XCTAssertTrue(presenter.requests.isEmpty)
     }
 
+    func testQuittingOrClosingDuringOnlyTheSSHStatusCheckNeedsNoPrompt() async throws {
+        let result = BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+        // Separate keys: finishing a key opens its gate for good.
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("set-ssh", profileID: "device-one"): [.init(events: [result], pauseBeforeEvents: true)],
+            .init("set-ssh"): [.init(events: [result], pauseBeforeEvents: true)]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let profile = DeviceProfile.make(
+            id: "device-one",
+            configuredDevice: try testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            applicationSupportURL: URL(fileURLWithPath: "/tmp/timecapsulesmb-tests", isDirectory: true)
+        )
+        let guardController = AppCloseGuard()
+        let presenter = RecordingCloseGuardPresenter()
+        guardController.configure { coordinator.hasBlockingWork }
+        guardController.presenter = presenter
+        let delegate = AppCloseGuardApplicationDelegate()
+        delegate.closeGuard = guardController
+
+        DeviceSSHAccessStore(coordinator: coordinator).refresh(profile: profile)
+        XCTAssertTrue(coordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus)).isBusy)
+        XCTAssertEqual(delegate.applicationShouldTerminate(.shared), .terminateNow)
+        XCTAssertTrue(guardController.shouldCloseWindow(NSWindow()))
+        XCTAssertTrue(presenter.requests.isEmpty)
+        // A gate exists only once its call is recorded; finishing earlier would be lost.
+        try await waitUntilStoreState { runner.calls.count == 1 }
+        runner.finish(.init("set-ssh", profileID: "device-one"))
+        try await waitUntilStoreState { !coordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus)).isBusy }
+
+        _ = coordinator.run(
+            operation: "set-ssh",
+            params: OperationParams.SetSSH.enable(noWait: false),
+            context: profile.runtimeContext,
+            activeDeviceID: profile.id,
+            password: "pw",
+            laneKey: .deviceWorkflow(profile.id, .sshAccess)
+        )
+        XCTAssertEqual(delegate.applicationShouldTerminate(.shared), .terminateLater)
+        XCTAssertFalse(guardController.shouldCloseWindow(NSWindow()))
+        XCTAssertEqual(presenter.requests, [.appQuit, .windowClose])
+        try await waitUntilStoreState { runner.calls.count == 2 }
+        runner.finish(.init("set-ssh"))
+        try await waitUntilStoreState { !coordinator.isDeviceBusy(profile.id) }
+    }
+
     func testAttachedWindowDelegateForwardsUninterceptedCallbacks() {
         let guardController = AppCloseGuard()
         let downstream = RecordingWindowDelegate()

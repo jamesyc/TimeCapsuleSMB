@@ -23,6 +23,12 @@ final class DeviceSSHAccessStore: ObservableObject {
     private let coordinator: OperationCoordinator
     private let now: () -> Date
     private var operationObservers: [DeviceProfile.ID: BackendOperationObserver] = [:]
+    /// How often each device's snapshot has changed, and how often it had
+    /// when its running check started: a check during which it changed, as
+    /// when Enable SSH finished meanwhile, keeps the newer result. Counted,
+    /// not timed, so a clock change cannot reorder them.
+    private var snapshotChanges: [DeviceProfile.ID: Int] = [:]
+    private var snapshotChangesAtCheckStart: [DeviceProfile.ID: Int] = [:]
     private var observedProfiles: Set<DeviceProfile.ID> = []
     private var cancellablesByProfile: [DeviceProfile.ID: Set<AnyCancellable>] = [:]
 
@@ -38,7 +44,10 @@ final class DeviceSSHAccessStore: ObservableObject {
     /// `password` lets the check also read the MAC of a profile without one.
     /// It is read from the keychain only when the check runs.
     func refreshIfNeeded(profile: DeviceProfile, password: @autoclosure () -> String? = nil) {
-        guard !coordinator.isDeviceBusy(profile.id) else {
+        // A check already running answers this one; skipping it here, not in
+        // runRefresh, also skips the keychain read.
+        guard !coordinator.isDeviceBusy(profile.id),
+              !coordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus)).isBusy else {
             return
         }
         if let snapshot = snapshots[profile.id],
@@ -49,11 +58,11 @@ final class DeviceSSHAccessStore: ObservableObject {
     }
 
     private func runRefresh(profile: DeviceProfile, password: String?) {
-        let laneKey = OperationLaneKey.deviceWorkflow(profile.id, .sshAccess)
+        let laneKey = OperationLaneKey.deviceWorkflow(profile.id, .sshStatus)
         let lane = coordinator.lane(for: laneKey)
         observeLane(for: profile.id, lane: lane)
+        // The check already running answers this request too.
         guard !lane.isBusy else {
-            reject(profileID: profile.id, message: L10n.string("operation.error.already_running"))
             return
         }
         lane.clear()
@@ -69,6 +78,7 @@ final class DeviceSSHAccessStore: ObservableObject {
             laneKey: laneKey
         ) {
         case .started(let operation):
+            snapshotChangesAtCheckStart[profile.id] = snapshotChanges[profile.id, default: 0]
             observer(for: profile.id).start(operation)
             process(lane.backend.events, profileID: profile.id)
         case .rejected(let message):
@@ -94,7 +104,7 @@ final class DeviceSSHAccessStore: ObservableObject {
     }
 
     func apply(payload: SSHAccessPayload, profile: DeviceProfile) {
-        snapshots[profile.id] = DeviceSSHAccessSnapshot(refreshedAt: now(), payload: payload)
+        setSnapshot(payload, for: profile.id)
         errors[profile.id] = nil
     }
 
@@ -167,10 +177,19 @@ final class DeviceSSHAccessStore: ObservableObject {
         }
     }
 
+    private func setSnapshot(_ payload: SSHAccessPayload, for profileID: DeviceProfile.ID) {
+        snapshots[profileID] = DeviceSSHAccessSnapshot(refreshedAt: now(), payload: payload)
+        snapshotChanges[profileID, default: 0] += 1
+    }
+
     private func applyResult(_ event: BackendEvent, profileID: DeviceProfile.ID) {
         do {
             let payload = try event.decodePayload(SSHAccessPayload.self)
-            snapshots[profileID] = DeviceSSHAccessSnapshot(refreshedAt: now(), payload: payload)
+            // A newer result, such as Enable SSH's, may have arrived while this check ran.
+            let changes = snapshotChanges[profileID, default: 0]
+            if (snapshotChangesAtCheckStart[profileID] ?? changes) == changes {
+                setSnapshot(payload, for: profileID)
+            }
             errors[profileID] = nil
         } catch {
             errors[profileID] = BackendErrorViewModel(
@@ -183,7 +202,7 @@ final class DeviceSSHAccessStore: ObservableObject {
     }
 
     private func finishIfLaneStopped(profileID: DeviceProfile.ID) {
-        if coordinator.activeOperation(for: .deviceWorkflow(profileID, .sshAccess))?.operation != "set-ssh" {
+        if coordinator.activeOperation(for: .deviceWorkflow(profileID, .sshStatus))?.operation != "set-ssh" {
             operationObservers[profileID]?.finish()
         }
     }

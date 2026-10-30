@@ -94,6 +94,7 @@ final class ActivityStore: ObservableObject {
 
     func refresh() {
         laneSnapshots = coordinator.allLanes
+            .filter { !$0.key.isBackground }
             .map { lane in
                 let snapshot = snapshot(for: lane)
                 let isPendingConfirmation = lane.backend.pendingConfirmation != nil

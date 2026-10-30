@@ -88,6 +88,102 @@ final class ContentViewSmokeTests: XCTestCase {
         XCTAssertEqual(flow.selectedDeviceID, unsaved.id)
     }
 
+    func testEveryDeviceSwitchChecksSSHOnTheDevicePage() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("set-ssh"): Array(repeating: .init(events: [
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+            ]), count: 3)
+        ])
+        let fixture = try await AppViewFixture(runner: runner)
+        let office = try await fixture.saveProfile(id: "office", host: "root@10.0.0.2")
+        let den = try await fixture.saveProfile(id: "den", host: "root@10.0.0.3")
+        let host = LiveHostedView(fixture.contentView)
+        defer { host.close() }
+        func checked() -> [String?] {
+            runner.calls.filter { $0.operation == "set-ssh" }.map(\.context?.profileID)
+        }
+
+        fixture.appStore.navigate(to: .device(office.id))
+        try await waitUntilStoreState { checked() == ["office"] }
+        // Straight to the other device: SwiftUI keeps the same page view.
+        fixture.appStore.navigate(to: .device(den.id))
+        try await waitUntilStoreState { checked() == ["office", "den"] }
+        // Away and back to the same device: only the page reappearing checks again.
+        fixture.appStore.navigate(to: .allDevices)
+        let allDevicesTitle = L10n.string("overview.saved_devices.title")
+        try await waitUntilStoreState {
+            accessibleElements(in: host.contentView).contains { $0.text == allDevicesTitle }
+        }
+        // SwiftUI removes the device page, ending its task, on the main-queue
+        // turn after it draws All Devices; going back sooner keeps the page.
+        await runQueuedStoreUpdates()
+        fixture.appStore.navigate(to: .device(den.id))
+        try await waitUntilStoreState { checked() == ["office", "den", "den"] }
+
+        await runQueuedStoreUpdates()
+        XCTAssertEqual(checked(), ["office", "den", "den"])
+        XCTAssertEqual(runner.calls.filter { $0.operation == "set-ssh" }.map { $0.params["action"] }, Array(repeating: .string("status"), count: 3))
+    }
+
+    func testABackgroundSSHCheckLeavesTheEnableSSHRunAlone() async throws {
+        let sshResult = BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+        let fixture = try await AppViewFixture(responses: [
+            .init(events: [BackendEvent(type: "stage", operation: "set-ssh", stage: "enable_ssh"), sshResult]),
+            .init(events: [BackendEvent(type: "stage", operation: "set-ssh", stage: "probe_ssh"), sshResult])
+        ])
+        let profile = try await fixture.saveProfile(id: "office")
+        let session = fixture.dashboardSession(for: profile)
+        let coordinator = fixture.appStore.operationCoordinator
+
+        XCTAssertNotNil(session.maintenanceStore.enableSSHAccess(password: "pw", profile: profile).operation)
+        try await waitUntilStoreState {
+            session.maintenanceStore.sshAccessState == .succeeded && !coordinator.isDeviceBusy(profile.id)
+        }
+        let enableRun = session.maintenanceStore.timelineEvents(for: .sshAccess).map(\.id)
+        XCTAssertFalse(enableRun.isEmpty)
+
+        // The device page's check, as on every visit.
+        session.refreshSSHAccessStatus(profile: profile)
+        try await waitUntilStoreState {
+            (fixture.runner as! StoreTestRunner).calls.count == 2
+                && !coordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus)).isBusy
+        }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual((fixture.runner as! StoreTestRunner).calls.map { $0.params["action"] }, [.string("enable"), .string("status")])
+        XCTAssertEqual(session.maintenanceStore.timelineEvents(for: .sshAccess).map(\.id), enableRun)
+        XCTAssertEqual(session.maintenanceStore.sshAccessState, .succeeded)
+        // Activity keeps the run the user started and leaves the check out.
+        fixture.appStore.activityStore.refresh()
+        XCTAssertEqual(fixture.appStore.activityStore.laneSnapshots.map(\.laneKey), [.deviceWorkflow(profile.id, .sshAccess)])
+    }
+
+    func testToolbarCancelLeavesABackgroundSSHCheckAlone() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("set-ssh"): [.init(events: [
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+            ], pauseBeforeEvents: true)]
+        ])
+        let fixture = try await AppViewFixture(runner: runner)
+        let profile = try await fixture.saveProfile(id: "office")
+        fixture.appStore.navigate(to: .device(profile.id))
+        let coordinator = fixture.appStore.operationCoordinator
+
+        fixture.appStore.sshAccessStore.refresh(profile: profile)
+        XCTAssertTrue(coordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus)).isBusy)
+        XCTAssertFalse(coordinator.isDeviceBusy(profile.id))
+        XCTAssertFalse(coordinator.canCancel)
+        XCTAssertFalse(fixture.appStore.canCancelSelectedOperation)
+        fixture.appStore.cancelSelectedOperation()
+        // A gate exists only once its call is recorded; finishing earlier would be lost.
+        try await waitUntilStoreState { runner.calls.count == 1 }
+        runner.finishAll()
+
+        // The check ran to its result rather than being cancelled.
+        try await waitUntilStoreState { fixture.appStore.sshAccessStore.snapshot(for: profile) != nil }
+        XCTAssertNil(fixture.appStore.sshAccessStore.error(for: profile))
+    }
+
     func testSavingADeviceOpensItAndStartsAddDeviceOver() async throws {
         let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
         let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")

@@ -115,7 +115,9 @@ struct DeviceDashboardView: View {
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .onAppear {
+        // Keyed by device: switching straight from one device to another keeps
+        // this view, so onAppear would not run for the second.
+        .task(id: profile.id) {
             session.refreshSSHAccessStatus(profile: profile)
         }
         .alert(

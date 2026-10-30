@@ -18,7 +18,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     private let lane: OperationLane
     private let stateSynchronizer: DeviceDashboardStateSynchronizer
     private var cancellables: Set<AnyCancellable> = []
-    private var pendingSSHRefresh: (operation: String, requestID: String, sshRequestID: String?)?
+    private var pendingSSHRefresh: (operation: String, requestID: String, sshOutcomeIDs: Set<UUID>)?
     private var handledSSHFailures: [String: String] = [:]
     // By event, not request: a confirmed replay reuses its confirmation's request ID.
     private var checkedAddressOutcomes: Set<UUID> = []
@@ -482,7 +482,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
               event.type == "error" || event.ok == false,
               handledSSHFailures[error.operation] != requestID else { return }
         handledSSHFailures[error.operation] = requestID
-        pendingSSHRefresh = (error.operation, requestID, latestTerminalEvent(for: "set-ssh")?.requestId)
+        pendingSSHRefresh = (error.operation, requestID, Set(sshCheckOutcomes().map(\.id)))
         Task { @MainActor [weak self] in self?.runPendingSSHRefresh() }
     }
 
@@ -533,11 +533,24 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             .compactMap { lane in lane.backend.events.last { $0.type == "error" || $0.type == "result" } }
     }
 
+    /// The last outcome of `operation` on this device's own lanes. A
+    /// background check's never counts: it reports no failure of its own.
     private func latestTerminalEvent(for operation: String) -> BackendEvent? {
         appStore.operationCoordinator.allLanes
-            .filter { $0.key.deviceProfileID == id }
+            .filter { $0.key.deviceProfileID == id && !$0.key.isBackground }
             .flatMap { $0.backend.events }
             .last { $0.operation == operation && ($0.type == "error" || $0.type == "result") }
+    }
+
+    /// Each lane's last SSH check outcome, the background check's included.
+    /// Their order across lanes is unknown, so each is compared with what
+    /// that lane held before, never with another lane's.
+    private func sshCheckOutcomes() -> [BackendEvent] {
+        appStore.operationCoordinator.allLanes
+            .filter { $0.key.deviceProfileID == id }
+            .compactMap { lane in
+                lane.backend.events.last { $0.operation == "set-ssh" && ($0.type == "error" || $0.type == "result") }
+            }
     }
 
     private func runPendingSSHRefresh() {
@@ -547,14 +560,19 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             return
         }
         // A successful retry or a newer SSH check already answers this failure.
-        for (operation, previousID) in [(pending.operation, Optional(pending.requestID)), ("set-ssh", pending.sshRequestID)] {
-            if let event = latestTerminalEvent(for: operation), event.type == "result", event.ok == true,
-               event.requestId != previousID {
-                pendingSSHRefresh = nil
-                return
-            }
+        let succeeded = { (event: BackendEvent) in event.type == "result" && event.ok == true }
+        if let retry = latestTerminalEvent(for: pending.operation), succeeded(retry), retry.requestId != pending.requestID {
+            pendingSSHRefresh = nil
+            return
         }
-        guard !appStore.operationCoordinator.isDeviceBusy(id) else { return }
+        // By event: a confirmed replay reuses its request ID, and an event may have none.
+        if sshCheckOutcomes().contains(where: { succeeded($0) && !pending.sshOutcomeIDs.contains($0.id) }) {
+            pendingSSHRefresh = nil
+            return
+        }
+        // A background check still running answers it once it finishes.
+        guard !appStore.operationCoordinator.isDeviceBusy(id),
+              !appStore.operationCoordinator.lane(for: .deviceWorkflow(id, .sshStatus)).isBusy else { return }
         pendingSSHRefresh = nil
         appStore.sshAccessStore.refresh(profile: profile)
     }

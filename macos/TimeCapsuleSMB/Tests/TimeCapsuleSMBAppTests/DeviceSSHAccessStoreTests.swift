@@ -70,10 +70,11 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
 
         defer { runner.finishAll() }
         store.refreshIfNeeded(profile: profile)
+        let lane = coordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus))
         try await waitUntilStoreState { runner.calls.count == 1 && store.snapshot(for: profile) != nil }
-        XCTAssertTrue(coordinator.isDeviceBusy(profile))
+        XCTAssertTrue(lane.isBusy)
         runner.finishAll()
-        try await waitUntilStoreState { !coordinator.isDeviceBusy(profile) }
+        try await waitUntilStoreState { !lane.isBusy }
         store.refreshIfNeeded(profile: profile)
 
         XCTAssertEqual(runner.calls.map(\.operation), ["set-ssh"])
@@ -81,11 +82,71 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
         now = Date(timeIntervalSince1970: 161)
         store.refreshIfNeeded(profile: profile)
         try await waitUntilStoreState {
-            store.snapshot(for: profile)?.refreshedAt == now && !coordinator.isDeviceBusy(profile)
+            store.snapshot(for: profile)?.refreshedAt == now && !lane.isBusy
         }
         XCTAssertEqual(store.snapshot(for: profile)?.payload.sshPortReachable, true)
 
         XCTAssertEqual(runner.calls.map(\.operation), ["set-ssh", "set-ssh"])
+    }
+
+    func testACheckKeepsANewerResultThatArrivedWhileItRan() async throws {
+        var now = Date(timeIntervalSince1970: 100)
+        let closed = BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())
+        let runner = PausingStoreTestRunner(responses: [
+            .init(events: [closed], pauseBeforeEvents: true),
+            .init(events: [closed])
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = DeviceSSHAccessStore(coordinator: coordinator, now: { now })
+        let profile = try makeProfile(host: "10.0.0.2")
+        let lane = coordinator.lane(for: .deviceWorkflow(profile.id, .sshStatus))
+
+        store.refresh(profile: profile)
+        try await waitUntilStoreState { runner.calls.count == 1 }
+        // Enable SSH finishes while the check runs, after the clock was set back.
+        now = Date(timeIntervalSince1970: 90)
+        store.apply(payload: try testSSHAccessPayload(sshPortReachable: true).decode(SSHAccessPayload.self), profile: profile)
+        runner.finishAll()
+        try await waitUntilStoreState { !lane.isBusy }
+        await runQueuedStoreUpdates()
+
+        // The check's older "SSH closed" does not replace it.
+        XCTAssertEqual(store.snapshot(for: profile)?.refreshedAt, Date(timeIntervalSince1970: 90))
+        XCTAssertEqual(store.snapshot(for: profile)?.payload.sshPortReachable, true)
+        XCTAssertNil(store.notice(for: profile, staleEndpointNotice: nil))
+        XCTAssertNil(store.error(for: profile))
+
+        // A check started after it does.
+        now = Date(timeIntervalSince1970: 95)
+        store.refresh(profile: profile)
+        try await waitUntilStoreState { runner.calls.count == 2 && !lane.isBusy }
+        await runQueuedStoreUpdates()
+        XCTAssertEqual(store.snapshot(for: profile)?.refreshedAt, Date(timeIntervalSince1970: 95))
+        XCTAssertEqual(store.snapshot(for: profile)?.payload.sshPortReachable, false)
+    }
+
+    func testARunningCheckAnswersRequestsMadeWhileItRuns() async throws {
+        let runner = PausingStoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+            ], pauseBeforeEvents: true)
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = DeviceSSHAccessStore(coordinator: coordinator)
+        let profile = try makeProfile(host: "10.0.0.2")
+        defer { runner.finishAll() }
+
+        store.refreshIfNeeded(profile: profile)
+        try await waitUntilStoreState { runner.calls.count == 1 }
+        store.refreshIfNeeded(profile: profile)
+        store.refresh(profile: profile)
+
+        // The running check answers both: no second run and no "already running".
+        XCTAssertNil(store.error(for: profile))
+        runner.finishAll()
+        try await waitUntilStoreState { store.snapshot(for: profile) != nil }
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertNil(store.error(for: profile))
     }
 
     func testApplyMaintenancePayloadUpdatesSnapshot() async throws {

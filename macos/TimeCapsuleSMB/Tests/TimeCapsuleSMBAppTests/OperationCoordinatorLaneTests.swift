@@ -422,7 +422,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 1)
     }
 
-    func testHasActiveWorkTracksRunningAndPendingConfirmation() async throws {
+    func testHasBlockingWorkTracksRunningAndPendingConfirmation() async throws {
         let runner = OperationKeyedStoreTestRunner(responses: [
             .init("deploy", profileID: "device-one"): [
                 .init(events: [
@@ -433,7 +433,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let laneKey = OperationLaneKey.device("device-one")
 
-        XCTAssertFalse(coordinator.hasActiveWork)
+        XCTAssertFalse(coordinator.hasBlockingWork)
         XCTAssertStarted(coordinator.run(
             operation: "deploy",
             params: ["dry_run": JSONValue.bool(false)],
@@ -441,17 +441,115 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             activeDeviceID: "device-one",
             laneKey: laneKey
         ))
-        XCTAssertTrue(coordinator.hasActiveWork)
+        XCTAssertTrue(coordinator.hasBlockingWork)
 
         try await waitUntilStoreState {
             coordinator.lane(for: laneKey).backend.pendingConfirmation != nil
                 && !coordinator.lane(for: laneKey).backend.isRunning
         }
-        XCTAssertTrue(coordinator.hasActiveWork)
+        XCTAssertTrue(coordinator.hasBlockingWork)
 
         coordinator.cancelPendingConfirmation()
 
-        try await waitUntilStoreState { !coordinator.hasActiveWork }
+        try await waitUntilStoreState { !coordinator.hasBlockingWork }
+    }
+
+    func testABackgroundSSHCheckGivesWayToRunsYouStart() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("set-ssh", profileID: "device-one"): [.init(events: [
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+            ], pauseBeforeEvents: true)],
+            .init("deploy", profileID: "device-two"): [.init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: .object([:]))
+            ], pauseBeforeEvents: true)],
+            .init("doctor", profileID: "device-one"): [.init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
+            ], pauseBeforeEvents: true)]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let sshAccess = DeviceSSHAccessStore(coordinator: coordinator)
+        let profile = try sshProfile()
+        let background = coordinator.lane(for: .deviceWorkflow("device-one", .sshStatus))
+
+        sshAccess.refresh(profile: profile)
+        XCTAssertTrue(background.isBusy)
+        // Nothing you started runs: no quit prompt, nothing for Cancel, and the device is free.
+        XCTAssertFalse(coordinator.hasBlockingWork)
+        XCTAssertFalse(coordinator.isDeviceBusy("device-one"))
+        XCTAssertFalse(coordinator.canCancel)
+        XCTAssertFalse(coordinator.canCancel(profileID: "device-one"))
+
+        // Another device's deploy counts, for that device only.
+        XCTAssertStarted(coordinator.run(
+            operation: "deploy",
+            params: ["dry_run": .bool(false)],
+            context: context("device-two"),
+            activeDeviceID: "device-two"
+        ))
+        XCTAssertTrue(coordinator.hasBlockingWork)
+        XCTAssertTrue(coordinator.isDeviceBusy("device-two"))
+        XCTAssertFalse(coordinator.isDeviceBusy("device-one"))
+        XCTAssertTrue(coordinator.canCancel(profileID: "device-two"))
+        XCTAssertFalse(coordinator.canCancel(profileID: "device-one"))
+
+        // A run you start on the same device does not wait for the check.
+        XCTAssertStarted(coordinator.run(
+            operation: "doctor",
+            context: context("device-one"),
+            activeDeviceID: "device-one"
+        ))
+        XCTAssertTrue(coordinator.isDeviceBusy("device-one"))
+        XCTAssertTrue(background.isBusy)
+
+        // A gate exists only once its call is recorded; finishing earlier would be lost.
+        try await waitUntilStoreState { runner.calls.count == 3 }
+        runner.finish(.init("deploy", profileID: "device-two"))
+        runner.finish(.init("set-ssh", profileID: "device-one"))
+        try await waitUntilStoreState { !background.isBusy && !coordinator.isDeviceBusy("device-two") }
+        XCTAssertTrue(coordinator.hasBlockingWork)
+
+        // While your run goes, a new background check does not start.
+        sshAccess.refresh(profile: profile)
+        XCTAssertFalse(background.isBusy)
+        XCTAssertEqual(sshAccess.error(for: profile)?.code, "operation_rejected")
+        // Each run reaches the helper from its own task, so only the set matters.
+        XCTAssertEqual(runner.calls.map(\.operation).sorted(), ["deploy", "doctor", "set-ssh"])
+
+        runner.finish(.init("doctor", profileID: "device-one"))
+        try await waitUntilStoreState { !coordinator.hasBlockingWork }
+    }
+
+    func testADevicesActiveOperationIsNeverItsBackgroundCheck() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("set-ssh", profileID: "device-one"): [.init(events: [
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+            ], pauseBeforeEvents: true)],
+            .init("uninstall", profileID: "device-one"): [.init(events: [
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: .object([:]))
+            ], pauseBeforeEvents: true)]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let profile = try sshProfile()
+
+        DeviceSSHAccessStore(coordinator: coordinator).refresh(profile: profile)
+        XCTAssertNil(coordinator.activeOperation(for: profile))
+        // Uninstall's lane sorts after the background check's; the sidebar
+        // still shows the uninstall.
+        XCTAssertStarted(coordinator.run(
+            operation: "uninstall",
+            context: context("device-one"),
+            activeDeviceID: "device-one"
+        ))
+        XCTAssertEqual(coordinator.activeOperation(for: profile)?.operation, "uninstall")
+        XCTAssertEqual(DeviceStatusPolicy.status(for: profile, passwordState: .available,
+                                                 activeOperation: coordinator.activeOperation(for: profile)), .maintaining)
+
+        try await waitUntilStoreState { runner.calls.count == 2 }
+        runner.finishAll()
+        try await waitUntilStoreState {
+            !coordinator.isDeviceBusy("device-one")
+                && !coordinator.lane(for: .deviceWorkflow("device-one", .sshStatus)).isBusy
+        }
     }
 
     func testCancelOnlyCancelsTargetLane() async throws {
@@ -657,6 +755,15 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         try await waitUntilStoreState { runner.calls.count == 1 }
         XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("secret")]))
         XCTAssertEqual(runner.calls[0].context?.profileID, "device-one")
+    }
+
+    private func sshProfile() throws -> DeviceProfile {
+        DeviceProfile.make(
+            id: "device-one",
+            configuredDevice: try testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            applicationSupportURL: URL(fileURLWithPath: "/tmp/timecapsulesmb-tests", isDirectory: true)
+        )
     }
 
     private func XCTAssertStarted(
