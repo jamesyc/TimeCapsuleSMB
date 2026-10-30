@@ -66,6 +66,9 @@ int main(int argc, char **argv) {
              "lwp 119 1 3 0x80 0 kqueue\nlwp 119 5 3 0x0 40 tstile\nlwp 119 6 3 0x0 2 biowait\n",
              (long)me, (long)me, (long)gone, (long)gone);
     write_file("external", text);
+    /* A writer's copy not yet renamed over its table: skipped, so its rows
+     * are not read twice. */
+    write_file(".external.new", text);
     assert(tc_proctable_read(&t) == 0);
     assert(t.count == 5);
     assert(find(&t, 2)->stat == 3 && find(&t, 2)->flag == 0x80 && find(&t, 2)->slept == 4);

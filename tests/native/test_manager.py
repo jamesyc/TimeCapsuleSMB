@@ -119,9 +119,10 @@ if role=='diskd':
     # (proctable.h); dropped once this PID is gone.
     procs=Path(os.environ['TC_TEST_ROOT'])/'procs'
     command=' '.join(['/sbin/diskd',*sys.argv[1:]])
-    (procs/f'diskd-{os.getpid()}.new').write_text(
+    # The reader skips names starting with a dot, so it never sees this row twice.
+    (procs/f'.diskd-{os.getpid()}.new').write_text(
         f'live {os.getpid()} {os.getppid()} {os.getpgrp()} 3 0x80 0 0 select diskd {command}\\n')
-    os.replace(procs/f'diskd-{os.getpid()}.new',procs/f'diskd-{os.getpid()}')
+    os.replace(procs/f'.diskd-{os.getpid()}.new',procs/f'diskd-{os.getpid()}')
 if role=='telemetry' and '--report' in sys.argv and not stuck:
     root=Path(os.environ['TC_TEST_ROOT'])
     while (root/'report-hold').exists():time.sleep(.05)
@@ -305,8 +306,10 @@ def processes(root,name,ps_lines,live=False):
 
 def write_rows(root,name,rows):
     # Replace atomically: the manager may read the directory at any moment.
-    (root/'procs'/f'{name}.new').write_text(''.join(row+'\n' for row in rows))
-    os.replace(root/'procs'/f'{name}.new',root/'procs'/name)
+    # The reader skips names starting with a dot, so a sample taken before the
+    # rename does not read these rows twice.
+    (root/'procs'/f'.{name}.new').write_text(''.join(row+'\n' for row in rows))
+    os.replace(root/'procs'/f'.{name}.new',root/'procs'/name)
 
 
 def external(root,ps_lines):
