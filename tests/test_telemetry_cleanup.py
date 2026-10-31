@@ -10,6 +10,7 @@ from timecapsulesmb.deploy.boot_assets import load_boot_asset_text
 from timecapsulesmb.deploy.commands import StopTelemetryAction, render_remote_action, remote_action_to_jsonable
 from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
+from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.ssh import SshConnection
 from unittest import mock
 
@@ -127,7 +128,7 @@ def test_uninstall_stops_before_deleting_files_when_cleanup_is_busy():
             raise RuntimeError('telemetry busy')
     with mock.patch('timecapsulesmb.deploy.executor.run_ssh', side_effect=ssh):
         with pytest.raises(RuntimeError, match='telemetry busy'):
-            remote_uninstall_payload(SshConnection('host', 'password', ''), plan)
+            remote_uninstall_payload(SshConnection('host', 'password', ''), plan, callbacks=OperationCallbacks())
     assert executed == [render_remote_action(action) for action in plan.remote_actions[:plan.remote_actions.index(cleanup) + 1]]
     assert remote_action_to_jsonable(cleanup) == {'kind': 'stop_telemetry', 'cleanup': True}
     assert '/mnt/Memory/debug' in plan.verify_absent_targets

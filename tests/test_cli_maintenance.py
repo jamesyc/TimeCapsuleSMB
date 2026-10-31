@@ -360,6 +360,10 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("request: AirPort ACP reboot (acRB)", text)
         self.assertIn("strategy: network_acp", text)
         self.assertIn("follow-up: wait for the ACP uptime (syUT) to restart, then SSH up", text)
+        # The sync after the removal is listed with the remote actions.
+        self.assertIn("  rm -rf ", text)
+        self.assertLess(text.rindex("  rm -rf "), text.index("  sync\n"))
+        self.assertLess(text.index("  sync\n"), text.index("Reboot:"))
         started = self.telemetry_payload("uninstall_started")
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(started["command_id"], finished["command_id"])
@@ -765,7 +769,14 @@ class CliMaintenanceTests(CliTestCase):
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "uninstall")
-            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            # A sync that timed out does not stop the reboot; files left
+            # after it carry the timeout in their report.
+            stack.enter_context(mock.patch(
+                "timecapsulesmb.cli.uninstall.remote_uninstall_payload",
+                side_effect=lambda _connection, _plan, *, callbacks: callbacks.measurement(
+                    "uninstall_sync", result="timeout", duration_sec=300.0,
+                ),
+            ))
             stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall", return_value=VerificationResult(False, ())))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes"])
@@ -777,6 +788,9 @@ class CliMaintenanceTests(CliTestCase):
         self.assertEqual(finished["device_came_back_after_reboot"], True)
         self.assertEqual(finished["post_uninstall_verified"], False)
         self.assertIn("stage=verify_post_uninstall", finished["error"])
+        self.assertEqual(
+            finished["execution"]["measurements"]["uninstall_sync"], [{"result": "timeout", "duration_sec": 300.0}],
+        )
 
     def test_fsck_yes_reboots_and_waits_by_default(self) -> None:
         output = io.StringIO()

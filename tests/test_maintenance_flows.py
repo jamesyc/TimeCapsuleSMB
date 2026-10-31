@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.deploy.executor import FLUSH_REMOTE_FILESYSTEMS_COMMAND, remote_uninstall_payload
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.device.errors import DeviceError, RsyncNotRunningError
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
@@ -48,7 +49,7 @@ from timecapsulesmb.services.maintenance import (
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.reboot import REBOOT_NO_DOWN_MESSAGE, REBOOT_UP_TIMEOUT_MESSAGE, REBOOT_UP_TIMEOUT_SECONDS, RebootFlowError
 from timecapsulesmb.transport.errors import SshNetworkError, TransportError
-from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime
 from tests.test_summaries import LANGUAGES, catalog, placeholder_types
 
@@ -893,6 +894,44 @@ class UninstallTests(unittest.TestCase):
                 except (RebootFlowError, DeviceError) as exc:
                     result = exc
         return result, recorder, reboot, verify
+
+    def _uninstall_in_order(self, plan, *, sync_error: BaseException | None = None):
+        """Every remote command of the removal, then the reboot request, in order."""
+        events: list[tuple] = []
+
+        def run_ssh(_connection, command, **_kwargs):
+            events.append(("ssh", command))
+            if command == FLUSH_REMOTE_FILESYSTEMS_COMMAND and sync_error is not None:
+                raise sync_error
+
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", side_effect=run_ssh), \
+                mock.patch("timecapsulesmb.services.maintenance.reboot_device",
+                           side_effect=lambda *_args, **_kwargs: events.append(("reboot",))), \
+                mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall",
+                           return_value=VerificationResult(ok=True, lines=())):
+            remote_uninstall_payload(CONNECTION, plan, callbacks=OperationCallbacks(
+                record_execution_measurement=lambda kind, **fields: events.append((kind, fields["result"])),
+            ))
+            reboot_after_uninstall(CONNECTION, plan, callbacks=RecordingCallbacks().callbacks)
+        return events
+
+    def test_the_removal_is_synced_before_the_reboot(self) -> None:
+        for wait in (True, False):
+            with self.subTest(wait=wait):
+                plan, _recorder, _mount = self.prepare(wait=wait)
+                events = self._uninstall_in_order(plan)
+                sync = events.index(("ssh", FLUSH_REMOTE_FILESYSTEMS_COMMAND))
+                removal = max(
+                    index for index, event in enumerate(events)
+                    if event[0] == "ssh" and "/Volumes/dk2/.samba4" in event[1]
+                )
+                self.assertLess(removal, sync)
+                self.assertEqual(events[sync + 1:], [("uninstall_sync", "ok"), ("reboot",)])
+
+    def test_a_sync_timeout_still_reboots(self) -> None:
+        plan, _recorder, _mount = self.prepare()
+        events = self._uninstall_in_order(plan, sync_error=SshCommandTimeout("sync timed out"))
+        self.assertEqual(events[-2:], [("uninstall_sync", "timeout"), ("reboot",)])
 
     def test_no_reboot_does_nothing(self) -> None:
         plan, _recorder, _mount = self.prepare(reboot=False)

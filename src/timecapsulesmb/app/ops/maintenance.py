@@ -179,7 +179,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     if dry_run:
         return OperationResult(True, uninstall_plan_payload(uninstall_plan_to_jsonable(plan)))
     context.stage("uninstall_payload")
-    remote_uninstall_payload(connection, plan)
+    remote_uninstall_payload(connection, plan, callbacks=context.to_operation_callbacks())
     try:
         verified = reboot_after_uninstall(connection, plan, callbacks=context.to_operation_callbacks())
     except RebootFlowError as exc:

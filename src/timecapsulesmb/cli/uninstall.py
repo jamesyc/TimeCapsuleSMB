@@ -105,7 +105,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print(f"  {payload_dir}")
         else:
             print("No mounted HFS volumes found; removing flash hooks and runtime state only.")
-        remote_uninstall_payload(connection, plan)
+        remote_uninstall_payload(connection, plan, callbacks=command_context.to_operation_callbacks())
         print("Removed managed payload, flash hooks, and runtime state.")
 
         if args.no_reboot:

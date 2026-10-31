@@ -163,7 +163,7 @@ from timecapsulesmb.services.runtime_verification import (
     recheck_cached_adisk,
     verify_managed_runtime_ready,
 )
-from timecapsulesmb.transport.errors import SshUploadTimeout
+from timecapsulesmb.transport.errors import SshLocalNetworkFilteredError, SshUploadTimeout
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError, upload_timeout_seconds
 
 
@@ -4529,9 +4529,43 @@ describe_managed_smbd_status "" ""
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         expected = [render_remote_action(action) for action in plan.remote_actions]
         connection = SshConnection("host", "pw", "-o foo")
+        measurements = []
+        callbacks = OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields)))
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_uninstall_payload(connection, plan)
-        self.assertEqual([call.args[1] for call in run_ssh_mock.call_args_list], expected)
+            remote_uninstall_payload(connection, plan, callbacks=callbacks)
+        # The sync follows the last removal.
+        self.assertEqual([call.args[1] for call in run_ssh_mock.call_args_list], [*expected, FLUSH_REMOTE_FILESYSTEMS_COMMAND])
+        [(kind, fields)] = measurements
+        self.assertEqual((kind, fields["result"]), ("uninstall_sync", "ok"))
+        self.assertGreaterEqual(fields["duration_sec"], 0.0)
+
+    def test_remote_uninstall_payload_raises_any_other_sync_failure(self) -> None:
+        # A connection the Mac lost or filtered keeps its own error and guidance.
+        plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
+        error = SshLocalNetworkFilteredError("filtered")
+
+        def run_ssh(_connection, command, **_kwargs):
+            if command == FLUSH_REMOTE_FILESYSTEMS_COMMAND:
+                raise error
+
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", side_effect=run_ssh):
+            with self.assertRaises(SshLocalNetworkFilteredError) as caught:
+                remote_uninstall_payload(SshConnection("host", "pw", "-o foo"), plan, callbacks=OperationCallbacks(record_execution_measurement=lambda *_args, **_fields: self.fail("synced")))
+        self.assertIs(caught.exception, error)
+
+    def test_remote_uninstall_payload_stops_at_a_failed_removal_before_the_sync(self) -> None:
+        plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
+        commands = []
+
+        def run_ssh(_connection, command, **_kwargs):
+            commands.append(command)
+            if command.startswith("rm -rf "):
+                raise SshError("rm failed")
+
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", side_effect=run_ssh):
+            with self.assertRaisesRegex(SshError, "rm failed"):
+                remote_uninstall_payload(SshConnection("host", "pw", "-o foo"), plan, callbacks=OperationCallbacks(record_execution_measurement=lambda *_args, **_fields: self.fail("synced")))
+        self.assertNotIn(FLUSH_REMOTE_FILESYSTEMS_COMMAND, commands)
 
     def test_render_process_present_ignores_zombies_for_name_and_full_matches(self) -> None:
         def process_present(command: str, *, rows: list[str]) -> bool:

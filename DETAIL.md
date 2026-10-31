@@ -769,7 +769,7 @@ Copy off anything you need from the volume first. For the internal disk, run Wip
 
 ### `uninstall`
 
-`tcapsule uninstall` removes TimeCapsuleSMB's files from the device. It stops the manager, removes the payload directories from the mounted HFS volumes, removes the loader files under `/mnt/Flash` and the runtime state, and reboots so Apple's services and the root filesystem start clean. After a waited reboot it checks the files are gone. Unless `--no-reboot` or `--dry-run` is given, it stops before mounting anything while a volume exists only in memory. It does not restore a firmware bank changed by `flash --patch`; `flash --restore` does that.
+`tcapsule uninstall` removes TimeCapsuleSMB's files from the device. It stops the manager, removes the payload directories from the mounted HFS volumes, removes the loader files under `/mnt/Flash` and the runtime state, runs `sync`, and reboots so Apple's services and the root filesystem start clean. After a waited reboot it checks the files are gone. Unless `--no-reboot` or `--dry-run` is given, it stops before mounting anything while a volume exists only in memory. It does not restore a firmware bank changed by `flash --patch`; `flash --restore` does that.
 
 Arguments:
 - `--config PATH`: use another config

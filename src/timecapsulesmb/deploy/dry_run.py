@@ -250,6 +250,7 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
     lines.append("Remote actions:")
     for command in render_remote_actions(plan.remote_actions):
         lines.append(f"  {command}")
+    lines.append("  sync")
     lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")

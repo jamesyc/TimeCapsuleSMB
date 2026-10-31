@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 
 from timecapsulesmb.deploy.commands import RemoteAction, RemovePathsAction, render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, FileTransfer, UninstallPlan
 from timecapsulesmb.device.storage import MaStVolume, VolumeClaims, ensure_volume_root_mounted_conn
+from timecapsulesmb.transport.errors import SshCommandTimeout
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, upload_file
 
 if TYPE_CHECKING:
     from timecapsulesmb.deploy.migration import OversizedSummary, SkippedSummary
+    from timecapsulesmb.services.callbacks import OperationCallbacks
 
 
 # One sync, no settle wait. /mnt/Flash is mounted synchronously, so a Flash
@@ -129,7 +132,24 @@ def flush_remote_filesystem_writes(connection: SshConnection) -> None:
     run_ssh(connection, FLUSH_REMOTE_FILESYSTEMS_COMMAND, timeout=FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS)
 
 
-def remote_uninstall_payload(connection: SshConnection, plan: UninstallPlan) -> None:
+def remote_uninstall_payload(
+    connection: SshConnection,
+    plan: UninstallPlan,
+    *,
+    callbacks: OperationCallbacks,
+) -> None:
     # One SSH command per action: the stop commands chained with rm in one
     # command failed with rc=255 on NetBSD 4 Time Capsules.
     run_remote_actions(connection, plan.remote_actions)
+    # The sync is insurance for the removal on the HFS disks. Without a
+    # restart, anything it fails to write out is inert payload with no boot
+    # hook; ACPd's restart writes the disks out itself. So a sync that times
+    # out on a disk that stopped answering must not keep the device from
+    # restarting. Any other failure stops the uninstall like the removal's.
+    started = time.monotonic()
+    result = "ok"
+    try:
+        flush_remote_filesystem_writes(connection)
+    except SshCommandTimeout:
+        result = "timeout"
+    callbacks.measurement("uninstall_sync", result=result, duration_sec=round(time.monotonic() - started, 3))

@@ -83,7 +83,9 @@ def test_uninstall_stops_a_running_migration_before_removing_it(monkeypatch, tmp
     monkeypatch.setattr(maintenance_service, 'reboot_device', lambda *a, wait, **kw: reboot.append('wait' if wait else 'request'))
     monkeypatch.setattr(maintenance_service, 'verify_post_uninstall', lambda *a: True)
     monkeypatch.setattr(maintenance_service, 'render_post_uninstall_verification', lambda *a: [])
-    context = SimpleNamespace(stage=lambda *a: None, log=lambda *a: None, to_operation_callbacks=OperationCallbacks,
+    measurements = []
+    callbacks = OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields)))
+    context = SimpleNamespace(stage=lambda *a: None, log=lambda *a: None, to_operation_callbacks=lambda: callbacks,
                               reading_at=lambda connection: None)
 
     if scenario in ('unkillable', 'ps_failure'):
@@ -97,6 +99,10 @@ def test_uninstall_stops_a_running_migration_before_removing_it(monkeypatch, tmp
         maintenance.uninstall_operation({'no_wait': no_wait}, context)
         first_remove = next(i for i, c in enumerate(calls) if c.startswith('rm -rf '))
         assert calls.index(guard) < first_remove
+        assert calls[-1] == executor.FLUSH_REMOTE_FILESYSTEMS_COMMAND
+        [(kind, sync)] = measurements
+        assert (kind, sync['result']) == ('uninstall_sync', 'ok')
+        assert isinstance(sync['duration_sec'], float)
         assert reboot == ['request' if no_wait else 'wait']
     sent = signals.read_text().split('\n')[:-1] if signals.exists() else []
     assert sent == {
