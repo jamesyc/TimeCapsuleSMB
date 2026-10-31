@@ -6,6 +6,9 @@ import importlib
 import struct
 import zlib
 
+from timecapsulesmb.core.errors import missing_dependency_message
+from timecapsulesmb.core.install import tcapsule_command
+
 
 MAGIC_PREFIX = b"APPLE-FIRMWARE\x00"
 HEADER_FORMAT = struct.Struct(">15sB2I4BI")
@@ -13,10 +16,6 @@ CHECKSUM_FORMAT = struct.Struct(">I")
 ENCRYPTED_FLAG = 0x02
 AES_BLOCK_SIZE = 16
 AES_CHUNK_SIZE = 0x8000
-PYCRYPTODOME_BOOTSTRAP_MESSAGE = (
-    "Python package pycryptodome is required for basebinary firmware encryption. "
-    "Run `./tcapsule bootstrap` to install it, then rerun `.venv/bin/tcapsule flash`."
-)
 
 
 class BasebinaryError(RuntimeError):
@@ -179,7 +178,9 @@ def _load_aes_module() -> object:
     try:
         return importlib.import_module("Crypto.Cipher.AES")
     except Exception as exc:
-        raise BasebinaryError(PYCRYPTODOME_BOOTSTRAP_MESSAGE) from exc
+        raise BasebinaryError(
+            missing_dependency_message("pycryptodome", exc, rerun_command=tcapsule_command("flash"))
+        ) from exc
 
 
 def _aes_cbc_cipher(key: bytes, iv: bytes) -> object:

@@ -8,7 +8,8 @@ from typing import Mapping
 import zlib
 
 from timecapsulesmb.core.error_codes import CodedError
-from timecapsulesmb.core.errors import require_python_module
+from timecapsulesmb.core.errors import missing_dependency_message, require_python_module
+from timecapsulesmb.core.install import tcapsule_command
 
 
 STOCK_LOGIN_NETBSD4_DUMMY = (
@@ -49,10 +50,6 @@ GZIP_MAGIC = b"\x1f\x8b\x08"
 GZIP_RESERVED_FLAG_BITS = 0xE0
 FOOTER_SCAN_BYTES = 4096
 MIN_FOOTER_END_OFFSET = 16
-ZOPFLI_BOOTSTRAP_MESSAGE = (
-    "Python package zopfli is required for flash patch compression. "
-    "Run `./tcapsule bootstrap` to install it, then rerun `.venv/bin/tcapsule flash`."
-)
 
 
 class FlashAnalysisError(CodedError):
@@ -399,7 +396,9 @@ def _load_zopfli_gzip() -> object:
 
 def require_zopfli_gzip_available() -> None:
     try:
-        require_python_module("zopfli.gzip", ZOPFLI_BOOTSTRAP_MESSAGE)
+        require_python_module(
+            "zopfli.gzip", missing_dependency_message("zopfli", rerun_command=tcapsule_command("flash"))
+        )
     except RuntimeError as exc:
         raise FlashAnalysisError(str(exc)) from exc
 
@@ -408,7 +407,9 @@ def _compress_with_zopfli_gzip(data: bytes) -> CompressionResult:
     try:
         zopfli_gzip = _load_zopfli_gzip()
     except Exception as exc:
-        raise FlashAnalysisError(ZOPFLI_BOOTSTRAP_MESSAGE) from exc
+        raise FlashAnalysisError(
+            missing_dependency_message("zopfli", exc, rerun_command=tcapsule_command("flash"))
+        ) from exc
     compressed = zopfli_gzip.compress(
         data,
         numiterations=5,

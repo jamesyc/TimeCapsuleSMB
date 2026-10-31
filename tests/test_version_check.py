@@ -284,6 +284,17 @@ class VersionCheckTests(unittest.TestCase):
         self.assertIn("Update required.", text)
         self.assertIn(f"Client version is out of date, download the latest version from: {DEFAULT_DOWNLOAD_URL}", text)
 
+    def test_render_version_block_message_tells_a_homebrew_install_to_upgrade_with_brew(self) -> None:
+        result = VersionCheckResult(should_block=True, message="Update required.", download_url=DEFAULT_DOWNLOAD_URL)
+
+        with mock.patch.dict("os.environ", {"TCAPSULE_CLIENT": "homebrew"}):
+            text = render_version_block_message(result)
+
+        self.assertIn("Update required.", text)
+        self.assertIn("Client version is out of date, run `brew update && brew upgrade tcapsule` to update it.", text)
+        # The download page has the app's disk image, which would not update the formula.
+        self.assertNotIn(DEFAULT_DOWNLOAD_URL, text)
+
 
 
 def appcast(*items: tuple[str | None, str | None]) -> bytes:

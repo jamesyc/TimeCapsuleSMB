@@ -14,6 +14,7 @@ from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
+from timecapsulesmb.core.install import HOMEBREW_UPGRADE_COMMAND, installed_with_homebrew
 from timecapsulesmb.core.process import popen_process, run_process
 from timecapsulesmb.transport.local import find_command
 from timecapsulesmb.transport.ssh_client import require_local_ssh
@@ -542,6 +543,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare the local host for TimeCapsuleSMB user workflows.")
     parser.add_argument("--python", default=sys.executable or "python3", help="Python interpreter to use for the repo .venv")
     args = parser.parse_args(argv)
+    if installed_with_homebrew():
+        # bootstrap sets up a source checkout; Homebrew already installed
+        # tcapsule's Python and packages.
+        print("Homebrew installed tcapsule and everything it needs, so there is nothing to bootstrap.")
+        print(f"Run `{HOMEBREW_UPGRADE_COMMAND}` to update it.")
+        return 0
 
     ensure_install_id()
     config = load_optional_env_config()

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import importlib
-import shlex
 import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+from timecapsulesmb.core.install import reinstall_command, tcapsule_command
 from timecapsulesmb.core.paths import package_project_root
 
 
@@ -24,9 +24,7 @@ def _active_venv_matches(expected_venv: Path) -> bool:
 
 
 def _current_tcapsule_command() -> str:
-    if len(sys.argv) <= 1:
-        return ".venv/bin/tcapsule <command>"
-    return shlex.join([".venv/bin/tcapsule", *sys.argv[1:]])
+    return tcapsule_command(*sys.argv[1:])
 
 
 def _dependency_recovery_message(install_command: str) -> str:
@@ -62,11 +60,11 @@ def missing_dependency_message(
     module_name: str,
     error: BaseException | None = None,
     *,
-    install_command: str = "./tcapsule bootstrap",
+    install_command: str | None = None,
     rerun_command: str | None = None,
 ) -> str:
     error_suffix = f" {type(error).__name__}: {error}" if error is not None else ""
-    recovery = _dependency_recovery_message(install_command)
+    recovery = _dependency_recovery_message(install_command or reinstall_command())
     message = (
         f"Failed to load {module_name}. Install the Python package {module_name}. "
         f"{recovery}"

@@ -60,6 +60,24 @@ class CliBootstrapTests(CliTestCase):
         self.assertEqual(finished["host_platform_label"], "macOS")
         self.assertEqual(finished["selected_python_version"], "3.11.9")
 
+    def test_homebrew_install_has_nothing_to_bootstrap(self) -> None:
+        output = io.StringIO()
+        with mock.patch.dict("os.environ", {"TCAPSULE_CLIENT": "homebrew"}):
+            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv") as ensure_venv:
+                with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id") as ensure_install_id:
+                    with redirect_stdout(output):
+                        rc = bootstrap.main([])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            output.getvalue(),
+            "Homebrew installed tcapsule and everything it needs, so there is nothing to bootstrap.\n"
+            "Run `brew update && brew upgrade tcapsule` to update it.\n",
+        )
+        ensure_venv.assert_not_called()
+        ensure_install_id.assert_not_called()
+        self.client.assert_not_called()
+
     def test_bootstrap_prints_same_core_next_steps_on_linux(self) -> None:
         output = io.StringIO()
         smbclient = {"smbclient": "/usr/bin/smbclient"}

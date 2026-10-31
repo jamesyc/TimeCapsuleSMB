@@ -265,7 +265,7 @@ class FlashAnalysisTests(unittest.TestCase):
             with self.assertRaises(FlashAnalysisError) as raised:
                 build_patch(bank, footer, member, login)
 
-        self.assertIn("Python package zopfli is required", str(raised.exception))
+        self.assertIn("Failed to load zopfli", str(raised.exception))
         self.assertIn("bootstrap", str(raised.exception))
 
     def test_patch_errors_are_reported_for_primary_bank_only_when_zopfli_gzip_is_too_large(self) -> None:

@@ -109,6 +109,15 @@ Nothing reaches users until the draft is published. Never push a `v*` tag to try
 
 The app checks `https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/appcast.xml`, which follows the newest published release that is not a prerelease. Publishing a release with "Set as the latest release" ticked is what offers it to the apps; drafts and prereleases are never offered.
 
+The Homebrew tap, `jamesyc/homebrew-tap`, updates itself. Its own workflow, `update.yml`, runs daily: when the latest release has a `TimeCapsuleSMB.dmg` the tap does not have yet, it writes the version and the SHA256 of the disk image and of the tag's source tarball into the cask and formula in this repo's `homebrew/`, taken from `main`, adds the formula's Python packages with `brew update-python-resources`, and commits both to the tap once `brew audit --strict --online`, a source install of the formula and `brew test` pass. It needs no secret. Run it by hand after publishing so the tap gets the release at once, and with a tag to write a release again after fixing `homebrew/` on `main`:
+
+```bash
+gh workflow run update.yml -R jamesyc/homebrew-tap
+gh workflow run update.yml -R jamesyc/homebrew-tap -f tag=v<version>
+```
+
+GitHub turns the daily run off after 60 days without a commit to the tap; turn it back on in the tap's Actions tab.
+
 ### One-time setup
 
 - A `release` environment in the repository settings whose deployment rule admits only `v*` tags, so only tag runs get its secrets.
@@ -145,6 +154,7 @@ A universal build on Apple silicon runs the smoke test (the helper's requests, t
 - Write the release notes in the draft, with compatibility or flash-safety warnings when applicable.
 - Publish with "Set as the latest release" ticked. A hidden build's draft is a prerelease: publish it as a prerelease, never as the latest release, so it never becomes the feed.
 - Confirm the asset SHA256 digests are visible on GitHub.
+- Run the tap's `update.yml` (above) and check that it committed the release to `jamesyc/homebrew-tap`.
 
 ## Updating And Pulling Releases
 

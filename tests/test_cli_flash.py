@@ -654,8 +654,9 @@ class CliFlashTests(CliTestCase):
     def test_flash_patch_missing_zopfli_fails_before_config_or_device_reads(self) -> None:
         output = io.StringIO()
         missing_zopfli = RuntimeError(
-            "Python package zopfli is required for flash patch compression. "
-            "Run `./tcapsule bootstrap` to install it, then rerun `.venv/bin/tcapsule flash`."
+            "Failed to load zopfli. Install the Python package zopfli. "
+            "Run `./tcapsule bootstrap` first to set up the required dependencies. "
+            "Then rerun `.venv/bin/tcapsule flash`."
         )
         with mock.patch("timecapsulesmb.flash.require_python_module", side_effect=missing_zopfli):
             with mock.patch("timecapsulesmb.cli.flash.ensure_install_id") as ensure_mock:
@@ -666,7 +667,7 @@ class CliFlashTests(CliTestCase):
                                 with self.assertRaises(SystemExit) as raised:
                                     cli_flash.main(["--patch"])
 
-        self.assertIn("Python package zopfli is required", str(raised.exception))
+        self.assertIn("Failed to load zopfli", str(raised.exception))
         self.assertIn("./tcapsule bootstrap", str(raised.exception))
         self.assertIn(".venv/bin/tcapsule flash", str(raised.exception))
         self.assertEqual(output.getvalue(), "")

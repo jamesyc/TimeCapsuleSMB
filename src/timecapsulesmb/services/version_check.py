@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from xml.etree import ElementTree
 
+from timecapsulesmb.core.install import HOMEBREW_UPGRADE_COMMAND, installed_with_homebrew
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.release import CLI_VERSION_CODE
 from timecapsulesmb.transport.http import HttpError, http_get
@@ -296,10 +297,8 @@ def _check_client_version(
 
 
 def render_version_block_message(result: VersionCheckResult) -> str:
-    return "\n".join(
-        [
-            f"Checking current version from: {VERSION_CHECK_URL}",
-            result.message,
-            f"Client version is out of date, download the latest version from: {result.download_url}",
-        ]
-    )
+    if installed_with_homebrew():
+        update = f"Client version is out of date, run `{HOMEBREW_UPGRADE_COMMAND}` to update it."
+    else:
+        update = f"Client version is out of date, download the latest version from: {result.download_url}"
+    return "\n".join([f"Checking current version from: {VERSION_CHECK_URL}", result.message, update])

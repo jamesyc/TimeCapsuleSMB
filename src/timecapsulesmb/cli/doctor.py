@@ -14,6 +14,7 @@ from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.doctor import build_doctor_error, doctor_finished_fields
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
+from timecapsulesmb.core.install import tcapsule_command
 from timecapsulesmb.core.paths import resolve_app_paths
 
 
@@ -73,7 +74,7 @@ def print_followup_help() -> None:
     print("- (To remove old Apple devices entries from mDNS cache) try running:")
     print("    sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder")
     print("- (If you have disk corruption issues, or error 22) then try running:")
-    print("    .venv/bin/tcapsule fsck")
+    print(f"    {tcapsule_command('fsck')}")
 
 
 def main(argv: Optional[list[str]] = None) -> int:

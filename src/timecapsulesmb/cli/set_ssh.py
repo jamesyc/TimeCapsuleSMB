@@ -13,6 +13,7 @@ from timecapsulesmb.cli.runtime import (
 )
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.config import ConfigError
+from timecapsulesmb.core.install import tcapsule_command
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.reboot import RebootFlowError
@@ -74,7 +75,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         try:
             command_context.require_valid_config(profile="set_ssh_status" if args.status else "set_ssh")
         except ConfigError as exc:
-            message = str(exc) or f"Missing {config.path} settings. Run '.venv/bin/tcapsule configure' first."
+            message = str(exc) or f"Missing {config.path} settings. Run '{tcapsule_command('configure')}' first."
             command_context.update_fields(set_ssh_action="missing_config")
             print(message)
             command_context.fail_with_error(message)

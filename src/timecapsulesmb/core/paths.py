@@ -8,6 +8,8 @@ import re
 from importlib import resources
 from pathlib import Path
 
+from timecapsulesmb.core.install import installed_with_homebrew
+
 
 TCAPSULE_DISTRIBUTION_ROOT_ENV = "TCAPSULE_DISTRIBUTION_ROOT"
 TCAPSULE_CONFIG_ENV = "TCAPSULE_CONFIG"
@@ -29,11 +31,18 @@ class DistributionRootValidation:
         if self.ok:
             return ""
         missing = ", ".join(self.missing_artifacts)
+        if installed_with_homebrew():
+            # The formula's wrapper sets the root; reinstalling restores it.
+            fix = "Run `brew reinstall tcapsule` to restore them."
+        else:
+            fix = (
+                "Run tcapsule from a TimeCapsuleSMB source checkout or set "
+                f"{TCAPSULE_DISTRIBUTION_ROOT_ENV} to the checkout/payload root."
+            )
         return (
             f"Invalid TimeCapsuleSMB distribution root: {self.root}\n"
             f"Missing checked-in payload artifact(s): {missing}\n"
-            "Run tcapsule from a TimeCapsuleSMB source checkout or set "
-            f"{TCAPSULE_DISTRIBUTION_ROOT_ENV} to the checkout/payload root."
+            f"{fix}"
         )
 
 

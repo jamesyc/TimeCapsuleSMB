@@ -112,6 +112,15 @@ jobs:
             exit 1
           fi
 
+      # The tap's update workflow fills these in only for a published release.
+      # `ruby -c` checks one file and passes any others to it as arguments.
+      - name: Check the Homebrew cask and formula parse
+        if: runner.os == 'Linux' && matrix.python-version == '3.15'
+        run: |
+          for file in homebrew/Casks/*.rb homebrew/Formula/*.rb; do
+            ruby -c "$file"
+          done
+
       - name: Verify checked-in artifact manifest
         run: .venv/bin/python -m pytest tests/test_artifacts.py tests/test_artifact_resolver.py
 

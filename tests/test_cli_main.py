@@ -22,6 +22,7 @@ from timecapsulesmb.cli import (
 )
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.core.paths import AppPaths
+from timecapsulesmb.core.release import CLI_VERSION
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
     BonjourQueryDiagnostics,
@@ -94,6 +95,38 @@ class CliMainTests(CliTestCase):
         command.assert_called_once_with(["--skip-smb"])
         self.assertEqual(stderr.getvalue(), f"TimeCapsuleSMB v3.9.0 is available: {DEFAULT_DOWNLOAD_URL}\n")
         self.assertEqual(stdout.getvalue(), "")
+
+    def test_main_tells_a_homebrew_install_to_upgrade_with_brew(self) -> None:
+        stderr = io.StringIO()
+        command = mock.Mock(return_value=0)
+        self._version_check.return_value = VersionCheckResult(
+            should_block=False,
+            local_version_code=30800,
+            available_version_code=30900,
+            available_version="3.9.0",
+            source="network",
+        )
+
+        with mock.patch.dict("os.environ", {"TCAPSULE_CLIENT": "homebrew"}):
+            with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": command}):
+                with redirect_stderr(stderr):
+                    rc = main(["doctor"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stderr.getvalue(), "TimeCapsuleSMB v3.9.0 is available: run `brew update && brew upgrade tcapsule`\n")
+
+    def test_version_flag_prints_the_cli_version_without_a_command(self) -> None:
+        stdout = io.StringIO()
+        command = mock.Mock(return_value=0)
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": command}):
+            with redirect_stdout(stdout):
+                with self.assertRaises(SystemExit) as raised:
+                    main(["--version"])
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertEqual(stdout.getvalue(), f"tcapsule {CLI_VERSION}\n")
+        command.assert_not_called()
+        self._version_check.assert_not_called()
 
     def test_main_names_no_release_when_current_or_unknown(self) -> None:
         cases = {

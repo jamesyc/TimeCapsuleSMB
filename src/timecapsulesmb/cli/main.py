@@ -17,8 +17,10 @@ from . import (
     validate_install, wipe_disk,
 )
 from timecapsulesmb.app.ops import KEEP_AWAKE_OPERATIONS
+from timecapsulesmb.core.install import HOMEBREW_UPGRADE_COMMAND, installed_with_homebrew
 from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.core.paths import DistributionRootError
+from timecapsulesmb.core.release import CLI_VERSION
 from timecapsulesmb.services.version_check import (
     DEFAULT_DOWNLOAD_URL,
     check_client_version,
@@ -46,6 +48,7 @@ COMMANDS = {
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tcapsule", description="TimeCapsuleSMB command line interface.")
+    parser.add_argument("--version", action="version", version=f"tcapsule {CLI_VERSION}")
     parser.add_argument("command", choices=sorted(COMMANDS))
     parser.add_argument("args", nargs=argparse.REMAINDER)
     return parser
@@ -62,10 +65,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 1
             available = version_check.available_version_code
             if available is not None and available > version_check.local_version_code:
-                print(
-                    f"TimeCapsuleSMB v{version_check.available_version} is available: {DEFAULT_DOWNLOAD_URL}",
-                    file=sys.stderr,
-                )
+                where = f"run `{HOMEBREW_UPGRADE_COMMAND}`" if installed_with_homebrew() else DEFAULT_DOWNLOAD_URL
+                print(f"TimeCapsuleSMB v{version_check.available_version} is available: {where}", file=sys.stderr)
         except Exception:
             pass
     # The app's operation registry names the long device commands for both

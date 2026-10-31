@@ -31,6 +31,7 @@ from timecapsulesmb.cli.runtime import (
     read_terminal_line,
 )
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
+from timecapsulesmb.core.install import tcapsule_command
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import configure as configure_service
@@ -679,7 +680,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"\nReview the .env file configuration: wrote {env_path}")
             print("Next steps:")
             print("- Deploy this configuration to your Time Capsule/Airport Extreme device, run:")
-            print("    .venv/bin/tcapsule deploy")
+            print(f"    {tcapsule_command('deploy')}")
         command_context.succeed()
         return 0
     return 1

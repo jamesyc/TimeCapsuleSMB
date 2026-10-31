@@ -48,6 +48,7 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 0. ***Turn off any VPN/Firewall/etc software*** or else it will have problems connecting to the device! Also, ***connect over ethernet, not Wi-Fi,*** if you are connected directly to the device. A direct Wi-Fi connection will disconnect you every time the device reboots.
 1. Download the latest release of the app from here: https://github.com/jamesyc/TimeCapsuleSMB/releases
 2. Download `TimeCapsuleSMB.dmg`, open it, drag TimeCapsuleSMB to Applications, and open it from there. The app offers new versions itself; the CLI prints a line when a newer release exists.
+    - With Homebrew, `brew install --cask jamesyc/tap/timecapsulesmb` does the same.
 3. Make sure *Local Network* permissions is granted (System Settings → Privacy & Security → Local Network → make sure TimeCapsuleSMB is allowed, then quit/reopen the app). Close and re-open the app after granting permissions.
 4. Click "Add Device" on the left sidebar, and select your device. 
 5. Enter your device password, and click "Save Device". 
@@ -70,7 +71,18 @@ Please [read the FAQ](FAQ.md) for more information. If you have an issue that co
 
 ## Quick Start (with python)
 
-Download (or run `git clone`) this repository to a folder on your Mac or Linux machine.
+On an Apple silicon Mac with macOS 14 or later, Homebrew can install the `tcapsule` command:
+
+```bash
+brew install jamesyc/tap/tcapsule
+tcapsule configure
+tcapsule deploy
+tcapsule doctor
+```
+
+It takes the same commands as the steps below, typed as `tcapsule` in place of `.venv/bin/tcapsule`, and needs no `bootstrap`. Homebrew has no prebuilt Python 3.15 for macOS 14 and 15, so there it compiles Python first. Its settings are in `~/Library/Application Support/TimeCapsuleSMB/CLI/.env`. `brew update && brew upgrade tcapsule` updates it and `brew uninstall tcapsule` removes it.
+
+Otherwise, download (or run `git clone`) this repository to a folder on your Mac or Linux machine.
 
 From the root of this repository, the normal quick start commands to run are:
 

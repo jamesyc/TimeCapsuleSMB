@@ -13,7 +13,7 @@ from timecapsulesmb.telemetry import TelemetryClient
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate the local TimeCapsuleSMB repo-only install.")
+    parser = argparse.ArgumentParser(description="Check that this TimeCapsuleSMB install has its Python packages and device payloads.")
     add_config_argument(parser)
     parser.add_argument("--json", action="store_true", help="Output validation results as JSON")
     args = parser.parse_args(argv)

@@ -81,6 +81,21 @@ class PathResolutionTests(unittest.TestCase):
         self.assertIn("Missing checked-in payload artifact", str(ctx.exception))
         self.assertIn("bin/", str(ctx.exception))
 
+    def test_missing_payloads_name_each_installs_own_recovery(self) -> None:
+        # Homebrew's wrapper sets the root, so pointing it elsewhere is no fix.
+        cases = {"homebrew": "Run `brew reinstall tcapsule` to restore them.", None: "source checkout or set"}
+        for client, expected in cases.items():
+            env = {name: value for name, value in os.environ.items() if name != "TCAPSULE_CLIENT"}
+            if client:
+                env["TCAPSULE_CLIENT"] = client
+            with self.subTest(client=client), tempfile.TemporaryDirectory() as tmp:
+                env[TCAPSULE_DISTRIBUTION_ROOT_ENV] = str(Path(tmp).resolve())
+                with mock.patch.dict(os.environ, env, clear=True):
+                    with self.assertRaises(DistributionRootError) as ctx:
+                        resolve_distribution_root(Path(tmp))
+                self.assertIn(expected, str(ctx.exception))
+                self.assertEqual("brew reinstall" in str(ctx.exception), client == "homebrew")
+
     def test_config_path_precedence_prefers_explicit_then_env_then_repo_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
