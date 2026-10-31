@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.15,<3.16"
+# dependencies = []
+# ///
 """Write the Sparkle appcast for one release of the packaged app.
 
 The feed has one item: the release being made. Its version, version code and

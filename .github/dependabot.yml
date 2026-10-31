@@ -8,24 +8,6 @@ updates:
       time: "09:00"
       timezone: America/Los_Angeles
 
-  - package-ecosystem: pip
-    # pyproject.toml's floors stay where Python 3.9 can meet them, so only
-    # the app's hash-pinned requirements are bumped; see RELEASE.md.
-    directory: /macos/TimeCapsuleSMB/tools
-    schedule:
-      interval: weekly
-      day: monday
-      time: "09:00"
-      timezone: America/Los_Angeles
-    # Packaging only installs releases at least a day old
-    # (UV_PACKAGING_OPTIONS in package_app.py); never pin a newer one.
-    cooldown:
-      default-days: 1
-    groups:
-      python-dependencies:
-        patterns:
-          - "*"
-
   - package-ecosystem: swift
     directory: /macos/TimeCapsuleSMB
     schedule:

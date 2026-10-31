@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.15,<3.16"
+# dependencies = []
+# ///
 from __future__ import annotations
 
 import argparse
@@ -17,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -46,15 +51,17 @@ RESOURCE_BUNDLE_NAME = "TimeCapsuleSMBMac_TimeCapsuleSMBApp.bundle"
 SPARKLE_FEED_URL = "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/appcast.xml"
 SPARKLE_PUBLIC_ED_KEY = "6dvSb76x5br3iXTAGXUzpEhmaTHnXGN6l63nJ+deLGg="
 SPARKLE_FRAMEWORK_NAME = "Sparkle.framework"
-PYTHON_RUNTIME_VERSION = "3.13.13"
-PYTHON_RUNTIME_URL = f"https://www.python.org/ftp/python/{PYTHON_RUNTIME_VERSION}/python-{PYTHON_RUNTIME_VERSION}-macos11.pkg"
-# The package at PYTHON_RUNTIME_URL; change it with PYTHON_RUNTIME_VERSION.
-PYTHON_RUNTIME_SHA256 = "a909cb655af5db67d5a90b3603437a1d58bec3446d624e4034e278ac62023cc9"
+# The app bundles the newest final release of this series that python.org
+# publishes as its universal macOS installer.
+PYTHON_RUNTIME_SERIES = "3.15"
+PYTHON_RUNTIME_INDEX = "https://www.python.org/ftp/python/"
+# Who must have signed that installer. A lookalike certificate cannot share
+# the Python Software Foundation's team ID.
+PYTHON_RUNTIME_SIGNER = "Developer ID Installer: Python Software Foundation (BMM5U3QVKW)"
 PYTHON_FRAMEWORK_NAME = "Python.framework"
-# Pinned with hashes by update_python_requirements.py, the only writer: the
-# project's dependencies with their own, and what builds the project.
-BUNDLED_PYTHON_REQUIREMENTS = PACKAGE_ROOT / "tools" / "bundled-requirements.txt"
-PYTHON_BUILD_REQUIREMENTS = PACKAGE_ROOT / "tools" / "build-requirements.txt"
+# The bundled Python's version and the app's Python packages, resolved at
+# build time; CI audits this file and keys its package cache on it.
+BUNDLED_PYTHON_PACKAGES_FILE = "python-packages.txt"
 # On every uv call packaging makes: uv's configuration files are ignored, so
 # the builder's own settings cannot change a release, and only releases at
 # least a day old are used, which gives PyPI time to remove a malicious upload.
@@ -65,8 +72,8 @@ BUNDLED_EXTRA_PYTHON_REQUIREMENTS = ("certifi",)
 DEFAULT_ARCHITECTURES = ("arm64", "x86_64")
 CACHE_KEY_VERSION = 1
 PYTHON_RUNTIME_CACHE_VERSION = 2
-# 3: uv installs the pinned requirements files instead of pip.
-PYTHON_SITE_PACKAGES_CACHE_VERSION = 3
+# 4: keyed on the packages resolved for the build, not on pinned files.
+PYTHON_SITE_PACKAGES_CACHE_VERSION = 4
 APP_ICON_CACHE_VERSION = 1
 DEFAULT_NOTARY_PROFILE = "tcapsulesmb-notary"
 DEFAULT_NOTARY_TIMEOUT = "30m"
@@ -523,18 +530,17 @@ def copy_helper_executable(source: Path, destination: Path) -> None:
     destination.chmod(0o755)
 
 
-def python_major_minor(python: str) -> tuple[int, int]:
-    code = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+def python_version(python: str) -> str:
+    """The interpreter's version, such as 3.15.2."""
     completed = subprocess.run(
-        [python, "-c", code],
+        [python, "-c", "import platform; print(platform.python_version())"],
         env=python_subprocess_env(),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=True,
     )
-    major, minor = completed.stdout.strip().split(".", 1)
-    return int(major), int(minor)
+    return completed.stdout.strip()
 
 
 def package_cache_dir(name: str) -> Path:
@@ -669,31 +675,90 @@ def replace_path(source: Path, destination: Path) -> None:
 
 
 def download_file(url: str, destination: Path) -> None:
+    """Download to a partial file beside `destination`, renamed into place
+    only once complete, so a download cut short never sits under the name
+    a later run takes as downloaded."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url, timeout=60) as response:
-        with destination.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
+    partial = destination.with_name(destination.name + ".partial")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            with partial.open("wb") as handle:
+                shutil.copyfileobj(response, handle)
+        partial.replace(destination)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def url_exists(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=60):
+            return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise
+
+
+def newest_python_runtime_url(series: str = PYTHON_RUNTIME_SERIES) -> str:
+    """The universal macOS installer of the newest final Python in `series`.
+    python.org files a prerelease under its final version's folder (3.16.0a1
+    in 3.16.0/), so a folder counts only once it holds the final installer.
+    Unlike the packages, a Python release is taken as soon as python.org posts
+    it, with no one-day wait; only its PSF signature vouches for it."""
+    with urllib.request.urlopen(PYTHON_RUNTIME_INDEX, timeout=60) as response:
+        index = response.read().decode("utf-8", "replace")
+    folders = set(re.findall(rf'href="({re.escape(series)}\.\d+)/"', index))
+    for version in sorted(folders, key=lambda name: tuple(map(int, name.split("."))), reverse=True):
+        url = f"{PYTHON_RUNTIME_INDEX}{version}/python-{version}-macos11.pkg"
+        if url_exists(url):
+            return url
+    raise RuntimeError(f"{PYTHON_RUNTIME_INDEX} has no final Python {series} macOS installer")
+
+
+# spctl asks Apple's notary service online when the installer carries no
+# stapled ticket; a stalled network then fails the build instead of hanging it.
+PYTHON_RUNTIME_SIGNATURE_TIMEOUT = 120
+
+
+def python_runtime_signature_problem(pkg: Path) -> str | None:
+    """Why the installer is not the Python Software Foundation's, notarized,
+    or None when it is. Its signature, not a recorded hash, vouches for it.
+    A check that does not finish raises: the installer itself may be fine."""
+    def check(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=PYTHON_RUNTIME_SIGNATURE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"could not check the signature of {pkg.name}: {' '.join(cmd[:-1])} "
+                f"did not finish within {PYTHON_RUNTIME_SIGNATURE_TIMEOUT} s"
+            ) from None
+
+    signature = check(["pkgutil", "--check-signature", str(pkg)])
+    if signature.returncode != 0 or PYTHON_RUNTIME_SIGNER not in signature.stdout:
+        return f"pkgutil --check-signature does not name {PYTHON_RUNTIME_SIGNER}:\n{signature.stdout}{signature.stderr}".rstrip()
+    gatekeeper = check(["spctl", "-a", "-t", "install", str(pkg)])
+    if gatekeeper.returncode != 0:
+        return f"Gatekeeper refuses it (spctl -a -t install):\n{gatekeeper.stdout}{gatekeeper.stderr}".rstrip()
+    return None
 
 
 def python_runtime_pkg(args: argparse.Namespace) -> Path:
-    if args.python_runtime_pkg:
-        return args.python_runtime_pkg.resolve()
+    url = args.python_runtime_url or newest_python_runtime_url()
     cache_dir = package_cache_dir("python-runtime")
-    filename = Path(args.python_runtime_url).name or f"python-{PYTHON_RUNTIME_VERSION}-macos11.pkg"
-    destination = cache_dir / filename
+    destination = cache_dir / Path(url).name
+    # Only the installer in use is kept: every Python release would otherwise
+    # leave another one behind, here and in CI's saved cache.
+    remove_least_recently_used(cache_dir, 0, exclude=destination.name)
     if not destination.is_file():
-        print(f"Downloading bundled Python runtime: {args.python_runtime_url}", file=sys.stderr)
-        download_file(args.python_runtime_url, destination)
-    # A cached file is checked too: a download cut short or replaced on the
-    # mirror would otherwise ship in every later build.
-    if args.python_runtime_url == PYTHON_RUNTIME_URL:
-        actual = sha256_file(destination)
-        if actual != PYTHON_RUNTIME_SHA256:
-            destination.unlink()
-            raise RuntimeError(
-                f"{destination.name} has SHA-256 {actual}, expected {PYTHON_RUNTIME_SHA256}; "
-                "deleted it, so the next run downloads it again"
-            )
+        print(f"Downloading bundled Python runtime: {url}", file=sys.stderr)
+        download_file(url, destination)
+    # A cached file is checked too: a download cut short would otherwise
+    # ship in every later build.
+    problem = python_runtime_signature_problem(destination)
+    if problem:
+        destination.unlink()
+        raise RuntimeError(f"{destination.name}: {problem}\nDeleted it, so the next run downloads it again.")
     return destination
 
 
@@ -705,43 +770,26 @@ def python_framework_dylib(framework: Path) -> Path:
     return framework_version_dir(framework) / "Python"
 
 
-def python_runtime_source(args: argparse.Namespace) -> tuple[str, Path, dict[str, object]]:
-    if args.python_runtime_framework:
-        source = args.python_runtime_framework.resolve()
-        return (
-            "framework",
-            source,
-            {
-                "source": str(source),
-                "tree_sha256": sha256_tree(source),
-            },
-        )
+def python_runtime_source(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
     source = python_runtime_pkg(args)
-    return (
-        "pkg",
-        source,
-        {
-            "source": str(source),
-            "source_sha256": sha256_file(source),
-            "url": args.python_runtime_url,
-        },
-    )
+    return source, {"source": str(source), "source_sha256": sha256_file(source)}
 
 
-def prepared_python_framework(args: argparse.Namespace, architectures: tuple[str, ...]) -> Path:
-    source_kind, source, source_fingerprint = python_runtime_source(args)
+def prepared_python_framework(args: argparse.Namespace, architectures: tuple[str, ...], *, reuse: bool = True) -> Path:
+    """The installer's framework, pruned, checked and signed, from the cache;
+    built into the cache first when it is not there or `reuse` is false."""
+    source, source_fingerprint = python_runtime_source(args)
     cache_root = package_cache_dir("python-framework")
     key = cache_key({
         "kind": "python-framework",
         "version": PYTHON_RUNTIME_CACHE_VERSION,
-        "source_kind": source_kind,
         "source_fingerprint": source_fingerprint,
         "architectures": architectures,
     })
     entry = evict_stale_cache_entries(cache_root / key)
     framework = entry / PYTHON_FRAMEWORK_NAME
 
-    if cache_is_complete(entry, framework / "Versions" / "Current" / "bin" / "python3"):
+    if reuse and cache_is_complete(entry, framework / "Versions" / "Current" / "bin" / "python3"):
         print("Using cached Python.framework.", file=sys.stderr)
         return framework
 
@@ -749,10 +797,7 @@ def prepared_python_framework(args: argparse.Namespace, architectures: tuple[str
         staging = Path(tmp) / "entry"
         staging.mkdir()
         staged_framework = staging / PYTHON_FRAMEWORK_NAME
-        if source_kind == "framework":
-            shutil.copytree(source, staged_framework, symlinks=True)
-        else:
-            extract_python_framework(source, staged_framework)
+        extract_python_framework(source, staged_framework)
         prune_python_runtime(staged_framework)
         remove_python_bytecode(staged_framework)
         remove_appledouble_files(staged_framework)
@@ -792,23 +837,8 @@ def copy_python_runtime(args: argparse.Namespace, resources_dir: Path, architect
         shutil.rmtree(runtime_dir)
     runtime_dir.mkdir(parents=True)
     framework = runtime_dir / PYTHON_FRAMEWORK_NAME
-
-    if getattr(args, "no_cache", False):
-        if args.python_runtime_framework:
-            shutil.copytree(args.python_runtime_framework.resolve(), framework, symlinks=True)
-        else:
-            extract_python_framework(python_runtime_pkg(args), framework)
-        prune_python_runtime(framework)
-        remove_python_bytecode(framework)
-        remove_appledouble_files(framework)
-        rewrite_python_framework_install_names(framework)
-        assert_macho_architectures_for_roots([framework], architectures, "Bundled Python runtime architecture")
-        assert_no_external_macho_dependencies_for_roots([framework])
-        ad_hoc_codesign_python_framework(framework)
-        assert_macho_code_signatures_valid_for_roots([framework])
-    else:
-        cached_framework = prepared_python_framework(args, architectures)
-        shutil.copytree(cached_framework, framework, symlinks=True)
+    cached_framework = prepared_python_framework(args, architectures, reuse=not getattr(args, "no_cache", False))
+    shutil.copytree(cached_framework, framework, symlinks=True)
     python_executable = bundled_python_executable_from_resources(resources_dir)
     if not python_executable.is_file():
         raise RuntimeError(f"Bundled Python executable is missing: {python_executable}")
@@ -896,6 +926,7 @@ def rewrite_python_framework_install_names(framework: Path) -> None:
 
 def prune_python_runtime(framework: Path) -> None:
     version_dir = framework_version_dir(framework)
+    stdlib = f"lib/python{version_dir.name}"
     for path in (version_dir / "bin").glob("*-intel64"):
         path.unlink()
     for relative_path in (
@@ -904,16 +935,16 @@ def prune_python_runtime(framework: Path) -> None:
         "lib/tcl8",
         "lib/tcl8.6",
         "lib/tk8.6",
-        "lib/python3.13/idlelib",
-        "lib/python3.13/tkinter",
-        "lib/python3.13/test",
+        f"{stdlib}/idlelib",
+        f"{stdlib}/tkinter",
+        f"{stdlib}/test",
     ):
         path = version_dir / relative_path
         if path.is_dir():
             shutil.rmtree(path)
         elif path.exists():
             path.unlink()
-    for path in (version_dir / "lib" / "python3.13" / "lib-dynload").glob("_tkinter*.so"):
+    for path in (version_dir / stdlib / "lib-dynload").glob("_tkinter*.so"):
         path.unlink()
 
 
@@ -983,13 +1014,13 @@ def python_package_source_fingerprint() -> dict[str, object]:
     return inputs
 
 
-def python_site_packages_cache_entry(python: str, architectures: tuple[str, ...]) -> Path:
+def python_site_packages_cache_entry(python: str, architectures: tuple[str, ...], packages: str) -> Path:
     key = cache_key({
         "kind": "python-site-packages",
         "version": PYTHON_SITE_PACKAGES_CACHE_VERSION,
         "python": python_cache_identity(python),
         "architectures": architectures,
-        "requirements": {path.name: sha256_file(path) for path in (BUNDLED_PYTHON_REQUIREMENTS, PYTHON_BUILD_REQUIREMENTS)},
+        "packages": packages,
         "source": python_package_source_fingerprint(),
     })
     return evict_stale_cache_entries(package_cache_dir("python-site-packages") / key)
@@ -1005,33 +1036,42 @@ def uv_executable() -> str:
     return uv
 
 
-def build_python_packages(python: str, site_packages: Path) -> None:
-    """Install the app's Python packages for the bundled interpreter, with
-    nothing downloaded that a requirements file does not pin by hash."""
-    uv = uv_executable()
-    major, minor = python_major_minor(python)
-    if (major, minor) < (3, 9):
-        raise RuntimeError(f"TimeCapsuleSMB.app requires Python 3.9 or newer, got {major}.{minor} from {python}")
+def resolve_python_packages(python: str) -> str:
+    """The app's Python packages for the bundled interpreter, as name==version
+    lines: the project's dependencies, theirs, and certifi, each the newest
+    release that is at least a day old and has a wheel. The site-packages
+    cache is keyed on them, the build log lists them and CI audits them."""
+    completed = subprocess.run(
+        [
+            uv_executable(), "pip", "compile", *UV_PACKAGING_OPTIONS, "--quiet", "--no-header", "--no-annotate",
+            "--only-binary", ":all:", "--python", python, str(REPO_ROOT / "pyproject.toml"), "-",
+        ],
+        input="".join(f"{name}\n" for name in BUNDLED_EXTRA_PYTHON_REQUIREMENTS),
+        env=python_subprocess_env(),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return completed.stdout
 
+
+def build_python_packages(python: str, site_packages: Path, packages: str) -> None:
+    """Install `packages` (resolve_python_packages) and the project for the
+    bundled interpreter."""
+    uv = uv_executable()
     with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-python-") as tmp:
         env = python_subprocess_env(pycache_prefix=Path(tmp) / "pycache")
         install = [uv, "pip", "install", *UV_PACKAGING_OPTIONS, "--python", python, "--target", str(site_packages)]
+        requirements = Path(tmp) / BUNDLED_PYTHON_PACKAGES_FILE
+        requirements.write_text(packages, encoding="utf-8")
         generated_build_lib = REPO_ROOT / "build" / "lib"
         build_lib_existed = generated_build_lib.exists()
         try:
-            # With dependencies: uv refuses the install if anything it needs
-            # is missing from the file, so the file is complete on every build.
-            # Wheels only: building a source release would fetch its build
-            # tools unpinned.
-            run([*install, "--require-hashes", "--no-build", "-r", str(BUNDLED_PYTHON_REQUIREMENTS)], env=env)
-            # A source directory has no hash, so the project goes in without
-            # its dependencies (just installed), built with pinned tools. The
-            # constraints alone check only the hashes they list; requiring
-            # build hashes refuses a build tool the file does not pin.
-            run([
-                *install, "--no-deps", "--require-build-hashes",
-                "--build-constraints", str(PYTHON_BUILD_REQUIREMENTS), str(REPO_ROOT),
-            ], env=env)
+            # Wheels only: the resolution picked versions that have one.
+            run([*install, "--no-build", "-r", str(requirements)], env=env)
+            # The project from its source, without its dependencies (just
+            # installed), built by the newest tools at least a day old.
+            run([*install, "--no-deps", str(REPO_ROOT)], env=env)
         finally:
             if not build_lib_existed and generated_build_lib.exists():
                 shutil.rmtree(generated_build_lib)
@@ -1053,29 +1093,29 @@ def create_python_packages(
     architectures: tuple[str, ...],
     *,
     use_cache: bool = True,
-) -> None:
+) -> str:
+    """Bundle the app's Python packages; return them as resolve_python_packages does."""
     python_root = resources_dir / "Python"
     site_packages = python_root / "site-packages"
     if site_packages.exists():
         shutil.rmtree(site_packages)
     python_root.mkdir(parents=True, exist_ok=True)
+    packages = resolve_python_packages(python)
+    print("Bundled Python packages: " + ", ".join(packages.split()), file=sys.stderr)
 
-    if use_cache:
-        entry = python_site_packages_cache_entry(python, architectures)
-        cached_site_packages = entry / "site-packages"
-        if cache_is_complete(entry, cached_site_packages):
-            print("Using cached Python site-packages.", file=sys.stderr)
-            shutil.copytree(cached_site_packages, site_packages)
-            remove_python_bytecode(site_packages)
-            return
-
+    entry = python_site_packages_cache_entry(python, architectures, packages)
+    cached_site_packages = entry / "site-packages"
+    # Without the cache the entry is rebuilt, then copied as a cached one is.
+    if use_cache and cache_is_complete(entry, cached_site_packages):
+        print("Using cached Python site-packages.", file=sys.stderr)
+    else:
         cache_root = entry.parent
         cache_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=f"{entry.name}.tmp-", dir=cache_root) as tmp:
             staging = Path(tmp) / "entry"
             staged_site_packages = staging / "site-packages"
             staged_site_packages.mkdir(parents=True)
-            build_python_packages(python, staged_site_packages)
+            build_python_packages(python, staged_site_packages, packages)
             remove_python_bytecode(staged_site_packages)
             remove_appledouble_files(staged_site_packages)
             assert_macho_architectures_for_roots([staged_site_packages], architectures, "Bundled Python package architecture")
@@ -1084,23 +1124,15 @@ def create_python_packages(
             assert_macho_code_signatures_valid_for_roots([staged_site_packages])
             mark_cache_complete(staging)
             replace_path(staging, entry)
-        shutil.copytree(cached_site_packages, site_packages)
-        return
-
-    site_packages.mkdir()
-    build_python_packages(python, site_packages)
+    shutil.copytree(cached_site_packages, site_packages)
     remove_python_bytecode(site_packages)
-    remove_appledouble_files(site_packages)
-    assert_macho_architectures_for_roots([site_packages], architectures, "Bundled Python package architecture")
-    assert_no_external_macho_dependencies_for_roots([site_packages])
-    ad_hoc_codesign_site_packages(site_packages)
-    assert_macho_code_signatures_valid_for_roots([site_packages])
+    return packages
 
 
 def remove_optional_zeroconf_extensions(site_packages: Path) -> None:
-    # zeroconf's Cython modules are optional. PyPI currently publishes arm64-only
-    # macOS wheels for CPython 3.9, so keep the app bundle portable by using the
-    # pure-Python modules that ship in the same package.
+    # zeroconf's Cython modules are optional, and PyPI publishes its macOS
+    # wheels for arm64 only, so the universal app uses the pure-Python modules
+    # that ship in the same wheel.
     zeroconf = site_packages / "zeroconf"
     if not zeroconf.is_dir():
         return
@@ -2153,7 +2185,11 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
         for built in (macos / PRODUCT_NAME, helpers / HELPER_PRODUCT_NAME):
             strip_debug_map(built)
     python_executable = copy_python_runtime(args, resources, architectures)
-    create_python_packages(str(python_executable), resources, architectures, use_cache=not args.no_cache)
+    bundled_version = python_version(str(python_executable))
+    print(f"Bundled Python runtime: {bundled_version}", file=sys.stderr)
+    packages = create_python_packages(str(python_executable), resources, architectures, use_cache=not args.no_cache)
+    # The Python line is a comment to pip-audit; CI's cache key hashes it too.
+    (output_dir / BUNDLED_PYTHON_PACKAGES_FILE).write_text(f"# Python {bundled_version}\n{packages}", encoding="utf-8")
     finalize_python_bundle(resources, sign=not args.codesign_identity)
     copy_distribution(resources)
     copy_sparkle_framework(resource_build_dir, app)
@@ -2206,21 +2242,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Source image to convert into the app bundle .icns icon.",
     )
     parser.add_argument(
-        "--python-runtime-framework",
-        type=Path,
-        default=Path(os.environ["TCAPSULE_PACKAGE_PYTHON_FRAMEWORK"]) if os.getenv("TCAPSULE_PACKAGE_PYTHON_FRAMEWORK") else None,
-        help="Existing universal Python.framework to copy into the app bundle.",
-    )
-    parser.add_argument(
-        "--python-runtime-pkg",
-        type=Path,
-        default=Path(os.environ["TCAPSULE_PACKAGE_PYTHON_PKG"]) if os.getenv("TCAPSULE_PACKAGE_PYTHON_PKG") else None,
-        help="Universal python.org macOS installer package to extract into the app bundle.",
-    )
-    parser.add_argument(
         "--python-runtime-url",
-        default=os.getenv("TCAPSULE_PACKAGE_PYTHON_URL", PYTHON_RUNTIME_URL),
-        help="Universal python.org macOS installer URL used when no local runtime source is provided.",
+        default=os.getenv("TCAPSULE_PACKAGE_PYTHON_URL"),
+        help=(
+            "Universal python.org macOS installer to bundle, such as an older release to go back to; "
+            f"by default the newest final Python {PYTHON_RUNTIME_SERIES} installer on python.org."
+        ),
     )
     parser.add_argument("--skip-smoke", action="store_true", help="Skip bundled helper capabilities and validate-install smoke tests.")
     parser.add_argument("--no-cache", action="store_true", help="Rebuild package-only cached artifacts instead of reusing them.")

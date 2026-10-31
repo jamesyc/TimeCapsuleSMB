@@ -23,11 +23,11 @@ jobs:
       - name: Build and run the no-pthread Samba tests with sanitizers
         run: python3 -m tests.samba.run host --work "$RUNNER_TEMP/samba-regressions" --jobs "$(nproc)" --sanitizers
 
-  # Checks against known advisories what users install (pyproject.toml's
-  # dependencies, resolved for every Python it allows) and what the Mac app
-  # bundles and builds with. Dev tools are left out: no user runs them, and the
-  # release job never installs them. A known vulnerability marks this job
-  # failed on every push, but only a release tag waits on it.
+  # Checks against known advisories what users install: pyproject.toml's
+  # dependencies, resolved for every Python it allows. Dev tools are left out,
+  # as no user runs them. A known vulnerability marks this job failed on every
+  # push, but only a release tag waits on it. The packages the Mac app bundles
+  # are audited where they are resolved, in package-app and release.
   audit:
     name: Audit Python dependencies
     runs-on: ubuntu-latest
@@ -51,18 +51,6 @@ jobs:
           --ignore GHSA-phvx-9mgw-67r5
           --ignore GHSA-qc2x-6f54-m6h9
           --ignore GHSA-rfg2-pjw2-56x2
-
-      # The app installs these exact pins, not pyproject.toml's ranges, and
-      # the build tools run in the release job beside its signing keys. Nothing
-      # is ignored here, so this also fails if a zeroconf advisory ever covers
-      # the release Python 3.10 and newer get. Runs even when the step above
-      # fails, so one push shows both results.
-      - name: Audit the packages the Mac app bundles and builds with
-        if: ${{ !cancelled() }}
-        run: >-
-          uvx pip-audit --disable-pip --require-hashes
-          -r macos/TimeCapsuleSMB/tools/bundled-requirements.txt
-          -r macos/TimeCapsuleSMB/tools/build-requirements.txt
 
   test:
     name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
@@ -172,23 +160,52 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
+      # What packaging bundles (the newest Python and packages) is known only
+      # once it has resolved them, so the cache is restored by prefix, the
+      # newest one saved, and saved after packaging under a key that hashes
+      # what the cached folder depends on: the bundled Python and package
+      # versions, the packaging code and the icon. The cached site-packages
+      # also holds the project, but a push that changes only the sources
+      # rebuilds that one entry in seconds; a cache saved for it would help
+      # only a rerun of the same commit.
       - name: Restore package cache
-        uses: actions/cache@v6
+        id: package-cache
+        uses: actions/cache/restore@v6
         with:
           path: macos/TimeCapsuleSMB/.build/package-app
-          # The fallback key restores and saves the whole folder, so a cache
-          # folder packaging stops using stays until this prefix changes.
-          key: package-app-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/TimeCapsuleSMB/tools/package_app.py', 'macos/TimeCapsuleSMB/tools/*-requirements.txt', 'macos/TimeCapsuleSMB/Package.swift', 'macos/TimeCapsuleSMB/Package.resolved', 'macos/TimeCapsuleSMB/Assets/AppIcon/tcs.jpg', 'pyproject.toml', 'src/**', 'bin/**') }}
+          # Each cache restores and saves the whole folder, so a cache folder
+          # packaging stops using stays until this prefix changes.
+          key: package-app-v3-${{ runner.os }}-${{ runner.arch }}-
           restore-keys: |
-            package-app-v2-${{ runner.os }}-${{ runner.arch }}-
+            package-app-v3-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Package and validate universal app
         run: |
-          python3 macos/TimeCapsuleSMB/tools/package_app.py \
+          uv run macos/TimeCapsuleSMB/tools/package_app.py \
             --configuration release \
             --arch universal \
             --zip \
             --full-validation
+
+      - name: Name the package cache
+        id: package-cache-key
+        run: echo "key=package-app-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/TimeCapsuleSMB/dist/python-packages.txt', 'macos/TimeCapsuleSMB/tools/package_app.py', 'macos/TimeCapsuleSMB/Assets/AppIcon/tcs.jpg') }}" >> "$GITHUB_OUTPUT"
+
+      # A cache restored under this very key holds what this run built already.
+      - name: Save package cache
+        if: steps.package-cache.outputs.cache-matched-key != steps.package-cache-key.outputs.key
+        uses: actions/cache/save@v6
+        with:
+          path: macos/TimeCapsuleSMB/.build/package-app
+          key: ${{ steps.package-cache-key.outputs.key }}
+
+      # The exact packages this build bundled, which packaging resolved and
+      # wrote beside the app. Nothing is ignored here, so this also fails if a
+      # zeroconf advisory ever covers the release Python 3.10 and newer get.
+      - name: Audit the packages the app bundles
+        # Like the audit job: a finding fails only a release.
+        continue-on-error: true
+        run: uvx pip-audit --disable-pip --no-deps -r macos/TimeCapsuleSMB/dist/python-packages.txt
 
       - name: Keep the app for the Intel check
         uses: actions/upload-artifact@v7
@@ -219,12 +236,15 @@ jobs:
           name: TimeCapsuleSMB-app
           path: ${{ runner.temp }}/app
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
       - name: Launch the app's code on Intel
         run: |
           test "$(uname -m)" = x86_64
           # ditto keeps the bundle's symlinks and permissions, as a user's unzip does.
           ditto -x -k "$RUNNER_TEMP/app/TimeCapsuleSMB.app.zip" "$RUNNER_TEMP/app"
-          python3 macos/TimeCapsuleSMB/tools/package_app.py --check-app "$RUNNER_TEMP/app/TimeCapsuleSMB.app"
+          uv run macos/TimeCapsuleSMB/tools/package_app.py --check-app "$RUNNER_TEMP/app/TimeCapsuleSMB.app"
 
   # A pushed v* tag builds the release: signed, notarized, its appcast
   # written, checked on a real Intel Mac, then left as a draft release for the
@@ -344,7 +364,7 @@ jobs:
       # restored: branch runs write it, and a release builds everything itself.
       - name: Package, sign and notarize the app
         run: |
-          python3 macos/TimeCapsuleSMB/tools/package_app.py \
+          uv run macos/TimeCapsuleSMB/tools/package_app.py \
             --configuration release \
             --arch universal \
             --zip \
@@ -353,12 +373,18 @@ jobs:
             --notarize \
             --notary-profile tcapsulesmb-notary
 
+      # The exact packages this build bundled, which packaging resolved and
+      # wrote beside the app. Nothing is ignored here, so this also fails if a
+      # zeroconf advisory ever covers the release Python 3.10 and newer get.
+      - name: Audit the packages the app bundles
+        run: uvx pip-audit --disable-pip --no-deps -r macos/TimeCapsuleSMB/dist/python-packages.txt
+
       - name: Write the appcast
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           # Refused before signing if the key is not the app's or the app is not universal.
-          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python3 macos/TimeCapsuleSMB/tools/sparkle_appcast.py \
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | uv run macos/TimeCapsuleSMB/tools/sparkle_appcast.py \
             --zip macos/TimeCapsuleSMB/dist/TimeCapsuleSMB.app.zip \
             --tag "$GITHUB_REF_NAME" \
             --out macos/TimeCapsuleSMB/dist/appcast.xml \
@@ -409,12 +435,15 @@ jobs:
           name: release-files
           path: ${{ runner.temp }}/release
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
       - name: Launch the release on Intel and assess it with Gatekeeper
         run: |
           test "$(uname -m)" = x86_64
           ditto -x -k "$RUNNER_TEMP/release/TimeCapsuleSMB.app.zip" "$RUNNER_TEMP/release/app"
           app="$RUNNER_TEMP/release/app/TimeCapsuleSMB.app"
-          python3 macos/TimeCapsuleSMB/tools/package_app.py --check-app "$app"
+          uv run macos/TimeCapsuleSMB/tools/package_app.py --check-app "$app"
           spctl -a -t exec -vvv "$app"
 
   release-draft:
