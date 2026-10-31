@@ -40,12 +40,15 @@ class BrokenSmbclientOutputTests(unittest.TestCase):
         self.bin_dir = Path(tmp.name)
 
     def run_with(self, script: str | None) -> str | None:
+        """What doctor learns about the smbclient on PATH, found and tested the
+        way doctor does off macOS."""
         if script is not None:
             tool = self.bin_dir / "smbclient"
             tool.write_text(script)
             tool.chmod(0o755)
-        with mock.patch.dict(os.environ, {"PATH": str(self.bin_dir)}):
-            return broken_smbclient_output()
+        with mock.patch.dict(os.environ, {"PATH": str(self.bin_dir)}), \
+             mock.patch.object(smb.sys, "platform", "linux"):
+            return smb.local_smb_client().problem()
 
     def test_a_smbclient_that_reports_the_failed_lookup_works(self) -> None:
         self.assertIsNone(self.run_with(WORKING_SMBCLIENT))
@@ -74,7 +77,7 @@ class BrokenSmbclientOutputTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("smbclient"), "no smbclient on this computer")
     def test_this_computers_smbclient_passes(self) -> None:
-        self.assertIsNone(broken_smbclient_output())
+        self.assertIsNone(broken_smbclient_output(shutil.which("smbclient")))
 
 
 if __name__ == "__main__":

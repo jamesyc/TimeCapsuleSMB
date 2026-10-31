@@ -1,21 +1,83 @@
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import functools
 import ipaddress
 import os
 import shlex
+import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
+from timecapsulesmb.checks import smb_macos
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.transport.local import command_exists, run_local_capture
+from timecapsulesmb.transport.local import find_command, run_local_capture
 
 SMBCLIENT_DEBUG_TEXT_LIMIT = 1000
+
+
+@dataclass(frozen=True)
+class LocalSmbClient:
+    """The SMB client doctor runs on this computer, the one place that says
+    which program it is, where, and whether it works."""
+
+    kind: str  # "macos" (Apple's client) or "smbclient"
+    label: str
+    tool: str
+    path: str | None  # absolute; None when the client is missing
+    # How it reports a connection macOS refused, which is what a missing
+    # Local Network permission looks like.
+    unreachable: str
+    # The self-test behind problem(); it runs only when the client is there.
+    self_test: Callable[[], Optional[str]] = field(compare=False, repr=False)
+
+    def missing_message(self) -> str:
+        if self.kind == "macos":
+            return f"missing local tool {self.tool} ({smb_macos.SMBUTIL}), which comes with macOS"
+        return f"missing local tool {self.tool}, please install {self.tool} on your computer"
+
+    def problem(self) -> str | None:
+        """Why the client is there but cannot work, or None (also when missing)."""
+        return None if self.path is None else self.self_test()
+
+    def unusable(self) -> str | None:
+        """How the client keeps doctor's SMB checks from running, said after
+        its label, or None when it can run them."""
+        if self.path is None:
+            return "is missing on this computer"
+        if self.problem() is not None:
+            return "on this computer does not work"
+        return None
+
+
+def local_smb_client() -> LocalSmbClient:
+    """Apple's own client, the one Time Machine uses, on a Mac, and smbclient
+    everywhere else."""
+    if sys.platform == "darwin":
+        return LocalSmbClient(
+            kind="macos",
+            label="Apple's SMB client",
+            tool="smbutil",
+            path=smb_macos.SMBUTIL if os.access(smb_macos.SMBUTIL, os.X_OK) else None,
+            unreachable="No route to host",
+            self_test=smb_macos.apple_smb_client_problem,
+        )
+    path = find_command("smbclient")
+    return LocalSmbClient(
+        kind="smbclient",
+        label="smbclient",
+        tool="smbclient",
+        path=path,
+        unreachable="NT_STATUS_HOST_UNREACHABLE",
+        self_test=functools.partial(broken_smbclient_output, path or ""),
+    )
 
 
 @dataclass(frozen=True)
@@ -64,8 +126,9 @@ def _normalize_smb_client_target(target: SmbClientTargetInput) -> SmbClientTarge
     return SmbClientTarget(target, ip)
 
 
-def _smbclient_base_args() -> list[str]:
-    return ["smbclient", "-s", "/dev/null"]
+def _smbclient_base_args(smbclient: str) -> list[str]:
+    # The program the self-test checked, by its path, is the one that runs.
+    return [smbclient, "-s", "/dev/null"]
 
 
 def _smbclient_env() -> dict[str, str]:
@@ -86,18 +149,16 @@ SMBCLIENT_SELF_TEST_TIMEOUT_SECONDS = 10
 
 
 @functools.cache
-def broken_smbclient_output() -> str | None:
-    """What this computer's smbclient printed when it ran but did not work,
-    or None when it works, is missing, or did not finish in time.
+def broken_smbclient_output(smbclient: str) -> str | None:
+    """What the smbclient at this path printed when it ran but did not work,
+    or None when it works or did not finish in time.
 
     A working smbclient reports an NT_STATUS for the failed lookup; one that
     crashes or cannot start reports none. A timeout proves nothing, so it does
     not count against the tool."""
-    if not command_exists("smbclient"):
-        return None
     try:
         proc = run_local_capture(
-            _smbclient_base_args() + list(SMBCLIENT_SELF_TEST_ARGS),
+            _smbclient_base_args(smbclient) + list(SMBCLIENT_SELF_TEST_ARGS),
             timeout=SMBCLIENT_SELF_TEST_TIMEOUT_SECONDS,
             env=_smbclient_env(),
         )
@@ -191,6 +252,8 @@ def _smbclient_attempt_retryable(attempt: dict[str, object]) -> bool:
         "NT_STATUS_CONNECTION_REFUSED",
         "NT_STATUS_CONNECTION_DISCONNECTED",
         "NT_STATUS_NETWORK_UNREACHABLE",
+        # The same failures in errno text, as Apple's client reports them.
+        "Network is unreachable",
         "Connection refused",
         "Connection reset by peer",
         "Operation timed out",
@@ -227,34 +290,21 @@ def authenticated_smb_listing_with_attempts(result: CheckResult, attempts: list[
     return CheckResult(result.status, f"authenticated SMB listing failed after {len(attempts)} attempt(s): {failure_msg}", details)
 
 
-def _redacted_smbclient_command(args: list[str]) -> str:
-    redacted: list[str] = []
-    redact_next = False
-    for arg in args:
-        if redact_next:
-            username = arg.split("%", 1)[0]
-            redacted.append(f"{username}%***" if username else "***")
-            redact_next = False
-            continue
-        redacted.append(arg)
-        if arg in {"-U", "--user"}:
-            redact_next = True
-    return shlex.join(redacted)
-
-
 def _smbclient_listing_args(
+    smbclient: str,
     target: SmbClientTarget,
     username: str,
-    password: str,
+    password: str | None,
     *,
     port: Optional[int] = None,
 ) -> list[str]:
-    args = _smbclient_base_args() + ["-g"]
+    """None writes *** for the password, to show the command."""
+    args = _smbclient_base_args(smbclient) + ["-g"]
     if port is not None:
         args += ["-p", str(port)]
     if target.ip_address is not None:
         args += ["-I", target.ip_address]
-    return args + ["-L", f"//{target.server}", "-U", f"{username}%{password}"]
+    return args + ["-L", f"//{target.server}", "-U", f"{username}%{'***' if password is None else password}"]
 
 
 def _new_listing_attempt(target: SmbClientTarget, timeout: int, start: float, command: str | None = None) -> dict[str, object]:
@@ -270,22 +320,6 @@ def _new_listing_attempt(target: SmbClientTarget, timeout: int, start: float, co
     return attempt
 
 
-def _run_smbclient_listing(
-    target: SmbClientTarget,
-    username: str,
-    password: str,
-    *,
-    port: Optional[int] = None,
-    timeout: int,
-) -> subprocess.CompletedProcess[str]:
-    args = _smbclient_listing_args(target, username, password, port=port)
-    return run_local_capture(
-        args,
-        timeout=timeout,
-        env=_smbclient_env(),
-    )
-
-
 def check_authenticated_smb_listing(
     username: str,
     password: str,
@@ -295,28 +329,54 @@ def check_authenticated_smb_listing(
     timeout: int = 20,
 ) -> CheckResult:
     """List the shares of the first server that answers, trying each in turn."""
-    if not command_exists("smbclient"):
-        return CheckResult("FAIL", "missing local tool smbclient")
+    client = local_smb_client()
+    if client.path is None:
+        return CheckResult("FAIL", client.missing_message())
+    smbclient = client.path
+    if client.kind == "macos":
+        # Apple's client lists through the address doctor connects to.
+        def listing_args(target: SmbClientTarget, secret: str | None) -> list[str]:
+            return smb_macos.view_args(target.ip_address or target.server, username, secret, port=port)
+
+        def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+            return smb_macos.run_view(args, timeout=timeout)
+
+        parse, failure_text = smb_macos.parse_smbutil_disk_shares, _apple_failure_text
+    else:
+        def listing_args(target: SmbClientTarget, secret: str | None) -> list[str]:
+            return _smbclient_listing_args(smbclient, target, username, secret, port=port)
+
+        def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+            return run_local_capture(args, timeout=timeout, env=_smbclient_env())
+
+        parse, failure_text = parse_smbclient_disk_shares, lambda proc: _smbclient_proc_failure_detail(proc)[0]
     attempts: list[dict[str, object]] = []
     for target in map(_normalize_smb_client_target, server if isinstance(server, list) else [server]):
-        command = _redacted_smbclient_command(_smbclient_listing_args(target, username, password, port=port))
+        command = shlex.join(listing_args(target, None))
         start = time.monotonic()
         try:
-            proc = _run_smbclient_listing(target, username, password, port=port, timeout=timeout)
+            proc = run(listing_args(target, password))
         except subprocess.TimeoutExpired as exc:
             attempt = _new_listing_attempt(target, timeout, start, command)
             attempt["outcome"] = "timeout"
             _record_listing_output(attempt, exc.stdout, exc.stderr)
             attempts.append(attempt)
             continue
+        except OSError as exc:
+            # The client went away, or cannot start, after the lookup found it.
+            attempt = _new_listing_attempt(target, timeout, start, command)
+            attempt["outcome"] = "error"
+            attempt["failure"] = f"{smbclient} could not run: {exc}"
+            attempts.append(attempt)
+            continue
         attempt = _new_listing_attempt(target, timeout, start, command)
         attempt["returncode"] = proc.returncode
         _record_listing_output(attempt, proc.stdout, proc.stderr)
         attempts.append(attempt)
-        disk_shares = parse_smbclient_disk_shares(proc.stdout)
+        disk_shares = parse(proc.stdout or "")
         if disk_shares is None:
             attempt["outcome"] = "error"
-            attempt["failure"] = _smbclient_proc_failure_detail(proc)[0]
+            attempt["failure"] = failure_text(proc)
             continue
         attempt["outcome"] = "pass"
         attempt["disk_shares"] = disk_shares
@@ -351,8 +411,14 @@ def check_authenticated_smb_file_ops_detailed(
     port: Optional[int] = None,
     timeout: int = 20,
 ) -> list[CheckResult]:
-    if not command_exists("smbclient"):
-        return [CheckResult("WARN", "SMB file-ops verification skipped: smbclient not found")]
+    client = local_smb_client()
+    if client.path is None:
+        return [CheckResult("WARN", f"SMB file-ops verification skipped: {client.missing_message()}")]
+    if client.kind == "macos":
+        return _check_authenticated_smb_file_ops_macos(
+            username, password, server, share_name, ip_address=ip_address, port=port, timeout=timeout,
+        )
+    smbclient = client.path
 
     test_dir_name = f".doctor-fileops-{uuid.uuid4().hex[:8]}"
     upload_name = ".sample.txt"
@@ -360,7 +426,7 @@ def check_authenticated_smb_file_ops_detailed(
     copy_name = ".sample-copy.txt"
 
     def run_share_commands(remote: str, commands: list[str]) -> subprocess.CompletedProcess[str]:
-        args = _smbclient_base_args()
+        args = _smbclient_base_args(smbclient)
         if port is not None:
             args += ["-p", str(port)]
         if ip_address is not None:
@@ -397,6 +463,8 @@ def check_authenticated_smb_file_ops_detailed(
                 return run_share_commands(remote, commands), None
             except subprocess.TimeoutExpired:
                 return None, results + [CheckResult("FAIL", f"{timeout_prefix} timed out for {target}")]
+            except OSError as exc:
+                return None, results + [CheckResult("FAIL", f"{timeout_prefix} failed: {smbclient} could not run: {exc}")]
 
         proc, timeout_results = run_step("SMB directory create", [f'mkdir "{test_dir_name}"'])
         if timeout_results is not None:
@@ -506,3 +574,129 @@ def check_authenticated_smb_file_ops_detailed(
             return results + [CheckResult("FAIL", f"SMB final cleanup check failed: share still contained {test_dir_name!r}")]
         results.append(CheckResult("PASS", f"SMB final cleanup check passed for {target}"))
         return results
+
+
+def _apple_failure_text(proc: subprocess.CompletedProcess[str]) -> str:
+    lines = [line.strip() for text in (proc.stderr or "", proc.stdout or "") for line in text.splitlines() if line.strip()]
+    errors = [line for line in lines if line.startswith("smbutil:")]
+    if errors:
+        return errors[0]
+    return lines[-1] if lines else f"failed with rc={proc.returncode}"
+
+
+def _read_uncached(path: Path) -> bytes:
+    """Read the file from the device. After the file changed on the device, a
+    plain read through the mount still returns this Mac's cached copy, while
+    an F_NOCACHE read returns the device's. Bytes, so contents the device
+    damaged fail the comparison instead of the decoding."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        if hasattr(fcntl, "F_NOCACHE"):  # macOS only; tests run it elsewhere too
+            fcntl.fcntl(fd, fcntl.F_NOCACHE, 1)
+        chunks = []
+        while chunk := os.read(fd, 65536):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _smb_file_steps_on_mount(root: Path, target: str) -> list[CheckResult]:
+    """smbclient's steps and messages, as file calls on a mounted share."""
+    test_dir = root / f".doctor-fileops-{uuid.uuid4().hex[:8]}"
+    upload = test_dir / ".sample.txt"
+    renamed = test_dir / ".sample-renamed.txt"
+    copy = test_dir / ".sample-copy.txt"
+    upload_contents = b"line1\nline2\nline3\n"
+    updated_contents = b"line1\nline2\nline3\nline4-updated\n"
+    results: list[CheckResult] = []
+
+    def failed(message: str) -> list[CheckResult]:
+        # Leave nothing behind on the share; the failure is already known.
+        shutil.rmtree(test_dir, ignore_errors=True)
+        return results + [CheckResult("FAIL", message)]
+
+    try:
+        test_dir.mkdir()
+    except OSError as exc:
+        return [CheckResult("FAIL", f"SMB directory create failed: {exc}")]
+    results.append(CheckResult("PASS", f"SMB directory create works for {target}"))
+
+    for label in ("SMB file create", "SMB file overwrite/edit", "SMB file read", "SMB file rename", "SMB file copy"):
+        try:
+            if label == "SMB file create":
+                upload.write_bytes(upload_contents)
+            elif label == "SMB file overwrite/edit":
+                upload.write_bytes(updated_contents)
+            elif label == "SMB file read":
+                if _read_uncached(upload) != updated_contents:
+                    return failed("SMB file read failed: downloaded contents did not match overwritten contents")
+            elif label == "SMB file rename":
+                upload.rename(renamed)
+            else:
+                copy.write_bytes(_read_uncached(renamed))
+                if _read_uncached(copy) != updated_contents:
+                    return failed("SMB file copy failed: copied file contents did not match source")
+        except OSError as exc:
+            return failed(f"{label} failed: {exc}")
+        results.append(CheckResult("PASS", f"{label} works for {target}"))
+
+    try:
+        copy.unlink()
+        names = sorted(path.name for path in test_dir.iterdir())
+    except OSError as exc:
+        return failed(f"SMB file delete failed: {exc}")
+    if copy.name in names:
+        return failed(f"SMB file delete failed: ls output still contained {copy.name!r}")
+    results.append(CheckResult("PASS", f"SMB file delete works for {target}"))
+    if renamed.name not in names:
+        return failed(f"SMB directory ls list failed: ls output did not contain {renamed.name!r}")
+    results.append(CheckResult("PASS", f"SMB directory ls list works for {target}"))
+
+    try:
+        renamed.unlink()
+        test_dir.rmdir()
+    except OSError as exc:
+        return failed(f"SMB directory delete failed: {exc}")
+    results.append(CheckResult("PASS", f"SMB directory delete works for {target}"))
+
+    try:
+        leftover = any(path.name == test_dir.name for path in root.iterdir())
+    except OSError as exc:
+        return results + [CheckResult("FAIL", f"SMB final cleanup check failed: {exc}")]
+    if leftover:
+        return results + [CheckResult("FAIL", f"SMB final cleanup check failed: share still contained {test_dir.name!r}")]
+    results.append(CheckResult("PASS", f"SMB final cleanup check passed for {target}"))
+    return results
+
+
+def _check_authenticated_smb_file_ops_macos(
+    username: str,
+    password: str,
+    server: str,
+    share_name: str,
+    *,
+    ip_address: str | None,
+    port: Optional[int],
+    timeout: int,
+) -> list[CheckResult]:
+    target_host = f"{server} via {ip_address}" if ip_address else server
+    target = f"{username}@{target_host}/{share_name}"
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        smb_macos.unmount_stale_doctor_mounts()
+    results: list[CheckResult] = []
+    try:
+        with smb_macos.mounted_share(
+            ip_address or server, share_name, username, password, port=port, timeout=timeout,
+        ) as root:
+            results = _smb_file_steps_on_mount(root, target)
+    except smb_macos.SmbMountTimeout:
+        return [CheckResult("FAIL", f"SMB mount timed out for {target}")]
+    except smb_macos.SmbMountError as exc:
+        return [CheckResult("FAIL", f"SMB mount failed for {target}: {exc}", {"errno": exc.code})]
+    except smb_macos.SmbUnmountError as exc:
+        # The checks ran; the next doctor's sweep retries the unmount.
+        results.append(CheckResult("WARN", f"SMB share stayed mounted after the checks for {target}: {exc}"))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return results + [CheckResult("FAIL", f"SMB mount failed for {target}: {exc}")]
+    return results

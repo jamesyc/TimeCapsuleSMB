@@ -9,7 +9,7 @@ import struct
 import tempfile
 import time
 import unittest
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -88,6 +88,7 @@ from timecapsulesmb.checks.smb import (
     parse_smbclient_disk_shares,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
+from tests.fixtures.smb_clients import SMBCLIENT_PATH, apple_client_here, smbclient_here
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
@@ -397,14 +398,12 @@ class CheckTests(unittest.TestCase):
             # The device's own SMB check reaches smbd through an SSH tunnel.
             # Cases about this computer's LAN checks leave it out, so their
             # smbclient mocks serve only the LAN listing.
-            # smbclient is on this computer unless a case says otherwise (CI's may lack it).
-            if "timecapsulesmb.checks.doctor_steps.command_exists" not in (extra_patches or {}):
-                mocks.command_exists = stack.enter_context(
-                    mock.patch("timecapsulesmb.checks.doctor_steps.command_exists", return_value=True)
-                )
-            if "timecapsulesmb.checks.doctor_steps.broken_smbclient_output" not in (extra_patches or {}):
+            # These cases describe smbclient's messages on every host; Apple's
+            # client has its own tests. smbclient is on this computer unless a
+            # case says otherwise (CI's may lack it).
+            if "timecapsulesmb.checks.smb.local_smb_client" not in (extra_patches or {}):
                 stack.enter_context(
-                    mock.patch("timecapsulesmb.checks.doctor_steps.broken_smbclient_output", return_value=None)
+                    mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here())
                 )
             if not real_device_smb:
                 mocks.device_smb = stack.enter_context(mock.patch(
@@ -530,6 +529,11 @@ class CheckTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._exit_stack = ExitStack()
+        # These cases cover smbclient, the client doctor uses off macOS, on
+        # every host; Apple's client is tested in test_smb_macos.py.
+        self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here())
+        )
         # Every doctor run here waits on a fake clock, never in real time;
         # run_doctor_with_mocks swaps in its own per run.
         self._exit_stack.enter_context(
@@ -2092,11 +2096,7 @@ class CheckTests(unittest.TestCase):
         self.assertIn("missing required configuration file", results[0].message)
 
     def test_check_required_local_tools_reports_each_tool(self) -> None:
-        def fake_exists(name: str) -> bool:
-            return name == "ssh"
-
-        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=fake_exists), \
-             mock.patch("timecapsulesmb.checks.local_tools.require_local_ssh", return_value="/tested/ssh"):
+        with self.local_tools_present(ssh=True, smb=False):
             results = check_required_local_tools()
         self.assertEqual([r.status for r in results], ["PASS", "FAIL", "PASS"])
         self.assertEqual(
@@ -2109,13 +2109,42 @@ class CheckTests(unittest.TestCase):
         )
 
     def test_check_required_local_tools_fails_missing_ssh(self) -> None:
-        # Every device command runs the system ssh.
-        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=lambda name: name != "ssh"):
+        # Every device command runs the system ssh; require_local_ssh says it is missing.
+        with mock.patch("timecapsulesmb.transport.ssh_client.shutil.which", return_value=None):
             results = check_required_local_tools()
         self.assertEqual(
-            results[0], CheckResult("FAIL", "missing local tool ssh, please install ssh on your computer"),
+            results[0],
+            CheckResult("FAIL", "Local tool ssh is missing; install OpenSSH 8.4 or newer on your computer."),
         )
         self.assertEqual([r.status for r in results[1:]], ["PASS", "PASS"])
+
+    def test_check_required_local_tools_names_each_kind_of_smb_client(self) -> None:
+        cases = (
+            (smbclient_here(), ("PASS", "local tool smbclient is installed")),
+            (smbclient_here(path=None), ("FAIL", "missing local tool smbclient, please install smbclient on your computer")),
+            (apple_client_here(), ("PASS", "local tool smbutil is installed")),
+            (apple_client_here(path=None), ("FAIL", "missing local tool smbutil (/usr/bin/smbutil), which comes with macOS")),
+        )
+        for client, expected in cases:
+            with self.subTest(kind=client.kind, path=client.path):
+                with mock.patch("timecapsulesmb.checks.local_tools.require_local_ssh", return_value="/tested/ssh"), \
+                     mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=client):
+                    results = check_required_local_tools()
+                self.assertEqual((results[1].status, results[1].message), expected)
+                # Whether the client is there is all this check asks; doctor tests whether it works.
+                client.self_test.assert_not_called()
+
+    @contextmanager
+    def local_tools_present(self, *, ssh: bool, smb: bool):
+        missing_ssh = SshClientConfigError("Local tool ssh is missing; install OpenSSH 8.4 or newer on your computer.")
+        with mock.patch(
+            "timecapsulesmb.checks.local_tools.require_local_ssh",
+            **({"return_value": "/tested/ssh"} if ssh else {"side_effect": missing_ssh}),
+        ), mock.patch(
+            "timecapsulesmb.checks.smb.local_smb_client",
+            return_value=smbclient_here() if smb else smbclient_here(path=None),
+        ):
+            yield
 
     def test_discover_smb_services_detailed_returns_snapshot_and_diagnostics(self) -> None:
         snapshot = BonjourDiscoverySnapshot(
@@ -2396,7 +2425,7 @@ class CheckTests(unittest.TestCase):
         self.assertIn("expected 10.0.1.1", result.message)
 
     def test_check_authenticated_smb_listing_handles_timeout(self) -> None:
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch(
                 "timecapsulesmb.checks.smb.run_local_capture",
                 side_effect=subprocess.TimeoutExpired(cmd=["smbclient"], timeout=20),
@@ -2430,8 +2459,7 @@ class CheckTests(unittest.TestCase):
             not_executable.chmod(0o644)
             for helper in (not_executable, Path(tmp) / "missing"):
                 with self.subTest(helper=helper.name):
-                    with mock.patch("timecapsulesmb.checks.local_tools.command_exists", return_value=True), \
-                         mock.patch("timecapsulesmb.checks.local_tools.SSH_ASKPASS_PATH", helper), \
+                    with mock.patch("timecapsulesmb.checks.local_tools.SSH_ASKPASS_PATH", helper), \
                          mock.patch("timecapsulesmb.checks.local_tools.require_local_ssh", return_value="/tested/ssh"):
                         results = check_required_local_tools()
                     self.assertEqual([r.status for r in results], ["PASS", "PASS", "FAIL"])
@@ -2451,8 +2479,7 @@ class CheckTests(unittest.TestCase):
             )
             for name, env, config, status in cases:
                 with self.subTest(name):
-                    with mock.patch("timecapsulesmb.checks.local_tools.command_exists", return_value=True), \
-                         mock.patch("timecapsulesmb.checks.local_tools.require_local_ssh", return_value="/tested/ssh"), \
+                    with mock.patch("timecapsulesmb.checks.local_tools.require_local_ssh", return_value="/tested/ssh"), \
                          mock.patch("timecapsulesmb.checks.local_tools.sha1_signature_env", return_value=env), \
                          mock.patch("timecapsulesmb.checks.local_tools.SHA1_OPENSSL_CONF_PATH", config):
                         results = check_required_local_tools()
@@ -2486,7 +2513,7 @@ class CheckTests(unittest.TestCase):
 
     def _doctor_without_usable_config(self, config: AppConfig, tool_present):
         ssh_login = mock.Mock()
-        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=tool_present), \
+        with self.local_tools_present(ssh=tool_present("ssh"), smb=tool_present("smbclient")), \
              mock.patch("timecapsulesmb.checks.doctor_steps.check_nsmb_conf", return_value=([], None)):
             with mock.patch("timecapsulesmb.checks.doctor_steps.check_ssh_login", ssh_login):
                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts") as artifacts:
@@ -7408,7 +7435,7 @@ class CheckTests(unittest.TestCase):
             "Disk|Data|\nIPC|IPC$|IPC Service (Samba)\ntc.local is an IPv6 address -- no workgroup available\n",
             "",
         )
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=proc):
                 result = check_authenticated_smb_listing("admin", "pw", SmbClientTarget("tc.local", "fe80::1%en0"))
         self.assertEqual(result.status, "PASS")
@@ -7427,7 +7454,7 @@ class CheckTests(unittest.TestCase):
             "Error returning browse list: NT_STATUS_ACCESS_DENIED\n",
             "lpcfg_do_global_parameter: WARNING: The \"client lanman auth\" option is deprecated\n",
         )
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=proc):
                 result = check_authenticated_smb_listing("admin", "pw", "server.local")
         self.assertEqual(result.status, "FAIL")
@@ -7438,18 +7465,18 @@ class CheckTests(unittest.TestCase):
 
     def test_check_authenticated_smb_listing_fails_on_logon_failure(self) -> None:
         proc = subprocess.CompletedProcess(["smbclient"], 1, "session setup failed: NT_STATUS_LOGON_FAILURE\n", "")
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=proc):
                 result = check_authenticated_smb_listing("admin", "pw", "server.local")
         self.assertEqual(result.status, "FAIL")
         self.assertIn("NT_STATUS_LOGON_FAILURE", result.message)
 
     def test_check_authenticated_smb_listing_fails_without_smbclient(self) -> None:
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=False):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here(path=None)):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture") as run_mock:
                 result = check_authenticated_smb_listing("admin", "pw", ["server.local"])
         self.assertEqual(result.status, "FAIL")
-        self.assertEqual(result.message, "missing local tool smbclient")
+        self.assertEqual(result.message, "missing local tool smbclient, please install smbclient on your computer")
         run_mock.assert_not_called()
 
     def test_parse_smbclient_disk_shares_uses_machine_listing_types(self) -> None:
@@ -7473,7 +7500,7 @@ class CheckTests(unittest.TestCase):
 
     def test_check_authenticated_smb_listing_falls_back_to_second_server_when_first_times_out(self) -> None:
         proc = subprocess.CompletedProcess(["smbclient"], 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch(
                 "timecapsulesmb.checks.smb.run_local_capture",
                 side_effect=[
@@ -7493,7 +7520,7 @@ class CheckTests(unittest.TestCase):
     def test_check_authenticated_smb_listing_continues_when_first_server_returns_no_share_table(self) -> None:
         missing_proc = subprocess.CompletedProcess(["smbclient"], 0, "Error returning browse list: NT_STATUS_ACCESS_DENIED\n", "")
         good_proc = subprocess.CompletedProcess(["smbclient"], 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch(
                 "timecapsulesmb.checks.smb.run_local_capture",
                 side_effect=[missing_proc, good_proc],
@@ -7510,7 +7537,7 @@ class CheckTests(unittest.TestCase):
 
     def test_check_authenticated_smb_listing_records_attempt_debug_details(self) -> None:
         failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_IO_TIMEOUT\n")
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch(
                 "timecapsulesmb.checks.smb.run_local_capture",
                 side_effect=[
@@ -7815,7 +7842,7 @@ class CheckTests(unittest.TestCase):
         listing = mock.Mock(return_value=self.smb_listing_result())
         run = self.device_smb_run(
             listing,
-            extra_patches={"timecapsulesmb.checks.doctor_steps.command_exists": mock.Mock(return_value=False)},
+            extra_patches={"timecapsulesmb.checks.smb.local_smb_client": mock.Mock(return_value=smbclient_here(path=None))},
         )
 
         run.mocks.ssh_local_forward.assert_not_called()
@@ -7826,11 +7853,66 @@ class CheckTests(unittest.TestCase):
         listing.assert_not_called()
         self.assertNotIn("smb_listing_failed", sections["computer"]["fail_codes"])
 
+    APPLE_CLIENT = {"timecapsulesmb.checks.smb.local_smb_client": mock.Mock(return_value=apple_client_here())}
+
+    def test_run_doctor_checks_names_apples_client_when_this_mac_cannot_reach_smb(self) -> None:
+        # Apple's client reports a connection macOS refused as EHOSTUNREACH.
+        refused = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 1 attempt(s): attempt 1 timecapsulesamba4.local via 10.0.0.2: "
+            "smbutil: server connection failed: No route to host",
+            {"attempts": [{"outcome": "error", "failure": "smbutil: server connection failed: No route to host"}]},
+        )
+        listing = mock.Mock(side_effect=[self.smb_listing_result("127.0.0.1"), refused])
+        run = self.device_smb_run(listing, extra_patches=self.APPLE_CLIENT)
+
+        warning = next(result for result in run.results if result.details.get("code") == "smb_listing_host_unreachable")
+        self.assertEqual((warning.status, warning.domain), ("WARN", "computer"))
+        self.assertTrue(warning.message.startswith(
+            "Apple's SMB client on this computer could not reach the device's SMB service (No route to host); "
+            "on a Mac this usually means TimeCapsuleSMB lacks Local Network permission"
+        ))
+
+    def test_run_doctor_checks_reads_apples_authentication_error_as_a_rejected_password(self) -> None:
+        rejected = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 1 attempt(s): attempt 1 127.0.0.1: "
+            "smbutil: server rejected the authentication: Authentication error",
+            {"attempts": [{"outcome": "error", "failure": "smbutil: server rejected the authentication: Authentication error"}]},
+        )
+        listing = mock.Mock(return_value=rejected)
+        run = self.device_smb_run(listing, device_reading=acp_reading(None), extra_patches=self.APPLE_CLIENT)
+
+        sections = doctor_report(run.results)["sections"]
+        self.assertEqual(sections["computer"]["fail_codes"], ["smb_login_rejected"])
+        listing.assert_called_once_with("admin", "pw", "127.0.0.1", port=2445)
+
+    def test_run_doctor_checks_names_apples_client_when_it_is_missing_or_broken(self) -> None:
+        listing = mock.Mock(return_value=self.smb_listing_result())
+        run = self.device_smb_run(listing, extra_patches={
+            "timecapsulesmb.checks.smb.local_smb_client": mock.Mock(return_value=apple_client_here(path=None)),
+        })
+        warning = next(result for result in run.results if result.details.get("code") == "device_smb_not_checked")
+        self.assertIn("Apple's SMB client is missing on this computer", warning.message)
+        listing.assert_not_called()
+
+        run = self.device_smb_run(listing, extra_patches={
+            "timecapsulesmb.checks.smb.local_smb_client": mock.Mock(
+                return_value=apple_client_here(problem="NetFS.framework could not be loaded"),
+            ),
+        })
+        failure = next(result for result in run.results if "does not work" in result.message and result.status == "FAIL")
+        self.assertEqual(
+            failure.message,
+            "Apple's SMB client at /usr/bin/smbutil does not work; doctor cannot run its SMB checks until it does",
+        )
+        warning = next(result for result in run.results if result.details.get("code") == "device_smb_not_checked")
+        self.assertIn("Apple's SMB client on this computer does not work", warning.message)
+        listing.assert_not_called()
+
     def broken_smbclient_patches(self) -> dict[str, object]:
-        return {
-            "timecapsulesmb.checks.doctor_steps.broken_smbclient_output": mock.Mock(return_value="BACKTRACE"),
-            "timecapsulesmb.checks.doctor_steps.find_command": mock.Mock(return_value="/opt/local/bin/smbclient"),
-        }
+        client = smbclient_here(path="/opt/local/bin/smbclient", problem="BACKTRACE")
+        return {"timecapsulesmb.checks.smb.local_smb_client": mock.Mock(return_value=client)}
 
     def test_run_doctor_checks_blames_a_smbclient_here_that_does_not_work(self) -> None:
         listing = mock.Mock(return_value=self.smb_listing_result())
@@ -7899,7 +7981,7 @@ class CheckTests(unittest.TestCase):
             smb_port=mock.Mock(status="PASS", message="445 ok"),
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing,
-                "timecapsulesmb.checks.doctor_steps.command_exists": mock.Mock(return_value=False),
+                "timecapsulesmb.checks.smb.local_smb_client": mock.Mock(return_value=smbclient_here(path=None)),
             },
         )
 
@@ -7912,7 +7994,7 @@ class CheckTests(unittest.TestCase):
         patches = self.broken_smbclient_patches()
         run = self.device_smb_run(listing, skip_smb=True, extra_patches=patches)
 
-        patches["timecapsulesmb.checks.doctor_steps.broken_smbclient_output"].assert_not_called()
+        patches["timecapsulesmb.checks.smb.local_smb_client"].return_value.self_test.assert_not_called()
         self.assertFalse([result for result in run.results if "does not work" in result.message])
 
     def test_run_doctor_checks_fails_the_device_when_its_ssh_tunnel_cannot_open(self) -> None:
@@ -7979,7 +8061,7 @@ class CheckTests(unittest.TestCase):
 
     def test_check_authenticated_smb_file_ops_detailed_reports_each_step(self) -> None:
         def fake_run_local_capture(args, timeout=15, **kwargs):
-            self.assertEqual(args[0], "smbclient")
+            self.assertEqual(args[0], SMBCLIENT_PATH)
             self.assertEqual(args[1:3], ["-s", "/dev/null"])
             command_text = args[-1]
             if 'get ".sample.txt"' in command_text:
@@ -8006,7 +8088,7 @@ class CheckTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 0, "Public\n", "")
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
         self.assertEqual([result.status for result in results], ["PASS"] * 10)
@@ -8027,7 +8109,7 @@ class CheckTests(unittest.TestCase):
         )
 
     def test_check_authenticated_smb_file_ops_detailed_reports_initial_timeout(self) -> None:
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch(
                 "timecapsulesmb.checks.smb.run_local_capture",
                 side_effect=subprocess.TimeoutExpired(cmd=["smbclient"], timeout=20),
@@ -8045,7 +8127,7 @@ class CheckTests(unittest.TestCase):
                 raise subprocess.TimeoutExpired(cmd=args, timeout=timeout)
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
 
@@ -8072,7 +8154,7 @@ class CheckTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 1, f"{nt_status_line}\n", f"session setup ok\n{smb1_noise}\n")
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
 
@@ -8100,7 +8182,7 @@ class CheckTests(unittest.TestCase):
                 )
             self.fail(f"unexpected smbclient invocation after mkdir failure: {command_text}")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
 
@@ -8120,7 +8202,7 @@ class CheckTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 1, "", "first noise line\nfinal error line\n")
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
 
@@ -8137,7 +8219,7 @@ class CheckTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 3, "", "")
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
 
@@ -8157,12 +8239,12 @@ class CheckTests(unittest.TestCase):
             captured_env = kwargs.get("env")
             return subprocess.CompletedProcess(args, 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 result = check_authenticated_smb_listing("admin", "pw", "server.local")
         self.assertEqual(result.status, "PASS")
         self.assertIsNotNone(captured_args)
-        self.assertEqual(captured_args[:3], ["smbclient", "-s", "/dev/null"])
+        self.assertEqual(captured_args[:3], [SMBCLIENT_PATH, "-s", "/dev/null"])
         self.assertIsInstance(captured_env, dict)
         self.assertNotIn("KRB5CCNAME", captured_env)
         self.assertNotIn("DYLD_LIBRARY_PATH", captured_env)
@@ -8175,7 +8257,7 @@ class CheckTests(unittest.TestCase):
             captured_args = args
             return subprocess.CompletedProcess(args, 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 result = check_authenticated_smb_listing(
                     "admin",
@@ -8186,7 +8268,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "PASS")
         self.assertEqual(
             captured_args,
-            ["smbclient", "-s", "/dev/null", "-g", "-p", "1445", "-I", "127.0.0.1", "-L", "//127.0.0.1", "-U", "admin%pw"],
+            [SMBCLIENT_PATH, "-s", "/dev/null", "-g", "-p", "1445", "-I", "127.0.0.1", "-L", "//127.0.0.1", "-U", "admin%pw"],
         )
 
     def test_check_authenticated_smb_listing_can_pin_connect_address(self) -> None:
@@ -8197,7 +8279,7 @@ class CheckTests(unittest.TestCase):
             captured_args = args
             return subprocess.CompletedProcess(args, 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 result = check_authenticated_smb_listing(
                     "admin",
@@ -8209,7 +8291,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.details["ip_address"], "192.168.1.217")
         self.assertEqual(
             captured_args,
-            ["smbclient", "-s", "/dev/null", "-g", "-I", "192.168.1.217", "-L", "//server.local", "-U", "admin%pw"],
+            [SMBCLIENT_PATH, "-s", "/dev/null", "-g", "-I", "192.168.1.217", "-L", "//server.local", "-U", "admin%pw"],
         )
 
     def test_authenticated_smb_listing_passes_a_scoped_server_unbracketed(self) -> None:
@@ -8221,7 +8303,7 @@ class CheckTests(unittest.TestCase):
             captured_args = args
             return subprocess.CompletedProcess(args, 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 result = check_authenticated_smb_listing(
                     "admin",
@@ -8231,7 +8313,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "PASS")
         self.assertEqual(
             captured_args,
-            ["smbclient", "-s", "/dev/null", "-g", "-I", "fe80::1%en0", "-L", "//fe80::1%en0", "-U", "admin%pw"],
+            [SMBCLIENT_PATH, "-s", "/dev/null", "-g", "-I", "fe80::1%en0", "-L", "//fe80::1%en0", "-U", "admin%pw"],
         )
 
     def test_check_authenticated_smb_listing_forwards_custom_port_for_server_lists(self) -> None:
@@ -8242,7 +8324,7 @@ class CheckTests(unittest.TestCase):
             captured_args = args
             return subprocess.CompletedProcess(args, 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 result = check_authenticated_smb_listing("admin", "pw", ["127.0.0.1"], port=2445)
         self.assertEqual(result.status, "PASS")
@@ -9256,11 +9338,11 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
                 return subprocess.CompletedProcess(args, 0, "Public\n", "")
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 results = check_authenticated_smb_file_ops_detailed("admin", "pw", "127.0.0.1", "Data", port=3445)
         self.assertEqual(len(results), 10)
-        self.assertTrue(all(args[:5] == ["smbclient", "-s", "/dev/null", "-p", "3445"] for args in captured_args))
+        self.assertTrue(all(args[:5] == [SMBCLIENT_PATH, "-s", "/dev/null", "-p", "3445"] for args in captured_args))
 
     def test_check_authenticated_smb_file_ops_detailed_can_pin_connect_address(self) -> None:
         captured_args: list[list[str]] = []
@@ -9290,7 +9372,7 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
                 return subprocess.CompletedProcess(args, 0, "Public\n", "")
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+        with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
                 results = check_authenticated_smb_file_ops_detailed(
                     "admin",
@@ -9300,7 +9382,7 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
                     ip_address="fd00::217",
                 )
         self.assertEqual(len(results), 10)
-        self.assertTrue(all(args[:5] == ["smbclient", "-s", "/dev/null", "-I", "fd00::217"] for args in captured_args))
+        self.assertTrue(all(args[:5] == [SMBCLIENT_PATH, "-s", "/dev/null", "-I", "fd00::217"] for args in captured_args))
 
     # The disks MaSt lists: diskd's SMART verdict and each volume's space.
 

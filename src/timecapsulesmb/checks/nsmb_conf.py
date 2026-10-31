@@ -3,8 +3,10 @@
 Time Machine needs SMB 3 (durable handles, the reconnect timeout). With
 `protocol_vers_map=2` in /etc/nsmb.conf the Mac negotiates SMB 2.1 and
 Time Machine rejects the disk: "The selected network backup disk does not
-support the required capabilities" (issues #181 and #372). doctor's own SMB
-checks use smbclient, which ignores nsmb.conf, so they pass regardless.
+support the required capabilities" (issues #181 and #372). On a Mac,
+doctor's own SMB checks use Apple's client (checks/smb_macos.py): NetFS mounts
+and smbutil both go through the SMB library that man nsmb.conf describes, so
+these settings apply to them as to any other mount this user makes.
 
 man nsmb.conf: /etc/nsmb.conf is global and wins over the user's
 ~/Library/Preferences/nsmb.conf. protocol_vers_map is a bitmap (1 SMB 1,

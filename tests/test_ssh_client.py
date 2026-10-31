@@ -12,6 +12,7 @@ from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.cli import bootstrap
 from timecapsulesmb.transport import ssh, ssh_client
 from timecapsulesmb.transport.errors import SshClientConfigError, SshClientStoppedError
+from tests.fixtures.smb_clients import smbclient_here
 
 
 @pytest.fixture(autouse=True)
@@ -85,7 +86,7 @@ def test_unsuccessful_probe_is_not_accepted_even_with_version_output(returncode,
 
 
 def test_doctor_reports_an_old_client_as_failure():
-    with mock.patch("timecapsulesmb.checks.local_tools.command_exists", return_value=True), \
+    with mock.patch("timecapsulesmb.checks.smb.local_smb_client", return_value=smbclient_here()), \
          mock.patch("timecapsulesmb.checks.local_tools.require_local_ssh", side_effect=SshClientConfigError("OpenSSH 8.4 or newer required")):
         results = check_required_local_tools()
     assert results[0].status == "FAIL"

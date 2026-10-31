@@ -41,6 +41,7 @@ from timecapsulesmb.checks.doctor_state import (
     SmbConfigState,
     StepDecision,
 )
+from timecapsulesmb.checks import smb as local_smb
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
 from timecapsulesmb.checks.models import DEVICE_NOT_CHECKED_CODE, DOMAIN_COMPUTER, DOMAIN_DEVICE, CheckResult
 from timecapsulesmb.checks.nsmb_conf import check_nsmb_conf
@@ -73,7 +74,6 @@ from timecapsulesmb.checks.smb import (
     authenticated_smb_listing_attempts,
     authenticated_smb_listing_retryable,
     authenticated_smb_listing_with_attempts,
-    broken_smbclient_output,
     check_authenticated_smb_listing,
     check_authenticated_smb_file_ops_detailed,
 )
@@ -194,7 +194,7 @@ from timecapsulesmb.discovery.bonjour import (
 from timecapsulesmb.discovery.devices import device_candidates_from_records
 from timecapsulesmb.discovery.models import normalize_airport_mac
 
-from timecapsulesmb.transport.local import command_exists, find_command, find_free_local_port
+from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.local import scoped_tcp_connect_errors
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_local_forward
@@ -340,9 +340,14 @@ DEVICE_SMB_PASSED = "passed"
 DEVICE_SMB_FAILED = "failed"
 DEVICE_SMB_NOT_RUN = "not_run"            # SSH skipped or failed, or SMB checks skipped
 # Samba rejected the saved password, or would (it is known not to match), or
-# this computer has no smbclient: a LAN check would only fail the same way.
+# this computer has no working SMB client: a LAN check would only fail the same way.
 DEVICE_SMB_BLOCKED = "blocked"
-SMB_LOGIN_REJECTED_TOKENS = ("NT_STATUS_LOGON_FAILURE", "NT_STATUS_WRONG_PASSWORD")
+# smbclient's statuses, and the errno text of Apple's client (EAUTH from NetFS,
+# the same words from smbutil).
+SMB_LOGIN_REJECTED_TOKENS = ("NT_STATUS_LOGON_FAILURE", "NT_STATUS_WRONG_PASSWORD", "Authentication error")
+# How each client reports a connection macOS refused, which is what a missing
+# Local Network permission looks like: smbclient's status and EHOSTUNREACH.
+SMB_LOCAL_ROUTE_FAILURE_TOKENS = ("NT_STATUS_HOST_UNREACHABLE", "No route to host")
 DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE = "active smb.conf xattr_tdb:file parent is missing"
 DOCTOR_STARTUP_WINDOW_SECONDS = 180
 
@@ -1893,7 +1898,7 @@ def _authenticated_smb_target_groups(
 
 
 def _smb_listing_looks_like_local_route_failure(result: CheckResult) -> bool:
-    if "NT_STATUS_HOST_UNREACHABLE" in result.message:
+    if any(token in result.message for token in SMB_LOCAL_ROUTE_FAILURE_TOKENS):
         return True
     attempts = result.details.get("attempts")
     if not isinstance(attempts, list):
@@ -1903,7 +1908,7 @@ def _smb_listing_looks_like_local_route_failure(result: CheckResult) -> bool:
             continue
         for key in ("failure", "stderr_tail", "stdout_tail"):
             value = attempt.get(key)
-            if isinstance(value, str) and "NT_STATUS_HOST_UNREACHABLE" in value:
+            if isinstance(value, str) and any(token in value for token in SMB_LOCAL_ROUTE_FAILURE_TOKENS):
                 return True
     return False
 
@@ -2111,9 +2116,10 @@ def _add_authenticated_smb_results(
         # macOS refuses the connection itself when the app lacks Local Network
         # permission. A warning only when the device's own SMB check passed:
         # otherwise nothing showed that SMB works at all.
+        client = local_smb.local_smb_client()
         add_result(CheckResult(
             "WARN" if device_smb_passed else "FAIL",
-            "smbclient on this computer could not reach the device's SMB service (NT_STATUS_HOST_UNREACHABLE); "
+            f"{client.label} on this computer could not reach the device's SMB service ({client.unreachable}); "
             "on a Mac this usually means TimeCapsuleSMB lacks Local Network permission "
             "(System Settings > Privacy & Security > Local Network)",
             {**listing_result.details, "code": DOCTOR_CODE_SMB_LISTING_HOST_UNREACHABLE},
@@ -3726,11 +3732,10 @@ def _doctor_check_device_smb(
             )
         )
         return DEVICE_SMB_FAILED
-    if not command_exists("smbclient"):
-        sink.add(_device_smb_not_checked("smbclient is missing on this computer (see this computer's checks)"))
-        return DEVICE_SMB_BLOCKED
-    if broken_smbclient_output() is not None:
-        sink.add(_device_smb_not_checked("smbclient on this computer does not work (see this computer's checks)"))
+    client = local_smb.local_smb_client()
+    unusable = client.unusable()
+    if unusable is not None:
+        sink.add(_device_smb_not_checked(f"{client.label} {unusable} (see this computer's checks)"))
         return DEVICE_SMB_BLOCKED
     if password_match is False:
         sink.add(_device_smb_not_checked(
@@ -3751,18 +3756,20 @@ def _doctor_check_device_smb(
 
 
 def _doctor_check_local_smbclient(inputs: DoctorInputs, sink: DoctorSink) -> None:
-    """Every SMB check runs this computer's smbclient; one that does not work
-    is reported once here, and those checks are left out."""
+    """Every SMB check runs this computer's SMB client (Apple's on a Mac,
+    smbclient elsewhere); one that does not work is reported once here, and
+    those checks are left out."""
     if inputs.options.skip_smb:
         return
-    broken_output = broken_smbclient_output()
+    client = local_smb.local_smb_client()
+    broken_output = client.problem()
     if broken_output is None:
         return
     if sink.debug_fields is not None:
         sink.debug_fields["local_smbclient_self_test"] = broken_output
     sink.add(CheckResult(
         "FAIL",
-        f"smbclient at {find_command('smbclient')} does not work; doctor cannot run its SMB checks until it does",
+        f"{client.label} at {client.path} does not work; doctor cannot run its SMB checks until it does",
     ))
 
 
@@ -3787,7 +3794,7 @@ def _doctor_check_authenticated_smb(
         return
     if processes.smbd_stuck or device_smb == DEVICE_SMB_BLOCKED:
         return
-    if not command_exists("smbclient") or broken_smbclient_output() is not None:
+    if local_smb.local_smb_client().unusable() is not None:
         return
 
     _add_authenticated_smb_results(

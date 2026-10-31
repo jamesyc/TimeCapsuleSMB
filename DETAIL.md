@@ -549,7 +549,7 @@ Shared behavior:
 
 ### `bootstrap`
 
-`tcapsule bootstrap` prepares this computer. It checks the selected Python, creates or reuses `.venv`, installs the repo into it, upgrades its dependencies to their newest releases, and checks the host tools it needs. A missing `ssh` or `smbclient` is installed through Homebrew on supported macOS versions, or through the Linux package manager. OpenSSH 8.4 or newer is required. On Intel Macs it skips `smbclient`, which Homebrew no longer builds for Intel: deploy does not need it, but doctor's SMB checks do. On Fedora, RHEL and their derivatives, SSH gets an OpenSSL config that allows the SHA-1 signature the Time Capsule's host key uses.
+`tcapsule bootstrap` prepares this computer. It checks the selected Python, creates or reuses `.venv`, installs the repo into it, upgrades its dependencies to their newest releases, and checks the host tools it needs. A missing `ssh` or `smbclient` is installed through Homebrew on supported macOS versions, or through the Linux package manager. OpenSSH 8.4 or newer is required. On Intel Macs it skips `smbclient`, which Homebrew no longer builds for Intel; on a Mac neither deploy nor doctor needs it. On Fedora, RHEL and their derivatives, SSH gets an OpenSSL config that allows the SHA-1 signature the Time Capsule's host key uses.
 
 Arguments:
 - `--python PYTHON`: the Python used to create a new `.venv`, by default the one running the command. It must be Python 3.9 or newer. An existing `.venv` keeps its interpreter.
@@ -890,7 +890,7 @@ Where to start:
 - the IPv4 and IPv6 SMB addresses and TCP 445 reachability
 - the device's own Bonjour records (found by its MAC), their names and hosts, the `_adisk` Time Machine flags and disk rows, and another device using the same name
 - NBNS name lookup, when the device has an address NBNS answers on
-- a logged-in `smbclient -L` listing, at least one share in it, and temporary SMB file operations
+- a logged-in share listing (`smbutil view` on a Mac, `smbclient -L` elsewhere), at least one share in it, and temporary SMB file operations (on a Mac, through a mount hidden from Finder)
 - that the non-HFS `xattr_tdb:file` setting points at the disk, not the RAM disk
 
 Results print as each check finishes; `--json` prints one result at the end. For the first 180 seconds after the manager starts, doctor waits, checking every 10 seconds, while Samba, mDNS and NBNS start.
