@@ -42,6 +42,8 @@ classifiers = [
   "Topic :: System :: Networking",
 ]
 dependencies = [
+  # Bootstrap still installs these on Python 3.9 (the macOS Command Line Tools
+  # Python, RHEL 9), so no floor may rise above the newest release for 3.9.
   "ifaddr>=0.2.0",
   "pycryptodome>=4.1.0,<5",
   "zopfli>=0.2.3.post1",
@@ -56,7 +58,10 @@ Issues = "https://github.com/jamesyc/TimeCapsuleSMB/issues"
 Releases = "https://github.com/jamesyc/TimeCapsuleSMB/releases"
 Source = "https://github.com/jamesyc/TimeCapsuleSMB"
 
-[project.optional-dependencies]
+# A dependency group, unlike an extra, is not published with the package.
+[dependency-groups]
+# CI's Python 3.9 lanes install these too, so the same rule holds: no floor
+# above the newest release for 3.9 (smbprotocol 1.17 already needs 3.10).
 dev = [
   # CLDR plural rules for the macOS catalog tests; not bundled into the app.
   "babel",

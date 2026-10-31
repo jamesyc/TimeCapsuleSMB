@@ -34,7 +34,6 @@ jobs:
           - macos-latest
         python-version:
           - "3.9"
-          - "3.12"
           - "3.15"
 
     steps:
@@ -48,6 +47,17 @@ jobs:
 
       - name: Install Python dependencies
         run: make install
+
+      # Bootstrap installs with pip into a venv of the user's own Python, which
+      # make install's uv does not cover. Run its install step on Python 3.9.
+      - name: Install the way bootstrap does
+        if: matrix.python-version == '3.9'
+        run: |
+          venv="$RUNNER_TEMP/bootstrap-venv"
+          .venv/bin/python -m venv "$venv"
+          .venv/bin/python -c 'import sys; from pathlib import Path; from timecapsulesmb.cli.bootstrap import install_python_requirements; install_python_requirements(Path(sys.argv[1]))' "$venv/bin/python"
+          "$venv/bin/python" -c 'import sys, Crypto.Cipher.AES, ifaddr, zeroconf, zopfli.gzip, timecapsulesmb.cli.main; print(sys.version)'
+          "$venv/bin/python" -m pip list --format=freeze
 
       - name: Compile the native service
         run: ./build/native/host-check.sh
@@ -98,7 +108,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          python-version: "3.12"
+          python-version: "3.15"
 
       - name: Install helper integration dependencies
         run: make install

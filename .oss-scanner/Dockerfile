@@ -31,7 +31,7 @@ USER scanner
 ENV PATH="/src/.venv/bin:${PATH}"
 RUN python3 -m venv .venv \
     && pip install --upgrade pip setuptools wheel \
-    && pip install -r requirements.txt -e '.[dev]' \
+    && pip install -e . --group dev \
     && touch .venv/.deps-installed
 
 # Retain a production-source Linux service with debug symbols for local PoCs.

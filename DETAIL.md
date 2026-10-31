@@ -549,7 +549,7 @@ Shared behavior:
 
 ### `bootstrap`
 
-`tcapsule bootstrap` prepares this computer. It checks the selected Python, creates or reuses `.venv`, installs `requirements.txt` and the repo into it, and checks the host tools it needs. A missing `ssh` or `smbclient` is installed through Homebrew on supported macOS versions, or through the Linux package manager. OpenSSH 8.4 or newer is required. On Intel Macs it skips `smbclient`, which Homebrew no longer builds for Intel: deploy does not need it, but doctor's SMB checks do. On Fedora, RHEL and their derivatives, SSH gets an OpenSSL config that allows the SHA-1 signature the Time Capsule's host key uses.
+`tcapsule bootstrap` prepares this computer. It checks the selected Python, creates or reuses `.venv`, installs the repo into it, upgrades its dependencies to their newest releases, and checks the host tools it needs. A missing `ssh` or `smbclient` is installed through Homebrew on supported macOS versions, or through the Linux package manager. OpenSSH 8.4 or newer is required. On Intel Macs it skips `smbclient`, which Homebrew no longer builds for Intel: deploy does not need it, but doctor's SMB checks do. On Fedora, RHEL and their derivatives, SSH gets an OpenSSL config that allows the SHA-1 signature the Time Capsule's host key uses.
 
 Arguments:
 - `--python PYTHON`: the Python used to create a new `.venv`, by default the one running the command. It must be Python 3.9 or newer. An existing `.venv` keeps its interpreter.
@@ -797,7 +797,7 @@ Use the commands above; `api` is for the app.
 
 ## Local test coverage
 
-`make install` installs `coverage.py` through the `dev` extra. `./tcapsule bootstrap` installs only `requirements.txt` and the editable package.
+`make install` installs `coverage.py` through the `dev` dependency group. `./tcapsule bootstrap` installs only the editable package and its dependencies.
 
 Test and coverage commands:
 - `make test`: C compile checks and the pytest suite

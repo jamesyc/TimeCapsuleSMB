@@ -57,6 +57,10 @@ PYTHON_FRAMEWORK_NAME = "Python.framework"
 # project's dependencies with their own, and what builds the project.
 BUNDLED_PYTHON_REQUIREMENTS = PACKAGE_ROOT / "tools" / "bundled-requirements.txt"
 PYTHON_BUILD_REQUIREMENTS = PACKAGE_ROOT / "tools" / "build-requirements.txt"
+# On every uv call packaging makes: uv's configuration files are ignored, so
+# the builder's own settings cannot change a release, and only releases at
+# least a day old are used, which gives PyPI time to remove a malicious upload.
+UV_PACKAGING_OPTIONS = ("--no-config", "--exclude-newer", "1 day")
 # Bundled beside the project's dependencies: python.org's Python has no CA
 # certificates of its own, so the helper (main.c) points it at certifi's.
 BUNDLED_EXTRA_PYTHON_REQUIREMENTS = ("certifi",)
@@ -1382,7 +1386,7 @@ def build_python_packages(python: str, site_packages: Path) -> None:
 
     with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-python-") as tmp:
         env = python_subprocess_env(pycache_prefix=Path(tmp) / "pycache")
-        install = [uv, "pip", "install", "--python", python, "--target", str(site_packages)]
+        install = [uv, "pip", "install", *UV_PACKAGING_OPTIONS, "--python", python, "--target", str(site_packages)]
         generated_build_lib = REPO_ROOT / "build" / "lib"
         build_lib_existed = generated_build_lib.exists()
         try:

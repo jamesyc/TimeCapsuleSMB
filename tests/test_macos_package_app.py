@@ -3917,7 +3917,12 @@ def test_python_packages_are_two_uv_installs_for_the_bundled_python(monkeypatch:
 
     package_app.build_python_packages("/App/Python/bin/python3", site_packages)
 
-    install = ["/opt/bin/uv", "pip", "install", "--python", "/App/Python/bin/python3", "--target", str(site_packages)]
+    # The builder's uv configuration never applies, and only releases at
+    # least a day old are taken.
+    install = [
+        "/opt/bin/uv", "pip", "install", "--no-config", "--exclude-newer", "1 day",
+        "--python", "/App/Python/bin/python3", "--target", str(site_packages),
+    ]
     assert calls == [
         [*install, "--require-hashes", "--no-build", "-r", str(package_app.BUNDLED_PYTHON_REQUIREMENTS)],
         [
@@ -4139,7 +4144,7 @@ def test_update_python_requirements_compiles_for_the_bundled_python(monkeypatch:
     bundled, build = calls
     for call in calls:
         cmd = call["cmd"]
-        assert cmd[:3] == ["/opt/bin/uv", "pip", "compile"]
+        assert cmd[:6] == ["/opt/bin/uv", "pip", "compile", "--no-config", "--exclude-newer", "1 day"]
         assert "--generate-hashes" in cmd
         assert cmd[cmd.index("--python-platform") + 1] == "macos"
         assert cmd[cmd.index("--python-version") + 1] == "3.14"

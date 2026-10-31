@@ -33,14 +33,17 @@ PY := $(VENVDIR)/bin/python
 # Editable installs see source edits immediately; dependency inputs need uv again.
 DEPS_STAMP := $(VENVDIR)/.deps-installed
 
+# --allow-existing: `make -B install` remakes this target too, and uv refuses
+# to overwrite an existing environment without it.
 $(PY):
-	uv venv $(VENVDIR)
+	uv venv --allow-existing $(VENVDIR)
 
 venv: $(PY)
 	@echo "Run: source $(VENVDIR)/bin/activate"
 
-$(DEPS_STAMP): $(PY) pyproject.toml requirements.txt
-	uv pip install --python $(PY) -r requirements.txt -e ".[dev]"
+# --upgrade: nothing is locked, so every install moves to the newest releases.
+$(DEPS_STAMP): $(PY) pyproject.toml
+	uv pip install --upgrade --python $(PY) -e . --group dev
 	@touch $@
 
 install: $(DEPS_STAMP)

@@ -22,7 +22,8 @@ from timecapsulesmb.transport.errors import SshError
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VENVDIR = REPO_ROOT / ".venv"
-REQUIREMENTS = REPO_ROOT / "requirements.txt"
+# Present only in a source checkout, which bootstrap installs from.
+PYPROJECT = REPO_ROOT / "pyproject.toml"
 HOMEBREW_INSTALL_COMMAND = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 # The Mac app bundles its own smbclient for both Mac architectures.
 MAC_APP_HINT = (
@@ -352,8 +353,9 @@ def install_python_requirements(venv_python: Path) -> None:
     print("Installing Python dependencies into .venv", flush=True)
     ensure_pip(venv_python)
     run([str(venv_python), "-m", "pip", "install", "-U", "pip"])
-    run([str(venv_python), "-m", "pip", "install", "-r", str(REQUIREMENTS)])
-    run([str(venv_python), "-m", "pip", "install", "-e", str(REPO_ROOT)])
+    # Eager: rerunning bootstrap, say after `git pull`, also moves the
+    # dependencies already in .venv to their newest releases.
+    run([str(venv_python), "-m", "pip", "install", "-U", "--upgrade-strategy", "eager", "-e", str(REPO_ROOT)])
 
 
 def _missing_required_host_tools() -> list[str]:
@@ -554,15 +556,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         python_executable=args.python,
     ) as command_context:
         command_context.update_fields(
-            requirements_path=str(REQUIREMENTS),
+            pyproject_path=str(PYPROJECT),
             venv_path=str(VENVDIR),
-            requirements_present=REQUIREMENTS.exists(),
+            pyproject_present=PYPROJECT.exists(),
             venv_exists_before=VENVDIR.exists(),
             python_executable=args.python,
         )
-        command_context.set_stage("validate_requirements")
-        if not REQUIREMENTS.exists():
-            message = f"Missing {REQUIREMENTS}"
+        command_context.set_stage("validate_project")
+        if not PYPROJECT.exists():
+            message = f"Missing {PYPROJECT}"
             print(message, file=sys.stderr)
             command_context.fail_with_error(message)
             return 1

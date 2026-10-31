@@ -89,7 +89,7 @@ class CliBootstrapTests(CliTestCase):
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("unrecognized arguments: --skip-airpyrt", stderr.getvalue())
 
-    def test_bootstrap_returns_error_when_requirements_missing(self) -> None:
+    def test_bootstrap_returns_error_when_pyproject_missing(self) -> None:
         stderr = io.StringIO()
         with mock.patch("pathlib.Path.exists", return_value=False):
             with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
@@ -99,20 +99,20 @@ class CliBootstrapTests(CliTestCase):
         self.assertIn("Missing", stderr.getvalue())
         finished = self.telemetry_payload("bootstrap_finished")
         self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["requirements_present"], False)
-        self.assertIn("stage=validate_requirements", finished["error"])
+        self.assertEqual(finished["pyproject_present"], False)
+        self.assertIn("stage=validate_project", finished["error"])
 
     def _bootstrap_with_fake_python(self, script: str) -> int:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            requirements = root / "requirements.txt"
-            requirements.write_text("zeroconf\n")
+            pyproject = root / "pyproject.toml"
+            pyproject.write_text("[project]\nname = \"timecapsulesmb\"\n")
             fake_python = root / "python3"
             fake_python.write_text(f"#!/bin/sh\n{script}\n")
             fake_python.chmod(0o755)
 
             with mock.patch("timecapsulesmb.cli.bootstrap.REPO_ROOT", root):
-                with mock.patch("timecapsulesmb.cli.bootstrap.REQUIREMENTS", requirements):
+                with mock.patch("timecapsulesmb.cli.bootstrap.PYPROJECT", pyproject):
                     with mock.patch("timecapsulesmb.cli.bootstrap.VENVDIR", root / ".venv"):
                         with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
                             with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
@@ -381,8 +381,10 @@ class CliBootstrapTests(CliTestCase):
             [
                 mock.call([str(venv_python), "-m", "ensurepip", "--upgrade"]),
                 mock.call([str(venv_python), "-m", "pip", "install", "-U", "pip"]),
-                mock.call([str(venv_python), "-m", "pip", "install", "-r", str(bootstrap.REQUIREMENTS)]),
-                mock.call([str(venv_python), "-m", "pip", "install", "-e", str(bootstrap.REPO_ROOT)]),
+                mock.call([
+                    str(venv_python), "-m", "pip", "install", "-U", "--upgrade-strategy", "eager",
+                    "-e", str(bootstrap.REPO_ROOT),
+                ]),
             ],
         )
 
@@ -392,9 +394,19 @@ class CliBootstrapTests(CliTestCase):
             with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
                 bootstrap.install_python_requirements(venv_python)
 
+        # A rerun upgrades pip, then moves the project and every dependency
+        # already in .venv to the newest releases.
         commands = [call.args[0] for call in run_mock.call_args_list]
-        self.assertNotIn([str(venv_python), "-m", "ensurepip", "--upgrade"], commands)
-        self.assertEqual(commands[0], [str(venv_python), "-m", "pip", "install", "-U", "pip"])
+        self.assertEqual(
+            commands,
+            [
+                [str(venv_python), "-m", "pip", "install", "-U", "pip"],
+                [
+                    str(venv_python), "-m", "pip", "install", "-U", "--upgrade-strategy", "eager",
+                    "-e", str(bootstrap.REPO_ROOT),
+                ],
+            ],
+        )
 
     def test_bootstrap_skips_required_host_tools_when_present(self) -> None:
         output = io.StringIO()

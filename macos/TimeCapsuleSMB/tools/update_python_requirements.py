@@ -7,7 +7,8 @@ project, pyproject.toml's [build-system].requires. Both resolve for the
 bundled Python's version on macOS, whichever Python runs uv. Run this after
 changing a dependency, the build system or PYTHON_RUNTIME_VERSION; it keeps
 the versions the files already pin where they still fit, and --upgrade moves
-everything to the newest versions.
+everything to the newest releases. Like packaging, it ignores uv's
+configuration files and takes only releases at least a day old.
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ from package_app import (  # noqa: E402
     PYTHON_BUILD_REQUIREMENTS,
     PYTHON_RUNTIME_VERSION,
     REPO_ROOT,
+    UV_PACKAGING_OPTIONS,
     uv_executable,
 )
 
@@ -44,7 +46,7 @@ def compile_requirements(uv: str, sources: list[str], stdin: str, output: Path, 
     python_version = ".".join(PYTHON_RUNTIME_VERSION.split(".")[:2])
     subprocess.run(
         [
-            uv, "pip", "compile", "--quiet", "--generate-hashes",
+            uv, "pip", "compile", *UV_PACKAGING_OPTIONS, "--quiet", "--generate-hashes",
             "--python-version", python_version, "--python-platform", "macos",
             *(["--upgrade"] if upgrade else []),
             "--output-file", str(output), *sources, "-",
