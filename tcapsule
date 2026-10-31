@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-
 import os
 import sys
 from pathlib import Path
@@ -51,7 +49,22 @@ def _handoff_to_bootstrapped_launcher() -> None:
     raise SystemExit(1)
 
 
+# This file avoids newer syntax (f-strings, `from __future__ import
+# annotations`) so that Python 3.5 and later reach the lines below.
 _handoff_to_bootstrapped_launcher()
+
+# The CLI needs Python 3.9. Under an older python3, such as RHEL 8's 3.6,
+# importing it fails with a traceback, so say so first. The handoff above
+# runs every other command with .venv's own Python, so only bootstrap and
+# help reach this on a bootstrapped checkout.
+if sys.version_info < (3, 9):
+    print(
+        "TimeCapsuleSMB needs Python 3.9 or later; this is Python {}.{}.\n"
+        "Install a newer Python, for example from https://www.python.org/downloads/, and run "
+        "this with it, such as `python3.13 ./tcapsule bootstrap`.".format(sys.version_info[0], sys.version_info[1]),
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:

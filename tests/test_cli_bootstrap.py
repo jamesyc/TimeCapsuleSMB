@@ -10,17 +10,13 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 from timecapsulesmb.cli import bootstrap
+from timecapsulesmb.transport.errors import SshClientConfigError
 
 from tests.cli_support import CliTestCase
 
 # setUp stubs the ensurepip check so main() never probes this host's Python;
 # its own tests call the real one.
 REAL_PYTHON_VENV_PACKAGE = bootstrap._python_venv_package
-
-
-def MAC_SSH_ONLY(name: str) -> str | None:
-    """Every Mac has /usr/bin/ssh; nothing else is installed."""
-    return "/usr/bin/ssh" if name == "ssh" else None
 
 
 class CliBootstrapTests(CliTestCase):
@@ -42,9 +38,8 @@ class CliBootstrapTests(CliTestCase):
                         with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
                             with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
                                 with mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value="3.11.9"):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.check_macos_host_tool_install_support", return_value={}):
-                                        with redirect_stdout(output):
-                                            rc = bootstrap.main([])
+                                    with redirect_stdout(output):
+                                        rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Detected host platform", text)
@@ -167,7 +162,7 @@ class CliBootstrapTests(CliTestCase):
         head = "h" * bootstrap.COMMAND_OUTPUT_HEAD_LIMIT
         tail = "t" * bootstrap.COMMAND_OUTPUT_TAIL_LIMIT
         message = bootstrap._format_command_error(
-            bootstrap.BootstrapCommandError(["brew", "install", "samba"], 1, f"{head}{'m' * 7}{tail}")
+            bootstrap.BootstrapCommandError(["apt-get", "install", "-y", "smbclient"], 1, f"{head}{'m' * 7}{tail}")
         )
 
         self.assertIn(f"output:\n{head}\n...<truncated 7 chars>...\n{tail}", message)
@@ -295,96 +290,6 @@ class CliBootstrapTests(CliTestCase):
         self.assertEqual(version, "3.9.0")
         self.assertIn("Selected Python: /usr/local/bin/python3.9 (3.9.0)", output.getvalue())
 
-    def test_bootstrap_blocks_old_macos_missing_tools_before_venv(self) -> None:
-        output = io.StringIO()
-        stderr = io.StringIO()
-
-        with mock.patch("pathlib.Path.exists", return_value=True):
-            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                    with mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value="3.11.9"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.detect_macos_product_version", return_value="10.15.7"):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", return_value=None):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv") as ensure_venv:
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.install_required_host_tools") as install_tools:
-                                        with redirect_stdout(output), redirect_stderr(stderr):
-                                            rc = bootstrap.main([])
-
-        self.assertEqual(rc, 1)
-        ensure_venv.assert_not_called()
-        install_tools.assert_not_called()
-        text = output.getvalue()
-        self.assertIn("Detected macOS version: 10.15.7", text)
-        self.assertIn("Missing ssh", text)
-        self.assertIn("requires macOS 14.0 or newer", text)
-        self.assertIn("Required host tools: ssh\033[0m\n", text)
-        self.assertNotIn("smbclient", text)
-        self.assertIn("\033[31m", text)
-        self.assertIn("missing host tools (ssh)", stderr.getvalue())
-        finished = self.telemetry_payload("bootstrap_finished")
-        self.assertEqual(finished["host_os_version"], "10.15.7")
-        self.assertEqual(finished["macos_auto_host_tool_install_supported"], False)
-        self.assertEqual(finished["missing_host_tools"], "ssh")
-        self.assertIn("stage=check_host_support", finished["error"])
-
-    def test_bootstrap_old_macos_continues_with_ssh_and_no_smbclient(self) -> None:
-        output = io.StringIO()
-        with mock.patch("pathlib.Path.exists", return_value=True):
-            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python") as ensure_venv:
-                with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
-                    with mock.patch("timecapsulesmb.cli.bootstrap.install_required_host_tools"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value="3.11.9"):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.detect_macos_product_version", return_value="10.15.7"):
-                                        with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=MAC_SSH_ONLY):
-                                            with redirect_stdout(output):
-                                                rc = bootstrap.main([])
-
-        self.assertEqual(rc, 0)
-        ensure_venv.assert_called_once()
-        text = output.getvalue()
-        self.assertIn("Detected macOS version: 10.15.7", text)
-        self.assertIn("Found ssh: /usr/bin/ssh", text)
-        self.assertNotIn("smbclient", text)
-        finished = self.telemetry_payload("bootstrap_finished")
-        self.assertEqual(finished["host_os_version"], "10.15.7")
-        self.assertEqual(finished["missing_host_tools"], "")
-        self.assertNotIn("smbclient_available_after", finished)
-
-    def test_bootstrap_macos_14_allows_missing_tools_to_reach_installer(self) -> None:
-        output = io.StringIO()
-        with mock.patch("pathlib.Path.exists", return_value=True):
-            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
-                with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
-                    with mock.patch("timecapsulesmb.cli.bootstrap.install_required_host_tools") as install_tools:
-                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value="3.11.9"):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.detect_macos_product_version", return_value="14.0"):
-                                        with mock.patch("timecapsulesmb.cli.bootstrap.find_command", return_value=None):
-                                            with redirect_stdout(output):
-                                                rc = bootstrap.main([])
-
-        self.assertEqual(rc, 0)
-        install_tools.assert_called_once()
-        self.assertNotIn("requires macOS 14.0 or newer", output.getvalue())
-        finished = self.telemetry_payload("bootstrap_finished")
-        self.assertEqual(finished["macos_auto_host_tool_install_supported"], True)
-        self.assertEqual(finished["missing_host_tools"], "ssh")
-
-    def test_bootstrap_unknown_macos_version_missing_tools_fails_safely(self) -> None:
-        output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.bootstrap.detect_macos_product_version", return_value=None):
-            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", return_value=None):
-                with self.assertRaises(bootstrap.BootstrapError):
-                    with redirect_stdout(output):
-                        bootstrap.check_macos_host_tool_install_support("macOS")
-
-        text = output.getvalue()
-        self.assertIn("Detected macOS version: unknown", text)
-        self.assertIn("Missing ssh", text)
-
     def test_bootstrap_install_python_requirements_repairs_venv_without_pip(self) -> None:
         output = io.StringIO()
         venv_python = Path("/tmp/tcapsule-venv/bin/python")
@@ -449,111 +354,106 @@ class CliBootstrapTests(CliTestCase):
                 self.client.assert_called_once()
                 self.client.reset_mock()
 
-    def test_bootstrap_installs_missing_ssh_via_homebrew_on_macos(self) -> None:
-        output = io.StringIO()
-        installed: set[str] = set()
-
-        def fake_which(name: str):
-            if name == "brew":
-                return "/opt/homebrew/bin/brew"
-            if name in installed:
-                return f"/opt/homebrew/bin/{name}"
-            return None
-
-        def fake_run(cmd):
-            if cmd[:2] == ["/opt/homebrew/bin/brew", "install"] and "openssh" in cmd[2:]:
-                installed.add("ssh")
-
-        with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
-            with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run) as run_mock:
-                with redirect_stdout(output):
-                    bootstrap.install_required_host_tools("macOS")
-        text = output.getvalue()
-        self.assertIn("Missing required host tools: ssh", text)
-        self.assertIn("Installing missing host tools via Homebrew: ssh", text)
-        self.assertIn("Installed required host tools: ssh", text)
-        self.assertNotIn("smbclient", text)
-        self.assertEqual(run_mock.call_args_list, [mock.call(["/opt/homebrew/bin/brew", "install", "openssh"])])
-        # The ssh Homebrew installed must still be new enough.
-        self.client.assert_called_once()
-
-    def test_bootstrap_fails_when_homebrew_missing_for_required_host_tools_on_macos(self) -> None:
-        output = io.StringIO()
-
-        with mock.patch("timecapsulesmb.cli.bootstrap.find_command", return_value=None):
-            with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
-                with self.assertRaises(bootstrap.BootstrapError) as raised:
-                    with redirect_stdout(output):
-                        bootstrap.install_required_host_tools("macOS")
-        run_mock.assert_not_called()
-        text = output.getvalue()
-        app_url = "https://github.com/jamesyc/TimeCapsuleSMB/releases"
-        # main prints the error last; the hint lives there, not in this output.
-        self.assertNotIn(app_url, text)
-        self.assertIn(f"Mac app, which needs no Homebrew: {app_url}", str(raised.exception))
-        self.assertIn("Install Homebrew", text)
-        self.assertIn("or manually install the missing tools on macOS: ssh", text)
-        self.assertIn("Then rerun './tcapsule bootstrap'.", text)
-        self.assertIn("Missing host tools: ssh", text)
-        self.assertIn("https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh", text)
-        self.assertIn("\033[31m", text)
-
-    def _bootstrap_on_mac(self, *, present: set[str], brew: bool) -> tuple[int, str, list[list[str]]]:
-        """Run all of bootstrap with the real host-tool step; return its status, terminal text and commands run."""
-        installed = set(present)
+    def _bootstrap_on(self, label: str, *, present: set[str]) -> tuple[int, str, list[list[str]], bool]:
+        """Run all of bootstrap on `label` with the real host-tool steps;
+        return its status, terminal text, the commands it ran and whether it
+        made .venv. Homebrew is on PATH, no Linux package manager is, and the
+        tools in `present` are in /usr/bin."""
         commands: list[list[str]] = []
 
         def fake_which(name: str):
             if name == "brew":
-                return "/opt/homebrew/bin/brew" if brew else None
-            return f"/opt/homebrew/bin/{name}" if name in installed else None
-
-        def fake_run(cmd):
-            commands.append(cmd)
-            if "openssh" in cmd[2:]:
-                installed.add("ssh")
+                return "/opt/homebrew/bin/brew"
+            return f"/usr/bin/{name}" if name in present else None
 
         terminal = io.StringIO()
         with mock.patch("pathlib.Path.exists", return_value=True):
-            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
+            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python") as ensure_venv:
                 with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value="3.11.9"):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.check_macos_host_tool_install_support", return_value={}):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
-                                        with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run):
-                                            with redirect_stdout(terminal), redirect_stderr(terminal):
-                                                rc = bootstrap.main([])
-        return rc, terminal.getvalue(), commands
+                        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value=label):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value="3.9.6"):
+                                with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=commands.append):
+                                        with redirect_stdout(terminal), redirect_stderr(terminal):
+                                            rc = bootstrap.main([])
+        return rc, terminal.getvalue(), commands, ensure_venv.called
 
-    def test_bootstrap_on_macos_with_ssh_and_no_smbclient_runs_no_brew(self) -> None:
-        for brew in (True, False):
-            with self.subTest(brew=brew):
-                rc, text, commands = self._bootstrap_on_mac(present={"ssh"}, brew=brew)
+    def test_bootstrap_on_macos_with_its_own_ssh_installs_nothing(self) -> None:
+        rc, text, commands, made_venv = self._bootstrap_on("macOS", present={"ssh"})
 
-                self.assertEqual(rc, 0)
-                self.assertEqual(commands, [])
-                self.assertIn("Found required host tools: ssh\n", text)
-                self.assertIn("Host setup complete.", text)
-                self.assertNotIn("smbclient", text)
-                self.assertNotIn("Homebrew", text)
-                self.assertEqual(self.telemetry_payload("bootstrap_finished")["result"], "success")
+        self.assertEqual(rc, 0)
+        self.assertEqual(commands, [])
+        self.assertTrue(made_venv)
+        self.assertIn("Found required host tools: ssh\n", text)
+        self.assertIn("Host setup complete.", text)
+        self.assertNotIn("smbclient", text)
+        self.assertNotIn("Homebrew", text)
+        self.assertNotIn("brew install", text)
+        self.client.assert_called()
+        self.assertEqual(self.telemetry_payload("bootstrap_finished")["result"], "success")
 
-    def test_bootstrap_shows_the_mac_app_hint_once_where_it_applies(self) -> None:
-        cases = [
-            # (ssh present, brew installed, status, app hints, commands run)
-            (True, False, 0, 0, []),
-            (False, False, 1, 1, []),
-            (False, True, 0, 0, [["/opt/homebrew/bin/brew", "install", "openssh"]]),
-        ]
-        for ssh, brew, status, hints, expected_commands in cases:
-            with self.subTest(ssh=ssh, brew=brew):
-                rc, text, commands = self._bootstrap_on_mac(present={"ssh"} if ssh else set(), brew=brew)
+    def test_bootstrap_on_macos_without_ssh_on_path_installs_nothing(self) -> None:
+        # Homebrew is on PATH, but bootstrap never installs anything on a Mac.
+        rc, text, commands, made_venv = self._bootstrap_on("macOS", present=set())
 
-                self.assertEqual(rc, status)
-                self.assertEqual(text.count(bootstrap.MAC_APP_HINT), hints, text)
-                self.assertEqual(commands, expected_commands)
+        self.assertEqual(rc, 1)
+        self.assertEqual(commands, [])
+        # Only an ssh that is there can be checked before .venv.
+        self.assertTrue(made_venv)
+        self.assertIn("Missing required host tools: ssh", text)
+        self.assertIn("Missing ssh. macOS includes it in /usr/bin: add /usr/bin to PATH", text)
+        self.assertNotIn("Homebrew", text)
+        self.assertNotIn("brew install", text)
+        self.client.assert_not_called()
+        finished = self.telemetry_payload("bootstrap_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertIn("stage=install_host_tools", finished["error"])
+
+    def test_bootstrap_on_macos_rejects_an_ssh_older_than_8_4(self) -> None:
+        # macOS 11 and older ship OpenSSH 8.1.
+        self.client.side_effect = SshClientConfigError(
+            "Local SSH client /usr/bin/ssh is OpenSSH_8.1; OpenSSH 8.4 or newer is required. "
+            "Upgrade OpenSSH on your computer and retry."
+        )
+
+        rc, text, commands, made_venv = self._bootstrap_on("macOS", present={"ssh"})
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(commands, [])
+        self.assertFalse(made_venv)
+        self.assertIn("OpenSSH 8.4 or newer is required", text)
+        self.assertIn("The ssh that comes with macOS is new enough from macOS 12 on.", text)
+        self.assertNotIn("Host setup complete.", text)
+        self.assertEqual(self.telemetry_payload("bootstrap_finished")["result"], "failure")
+
+    def test_bootstrap_on_linux_rejects_an_old_installed_ssh_before_venv(self) -> None:
+        # Ubuntu 20.04 ships OpenSSH 8.2, and its package manager has no newer one.
+        self.client.side_effect = SshClientConfigError(
+            "Local SSH client /usr/bin/ssh is OpenSSH_8.2; OpenSSH 8.4 or newer is required. "
+            "Upgrade OpenSSH on your computer and retry."
+        )
+
+        rc, text, commands, made_venv = self._bootstrap_on("Linux", present={"ssh", "smbclient"})
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(commands, [])
+        self.assertFalse(made_venv)
+        self.assertIn("OpenSSH 8.4 or newer is required", text)
+        self.assertIn("Debian 11, Ubuntu 22.04, RHEL 9 and later ship OpenSSH 8.4 or newer.", text)
+        self.assertNotIn("comes with macOS", text)
+        self.assertIn("stage=check_ssh", self.telemetry_payload("bootstrap_finished")["error"])
+
+    def test_bootstrap_on_linux_without_ssh_makes_venv_before_installing_it(self) -> None:
+        # A failed install still leaves a .venv; here no package manager is found.
+        rc, text, commands, made_venv = self._bootstrap_on("Linux", present={"smbclient"})
+
+        self.assertEqual(rc, 1)
+        self.assertTrue(made_venv)
+        self.assertEqual(commands, [])
+        self.client.assert_not_called()
+        self.assertIn("No supported Linux package manager found to install missing host tools: ssh", text)
+        self.assertIn("stage=install_host_tools", self.telemetry_payload("bootstrap_finished")["error"])
 
     def _linux_install(
         self,
@@ -761,11 +661,14 @@ class CliBootstrapTests(CliTestCase):
         self.assertEqual(text.splitlines()[-1], "sudo apt-get update && sudo apt-get install -y python3.13-venv")
         self.assertNotIn("Installed python3.13-venv", text)
 
-    def test_bootstrap_installs_the_venv_package_first_and_host_tools_last(self) -> None:
+    def test_bootstrap_orders_the_venv_package_venv_and_host_tools(self) -> None:
+        # Host tools come last, so a failure there still leaves a .venv
+        # that can deploy.
+        venv = ["ensure_venv", "install_python_requirements", "install_required_host_tools"]
         cases = (
-            ("Linux", "python3.11-venv", ["install_python_venv_package", "ensure_venv", "install_python_requirements"]),
-            ("Linux", None, ["ensure_venv", "install_python_requirements"]),
-            ("macOS", None, ["ensure_venv", "install_python_requirements"]),
+            ("Linux", "python3.11-venv", ["install_python_venv_package", *venv]),
+            ("Linux", None, venv),
+            ("macOS", None, venv),
         )
         for label, venv_package, steps in cases:
             with self.subTest(label=label, venv_package=venv_package):
@@ -775,7 +678,6 @@ class CliBootstrapTests(CliTestCase):
                      mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"), \
                      mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value=label), \
                      mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value="3.11.9"), \
-                     mock.patch("timecapsulesmb.cli.bootstrap.check_macos_host_tool_install_support", return_value={}), \
                      mock.patch("timecapsulesmb.cli.bootstrap._python_venv_package", return_value=venv_package) as probe, \
                      mock.patch("timecapsulesmb.cli.bootstrap.install_python_venv_package", calls.install_python_venv_package), \
                      mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", calls.ensure_venv), \
@@ -783,10 +685,7 @@ class CliBootstrapTests(CliTestCase):
                      mock.patch("timecapsulesmb.cli.bootstrap.install_required_host_tools", calls.install_required_host_tools), \
                      redirect_stdout(io.StringIO()):
                     self.assertEqual(bootstrap.main([]), 0)
-                self.assertEqual(
-                    [name for name, _args, _kwargs in calls.mock_calls],
-                    [*steps, "install_required_host_tools"],
-                )
+                self.assertEqual([name for name, _args, _kwargs in calls.mock_calls], steps)
                 calls.install_required_host_tools.assert_called_once_with(label)
                 if venv_package:
                     calls.install_python_venv_package.assert_called_once_with(venv_package)
@@ -840,7 +739,6 @@ class CliBootstrapTests(CliTestCase):
                  mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"), \
                  mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value=label), \
                  mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value=selected), \
-                 mock.patch("timecapsulesmb.cli.bootstrap.check_macos_host_tool_install_support", return_value={}), \
                  mock.patch("timecapsulesmb.cli.bootstrap._python_venv_package", return_value=None), \
                  mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=venv / "bin" / "python"), \
                  mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"), \

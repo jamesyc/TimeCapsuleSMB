@@ -64,6 +64,54 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("Run `./tcapsule bootstrap` first", result.stderr)
         self.assertEqual(result.stdout, "")
 
+    def test_python_older_than_3_9_is_refused_before_importing_source(self) -> None:
+        cases = {(3, 8, 20, "final", 0): False, (3, 9, 0, "final", 0): True}
+        for version, runs in cases.items():
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                launcher = self._copy_launcher(root)
+                self._write_source_main(root)
+                # The launcher reads sys.version_info when it runs.
+                script = (
+                    "import runpy, sys\n"
+                    f"sys.version_info = {version!r}\n"
+                    f"sys.argv = [{str(launcher)!r}, 'bootstrap']\n"
+                    f"runpy.run_path({str(launcher)!r}, run_name='__main__')\n"
+                )
+                result = subprocess.run(
+                    [sys.executable, "-c", script], cwd=root, text=True, capture_output=True, check=False,
+                )
+
+                if runs:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), "source-main:bootstrap")
+                else:
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("TimeCapsuleSMB needs Python 3.9 or later; this is Python 3.8.", result.stderr)
+                    self.assertIn("`python3.13 ./tcapsule bootstrap`", result.stderr)
+
+    def test_old_python_still_hands_off_to_a_bootstrapped_virtualenv(self) -> None:
+        # Bootstrapped with a newer Python, a checkout runs its commands with
+        # .venv's own Python whatever python3 started the launcher.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            launcher = self._copy_launcher(root)
+            self._write_fake_venv_launcher(root)
+            script = (
+                "import runpy, sys\n"
+                "sys.version_info = (3, 8, 20, 'final', 0)\n"
+                f"sys.argv = [{str(launcher)!r}, 'configure', '--name', 'Capsule']\n"
+                f"runpy.run_path({str(launcher)!r}, run_name='__main__')\n"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=root, text=True, capture_output=True, check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)[1:], ["configure", "--name", "Capsule"])
+        self.assertNotIn("needs Python 3.9", result.stderr)
+
     def test_top_level_help_runs_before_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

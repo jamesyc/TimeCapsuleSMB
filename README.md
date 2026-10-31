@@ -30,7 +30,7 @@ If TimeCapsuleSMB has been useful to you, you can [buy me a coffee](https://buym
 ## Requirements
 
 You will need:  
-- An Intel or Apple Silicon macOS 14+ or Linux machine on the same local network as the Time Capsule
+- A Mac or Linux computer on the same local network as the Time Capsule. The app and Homebrew need macOS 14 or later; the Python CLI from a clone of this repository runs on macOS 12 or later, Intel or Apple silicon, and on Linux with OpenSSH 8.4 or newer.
 - The password for the Time Capsule
 
 For the python setup, you need:  
@@ -82,7 +82,7 @@ tcapsule doctor
 
 It takes the same commands as the steps below, typed as `tcapsule` in place of `.venv/bin/tcapsule`, and needs no `bootstrap`. Homebrew has no prebuilt Python 3.15 for macOS 14 and 15, so there it compiles Python first. Its settings are in `~/Library/Application Support/TimeCapsuleSMB/CLI/.env`. `brew update && brew upgrade tcapsule` updates it and `brew uninstall tcapsule` removes it.
 
-Otherwise, download (or run `git clone`) this repository to a folder on your Mac or Linux machine.
+On any Mac with macOS 12 or later, or on Linux, you can instead download (or run `git clone`) this repository to a folder.
 
 From the root of this repository, the normal quick start commands to run are:
 
@@ -114,7 +114,7 @@ Run:
 
 This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs the Python dependencies needed for discovery, deployment, and verification, and sets up the local `tcapsule` command into that virtualenv.
 
-On Linux, if `ssh` or `smbclient` is missing, `bootstrap` will try to install it with the detected package manager. On a Mac it needs only `ssh`, which comes with macOS. Bootstrap and doctor require OpenSSH 8.4 or newer; upgrade an older SSH client manually. SSH logins use the system `ssh` (OpenSSH 8.4 or newer) with TimeCapsuleSMB's own password helper, so no other tool is needed.
+On Linux, if `ssh` or `smbclient` is missing, `bootstrap` will try to install it with the detected package manager. On a Mac it needs only `ssh`, which comes with macOS, and it installs nothing. Bootstrap and doctor require OpenSSH 8.4 or newer, which macOS has from macOS 12 on (macOS 11 ships 8.1). On Linux, Debian 11, Ubuntu 22.04, RHEL 9 and later have it; Ubuntu 20.04 and RHEL 8 ship an older one, so they fail even with a newer Python. Bootstrap checks an installed `ssh` before it creates `.venv`. SSH logins use the system `ssh` (OpenSSH 8.4 or newer) with TimeCapsuleSMB's own password helper, so no other tool is needed.
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` to run a command.
 

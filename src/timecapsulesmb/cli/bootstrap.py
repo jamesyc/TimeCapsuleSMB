@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import platform
 import shlex
 import subprocess
 import sys
@@ -25,12 +24,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 VENVDIR = REPO_ROOT / ".venv"
 # Present only in a source checkout, which bootstrap installs from.
 PYPROJECT = REPO_ROOT / "pyproject.toml"
-HOMEBREW_INSTALL_COMMAND = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-# The Mac app uses macOS's own ssh and SMB client.
-MAC_APP_HINT = (
-    "Or use the TimeCapsuleSMB Mac app, which needs no Homebrew: "
-    "https://github.com/jamesyc/TimeCapsuleSMB/releases"
-)
 MIN_BOOTSTRAP_PYTHON = (3, 9)
 FIXED_ZEROCONF_PYTHON = (3, 10)
 OLD_ZEROCONF_NOTE = (
@@ -38,17 +31,15 @@ OLD_ZEROCONF_NOTE = (
     "that a crafted mDNS packet on your network can trigger. For the fixed zeroconf, delete .venv "
     "and rerun './tcapsule bootstrap --python /path/to/python3.10' with Python 3.10 or newer."
 )
-MIN_MACOS_AUTO_HOST_TOOL_INSTALL = (14, 0)
 PYTHON_VERSION_PROBE = "import sys; print('%d.%d.%d' % sys.version_info[:3])"
-MACOS_HOST_TOOL_PACKAGES = {"ssh": "openssh"}
 LINUX_HOST_TOOL_PACKAGES = {
     "apt-get": {"ssh": "openssh-client", "smbclient": "smbclient"},
     "dnf": {"ssh": "openssh-clients", "smbclient": "samba-client"},
     "zypper": {"ssh": "openssh-clients", "smbclient": "samba-client"},
     "pacman": {"ssh": "openssh", "smbclient": "smbclient"},
 }
-# Telemetry keeps the start and the end of a failed command's output: brew and
-# pip print their error last, but some brew errors come first.
+# Telemetry keeps the start and the end of a failed command's output, since
+# pip and the package managers do not all print their error at the same end.
 COMMAND_OUTPUT_HEAD_LIMIT = 2048
 COMMAND_OUTPUT_TAIL_LIMIT = 6144
 # After Ctrl-C the child got the same SIGINT; give it this long to exit.
@@ -57,12 +48,6 @@ INTERRUPTED_CHILD_GRACE_SECONDS = 5.0
 
 class BootstrapError(Exception):
     pass
-
-
-class BootstrapPreflightError(BootstrapError):
-    def __init__(self, message: str, fields: dict[str, object]) -> None:
-        self.fields = fields
-        super().__init__(message)
 
 
 class BootstrapCommandError(Exception):
@@ -259,81 +244,13 @@ def validate_selected_python(python: str) -> str:
     return version
 
 
-def detect_macos_product_version() -> str | None:
-    try:
-        proc = run_process(
-            ["sw_vers", "-productVersion"],
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
-        proc = None
-    if proc is not None and proc.returncode == 0:
-        version = proc.stdout.strip()
-        if version:
-            return version
-    return platform.mac_ver()[0] or None
-
-
 def required_host_tools(platform_label: str) -> tuple[str, ...]:
-    """ssh logs in to the device; every Mac has it, minimal Linux installs may
-    not. smbclient runs doctor's SMB checks, except on macOS, where doctor uses
-    Apple's own SMB client (checks/smb_macos.py)."""
+    """ssh logs in to the device; every Mac has it in /usr/bin, minimal Linux
+    installs may not. smbclient runs doctor's SMB checks, except on macOS,
+    where doctor uses Apple's own SMB client (checks/smb_macos.py)."""
     if platform_label == "macOS":
         return ("ssh",)
     return ("ssh", "smbclient")
-
-
-def _required_host_tool_paths(platform_label: str) -> dict[str, str | None]:
-    return {tool: find_command(tool) for tool in required_host_tools(platform_label)}
-
-
-def _missing_tools_from_paths(paths: dict[str, str | None]) -> list[str]:
-    return [tool for tool, path in paths.items() if path is None]
-
-
-def _print_host_tool_status(paths: dict[str, str | None]) -> None:
-    for tool, path in paths.items():
-        if path:
-            print(f"Found {tool}: {path}", flush=True)
-        else:
-            print(f"Missing {tool}", flush=True)
-
-
-def check_macos_host_tool_install_support(platform_label: str) -> dict[str, object]:
-    if platform_label != "macOS":
-        return {}
-
-    macos_version = detect_macos_product_version()
-    parsed = _parse_version_prefix(macos_version) if macos_version else None
-    auto_install_supported = parsed is not None and _version_at_least(parsed, MIN_MACOS_AUTO_HOST_TOOL_INSTALL)
-    paths = _required_host_tool_paths(platform_label)
-    missing_tools = _missing_tools_from_paths(paths)
-    fields: dict[str, object] = {
-        "host_os_version": macos_version or "unknown",
-        "macos_auto_host_tool_install_supported": auto_install_supported,
-        "missing_host_tools": _format_tools(missing_tools),
-    }
-    if auto_install_supported:
-        return fields
-
-    print(f"Detected macOS version: {macos_version or 'unknown'}", flush=True)
-    _print_host_tool_status(paths)
-    if not missing_tools:
-        return fields
-
-    minimum = _format_version_tuple(MIN_MACOS_AUTO_HOST_TOOL_INSTALL)
-    message = (
-        f"Automatic TimeCapsuleSMB host-tool install requires macOS {minimum} or newer. "
-        f"Manually install the missing host tools ({_format_tools(missing_tools)}), "
-        "then rerun './tcapsule bootstrap'."
-    )
-    print(color_red(message), flush=True)
-    print(color_red(f"Required host tools: {_format_tools(list(paths))}"), flush=True)
-    raise BootstrapPreflightError(message, fields)
 
 
 def ensure_venv(python: str) -> Path:
@@ -372,16 +289,11 @@ def install_python_requirements(venv_python: Path) -> None:
 
 
 def _missing_required_host_tools(platform_label: str) -> list[str]:
-    return _missing_tools_from_paths(_required_host_tool_paths(platform_label))
+    return [tool for tool in required_host_tools(platform_label) if find_command(tool) is None]
 
 
 def _format_tools(tools: list[str]) -> str:
     return ", ".join(tools)
-
-
-def _macos_manual_install_command(missing_tools: list[str]) -> str:
-    packages = [MACOS_HOST_TOOL_PACKAGES[tool] for tool in missing_tools]
-    return f"brew install {' '.join(packages)}"
 
 
 def _python_venv_package(python: str, python_version: str) -> str | None:
@@ -469,42 +381,24 @@ def install_python_venv_package(package: str) -> None:
     print(f"Installed {package}", flush=True)
 
 
-def _install_macos_host_tools(missing_tools: list[str], manual_command: str) -> None:
-    brew = find_command("brew")
-    if brew is None:
-        print(
-            color_red(
-                "Install Homebrew so bootstrap can install missing host tools automatically, "
-                f"or manually install the missing tools on macOS: {_format_tools(missing_tools)}. "
-                "Then rerun './tcapsule bootstrap'."
-            ),
-            flush=True,
-        )
-        print(color_red(f"Missing host tools: {_format_tools(missing_tools)}"), flush=True)
-        print(color_red("Homebrew install command:"), flush=True)
-        print(HOMEBREW_INSTALL_COMMAND, flush=True)
-        # main prints this error last, so the app hint appears once, at the end.
-        raise BootstrapError(
-            "Install Homebrew or manually install the missing tools on macOS: "
-            f"{_format_tools(missing_tools)}. {MAC_APP_HINT}"
-        )
-
-    packages = [MACOS_HOST_TOOL_PACKAGES[tool] for tool in missing_tools]
-    print(f"Installing missing host tools via Homebrew: {_format_tools(missing_tools)}", flush=True)
-    _run_install_commands(_format_tools(missing_tools), [[brew, "install", *packages]], manual_command)
-
-
-def _require_supported_ssh() -> None:
+def _require_supported_ssh(platform_label: str) -> None:
     try:
         require_local_ssh()
     except SshError as exc:
-        raise BootstrapError(str(exc)) from exc
+        message = str(exc)
+        if platform_label == "macOS":
+            # macOS 11 and older ship OpenSSH 8.1.
+            message += " The ssh that comes with macOS is new enough from macOS 12 on."
+        elif platform_label == "Linux":
+            # Ubuntu 20.04 ships 8.2 and has no newer package.
+            message += " Debian 11, Ubuntu 22.04, RHEL 9 and later ship OpenSSH 8.4 or newer."
+        raise BootstrapError(message) from exc
 
 
 def install_required_host_tools(platform_label: str) -> None:
     missing_tools = _missing_required_host_tools(platform_label)
     if "ssh" not in missing_tools:
-        _require_supported_ssh()
+        _require_supported_ssh(platform_label)
     if not missing_tools:
         print(f"Found required host tools: {_format_tools(list(required_host_tools(platform_label)))}", flush=True)
         return
@@ -512,8 +406,11 @@ def install_required_host_tools(platform_label: str) -> None:
     print(f"Missing required host tools: {_format_tools(missing_tools)}", flush=True)
     tools = _format_tools(missing_tools)
     if platform_label == "macOS":
-        manual_command = _macos_manual_install_command(missing_tools)
-        _install_macos_host_tools(missing_tools, manual_command)
+        # macOS ships OpenSSH in /usr/bin, so only a PATH without it misses ssh.
+        _raise_host_tool_install_error(
+            f"Missing {tools}. macOS includes it in /usr/bin: add /usr/bin to PATH, "
+            "then rerun './tcapsule bootstrap'."
+        )
     elif platform_label == "Linux":
         manager = _linux_package_manager()
         if manager is None:
@@ -535,7 +432,7 @@ def install_required_host_tools(platform_label: str) -> None:
             f"Required host tools are still missing after install attempt: {_format_tools(still_missing)}",
             manual_command,
         )
-    _require_supported_ssh()
+    _require_supported_ssh(platform_label)
     print(f"Installed required host tools: {tools}", flush=True)
 
 
@@ -587,15 +484,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                 selected_python=args.python,
                 selected_python_version=selected_python_version,
             )
-            command_context.set_stage("check_host_support")
-            command_context.update_fields(**check_macos_host_tool_install_support(platform_label))
+            if find_command("ssh") is not None:
+                # No package manager has a newer ssh than the one installed,
+                # so a too-old one fails before bootstrap spends minutes on .venv.
+                command_context.set_stage("check_ssh")
+                _require_supported_ssh(platform_label)
             command_context.set_stage("check_python_venv")
             venv_package = _python_venv_package(args.python, selected_python_version) if platform_label == "Linux" else None
             if venv_package:
                 # .venv cannot be created or repaired without it, so it comes
                 # first. The host tools still come last: a failure there (no
-                # Homebrew, no sudo, a package apt refuses) leaves a .venv
-                # that can deploy.
+                # sudo, a package apt refuses) leaves a .venv that can deploy.
                 command_context.update_fields(python_venv_package=venv_package)
                 command_context.set_stage("install_python_venv_package")
                 install_python_venv_package(venv_package)
@@ -617,8 +516,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.set_error(f"Cancelled by user\n\n{output}")
             raise
         except BootstrapError as e:
-            if isinstance(e, BootstrapPreflightError):
-                command_context.update_fields(**e.fields)
             print(str(e), file=sys.stderr)
             command_context.fail_with_error(str(e))
             return 1

@@ -549,7 +549,7 @@ Shared behavior:
 
 ### `bootstrap`
 
-`tcapsule bootstrap` prepares this computer. It checks the selected Python, creates or reuses `.venv`, installs the repo into it, upgrades its dependencies to their newest releases, and checks the host tools it needs. On Linux it needs `ssh` and `smbclient`, and installs a missing one through the package manager. On macOS doctor uses Apple's own SMB client, so bootstrap needs only `ssh`, which comes with macOS. OpenSSH 8.4 or newer is required. On Fedora, RHEL and their derivatives, SSH gets an OpenSSL config that allows the SHA-1 signature the Time Capsule's host key uses.
+`tcapsule bootstrap` prepares this computer. It checks the selected Python, creates or reuses `.venv`, installs the repo into it, upgrades its dependencies to their newest releases, and checks the host tools it needs. On Linux it needs `ssh` and `smbclient`, and installs a missing one through the package manager. On macOS doctor uses Apple's own SMB client, so bootstrap needs only `ssh`, which comes with macOS, and installs nothing. OpenSSH 8.4 or newer is required, which macOS 12 and later have, as do Debian 11, Ubuntu 22.04, RHEL 9 and later. Bootstrap checks an installed `ssh` before it creates `.venv`, since no package manager offers a newer one. On Fedora, RHEL and their derivatives, SSH gets an OpenSSL config that allows the SHA-1 signature the Time Capsule's host key uses.
 
 Arguments:
 - `--python PYTHON`: the Python used to create a new `.venv`, by default the one running the command. It must be Python 3.9 or newer. An existing `.venv` keeps its interpreter.
