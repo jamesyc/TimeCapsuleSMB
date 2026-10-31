@@ -169,7 +169,7 @@ static void reg_callback(DNSServiceRef sd, DNSServiceFlags flags, DNSServiceErro
     }
 }
 
-/* The daemon creates its socket only while it runs (F1). The stub's
+/* The daemon creates its socket only while it runs (F1, build/native/README.md). The stub's
  * ConnectToServer blocks up to 3 s retrying connect(), so when the socket
  * is absent we mark the round unreachable without calling it, and once one
  * attempt in a round fails that way the remaining entries wait for the

@@ -292,7 +292,7 @@ file created without read access, as Linux `mfsymlinks` does, is read through an
 internal handle that must be the same file. Each
 conversion commits the journal with `sync()`, and so does a rollback before it
 checks and removes the link it made; the test counts these calls (see the HFS journal note
-in `DETAIL.md`). The metadata case checks that attributes and
+in `build/native/README.md`). The metadata case checks that attributes and
 streams set before close move to the link, but never Finder info or resource
 forks. Those are matched by their exact stored names, so a stream such as
 `backup.AFP_AfpInfo.notes` still moves. Buffers must grow on `ERANGE`

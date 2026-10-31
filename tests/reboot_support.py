@@ -46,7 +46,7 @@ class FakeAcpDevice:
     reboots: bool = True
     # Apple's ACPd takes the request, tears itself down (ACP stops answering
     # after shutdown_after) and never runs shutdown: the old kernel and its
-    # sshd keep running (DETAIL.md, "Apple ACPd can hang during its own restart").
+    # sshd keep running (build/native/README.md, "Apple ACPd").
     acpd_hangs: bool = False
     # Host seconds after the request during which a shutdown process is listed
     # while the old kernel still runs (a slow but real restart).

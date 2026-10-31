@@ -1,124 +1,102 @@
-# TimeCapsuleSMB Detail Reference
+# TimeCapsuleSMB detail reference
 
-This file is the long-form engineering reference for the current system.
+This file covers what runs on the Time Capsule, what each setting and command does, and what to do when Apple's firmware fails. [README.md](README.md) has the quick start. Firmware internals for maintainers are in [build/native/README.md](build/native/README.md#firmware-facts).
 
-It is intentionally denser than [README.md](README.md). The README is the user-facing overview. This file is for maintainers, contributors, and users who want the actual constraints, rationale, and implementation details in one place before they start modifying the box or the tooling.
+## What works today
 
-## Current Working State
+TimeCapsuleSMB works end to end on the AirPort Time Capsule:
+- static Samba 4.25.0, built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices and from NetBSD 4 sources for older ones
+- one static `service` image with manager, discovery, telemetry, and diagnostic roles
+- startup from `/mnt/Flash/rc.local` at boot
+- a native manager for `smbd`, discovery, telemetry, and optional rsync
+- SMB on port `445`
+- Finder info, extended attributes and resource forks stored natively on HFS, where Apple's AFP server sees them too
+- a deploy-time migrator for legacy `xattr.tdb` records and `._` AppleDouble files
+- Bonjour records for `_smb._tcp`, `_adisk._tcp`, and `_afpovertcp._tcp` when AFP advertising is on; Apple's `_device-info._tcp`, `_airport._tcp` and USB printer records are left alone
+- SMB logins with the AirPort device password (`/usr/bin/acp -q syPW`); the docs use the username `admin`
+- no guest access
+- device compatibility detection during deploy
+- `tcapsule activate` to start the runtime by hand on NetBSD 4
+- `tcapsule fsck` for disk repair
+- `tcapsule wipe-internal-disk` to format the internal disk, including disks AirPort Utility's Erase Disk cannot format
+- `tcapsule uninstall` to remove the managed files; `tcapsule flash --restore` restores a patched firmware bank
 
-The current system works end to end on the target Apple AirPort Time Capsule.
+Tested so far:
+- NetBSD 6 works end to end and starts on its own after a reboot.
+- 1st-generation NetBSD 4 hardware without the firmware boot-hook patch works, with `tcapsule activate` after each reboot.
+- Other NetBSD 4 generations without the patch may start on their own if their firmware runs `/mnt/Flash/rc.local` early in boot. This is not confirmed.
 
-What is working now:
-- static Samba 4.25.0 built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices
-- static Samba 4.25.0 built from NetBSD 4 sources for older NetBSD 4-era AirPort storage devices
-- one static `service` image containing manager, discovery, telemetry, and diagnostic roles
-- boot-time runtime staging via `/mnt/Flash/rc.local`
-- native manager for `smbd`, discovery, telemetry, and optional rsync
-- direct SMB service on port `445`
-- native HFS FinderInfo, extended-attribute, and resource-fork storage shared with Apple's AFP server
-- a two-phase deploy migrator for legacy `xattr.tdb` records and `._` AppleDouble resource files
-- Bonjour advertisement for:
-  - managed `_smb._tcp`
-  - managed `_adisk._tcp`
-  - optional managed `_afpovertcp._tcp` when AFP advertisement is enabled
-  - Apple-published `_device-info._tcp`, `_airport._tcp`, and USB printer records, left untouched
-- authenticated SMB access using:
-  - examples and docs use Samba username `admin`
-  - boot-time generated RAM auth stores a `root` Samba account
-  - incoming SMB usernames are mapped to Unix `root`
-  - password: the current AirPort device password read from `/usr/bin/acp -q syPW`
-- guest access disabled
-- deploy-time device compatibility detection
-- manual NetBSD 4 activation via `tcapsule activate`
-- manual disk repair via `tcapsule fsck`
-- internal disk formatting via `tcapsule wipe-internal-disk`, also for disks AirPort Utility's Erase Disk cannot format
-- managed-file uninstall via `tcapsule uninstall`; firmware boot-hook patches are restored separately with `tcapsule flash --restore`
+What clients see:
+- `_smb._tcp`, and `_adisk._tcp` for Time Machine
+- `_airport._tcp` for AirPort Utility, published by Apple's ACPd and never touched by us
+- NBNS name answers from Apple's `wcifsnd` when the network allows it
+- a Bonjour name managed by Apple's mDNSResponder, which also handles conflict renames; the Samba server string comes from the AirPort name (`syNm`)
+- a Samba NetBIOS name from `/bin/hostname`, falling back to `syNm`
+- one share per Apple `MaSt` volume, at `smb://<advertised-host>.local/<share name>`, with names cleaned up and made unique
 
-Current validation status:
-- NetBSD 6 is validated end to end with reboot-persistent startup
-- tested NetBSD 4 gen1 hardware without the firmware boot-hook patch is validated with manual `tcapsule activate` after reboot
-- other unpatched NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet confirmed
+Logins:
+- any SMB username works with the AirPort device password; the docs use `admin`
+- at boot, the runtime writes a `root` Samba account hash to RAM and maps every incoming username to Unix `root`
+- files are accessed as `root`, because non-root identities failed to switch privileges on this firmware
+- a password changed in AirPort Utility takes effect at the next boot or activation
 
-Current user experience:
-- the Time Capsule advertises `_smb._tcp`
-- the Time Capsule advertises `_adisk._tcp` for Time Machine
-- Apple's ACPd publishes `_airport._tcp` for AirPort Utility; we never touch it
-- the Time Capsule answers NBNS name queries for the active runtime NetBIOS name through Apple's `wcifsnd` whenever eligible
-- the Bonjour instance name is managed by Apple's mDNSResponder, including conflict renaming; the Samba server string is derived from Apple `syNm`
-- the Samba NetBIOS name is derived from `/bin/hostname`, with `syNm` fallbacks; the Bonjour hostname belongs to Apple's mDNSResponder
-- shares are derived from Apple `MaSt` volume metadata and are available as:
-  - `smb://<advertised-host>.local/<sanitized and de-duplicated volume share name>`
+## Device profile
 
-Current auth model:
-- the docs and examples use SMB login user `admin`
-- the current AirPort device password is used as the SMB password
-- boot-time generated Samba auth stores a `root` SMB account hash in RAM
-- the username map currently maps incoming SMB usernames to Unix `root`
-- filesystem access still runs as `root`
-- this avoids the privilege-switch failures seen with non-root identities on this firmware
+Target families:
 
-## Device Profile
-
-The important target families are:
-
-- NetBSD 6.x `evbarm`: 5th generation Time Capsules and same-era AirPort storage devices
+- NetBSD 6.x `evbarm`: 5th-generation Time Capsules and AirPort storage devices of the same era
 - NetBSD 4.x `evbarm`: older little-endian AirPort storage devices
 - NetBSD 4.x `armeb`: older big-endian AirPort storage devices
-- AirPort Extreme devices with attached USB storage are supported by the same deploy/runtime model, but are less broadly validated than Time Capsule hardware
+- AirPort Extremes with USB storage use the same deploy and runtime, with less testing than Time Capsules
 
-The details differ by generation, but the important shared constraints are:
-- root fs is tiny
+Every generation shares these limits:
+- the root filesystem is tiny
 - flash is tiny
-- `/mnt/Memory` is only about `16 MiB`
-- the runtime has to fit in RAM while lock/cache databases can grow during client activity
+- `/mnt/Memory` holds about `16 MiB`
+- the runtime has to fit in RAM, and its lock and cache databases grow while clients are connected
 
-Relevant mount points:
+Mount points:
 - `/` on `/dev/md0a`
 - `/mnt/Flash` on `/dev/flash2a`
 - `/mnt/Memory` on `tmpfs`
-- internal HDD usually appears as `/dev/dk2` or `/dev/dk3`
-- Apple’s expected mount point is `/Volumes/dk2` or `/Volumes/dk3`
+- the internal HDD, usually `/dev/dk2` or `/dev/dk3`, mounted by Apple at `/Volumes/dk2` or `/Volumes/dk3`
 
-Current live storage numbers observed during development:
-- `/`: about `15.5 MiB` total, about `4.7 MiB` free
-- `/mnt/Flash`: about `1 MiB` total, about `933 KiB` free
-- `/mnt/Memory`: `16 MiB` total, with limited free headroom once Samba is staged
-- `/Volumes/dk2`: effectively the large 2 TB data disk
+Sizes measured on a device:
+- `/`: about `15.5 MiB`, about `4.7 MiB` free
+- `/mnt/Flash`: about `1 MiB`, about `933 KiB` free
+- `/mnt/Memory`: `16 MiB`, with little left once Samba is staged
+- `/Volumes/dk2`: the 2 TB data disk
 
-These constraints drive almost every design decision in this repo.
+Most design decisions in this repo follow from these limits.
 
-Current deploy compatibility classification uses the NetBSD major version and detected ELF endianness; the reported architecture and AirPort identity narrow the displayed device candidates but do not select the payload by themselves:
-- little-endian NetBSD 6.x: current `netbsd6_samba4` target, corresponding to 5th-generation Time Capsules and same-era AirPort devices
-- little-endian NetBSD 4.x: `netbsd4le_samba4`, covering 3rd-4th-generation Time Capsules and 3rd-5th-generation AirPort Extreme hardware
-- big-endian NetBSD 4.x: `netbsd4be_samba4`, covering 1st-2nd-generation Time Capsules and 1st-2nd-generation AirPort Extreme hardware
-  - tested gen1 hardware without the firmware boot-hook patch needs manual `activate` after reboot
-  - other generations may auto-start if their firmware runs `/mnt/Flash/rc.local`, but that is not yet confirmed
+Deploy picks the payload by NetBSD major version and ELF byte order. The reported architecture and AirPort model only narrow the device names it shows.
+- little-endian NetBSD 6.x: `netbsd6_samba4`, for 5th-generation Time Capsules and AirPort devices of that era
+- little-endian NetBSD 4.x: `netbsd4le_samba4`, for 3rd and 4th-generation Time Capsules and 3rd to 5th-generation AirPort Extremes
+- big-endian NetBSD 4.x: `netbsd4be_samba4`, for 1st and 2nd-generation Time Capsules and AirPort Extremes
+  - tested 1st-generation hardware without the firmware boot-hook patch needs `activate` after each reboot
+  - other generations may start on their own if their firmware runs `/mnt/Flash/rc.local`; this is not confirmed
 
-## Why The Current Architecture Exists
+## Why the architecture looks like this
 
 ### Flash is too small
 
-The flash filesystem cannot hold the real Samba runtime.
+The flash filesystem cannot hold Samba.
 
 ### Root is too small
 
-The root filesystem is also too small to be the main runtime home.
+The root filesystem cannot hold it either.
 
-### RAM is too small to be the persistent home
+### RAM is too small to keep anything
 
-`/mnt/Memory` is only about `16 MiB`, and the staged Samba runtime consumes most of it. It is good for transient execution, not for persistence.
+`/mnt/Memory` holds about `16 MiB`, and the staged Samba runtime takes most of it. Programs can run from it, but nothing there survives a reboot.
 
-### The HDD is large but unreliable as an execution root
+### The HDD is large but can disappear
 
-The internal HDD can be mounted locally and is fully usable for reads and writes.
+The device can mount the internal HDD itself and read and write it freely. Apple may unmount or sleep the disk later, though, so `smbd` cannot run from `/Volumes/dk2`.
 
-However, Apple may later unmount or sleep the disk. Running `smbd` directly from `/Volumes/dk2` is therefore unsafe.
+### Where everything lives
 
-### Final result
-
-The actual working split is:
-
-- persistent payload on HDD:
+- on the HDD, kept across reboots:
   - `/Volumes/dkX/.samba4/smbd`
   - `/Volumes/dkX/.samba4/rsync`
   - `/Volumes/dkX/.samba4/rsyncd.conf`
@@ -126,957 +104,340 @@ The actual working split is:
   - `/Volumes/dkX/.samba4/private/xattr.tdb`
   - `/Volumes/dkX/.samba4/cache`
   - `/Volumes/dkX/.samba4/logs/`
-- tiny persistent boot hook on flash:
+- on flash, a small boot hook:
   - `/mnt/Flash/rc.local`
   - `/mnt/Flash/boot.sh`
   - `/mnt/Flash/dfree.sh`
   - `/mnt/Flash/service`
   - `/mnt/Flash/tcapsulesmb.conf`
-- transient runtime on RAM disk:
+- on the RAM disk, rebuilt at each boot:
   - `/mnt/Memory/samba4`
-  - `/mnt/Memory/debug` and `/mnt/Memory/debug.sig` for temporary signed debug execution
+  - `/mnt/Memory/debug` and `/mnt/Memory/debug.sig`, for a signed debug program when one is sent
   - `/mnt/Locks`
 
-This gives:
-- persistence on disk
-- safe execution from RAM
-- only tiny always-mounted files on flash
+The disk holds the files, programs run from RAM, and flash holds only the small files that must always be mounted.
 
-Current naming split:
-- `.samba4` is the fixed managed persistent HDD payload directory
-- the live RAM runtime path is intentionally fixed at `/mnt/Memory/samba4`
-- share names are not configured locally; runtime sanitizes and de-duplicates the Apple `MaSt` partition names
+Names:
+- `.samba4` is the payload directory on the HDD, and its name is fixed
+- the RAM runtime is always at `/mnt/Memory/samba4`
+- share names are not configured; the runtime builds them from Apple's `MaSt` volume names
 
-## Why Samba 4.8, Then 4.25.0
+## Why Samba 4.8, then 4.25.0
 
-The project did not land on Samba 4.x by accident. Samba 4.8 was the first fully working Time Machine target on this hardware; the current checked-in deploy artifacts are Samba 4.25.0.
+Samba 4.8 was the first version that worked as a Time Machine target on this hardware. The current release ships Samba 4.25.0.
 
 ### Samba 3
 
-Samba 3.x worked well enough to prove the device could serve files, and was a small 6MB, but has issues with directory traversal with NetBSD 6. This meant `ls` would not work in the Samba share. As Samba 3.x was the first version with SMB2 support, it was rather incomplete and buggy.
+Samba 3.x proved the device could serve files, and its binary was a small 6 MB. But directory listing failed on NetBSD 6, so `ls` did not work in the share. Samba 3.x was also the first version with SMB2, and that support was incomplete and buggy.
 
 ### Samba 4.0
 
-Tried 4.0 as it in theory had better SMB2 support than 3.x but it had the same directory traversal bug. It was significantly harder to compile than 3.x but a lot easier than 4.2-4.8, so it served well as a stepping stone in getting 4.8 to work as trying to compile 4.8 from scratch at first drove me crazy.
+I tried 4.0 because its SMB2 support should have been better than 3.x, but it had the same directory listing bug. It was much harder to compile than 3.x and much easier than 4.2-4.8. That made it a good stepping stone, because compiling 4.8 from scratch at first drove me crazy.
 
 ### Samba 4.2
 
-Samba 4.2 was built successfully, but it hit a runtime bug on-device:
-- a `talloc` / `loadparm` use-after-free class issue on first client session
+Samba 4.2 built, but it crashed on the device with a `talloc` / `loadparm` use-after-free on the first client session.
 
-Separately, the NetBSD 10-era toolchain path also exposed incompatible directory API behavior on the NetBSD 6 box.
+The NetBSD 10 toolchain also produced directory API calls that the NetBSD 6 box did not support.
 
 ### Samba 4.3
 
-Samba 4.3 was an important stepping stone, but it was not enough. It did not run into any bugs as a network file share. It worked as a normal authenticated network share, but not as a real Time Machine target. 
-
-In practice, 4.3 proved the architecture and deployment model, while 4.8 was the version that first enabled the full Time Machine-oriented share behavior.
+Samba 4.3 ran as an authenticated network share without bugs, but it could not be a Time Machine target. It proved the architecture and deployment model; 4.8 was the first version whose shares worked with Time Machine.
 
 ### Samba 4.8
 
-Samba 4.8 was the first stable target because it gave the project a usable Time Machine stack through `vfs_fruit`.
+Samba 4.8 was the first stable target, with a working Time Machine stack through `vfs_fruit`.
 
 ### Samba 4.25.0
 
-Samba 4.25.0 is the current shipped target. It keeps the same static-module deployment model, but uses the newer `samba4x` build lanes and checked-in artifacts.
+Samba 4.25.0 is the shipped version. It keeps the static-module build and uses the newer `samba4x` build lanes.
 
-With the current static-module build, the shipped config supports:
+The shipped build includes:
 - `catia`
 - `fruit`
 - `streams_xattr`
 - `acl_xattr`
 - `xattr_tdb`
-- `aio_fork`, enabled by default and bounded to two children per client connection and share; `TC_VFS_AIO_FORK_DISABLED=true` leaves it out
+- `aio_fork`, on by default, with at most two children per client connection and share; `TC_VFS_AIO_FORK_DISABLED=true` leaves it out
 - `fruit:time machine = yes`
 
-## Native Mac Metadata Architecture
+## NetBSD 6 build path
 
-Apple's HFS implementation stores the Mac concepts Samba must expose in three
-different kinds of native object. They should not be collapsed into a single
-extended-attribute mechanism:
+The Time Capsule runs NetBSD 6, so the first builds used NetBSD 6 sources. They failed: the NetBSD 6 tree cannot produce earmv4 output. I presume Apple used its own toolchain.
 
-| Mac concept | SMB representation | Owning VFS layer | Native HFS storage | Future FAT32 storage | Migrator input and output |
-| --- | --- | --- | --- | --- | --- |
-| FinderInfo | `:AFP_AfpInfo:$DATA` | `fruit` | `com.apple.FinderInfo` catalog metadata | `fruit:metadata=stream\|netatalk` backed by TDB | Selected TDB metadata → native FinderInfo |
-| Tags and other Mac xattrs | `:com.apple.…:$DATA` | `streams_xattr` → `xattr_tdb` | Canonical HFS xattr | Encoded stream in `xattr.tdb` | TDB stream → canonical HFS xattr |
-| Resource fork | `:AFP_Resource:$DATA` | `fruit` | `file/..namedfork/rsrc` | `._file` through `fruit:resource=file` | AppleDouble resource entry → native resource fork |
-| Windows-only ADS | Ordinary named stream | `streams_xattr` → `xattr_tdb` | Encoded/sharded HFS xattrs | `xattr.tdb` | TDB stream/extents → native HFS xattrs |
-| NT ACL | Samba security xattr | `acl_xattr` → `xattr_tdb` | Native HFS security xattr | `xattr.tdb` | TDB security xattr → native HFS xattr |
+### NetBSD 10 build path
 
-`vfs_fruit` already intercepts the two special Mac streams before
-`streams_xattr`. On HFS, its effective metadata backend synthesizes the 60-byte
-`AFP_AfpInfo` stream from the native 32-byte FinderInfo value. Its effective
-resource backend opens `file/..namedfork/rsrc` as a real descriptor, so large
-resource forks use normal offset I/O and are not limited by the device's
-3,802-byte ordinary-xattr ceiling.
+My VM ran NetBSD 10. Static NetBSD 10 binaries ran on the device and worked for Samba 3.x, but later tests showed that important directory APIs failed on the Time Capsule, so NetBSD 10 could not build a full Samba.
 
-An all-zero FinderInfo is no FinderInfo. Apple's kernels keep none (writing one
-removes the attribute), and `fruit` lists no `AFP_AfpInfo` stream for one, so
-the migrator writes nothing for an all-zero legacy value and leaves any native
-FinderInfo in place, as it does for a row without FinderInfo.
+### NetBSD 7 build path
 
-All other named streams continue down the configured stack:
+The first working build used:
+- the NetBSD 7 source tree
+- a static `earmv4` build
+- Samba 4.8.x
+
+It builds reproducibly, runs on the Time Capsule, serves files, and supports Time Machine through `vfs_fruit`.
+
+The shipped Samba 4.25.0 uses the same NetBSD 7 / NetBSD 4 SDK split. The build scripts are under [build/](build); see [What the build pipeline produces](#what-the-build-pipeline-produces).
+
+## Mac metadata on HFS
+
+Finder info, tags, other Mac extended attributes, and resource forks are stored on the HFS disk the same way Apple's AFP server stores them, so a file's metadata is the same over SMB, AFP and SSH. The Samba module stack is:
 
 ```text
 catia → fruit → streams_xattr → acl_xattr → xattr_tdb
 ```
 
-On HFS, `xattr_tdb` is an automatic native backend and never opens or creates
-the configured TDB. It translates Mac stream names into canonical
-`com.apple.*` HFS xattrs, while excluding `com.apple.FinderInfo` and
-`com.apple.ResourceFork` because `fruit` owns their special SMB semantics.
-Windows-only streams remain encoded and may use HFS xattr extents. A canonical
-Apple xattr that exceeds the native HFS limit is rejected rather than exposing
-an incomplete first extent to AFP. The deploy migrator keeps such a legacy value
-where it was (see "Values too large for HFS" below).
+On HFS, `fruit` maps `AFP_AfpInfo` to the native FinderInfo and `AFP_Resource` to the real resource fork (`file/..namedfork/rsrc`). `xattr_tdb` writes other streams as native HFS xattrs and never opens `xattr.tdb`. Apple's firmware stores at most 3,802 bytes in one HFS attribute, and a larger Apple xattr is refused. FAT32 volumes are not supported.
 
-FAT32 is not currently supported: TimeCapsuleSMB does not mount or discover
-FAT32 volumes. On non-HFS filesystems, the module follows its upstream TDB
-behavior; the fallback is kept deliberately so a future FAT32 implementation
-can use TDB-backed metadata and AppleDouble resources without another Samba
-storage redesign.
+### Migrating older metadata
 
-### AppleDouble migration
+Releases before native storage kept Mac metadata in `.samba4/private/xattr.tdb` and in `._filename` AppleDouble files. Deploy migrates both. Boot and disk hotplug never do.
 
-`fruit:resource=file` means a separate `._filename` AppleDouble container, not
-an HFS resource fork. A normal container has a header and entry table, a
-FinderInfo entry, an optional embedded `ATTR` table containing more xattrs, and
-an arbitrarily large resource entry. Deleting it after copying only the resource
-entry could therefore discard FinderInfo or tags.
+- Deploy stops every writer, Apple's `afpserver` included, and copies the metadata into native HFS storage. After it installs the new software, it verifies each value, removes the migrated `._` files and retires the old database.
+- An interrupted deploy can be rerun: the old files are only read until their values are verified. When databases disagree about an attribute, the newest file wins.
+- A disk that is not attached keeps its rows in the database. Attach it and deploy again to migrate them.
+- `xattr.tdb.migration-progress.json`, beside the database, lists the finished volumes so later deploys skip them. If it is lost, the next deploy scans those volumes again.
+- Rows for files that are gone from a fully scanned disk are kept: the database is renamed `xattr.tdb.orphaned.N`. Only Uninstall and Wipe Internal Disk delete these files.
+- A value too large for HFS stays where it was, in a set-aside database or in its `._` file, which Samba hides. macOS sandbox containers carry such values (8-41 KB `com.apple.data-container-personality`). Deploy lists them when it finishes.
+- The logs are `.samba4/logs/xattr-migration-copy.log` and `xattr-migration-cleanup.log`. A damaged `._` file or database stops the deploy before anything is changed.
 
-The standalone `xattr-hfs-migrate` helper validates all offsets and lengths,
-migrates FinderInfo and embedded xattrs, streams
-the resource entry into `file/..namedfork/rsrc`, and verifies the result. It
-recognizes Samba's intentionally blank resource-fork placeholder. Malformed
-containers, unsupported top-level entries, or failed read-back verification
-leave the sidecar untouched and fail that migration phase. An embedded xattr
-too large for a native attribute is not an error: the rest of the sidecar
-migrates and cleanup keeps the sidecar as that value's only copy.
+## How we use Apple's mDNSResponder
 
-Every detected payload `xattr.tdb` is a migration input, including incomplete
-v2.2.9 and older installations. With no TDB, deploy skips both helper upload and
-recursive scans. Migration is split around software replacement:
+The device's own `mDNSResponder` is the only mDNS responder on the device, and TimeCapsuleSMB never kills it: ACPd does not restart it, so only a reboot would bring it back. Our `service discovery` role registers our records through the daemon's `dns_sd` socket.
 
-1. Read old configuration and payload locations, stop every filesystem writer including Apple's `afpserver`, disable `rc.local`, and flush Flash.
-2. Upload the helper to RAM. Fingerprint sources and preserve their old metadata decoding mode in adjacent progress files.
-3. `copy`: walk each unfinished available HFS volume once, merging logical attributes from all read-only input databases.
-4. Replace known project software, verify and flush it, keeping old runtime configuration through cleanup.
-5. `cleanup`: verify merged native values, flush files, remove verified sidecars, and save completed-volume key coverage.
-6. Retire whole databases in increasing source priority; unresolved older databases retain newer authorities. Fully verified files are deleted, files containing proven orphan metadata or values too large for HFS are quarantined intact. While a lone database's retirement waits for an absent disk, it is copied to `xattr.tdb.orphaned.N` and its verified rows are dropped (below).
-7. Write new configuration and `rc.local` last, flush, and reboot.
+Apple's `diskd` registers `_smb._tcp`, `_adisk._tcp` and `_afpovertcp._tcp` for Apple's own file servers, which would send Finder to Apple's SMB and AFP. `diskd` also provides the disk list (`acp -q MaSt`) and mounts volumes (`diskd.useVolume`), so it has to keep running. The manager starts it as `/sbin/diskd -i lo0 -d local.`, which keeps both of those working and limits its registrations to loopback.
 
-Conflicting logical values use the source file's `(mtime seconds, nanoseconds,
-normalized volume UUID, payload-relative path bytes)`; the greatest tuple wins.
-Absent attributes do not delete older unique values. Stream fragments stay with
-their winning source. Sources remain read-only throughout both walks, preserving
-precedence if deployment is interrupted.
-
-A temporary per-file resource migration marker makes an interrupted large fork
-copy distinguishable from a pre-existing native/legacy conflict. The helper
-removes the marker after a complete byte-for-byte verification. TDB values win
-conflicts during migration: the database stores attribute names and values, not
-per-attribute modification times. Cleanup requires exact native readback before
-retiring those values. Native-only values and existing native resource forks
-keep their existing behavior. Stream extents are
-written before their anchor so interrupted exports can be retried. Read failures
-are errors, never evidence of a conflict.
-
-Migration runs only during deploy, never during boot or disk hotplug. Each
-native operation stops after five minutes without progress. Diagnostics stay in
-`.samba4/logs/xattr-migration-copy.log` or `xattr-migration-cleanup.log`.
-These logs include the UTC start time, selected metadata representation, TDB
-details, scanned roots, and native progress/error output. Deploy distinguishes
-native inactivity from SSH loss and retrieves a bounded saved-log
-snapshot for up to 30 seconds. The macOS diagnostics export
-retains the last deploy's stage, timestamps, operation ID and error code even
-after later operations displace its recent events.
-An unavailable external disk keeps its legacy TDB rows; attach it and run deploy
-again to migrate them. An interrupted deployment can be rerun. Validated `xattr.tdb.migration-progress.json` files remember completed volume
-UUIDs and verified key coverage for the entire source cohort. Later deploys skip
-those volumes in both phases, preserving subsequent native edits. Missing or
-invalid progress makes the next deploy walk those volumes again and rewrite
-native values from any rows still in a database.
-
-A lone database therefore does not keep verified rows. When its retirement is
-deferred because some rows belong to a disk that is not attached, retirement
-copies the unchanged file to the next free `xattr.tdb.orphaned.N` (a reused
-`/dev/dkN` can match a row to the wrong disk; the copy keeps it recoverable),
-then drops every row that cleanup verified natively, 1,000 per TDB
-transaction. Whole-file retirement would delete those rows anyway; orphaned,
-kept and unresolved rows stay. Deploy then saves the receipts with the new
-fingerprint and without the dropped keys. From then on a lost receipt costs a
-walk, not native edits. Rows with values HFS cannot hold natively (too large,
-or a folder's resource fork) stay whole, so a lost receipt can still rewrite
-the other attributes of those files, such as a folder's FinderInfo label.
-Several databases keep every row until whole-file retirement: their
-precedence is their unchanged mtime, and they still depend on their receipts.
-An older database found later, on a disk that was absent before, can still
-write its values over volumes whose rows were already dropped or retired.
-A power loss during a drop leaves a TDB recovery area, and TDB refuses
-read-only opens until a writer replays it. The first helper call of each
-deploy (`inspect`) therefore opens a database read-write when a read-only open
-fails, before fingerprinting it; that applies to any source, including one of
-several.
-An unfinished volume may therefore replay authoritative TDB metadata after a
-reboot; the legacy database is deliberately presumed newer than an interim AFP
-edit until cleanup records that volume as complete.
-Changed source contents, new sources, or a changed conversion policy invalidate
-completion. Disk-number reassignment alone does not. Known absent source disks
-do not invalidate existing completion, but cannot prove new volumes finished.
-
-#### Orphans and unresolved rows (v3.1.0)
-
-Legacy TDB keys are `(st_dev, st_ino)`, never a volume UUID, so a row that no
-file claimed is one of two things and the migrator tells them apart:
-
-- a **proven orphan**: its device is one of the roots this run walked completely
-  (no scan error, no filesystem boundary crossed) and the inode is gone;
-- an **unresolved** row: its device was not walked, so the metadata may belong to
-  a disk that is not attached right now.
-
-Unresolved rows keep the database live for a later run. When every row is verified or proven orphaned and at least one is an orphan,
-retirement closes the original database and renames it to
-`xattr.tdb.orphaned.N` beside the payload (`N` is the first unused slot, never
-overwriting an earlier quarantine); nothing is deleted. Structured coverage distinguishes matched, orphaned, and unresolved keys; the
-deployment log reports each source and retirement outcome. Note the limit of device-number identity: rows
-written by a disk that used to sit at the same `/dev/dkN` as the current one look
-like proven orphans of the current disk, which is why quarantine keeps the file.
-(This attachment-evidence definition is a deliberate decision: the rows carry
-nothing else, and refusing to prove any row would keep every leftover database
-live forever.)
-
-#### Values too large for HFS (issue 345)
-
-Apple's firmware stores at most 3,802 bytes in one HFS attribute, so AFP and a
-Mac never see a larger value on these disks. Its kernel runs Darwin 8's
-inline-only `hfs_setxattr`: the limit is (attributes B-tree node size - 20) / 2
-- 284, rounded down to even, which is 3,802 for the 8 KiB nodes it creates, and
-anything larger fails with `E2BIG`. It has no extent-based attribute code, and
-that function is its only writer of attribute records, AFP included. Legacy `xattr.tdb` rows and `._`
-files had no such limit: macOS sandbox containers carry 8-41 KB
-`com.apple.data-container-personality` values. Such a value cannot become
-native, and it is still someone's metadata, so the migrator leaves it where it
-is and migrates the rest of the file:
-
-- a TDB record that keeps a value is complete, like a proven orphan: its
-  coverage kind is `X` (beside `M` for verified and `O` for orphaned), its
-  volume is recorded as finished and never walked again, and retirement
-  quarantines the database as `xattr.tdb.orphaned.N` instead of deleting it;
-- a `._` file that keeps a value is not removed by cleanup. Samba vetoes `._`
-  files, so it stays invisible over SMB.
-
-After cleanup, deploy lists the kept values once (up to ten, with a total) and
-says whether the database holding them was set aside or stays live until
-migration finishes on every disk. The native report carries up to 50 with the
-full counts; a hard-linked record counts once per walk, while each link's own
-`._` file counts separately. Names are decoded for display only. Telemetry
-records the counts, the database outcome and Apple attribute names, never paths. Any other damage, such as a stream that
-claims more than 35 extents, still stops the deploy.
-
-Only deploy reads the adjacent JSON completion files. Runtime daemons never
-read or write migration state. Old `xattr-migration-completed.txt` files remain
-ignored, and quarantined databases remain preserved.
-
-The stream layer allows 3,803 logical bytes for canonical Apple xattrs on HFS:
-3,802 native bytes plus its synthetic marker. Windows ADS retain 3,802-byte
-physical fragments. Larger canonical Apple values fail before modifying the
-existing attribute.
-
-## NetBSD 6 build path
-
-As the Time Capsule ran NetBSD 6, initial attempts used the NetBSD 6 source code to attempt to build. This failed terribly, as it turns out the NetBSD 6 source did not support earmv4 build output. I presume Apple used some custom toolchain. 
-
-### NetBSD 10 build path
-
-My VM was running NetBSD 10. A NetBSD 10-generated static binary could execute, and it worked fine for Samba 3.x, but later direct directory probes confirmed that important directory APIs failed on the Time Capsule. That made the NetBSD 10 route unacceptable for full Samba serving.
-
-### NetBSD 7 build path
-
-The first working result came from:
-- NetBSD 7 source tree
-- static `earmv4` build
-- Samba 4.8.x
-
-That combination:
-- builds reproducibly
-- executes correctly on the Time Capsule
-- serves files successfully
-- supports Time Machine semantics through `vfs_fruit`
-
-The current deploy artifacts use Samba 4.25.0 on the same NetBSD 7 / NetBSD 4 SDK split.
-
-The important build logic is now under [build/](build). The VM-side [build/Makefile](build/Makefile) names the supported per-family and all-lane targets while leaving the expensive SDK download/bootstrap steps explicit rather than making them artifact-build dependencies.
-
-Current maintainer build lanes:
-- NetBSD 7 SDK lane:
-  - [build/download.sh](build/download.sh)
-  - [build/bootstrap.sh](build/bootstrap.sh)
-- NetBSD 4 SDK lane:
-  - [build/downloadoldle.sh](build/downloadoldle.sh)
-  - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
-  - [build/downloadoldbe.sh](build/downloadoldbe.sh)
-  - [build/bootstrapoldbe.sh](build/bootstrapoldbe.sh)
-- NetBSD 7 current Samba 4.25.0 lane:
-  - [build/downloadsamba4x.sh](build/downloadsamba4x.sh)
-  - [build/samba4x.sh](build/samba4x.sh)
-- NetBSD 4 current Samba 4.25.0 lanes:
-  - [build/downloadsamba4xoldle.sh](build/downloadsamba4xoldle.sh)
-  - [build/downloadsamba4xoldbe.sh](build/downloadsamba4xoldbe.sh)
-  - [build/samba4xoldle.sh](build/samba4xoldle.sh)
-  - [build/samba4xoldbe.sh](build/samba4xoldbe.sh)
-- current rsync 3.4.4 lanes:
-  - [build/downloadrsync.sh](build/downloadrsync.sh)
-  - [build/rsync.sh](build/rsync.sh)
-  - [build/rsyncoldle.sh](build/rsyncoldle.sh)
-  - [build/rsyncoldbe.sh](build/rsyncoldbe.sh)
-- NetBSD 7 utility lanes:
-  - [build/hello.sh](build/hello.sh)
-  - [build/service.sh](build/service.sh)
-- NetBSD 4 utility lanes:
-  - [build/hellooldle.sh](build/hellooldle.sh)
-  - [build/hellooldbe.sh](build/hellooldbe.sh)
-  - [build/serviceoldle.sh](build/serviceoldle.sh)
-  - [build/serviceoldbe.sh](build/serviceoldbe.sh)
-
-The direct scripts target the NetBSD 7 lane by default. The `*oldle.sh` and `*oldbe.sh` wrappers select the NetBSD 4 little-endian and big-endian lanes.
-
-## How We Use Apple's mDNSResponder
-
-Since v3.1.0 the device's own `mDNSResponder` (Apple's crunched static binary,
-version 397.32 on both the NetBSD 4 and NetBSD 6 lanes) is the only mDNS
-responder on the device. We never kill it: ACPd does not respawn it and a
-hand-started daemon lacks `_airport._tcp`, so a dead daemon is recoverable only
-by a reboot. Our `service discovery` role is a small *registrant*: it registers our
-records through the standard `dns_sd` Unix-socket IPC at
-`/var/run/mDNSResponder`, using Apple's own client stub (vendored, unchanged,
-in [build/native/dnssd/](build/native/dnssd/)).
-
-Why this works now and did not before: Apple's `diskd` registers `_smb._tcp`,
-`_adisk._tcp` and `_afpovertcp._tcp` for Apple's own file servers
-unconditionally, and Finder would follow those to Apple SMB/AFP rather than
-our Samba. `diskd` is also load-bearing: it populates `acp -q MaSt` (our
-volume/UUID source of truth) and serves `acp rpc diskd.useVolume` (how the
-manager mounts volumes). The manager therefore relaunches it as
-`/sbin/diskd -i lo0 -d local.`: it keeps doing its real job while its own
-registrations never leave loopback. ACPd still starts its own diskd at boot and
-whenever it applies a sharing setting; that second diskd would delete our
-diskd's RPC names in ACPd (F16), so `boot.sh` makes `/sbin/diskd` (RAM root) a
-guard that runs the real binary, hard-linked as `/usr/libexec/diskd`, only for
-`-i lo0` and makes every other start exit at once. ACPd likewise starts its own
-`wcifsnd`, without arguments, at boot (one to three times in the first minute)
-and on address changes, which would take the NBNS ports from discovery's child,
-so `/sbin/wcifsnd` is a guard that always exits; discovery runs the real binary
-hard-linked as `/usr/libexec/wcifsnd`, or `/sbin/wcifsnd` when that link is
-missing (boot.sh could not make it and so left Apple's binary there, or an older
-boot.sh started this runtime). Uninstall leaves both guards in place: the
-manager's loopback diskd outlives it and keeps serving `MaSt` and
-`diskd.useVolume`, and Apple's own diskd beside it would delete those RPC names
-(F16). Uninstall removes boot.sh, so the reboot that follows it, or the user's
-next one after `--no-reboot`, starts the stock daemons. Our registrations use `name=NULL` and flags
-`0`, so Apple's mDNSResponder owns the shared default service name and resolves
-conflicts. A stock-device test on 2026-09-19 showed `diskd` renaming both SMB and
-ADisk to "Name (2)" after an SMB-only conflict, while `syNm` and the hostname
-remained unchanged. Registration callbacks accept that name. Doctor finds the
-device's own records by its MAC: the `_airport` and `_adisk` TXT carry `waMA`,
-the MAC ACP reports, and all of one device's services share one host. Without
-a MAC it uses the `_smb` record at the saved address. Both address families are
-checked against that host, Apple's renames of the device's own names are
-accepted, and another device holding the same name is a warning (Bonjour Names).
+`boot.sh` replaces `/sbin/diskd` with a guard that lets only that loopback start through. A second diskd started by ACPd would break the first one's RPC names until the next reboot. `/sbin/wcifsnd` gets a guard too, so ACPd cannot take the NBNS ports from the `wcifsnd` that discovery runs. Uninstall leaves both guards in place until the next reboot brings back the stock daemons.
 
 | Process | Owner | Role |
 | --- | --- | --- |
 | `/sbin/mDNSResponder -d` | Apple (child of ACPd) | the only responder: host `A`/`AAAA` per interface, `_airport` (via ACPd), `_device-info`, printers (via `printd`), and everything we register. Never killed. |
 | `ACPd` | Apple | registers `_airport._tcp` and follows the AirPort Utility WAN switches; serves `acp -q`/`acp rpc` |
-| `/usr/libexec/diskd -i lo0 -d local.` | Apple binary, started by the manager through boot.sh's `/sbin/diskd` guard | disk topology (`MaSt`), `diskd.useVolume`, spin-down; its `_smb`/`_adisk`/`_afpovertcp` stay on loopback |
+| `/usr/libexec/diskd -i lo0 -d local.` | Apple binary, started by the manager | disk list (`MaSt`), `diskd.useVolume`, spin-down; its `_smb`/`_adisk`/`_afpovertcp` stay on loopback |
 | `printd` | Apple | printer discovery and `_riousbprint`/`_pdl-datastream` registration |
-| `wcifsfs` | Apple | Apple SMB server, always stopped so Samba owns SMB |
-| `/usr/libexec/wcifsnd` | Apple binary, child owned by `service discovery`; boot.sh's `/sbin/wcifsnd` guard ignores ACPd's starts | native NBNS registration, conflict handling, WINS behavior, and UDP `137`/`138`; present only while native NBNS is eligible |
-| `afpserver` | Apple | kept running regardless of the AFP advertising setting; advertising is controlled through diskd's loopback scope and our Bonjour registrations |
-| `service discovery` | ours, `/mnt/Flash/service` | registers Bonjour records through mDNSResponder and owns the foreground `wcifsnd` child used for native NBNS |
+| `wcifsfs` | Apple | Apple's SMB server, always stopped so Samba owns SMB |
+| `/usr/libexec/wcifsnd` | Apple binary, child of `service discovery` | NBNS on UDP `137`/`138`; runs only while the network allows NBNS |
+| `afpserver` | Apple | kept running whatever the AFP advertising setting |
+| `service discovery` | ours, `/mnt/Flash/service` | registers Bonjour records through mDNSResponder and runs the `wcifsnd` child |
 
-What Apple publishes vs what we publish:
+Who publishes what:
 
 | Service | Source | Interfaces |
 | --- | --- | --- |
-| `_smb._tcp` (port 445, empty TXT) | ours | every link whose plan mask has `SVC_SMB` |
+| `_smb._tcp` (port 445, empty TXT) | ours | every link allowed file sharing |
 | `_adisk._tcp,_airport` (port 9, `sys=waMA=…,adVF=0x1010` + one `dkN=adVF=…,adVN=…,adVU=…` per disk) | ours | same as `_smb` |
 | `_afpovertcp._tcp` (port 548) | ours, only with `MDNS_ADVERTISE_AFP=1` | same as `_smb` |
 | `_airport._tcp` | Apple (ACPd) | Apple's rules |
-| `_device-info._tcp` (`model=TimeCapsule6,116` …) | Apple (daemon built-in, from `/etc/mdnsd.conf`) | Apple's |
+| `_device-info._tcp` (`model=TimeCapsule6,116` …) | Apple | Apple's |
 | host `A`/`AAAA` | Apple | fe80 + every IPv4 incl. 169.254, no GUA |
 | printers | Apple (printd) | Apple's |
 
-The hostname is Apple's (`AirPort-Time-Capsule.local`, from `syDN`, else
-`syNm`, else `Base-Station-<raMA, else waMA>`), so SRV targets of our
-registrations resolve through Apple's host records. The doctor compares host
-labels as mDNSCore does (ASCII case only) and accepts Apple's conflict rename
-`label-N` only on this device's own host: "Office 2" has the label `Office-2`
-of its own.
+The hostname is Apple's (`AirPort-Time-Capsule.local`, from `syDN`, else `syNm`, else `Base-Station-<MAC>`), and our records point at it.
 
-### Discovery policy and Samba networking
+### Where file sharing is visible
 
-The unified service's discovery, telemetry, and diagnostic paths share one collector in
-[build/native/common/](build/native/common/): `acp -q` for
-`raNA raDS waNM usbF laIP waIP waLL gnRo syNm waMA`, the kernel
-interface table via our own `sysctl(NET_RT_IFLIST)` parser (libc
-`getifaddrs()` returns garbage names on Apple's NetBSD 4 kernel because its
-`struct if_msghdr` is 152 bytes while the SDK's is 144), and the flash config.
-From those facts the plan assigns each link a role — `gnRo` owner → GUEST,
-`laIP` owner → LAN, NAT mode and `waIP`/`waLL` owner → WAN, anything else →
-ISOLATED — and a service mask: LAN gets SMB+ADISK (+AFP when enabled); WAN and
-GUEST get the LAN mask only in NAT mode with disks-over-WAN (`usbF & 0x8`)
-enabled, exactly the AirPort Utility switch; ISOLATED gets nothing. A failed ACP re-read
-keeps the last validated roles on unchanged links and reports the age; a link
-recreated with a new index (an AirPort Utility apply) starts isolated until a
-coherent read. `service --print-link-plan` prints the whole plan.
+Discovery uses the rules Apple's own file servers used. The LAN gets SMB and ADisk, plus AFP when enabled. WAN and guest links get them only in NAT mode with "Share disks over WAN" turned on in AirPort Utility. The guest network never gets file sharing, and any other link gets nothing. At startup nothing is shared until those settings have been read; if a later read fails, the last good result stays. `service --print-link-plan` prints the current plan.
 
-The manager does not collect this plan. Samba also does not consume it: the
-generated configuration omits `interfaces` and `bind interfaces only`, and
-Samba owns IPv4 and IPv6 wildcard TCP 445 listeners. Both tested NetBSD 4 and
-NetBSD 6 Time Capsules are dual-stack, including scoped IPv6 link-local SMB.
-The Samba build carries a NetBSD-only `NET_RT_IFLIST` reader because Apple's
-kernel routing-message layout does not match the SDK/libc layout. Bonjour
-policy controls where `_smb` is visible, while Apple's firewall controls WAN
-and guest reachability.
+Samba listens on every IPv4 and IPv6 address, including scoped IPv6 link-local. Bonjour controls where `_smb` is visible, and Apple's firewall controls whether WAN and guest clients can reach it.
 
-Three details from the v3.1.0 review matter here. An ACP key has three outcomes,
-not two: `ok`, `unavailable` (`acp` answered that the key is not set — a real
-observation; no guest network, no WAN link-local) and `abort` (timeout, exec
-failure, or never asked because the 30 s collection budget ran out). Only the
-first two can move a role; an aborted `laIP`/`waIP`/`waLL`/`gnRo` is a failed
-re-read that keeps the last validated policy (`incomplete reason=<key>`), and an
-aborted `syNm`/`waMA` keeps the previous instance name and `waMA`
-(`identity … retained=1`) so a slow ACPd never renames the service or withdraws
-`_adisk`. At cold start nothing is shared until the plan validates, and a link that owns a
-readable `gnRo` is GUEST with no permission regardless — the guest network never
-carries file sharing. And a
-link plan holds every address the interface table can (64), so a link with many
-IPv6 addresses is bound completely or the snapshot is marked incomplete, never
-published with a subset.
+## Bonjour discovery boundaries
 
-## Bonjour Discovery Boundaries
+`timecapsulesmb.discovery.bonjour.discover_snapshot_merged_detailed()` returns one normalized record per service instance, so a device with three services gives three records. Each service type has its own job:
+- `_airport._tcp.local.` identifies the Apple device, and configure lists devices from it alone
+- `_smb._tcp.local.` identifies the Samba service, and doctor's Bonjour checks use it; doctor also reads `waMA` from the `_airport`/`_adisk` TXT to find the device's own host
+- `_device-info._tcp.local.` can have the same name, hostname and IP as `_smb._tcp.local.`, and stays a separate raw record
 
-Local Bonjour discovery is intentionally service-centric. `timecapsulesmb.discovery.bonjour.discover_snapshot_merged_detailed()` returns one normalized record per service instance, not one merged record per physical device.
+Do not merge `_airport`, `_smb` and `_device-info` records inside `bonjour.discover_snapshot_merged_detailed()`. A merged record has one name and hostname with several meanings, and configure and doctor then print duplicate-looking or misleading lines. Callers filter the raw results by the service prefix they need: `_airport` for configure, `_smb` for doctor.
 
-That distinction matters:
-- `_airport._tcp.local.` is the Apple device identity and is the only service configure uses for the interactive device list
-- `_smb._tcp.local.` is the managed Samba service identity and is what doctor Bonjour checks use; doctor also reads `waMA` from `_airport`/`_adisk` TXT to find the device's own host, and checks that `_smb` carries the same name as that host's `_airport`
-- `_device-info._tcp.local.` may share the same name, hostname, and IP as `_smb._tcp.local.`, but it must remain a separate raw record
+## Bonjour names
 
-Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.discover_snapshot_merged_detailed()`. Merging service records creates ambiguous objects with one name/hostname but multiple meanings, and it causes duplicate-looking or misleading configure/doctor output. The stored `service_type` should remain the raw observed value. Callers should filter raw discovery results by the service prefix they actually need, such as `_airport` for configure and `_smb` for doctor. Prefix filtering intentionally matches both `_smb._tcp.local.` and `_smb._tcp.local`.
+Apple's rules, read from the firmware:
 
-## Bonjour Names
+- The device's Bonjour name is its AirPort name (`syNm`) when that fits in 63 bytes. A longer name gets a name Apple builds from the model and MAC. `_airport`, `_smb` and `_adisk` share that one name and are renamed together.
+- When another device on the network already uses the name, Apple renames this one "Name (2)" and its host `Name-2`. Only ASCII letters ignore case: "Home" and "home" conflict, "Été" and "été" do not.
+- An AirPort does not save that rename. At its next restart or network change it goes back to its original name, so two AirPorts with the same name can swap names, and Time Machine can reach the wrong one. A Mac does save its renames. Give each AirPort its own name in AirPort Utility.
 
-These are Apple's rules, read from the ACPd firmware (7.8.1 NetBSD 4 LE/BE and
-7.9.1 NetBSD 6, which embed mDNSResponder-397.32) and emulated on test names
-(2026-10-12). `device/probe.py` (`apple_conflict_rename`, `apple_conflict_base`,
-`apple_name_key`, `apple_bonjour_host_label`) and the app's `AppleBonjourName`
-implement them, checked against `Fixtures/apple_mdns_names.json`, which holds the
-firmware's own answers.
+Doctor warns when another device advertises this device's name. A renamed name that nobody else uses is reported for information only.
 
-- **Service name.** ACPd's `_airport`, our discovery role's `_smb`/`_adisk` and
-  loopback `diskd` all register with `name=NULL`, so they share the daemon's one
-  default name and are renamed together. It is `syNm` byte for byte, spaces
-  included, when it fits 63 bytes (ACPd copies it with CFStringGetPascalString,
-  all or nothing, LE `0x45102c`). A longer `syNm` gets a name of Apple's own,
-  built from the `Hardware` model string and the MAC; doctor then reads the
-  name from the device's `_airport` record rather than predicting it.
-- **Host label.** From `syDN`, else `syNm`, else `Base-Station-<raMA, else
-  waMA>` (LE `0x42e110`). ASCII letters and digits keep their case, an
-  apostrophe is dropped, and every other byte becomes one `-` (LE `0x442194`).
-  So names that differ only in non-ASCII letters share a label: "Café" and
-  "Cafè" are both `Caf`, "Office Ä" and "Office Ö" both `Office`, and a name
-  with no ASCII at all falls back to `Base-Station-…`. A host label is weak
-  evidence of which device this is; two service names are strong.
-- **Conflict rename** (mDNSCore IncrementLabelSuffix, LE `0x2c0330`). A service
-  name becomes "Name (2)", a host label `label-2`. An existing suffix is raised:
-  2 to 9 by one, from 10 at random. Trailing spaces go before " (N)", and the
-  name is cut on a UTF-8 boundary to fit 63 bytes. Apple never makes "(1)" or
-  "-1". A name that really ends in " (N)" cannot be told from a rename.
-- **Comparison.** mDNSCore's SameDomainLabel (LE `0x2ba0b8`, BE `0x2929e4`,
-  NetBSD 6 `0x2e9a44`) folds ASCII A-Z and compares every other byte exactly,
-  as RFC 6762 section 16 requires: "Home" and "home" conflict, "Été" and "été"
-  do not, and neither do composed and decomposed "é". macOS's mDNSResponder
-  behaves the same (`dns-sd -R` test). Code that compares names uses
-  `apple_name_key` or `AppleBonjourName.key`, never Unicode case folding,
-  normalization or Swift's `==`.
-- **Renames are not saved on an AirPort.** ACPd's mDNSPreferencesSetNames
-  helper is a stub (LE `0x298418`). The next configuration reload (SIGHUP, a
-  network change, a restart) registers `syNm` again, so two devices with one
-  name can swap names, and Time Machine can reach the wrong one. **macOS saves
-  its renames** (mDNSResponderHelper PreferencesSetName writes ComputerName and
-  LocalHostName), so a Mac's "Name (2)" or `Name-2` is its own name from then on.
+## Saved device identity
 
-Doctor's conflict check runs once per run, on this device's own record. Another
-host (and, when known, another MAC) shares this device's name when its service
-name, in a service type this device registers, is this device's original name,
-or when its host label is this device's original label. On another AirPort (a
-host with an `_airport` record), whose renames are unsaved too, Apple's rename
-counts as well: a service name that is the original plus " (N)", or a label
-`label-N` when that AirPort's own name would give `label` (so "Office 2" beside
-"Office" is no conflict). A Mac's suffixed name is one it saved, so only an
-exact match counts there. That is a warning; a renamed name nobody else
-advertises is an info line. It makes no host lookups: a `.local` name nobody
-owns takes 10 s to fail.
+Each saved device is identified by its AirPort MAC address (`TC_AIRPORT_MAC`). Its name and address can change. Every command first checks that the device at the saved address (`TC_HOST`) has that MAC. If the device has moved, the command finds it by MAC over Bonjour and uses the new address for that run; the app offers to save it, and the CLI says to run `tcapsule configure`. A different AirPort at the saved address is refused (`device_identity_mismatch`), so a neighbor's AirPort with the same password is never reconfigured. Adding a device the app already has stops with `device_already_saved`, and the app continues with the saved profile.
 
-## Saved Device Identity
+## Registered mDNS records
 
-`TC_HOST` is the one address every connection of a command uses; names never
-connect. `TC_AIRPORT_MAC` is the device's `waMA`, which configure saves. The
-app's device registry owns each profile's MAC and sends it as `airport_mac`
-with every operation, so the profile's `.env` copy is not trusted.
+- `boot.sh` prepares directories, installs the diskd and wcifsnd guards and the locks filesystem, then runs `service manager`, which starts Apple's loopback `diskd`
+- the manager starts `/mnt/Flash/service discovery` with the Samba name and one ADisk row per share; discovery reads everything else from ACP, the interface table and the flash config
+- discovery registers again when the network changes, and deregisters everything at shutdown so the daemon sends goodbye packets
+- with no Samba payload on any disk, none of our records are registered; Apple's `_airport` and `_device-info` stay up either way
+- a name conflict or registration error is retried with backoff; we never start the daemon ourselves
 
-- **Following a moved device.** A command first reads `waMA`, `syNm` and `syDN`
-  in one network ACP request at `TC_HOST` (`services.runtime.confirm_device_address`).
-  The saved MAC answering with the password means the command goes ahead there.
-  Another MAC, no answer, or a rejected password sends `services.locate` to
-  browse `_airport` for that MAC and read the candidate with the password. A
-  device found elsewhere is used at that address for this command only: the
-  app offers to save it, the CLI says to run `tcapsule configure`. Another
-  AirPort at the address with the saved one not found is
-  `device_identity_mismatch`.
-- **Configure of a saved device** makes the same check before anything changes,
-  with one read, so another AirPort that took the address (households often
-  share one admin password) is never given SSH and rebooted. When SSH answers
-  at the address that read reached, it is also configure's ACP password check.
-- **Adding a saved device at a new address (app only).** An add that matches
-  no saved device by its address or Bonjour record sends every saved MAC as
-  `saved_airport_macs`. Configure reads the AirPort's identity over ACP before
-  anything changes on it (also its password check) and, at a saved MAC, stops
-  with `device_already_saved`, the MAC in the error's `details`, before writing
-  a config. Where ACP does not answer that read, the SSH probe's MAC stops it,
-  possibly after ACP turned SSH on; a saved profile's own run (an expected MAC)
-  never stops there. Once the stopped run's helper has exited, the app drops
-  that run from Activity and runs configure again as that saved profile: its
-  lane, settings, config and MAC check, with `address_source` `manual` for a
-  typed address or `mac` for a discovered one, and the first run's Local
-  Network result instead of a second check. A profile forgotten meanwhile is
-  added as a new one. A device busy with another operation fails the add,
-  naming it; the page keeps what was typed for another try. A Cancel from any
-  page before the helper exits (it may still be sending telemetry) ends the add
-  as cancelled, with no second run: the app reads the helper's exit code.
-  Telemetry records the stopped run as a failure with the code
-  `device_already_saved`, since the server accepts only the results `success`,
-  `failure`, `cancelled` and `confirmation_required`.
-- **Learning the MAC (app only).** A profile saved before MACs were learns one
-  from a read that took the password: the background SSH check reads devices
-  seen at their saved address, and doctor and every command that goes through
-  ACPd (deploy, flash, fsck, uninstall, SSH changes) report what they reached
-  (`airport_mac`, `airport_instance_name`, `airport_host_label`,
-  `airport_host_label_source`). A saved MAC never changes; the registry refuses
-  another. Without one, the names decide (`DeviceNetworkIdentity.nameEvidence`):
-  two known service names decide; a host label counts only when one side has no
-  service name, or when it came from `syDN`, which a rename of `syNm` leaves
-  alone. A name with Apple's suffix, another visible device on the same host
-  label (a conflict not renamed yet), or any device or other profile with the
-  same service name leaves it ambiguous; another saved profile's host label
-  does not, as it is only what that device held when saved. A profile with no
-  saved name learns only while discovery shows no other AirPort.
-- **Moved-device banner.** Discovery finds a profile's device at a new address
-  by its MAC, or for a profile without one by the same name rules. The
-  telemetry field `address_source` (`mac`, `name`, `manual`) says which, and
-  saving the new address turns SSH on if needed.
-- **Telemetry.** `airport_mac` and `current_host` are telemetry fields. The
-  names and `airport_host_label_source` go to the app only
-  (`services.context.DEVICE_APP_ONLY_FIELDS`), in results and debug fields but
-  never in telemetry fields or the debug text of a failure. A fatal doctor
-  run's debug text still includes its naming probe.
+## Boot flow
 
-## Registered mDNS Records
-
-Current behavior:
-- `boot.sh` prepares platform directories, installs the diskd and wcifsnd guards and the locks filesystem, then executes `service manager`; the manager reconciles Apple's loopback `diskd`
-- the manager launches `/mnt/Flash/service discovery` with the canonical Samba name (`--netbios-name`), payload state (`--diskless` when applicable), and ADisk rows (`--adisk-share NAME KEY UUID FLAGS`, repeated per share); identity and link facts otherwise come from ACP, the interface table, and flash config
-- the registrant holds one `DNSServiceRef` per (link index, service), re-registers on plan changes (a `PF_ROUTE` socket plus a 30 s ACP poll), and deregisters everything on `SIGTERM` so the daemon sends goodbyes
-- in diskless mode the desired set is empty; `_airport` and `_device-info` are Apple's and stay up regardless
-- a name conflict or any registration error backs off (1, 2, 4 … 30 s) and retries with the unchanged desired state; an unreachable daemon marks the registrations degraded and is never started by us
-
-## Boot Flow In Detail
-
-`rc.local` backgrounds `boot.sh` with stdin/stdout/stderr detached so Apple's
-startup can continue. `boot.sh` performs only platform preparation: RAM
-directories, existing-compatible `/root` prefixes, and the 6 MiB locks
-filesystem. It leaves Apple's kernel tunables, including the buffer cache, as
-the firmware set them. It preserves existing files and mounts, then executes
-`/mnt/Flash/service manager`.
-
-NetBSD 6 uses `mount_tmpfs -s 6m`, retaining its plain-directory fallback if
-mounting fails. NetBSD 4 uses `mount_mfs -s 13312` and refuses rootfs fallback:
-6.5 MiB, of which its UFS keeps 7% (12288 sectors showed 5711 KiB in `df`), so
-both hold about 6 MiB of files.
-Either takes memory only as files grow (an MFS keeps what it once held until
-reboot). Boot never clears active locks. The native manager first locks its
-existing executable inode, reconciles old processes, and waits for all Samba
-workers to exit before clearing obsolete locks during executable replacement.
-
-A full lock directory makes smbd fail opens and abort mid-backup, which can
-leave Time Machine starting new sparse bundles (issue 384). Every 5 s while
-smbd serves, the manager adds up the space the files in `/mnt/Locks` take
-(their `st_blocks`, not `statvfs()`: a NetBSD tmpfs's free count also shrinks
-with free memory). From 4 MiB it logs `manager: /mnt/Locks holds N KiB;
-restarting smbd with it empty`, stops smbd the usual graceful way (SIGTERM,
-then SIGKILL to the group after 10 s), empties the directory once the whole
-group has exited, and starts smbd again; clients reconnect as after a dropped
-connection, and their durable handles are gone. Each reset sends a
-`locks_reset:<KiB>` heartbeat when telemetry is on. For 10 minutes after a
-reset, a refill restarts smbd again only past 4.75 MiB, where one more step of
-every file would fill the directory, so a quick refill cannot keep restarting
-it. Samba truncates its volatile
-tdb files on a clean start only when no process still holds one, so the
-directory is emptied either way. Each tdb file grows in one step of a quarter
-of its size, and `smbXsrv_open_global.tdb`, the largest, holds about two
-thirds of what is used: from 4 MiB every file can still grow once (5 MiB) or
-that one twice (5.5 MiB) while smbd stops, within the 6 MiB either kernel's
-filesystem holds.
+`rc.local` starts `boot.sh` in the background so Apple's startup can continue. `boot.sh` prepares RAM directories, the diskd and wcifsnd guards, and a 6 MiB locks filesystem (`/mnt/Locks`: tmpfs on NetBSD 6, MFS on NetBSD 4). It leaves Apple's kernel settings alone and then runs `/mnt/Flash/service manager`.
 
 ### Native manager
 
-The [manager](build/native/service/manager.c) owns repeated work:
+The [manager](build/native/service/manager.c) handles everything that repeats:
 
-- Listen for Apple's `EVFILT_DEVICE` notifications and `PF_ROUTE` changes; use
-  monotonic deadlines and a five-second topology confirmation interval.
-- Retain MaSt as semantic disk inventory, with a ten-second fallback. Read the
-  live mount table before activating or writing a volume. An unavailable MaSt
-  read is distinct from a successful empty inventory.
-- Use the established `diskd.useVolume` path. Keep Apple's `mDNSResponder` and
-  `afpserver` alive; move/recover `diskd` on loopback without replacing Apple's
-  filesystem management.
-- Prefer a valid internal payload, then an external one. Cache the selected
-  generation instead of repeatedly reading HDD software metadata.
-- Prepare ShareRoot/markers, RAM executables, authentication and Samba config
-  in bounded child jobs. Supervision and shutdown stay responsive during slow
-  ACP or disk operations. Failed or superseded jobs remain retryable.
-- Own `smbd -F --no-process-group` directly in a separate process group.
-  Restart for executable replacement and reload ordinary configuration changes;
-  interface/address changes are Samba's responsibility and do not restart it.
-- Forward parent reloads to workers. Reset Samba's cwd cache and inspect real
-  retained descriptors plus volume/root identity, disconnecting only affected
-  trees through Samba's existing asynchronous AIO-draining path.
-- Start independent `service discovery` and `service telemetry --daemon`
-  processes from the single Flash image. Each collects its own network plan;
-  discovery receives only successfully applied share rows in argv.
-- Recover exited children with bounded backoff. Discovery owns its native
-  `wcifsnd`; healthy checks never kill that child independently. ACPd starts
-  its own `wcifsfs` at boot and on address changes, and a `wcifsnd` that
-  discovery did not start can appear (an orphan, or ACPd's where boot.sh could
-  not guard `/sbin/wcifsnd`). The manager reads the process table every
-  second, and when either appears it starts the audit at once instead of at
-  the next 30-second one. The audit stops them, SIGKILL after 10 s, without
-  replacing discovery or Samba.
-- Stop Samba and rsync if no valid payload remains, even if their old RAM
-  executable is present. Discovery can remain diskless without waiting for
-  Samba authentication, and telemetry retains its existing signed-job drain.
+- It watches for disk and network changes, and reads Apple's disk list (`MaSt`) and the mount table before using a volume.
+- It mounts volumes through Apple's `diskd.useVolume`, keeps Apple's `mDNSResponder` and `afpserver` running, and runs `diskd` on loopback.
+- It uses a valid internal payload first, then an external one.
+- It copies `smbd`, the login files and the Samba config into RAM, checks `smbd` against the payload's checksums, and runs `smbd` as its child. A configuration change reloads Samba; a new `smbd` restarts it.
+- It starts `service discovery` and `service telemetry --daemon` from the Flash image, and restarts any child that exits, with backoff.
+- It stops Apple's SMB server (`wcifsfs`) and any `wcifsnd` that discovery did not start.
+- It stops Samba and rsync when no valid payload is left.
 
-Internal shares use ShareRoot unless the disk-root option is enabled; external
-shares use the volume root. Existing naming, ADisk device keys/UUIDs, protocol,
-AIO, metadata, logging and performance preferences are preserved. Only deployment
-runs metadata migration; boot and hotplug never scan legacy TDBs or consume old
-migration-completed markers.
+Internal shares point at `ShareRoot` unless the disk-root option is on; external shares point at the volume root.
 
-The manager keeps state in memory. Anonymous pipes carry parent lifetime and
-short-lived job results; there is no new PID/status file or network-plan IPC.
-Process titles identify manager, discovery, telemetry and setup-job roles.
+A full lock directory makes `smbd` fail to open files and can stop a backup partway. When the files in `/mnt/Locks` reach 4 MiB, the manager logs it, restarts `smbd` with the directory emptied, and sends a `locks_reset` heartbeat. Clients reconnect as they would after a dropped connection.
+
+The manager's process title shows what it found:
+- `payload=missing`: no disk holds the Samba files, as after an erase. Reinstall.
+- `payload=damaged`: `smbd` on the disk does not match its checksum. Reinstall.
+- `payload=unreadable`: the disk could not read it. The disk is failing.
+- `unmounted=`: a disk has not mounted for 10 minutes. Restart the device, then run Disk Repair.
+- `stuck=`: a process has been asleep in the kernel for 2 minutes or more.
+
+Doctor reads these.
 
 Logs:
 
-- RAM: `var/rc.local.log`, `var/runtime.log`, `var/telemetry.log`, `var/rsync.log`
-  under `/mnt/Memory/samba4`; runtime logs retain a bounded tail in place.
-- Discovery: `<payload>/logs/discovery.log`, with a RAM fallback while diskless.
+- RAM: `var/rc.local.log`, `var/runtime.log`, `var/telemetry.log` and `var/rsync.log` under `/mnt/Memory/samba4`. Each keeps only its most recent lines.
+- Discovery: `<payload>/logs/discovery.log`, or a RAM copy while no payload is available.
 - Samba: `<payload>/logs/log.smbd` and `smbd-console.log`.
 
-The executable [native regressions](tests/native/README.md) replace the old
-shell cadence and function-stubbing tests. Patched Samba tests separately cover
-reload delivery, volume replacement, descriptor revocation and asynchronous
-teardown with another tree still active.
+## Optional rsync daemon
 
-### Reading the process table
+Deploy always copies the rsync binary and its configuration to the payload (`/Volumes/dkX/.samba4/rsync` and `rsyncd.conf`). It runs only when turned on: Enable rsync in the app, or `tcapsule deploy --enable-rsync`, saved as `RSYNC_ENABLED=1` in `/mnt/Flash/tcapsulesmb.conf`. It is off by default.
 
-On both kernels, reading another process's command line (`ps`'s `command`
-column, `KERN_PROC_ARGS`) goes through `uvm_io()` and `uvm_map_extract()`,
-which take the target process's map lock exclusively. A process asleep in
-`fork()` (`uvmspace_fork()` allocates with the map locked) or `msync()` holds
-that lock for as long as the disk keeps it waiting, so `ps axww -o command=`
-stalls behind one such process however many others it lists. The table itself
-(`KERN_PROC2`, `ps ax` without a command column) never waits.
+When it is on, the manager copies rsync to RAM, checks it against the payload's checksums, and runs it as a daemon on TCP `873`. The daemon has one writable module, `shareroot`, at the payload volume's `ShareRoot`. It runs as `root` and asks for no password, so turn it on only on a network you trust. Its log is `/mnt/Memory/samba4/var/rsync.log`.
 
-The manager reads the table alone ([proctable.h](build/native/service/proctable.h))
-and reads argv only in jobs. The host's device scripts do the same through one
-shell function, `ps_rows` (`device/processes.py`). Every listing has one layout,
-`pid ppid pgid stat sl wchan time ucomm`, then the command line, and one parser
-(`parse_ps_rows`). Each caller names the processes whose role depends on their
-argv, and only those command lines are read, one `ps -ww -o ucomm= -o command=
--p PID` each (NetBSD 4's `ps -p` takes one PID):
+rsync runs separately from Samba. A failed rsync never stops file sharing; it is retried after 5, 15, then 60 s. Doctor reports `rsync=missing`, `rsync=damaged` (reinstall) or `rsync=unreadable` (a failing disk). Turning rsync off in a later deploy stops the daemon and leaves its files on the disk.
 
-- doctor's listings and the probes: `service` titles and `diskd`'s `-i lo0`;
-- the stop script and the idle-job guard: `service` and `sh` launchers;
-- the migration probe: the migrator's phase and `sh`;
-- the rsync check: rsync's `--daemon`.
+## SMB runtime layout
 
-Doctor never reads `sh` or `smbd` command lines: they fork the most, so they are
-the likeliest to hold their map lock. A row in state `D` is looked at once more
-a second later; if it is still `D`, or ps cannot read it, the row ends in
-`(unreadable)`. A process gone since the listing is left out. Callers treat an
-unreadable process as possibly theirs, never as absent: the stop scripts wait
-for it but never signal it, the idle-job guard waits for it, doctor's manager
-and discovery checks say it could not be identified (and retry it), and a
-migrator is still a migration. An rsync daemon is not: it waits for
-connections, so one asleep in the kernel is brief, and doctor retries "not
-running". When a listing times out anyway, doctor and deploy telemetry read the
-table alone (`STUCK_PROCESS_PS_COMMAND`, the same columns) and name the
-processes asleep in the kernel.
-
-This narrows the stall but does not close it: the second look and the read are
-separate commands, so a process can go to sleep holding its map lock between
-them, and the read then waits for it. `sh` is among the selected names and
-forks often, so a deploy's stop script can still meet one. The SSH timeout of
-each caller bounds that wait.
-
-## Optional rsync Daemon
-
-Deploy always installs the device-family rsync binary and its generated daemon configuration in the selected HDD payload:
-
-- `/Volumes/dkX/.samba4/rsync`
-- `/Volumes/dkX/.samba4/rsyncd.conf`
-
-Installation and enablement are separate. The macOS app exposes **Enable rsync** in both the Install options and saved device settings, while the CLI uses:
-
-```bash
-.venv/bin/tcapsule deploy --enable-rsync
-```
-
-That selection is persisted as `RSYNC_ENABLED=0|1` in `/mnt/Flash/tcapsulesmb.conf`. The binary and configuration stay on the HDD either way. On a successful app deploy, the selected value is also saved to the device profile and restored into later Install sessions. Existing profiles that predate this setting default to disabled.
-
-When rsync is enabled, the manager:
-
-1. discovers the currently mounted payload volume and creates its `ShareRoot` if needed
-2. stages `/mnt/Memory/samba4/etc/rsyncd.conf`, rewriting the module path to the payload volume's current `/Volumes/dkN/ShareRoot` mount rather than trusting its deploy-time device number
-3. copies the rsync binary to `/mnt/Memory/samba4/sbin/rsync`, checked against the payload's `checksums` file
-4. starts the RAM copy with `--daemon --no-detach`
-5. verifies the live `rsync` process owns TCP port `873`
-
-The daemon exposes a writable, unauthenticated module named `shareroot`. Only enable it on a trusted network. Its log lives at `/mnt/Memory/samba4/var/rsync.log` and uses the same shared runtime log bounding helper as the other managed services, with the normal `32768`-byte limit.
-
-Disabling rsync on a later deploy leaves the persistent HDD files installed, but the manager stops the daemon and removes the RAM binary and configuration. It removes them the same way once no disk holds the payload. rsync stages, publishes and starts on its own, apart from Samba: Samba never waits on it, and a payload is valid with Samba's files alone. When rsync's run fails, as when its file on the disk does not match the CRC-32 in the payload's `checksums` file, Samba serves without it and rsync is tried again after 5, 15, then 60 s; a failed run that was copying rsync anew (another payload, or after damage) also stops the rsync still serving the old copy. While an earlier manager's rsync is still being stopped, rsync's staging waits for it. rsync has the same verdicts as Samba: `rsync=missing` in the manager title when the payload has no `rsync` or `rsyncd.conf`, `rsync=damaged` when rsync on the disk is damaged, `rsync=unreadable` when the disk could not read it (`rsync_unreadable_on_disk`, a failing disk). Doctor's rsync check fails and says to reinstall, or for an unreadable one to replace the disk; deploy and Activate report it once Samba is up, saying that file sharing is running; and the app shows it, when it is the only failure, with Install, or with the Checkup for an unreadable one. Doctor's startup wait, deploy and Activate wait for rsync as for Samba; when their window ends with Samba serving and rsync not, they report rsync alone. Activate does not restart a Samba that already serves. No rsync PID file is used: the manager owns its foreground child and checks its listeners. This deliberately avoids stale runtime state files.
-
-The manager supervises only the `rsync --daemon` process and its connection children. An `rsync --daemon` outside its process group, such as one left by an earlier manager, is stopped with `SIGTERM`, then `SIGKILL` after 10 seconds; the first `SIGKILL` sent to each process is logged in `runtime.log`. One-shot rsync clients run on the device and the `rsync --server` processes sshd starts for a remote client are left alone, and doctor ignores them too.
-
-## SMB Runtime Layout
-
-When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
+After a successful boot, `/mnt/Memory/samba4` holds:
 - `sbin/smbd`
-- optionally `sbin/rsync`
+- `sbin/rsync`, when rsync is on
 - `etc/smb.conf`
-- optionally `etc/rsyncd.conf`
+- `etc/rsyncd.conf`, when rsync is on
 - `var/`
 - `private/`
 
-Current auth files are generated during runtime staging and live only in RAM:
+The login files are written at boot and exist only in RAM:
 - `/mnt/Memory/samba4/private/smbpasswd`
 - `/mnt/Memory/samba4/private/username.map`
 
-The selected payload home still contains `/Volumes/dkX/.samba4/private/` for persistent Samba metadata such as `xattr.tdb`.
+Persistent Samba data such as `xattr.tdb` stays in `/Volumes/dkX/.samba4/private/`. NetBSD 4 keeps the Samba cache on the HDD (`/Volumes/dkX/.samba4/cache`) because its RAM disk is too small; NetBSD 6 keeps it in `/mnt/Memory/samba4/var`.
 
-Current persistent Time Machine metadata state also lives in the selected payload home:
-- `/Volumes/dkX/.samba4/private/xattr.tdb`
-
-Current NetBSD 4 Samba cache state lives on the HDD to preserve RAM headroom:
-- `/Volumes/dkX/.samba4/cache`
-
-NetBSD 6 note:
-- the normal NetBSD 6 runtime keeps Samba cache state in `/mnt/Memory/samba4/var`
-- the HDD cache path above is used for the NetBSD 4 payload family because the NetBSD 4 RAM disk is too tight for the full runtime plus cache TDB growth
-
-Current rendered Samba config characteristics:
-- `netbios name = <runtime hostname-derived name>`
-- `server string = <runtime Apple syNm-derived name>`
+Generated `smb.conf` settings:
+- `netbios name = <name from the device hostname>`
+- `server string = <name from Apple syNm>`
 - `security = user`
-- `min protocol = SMB2` and `max protocol = SMB3` by default
-- protocol and signing/encryption override modes can omit or replace those defaults
+- `min protocol = SMB2` and `max protocol = SMB3` by default; the protocol and signing options change these
 - `guest ok = no`
 - `valid users = root`
 - `force user = root`
 - `force group = wheel`
 - `reset on zero vc = yes`
-- share paths are generated from `MaSt`
-- internal default: `path = /Volumes/dkN/ShareRoot`
-- external default: `path = /Volumes/dkN`
+- one share per `MaSt` volume
+  - internal disk: `path = /Volumes/dkN/ShareRoot`
+  - external disk: `path = /Volumes/dkN`
 - `pid directory = /mnt/Memory/samba4/var`
 - `lock directory = /mnt/Locks`
 - `state directory = /mnt/Memory/samba4/var`
-- `cache directory = /mnt/Memory/samba4/var` on NetBSD 6
-- `cache directory = /Volumes/dkX/.samba4/cache` on NetBSD 4
+- `cache directory = /mnt/Memory/samba4/var` on NetBSD 6, `/Volumes/dkX/.samba4/cache` on NetBSD 4
 - `private dir = /mnt/Memory/samba4/private`
 - `log file = /Volumes/dkX/.samba4/logs/log.smbd`
-- `max log size = 128` in the normal generated config
+- `max log size = 128`
 - `deadtime = 720`
-- `max smbd processes = 12`: bounds connection children while allowing reconnect overlap for eight active backup clients. Old connection children can keep their slots while draining. aio_fork helpers are not counted here: each connection adds up to two per share it uses, so twelve busy connections can fill the process table (`kern.maxproc` below), after which new helpers fail and their I/O runs in the connection's own smbd. This is a connection ceiling, not a guarantee of twelve simultaneous backup users.
-- `socket options = TCP_NODELAY SO_RCVBUF=2097152` on NetBSD 6; `TCP_NODELAY SO_SNDBUF=229376 SO_RCVBUF=393216` on NetBSD 4. NetBSD 6 keeps its send autosizing (32 KiB initially, growing in 8 KiB increments toward a 2 MiB automatic ceiling); setting `SO_SNDBUF` would disable it. NetBSD 4 has no such autosizing. While smbd waits for the disk it reads nothing, so once the Mac's data in flight fills the receive buffer (stock NetBSD: 32 KiB) the TCP window shuts. macOS gives up on a send after 5 s, then either reconnects or sends a short WRITE (issue 221): its send call reports a send that the timeout cut off as complete, so the next requests start inside the WRITE's data. Patch 0072 refuses such a WRITE without writing or answering it, answers the requests after it, and then ends the connection, so the Mac reconnects and sends the WRITE again; on a Time Machine mount an unanswered CREATE, CLOSE, LOCK or rename would fail the backup. How it recognises the WRITE, when it closes, and what it does not cover (encrypted sessions, compounds, receivefile, multichannel) are in its comment in `build/patches/samba4x/series`. NetBSD 6's 2 MiB is about what a Mac's Time Machine writes keep in flight. NetBSD 4's Ethernet driver lends the stack its own 2048 receive buffers of 2 KiB per port and drops packets once all are lent. Issue 386's controls at 1/2/4/8/12 independent connections, including stopped readers and partial uploads, selected 224 KiB send/384 KiB receive to improve reads over the fixed 32 KiB send default while limiting queued data. At twelve connections the combined payload capacity is 7.125 MiB, allocated as used; it is not total physical memory consumption. These controls do not certify twelve simultaneous backups or reconnect overlap. Before every smbd start the manager sets three kernel limits (doctor records their values in the debug field `remote_kern_limits`; a failed set is logged to `runtime.log`). It raises `kern.sbmax` and `kern.maxfiles` and never lowers them, so a larger value set elsewhere stays; it sets `kern.maxproc` exactly, lowering it too, because any higher value can panic the kernel and an older release's 128 survives an upgrade that does not reboot:
-  - `kern.sbmax` from Apple's 256 KiB to 9/8 of the receive buffer on NetBSD 6, and to the existing tested 589824 bytes (576 KiB) on NetBSD 4. NetBSD refuses a socket buffer above 8/9 of this ceiling, which also bounds mbuf-memory accounting; reducing NetBSD 4's receive payload must not also reduce that accounting headroom.
-  - `kern.maxfiles`, the system-wide open-file table, from Apple's 1024 to 4096. A Time Machine sparse bundle keeps a hundred or more band files open in its smbd, so several Macs at once fill Apple's table; every open then fails and the Macs drop their disk images. Entries are allocated as files open, so the limit costs nothing until used.
-  - `kern.maxproc`, the system-wide process table, from Apple's 84 (NetBSD's default for `maxusers 4`) to 90 on NetBSD 6, 103 on little-endian NetBSD 4 and 99 on big-endian NetBSD 4. Each client connection adds its smbd and up to two aio_fork helpers per share it uses, and a full table fails every fork on the device. It cannot go further: the ARM pmap shares each L1 page table among 15 address spaces and allocates `ceil(maxproc / 15)` of them once, at boot, so both kernels hold 90 user address spaces whatever `kern.maxproc` says later, and the `fork()` that needs a 91st panics the kernel. `fork()` refuses at `kern.maxproc`, root included, so the limit is safe at 90 plus the processes that never take an address space. Every NetBSD 6 process but proc0 has one. NetBSD 4's kernel threads are processes without one, and each NetBSD 4 build also runs on AirPort Extremes, which lack the Time Capsule's fan thread. Counting only the processes that exist from boot (the physical-I/O worker starts on first use), the little-endian Extremes run 13 and the big-endian ones 9, hence 103 and 99.
-- On NetBSD 6 the manager also sets `net.inet.tcp.sendbuf_auto = 1` and `net.inet.tcp.sendbuf_max = 2097152` exactly before every smbd start, logging any failure. These TCP settings apply system-wide; the initial 32 KiB send size, 8 KiB growth step, and shared mbuf cluster pool stay unchanged. Fixed and automatic socket limits both allocate physical backing as used; NetBSD 6 does not shrink a grown automatic limit during idle. The larger automatic ceiling improved unsigned single-client reads in issue 386's quick tests. Twelve 32 MiB uploads with fixed 2 MiB buffers completed but exhausted the unchanged cluster pool and logged allocation failures, so this is not a resource-clean twelve-client certification.
-- `server smb3 signing algorithms = HMAC-SHA256 AES-128-CMAC AES-128-GMAC` and `server smb3 encryption algorithms = AES-128-CCM AES-256-CCM AES-128-GCM AES-256-GCM` on every lane. Samba picks its first algorithm that the client offers, so each list is ordered by its cost on these CPUs. No lane's nettle has assembly for GHASH (NetBSD 6 has ARMv6 assembly for AES and SHA-256, NetBSD 4 LE ARMv5 assembly for AES, NetBSD 4 BE none), so GMAC and GCM are the slowest, and SHA-256 runs faster than AES on both. smbd CPU seconds on the device per 128 MiB `smbclient` read: signed, NetBSD 6 9.4 with HMAC-SHA256, 12.0 with AES-CMAC and 38.4 with Samba's preferred AES-GMAC, NetBSD 4 10.3, 20.0 and 47.7; encrypted, NetBSD 6 20.9 with AES-128-CCM, 25.4 with AES-256-CCM, 45.6 with AES-128-GCM and 46.7 with AES-256-GCM, NetBSD 4 37.2, 47.5, 62.8 and 68.1 (unsigned: 4.8 and 2.9); those NetBSD 4 figures are the C code that NetBSD 4 BE still runs. NetBSD 4 LE's ARMv5 AES (assembled with the NetBSD 6 toolchain's gas, since NetBSD 4's predates its syntax) cuts AES-CMAC to 12.3, AES-128-CCM to 23.1 and AES-256-CCM to 28.6, and HMAC-SHA256 stays first at 10.2. A client that offers none of the faster algorithms still gets the one it offers. SMB 3.0 clients, which negotiate no algorithm, get AES-CMAC and AES-128-CCM regardless. Unsigned traffic, macOS's default, is unaffected.
-- `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
-- unless `TC_VFS_AIO_FORK_DISABLED=true`, append `aio_fork`, cap each client connection's use of each share at `aio_fork:max_children = 2`, keep Samba's default 8 MiB SMB2 read/write sizes (each helper's buffer covers them, patch 0031), and enable AIO for requests of at least one byte
-- `fruit:resource = file`; this remains the non-HFS and migration-source setting, while HFS shares automatically use the native resource fork
+- `max smbd processes = 12`: room for eight backup clients plus their reconnects. Twelve backups at once have not been tested.
+- `socket options` with larger receive buffers than the firmware default (and larger send buffers on NetBSD 4), so a Mac can keep sending Time Machine data while `smbd` waits for the disk
+- `server smb3 signing algorithms` and `server smb3 encryption algorithms` ordered by cost on these CPUs. On NetBSD 6, signing a 128 MiB read takes 9.4 CPU seconds with HMAC-SHA256 and 38.4 with Samba's default AES-GMAC; encrypting it takes 20.9 with AES-128-CCM and 45.6 with AES-128-GCM. Unsigned traffic, macOS's default, is not affected.
+- `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`, plus `aio_fork` (at most two helpers per connection and share) unless `TC_VFS_AIO_FORK_DISABLED=true`
+- `fruit:resource = file`; HFS shares use the native resource fork regardless
 - `fruit:veto_appledouble = yes`
-- `fruit:metadata = netatalk` by default, or `fruit:metadata = stream` when Netatalk metadata mode is explicitly disabled; on HFS this selects the preferred legacy migration source while runtime FinderInfo is native
+- `fruit:metadata = netatalk` by default, or `stream` when Netatalk metadata is turned off
 - `fruit:time machine = yes`
-- `mangled names = no`: names are listed as stored. Samba's default lists DOS device names (`AUX`, `CON`, `NUL`, `PRN`, `COM1`-`COM4`, `LPT1`-`LPT4`, also with an extension, such as `con.txt`) under 8.3 aliases, and a Mac's lookup of the real name then fails (issue 347). A name that AFP or SSH stored with a trailing dot or space is listed as stored too, but a Mac cannot open it, because it sends that last character as U+F029 or U+F028
+- `mangled names = no`: names are listed as stored, so a Mac can open files named after DOS devices such as `AUX` or `con.txt`. A Mac cannot open a name that AFP or SSH stored with a trailing dot or space, though it is listed.
 - `acl_xattr:ignore system acls = yes`
-- `xattr_tdb:file = /Volumes/dkX/.samba4/private/xattr.tdb`; HFS shares bypass this backend after migration, while the configured path remains available for a future non-HFS filesystem
-- `veto files = /.samba4/` on every share so the payload is hidden when it lives on a shared disk root
+- `xattr_tdb:file = /Volumes/dkX/.samba4/private/xattr.tdb`; HFS shares do not use it
+- `veto files = /.samba4/` on every share, which hides the payload when a share exposes the disk root
 
-Current auth mapping:
-- the docs and examples use `admin` as the normal user-facing SMB login name
-- the RAM `smbpasswd` backend contains a `root` entry generated from live AirPort `syPW`
-- RAM `username.map` contains:
-  - `!root = root`
-  - `root = *`
-- incoming SMB usernames are mapped to Unix `root`
+Before each `smbd` start the manager raises three kernel limits that are too low for several Macs backing up at once: the socket buffer ceiling (`kern.sbmax`), the open-file table (`kern.maxfiles`, 1024 to 4096; one sparse bundle keeps a hundred or more band files open), and the process table (`kern.maxproc`, set to the highest value each kernel runs safely: 90 on NetBSD 6, 103 on little-endian and 99 on big-endian NetBSD 4). Doctor records their values.
 
-This is intentionally pragmatic:
-- login is authenticated
-- the filesystem still runs as `root`
-- it avoids the earlier non-root privilege-switch failures on this firmware
+Login mapping:
+- the RAM `smbpasswd` has one `root` entry, made from the AirPort password (`syPW`)
+- the RAM `username.map` contains `!root = root` and `root = *`, so every SMB username maps to Unix `root`
 
-Operational note:
-- the live runtime config at `/mnt/Memory/samba4/etc/smb.conf` is regenerated on each boot
-- `/mnt/Memory` is a RAM disk, so live edits there are ephemeral
-- temporary debug edits such as one-off `log level = ...` lines will disappear after reboot
-- manager logs under `/mnt/Memory/samba4/var` are also ephemeral for the same reason
+The runtime config at `/mnt/Memory/samba4/etc/smb.conf` is rebuilt at every boot. `/mnt/Memory` is a RAM disk, so edits there, such as a one-off `log level = ...`, are lost at the next reboot, along with the RAM logs.
 
-## Symbolic Links
+## Symbolic links
 
-Symlinks are stored on disk as native POSIX links, the same objects Apple's AFP
-server and SSH create, so every protocol sees one link (Samba patches 0045 and
-0058-0060, `tc:native symlinks` in the generated `smb.conf`):
+Symlinks are stored as native POSIX links, the same as Apple's AFP server and SSH create, so every protocol sees the same link:
 
-- macOS clients see native links as links and create them as usual; each new
-  link becomes native when its creating handle closes. XSym link files written
-  by earlier releases keep working and are never migrated; rewriting one makes
-  it native.
-- Windows `mklink` works. `mklink /D` (directory symlinks) is refused ("Access is
-  denied"); directory links made by other clients are listed as directory
-  symlinks and can be followed and removed.
-- Linux clients (`fs/smb/client`) create links with the symlink, NFS or WSL
-  reparse forms, depending on the `symlink=` mount option, and all three are
-  accepted. With `mfsymlinks` they write XSym files, which become native too. FIFOs, sockets and device nodes are refused, which that client
-  reports as `EOPNOTSUPP`. The device suite checks this by sending the same SMB2
-  requests the Linux source sends; no Linux mount was tested.
-- While converting, smbd moves the original aside as `.tc-xsym.<ino>.<pid>`
-  and removes it when its handle closes. The generated `smb.conf` vetoes that
-  name, and `delete veto files = yes` lets a folder be removed even if one is
-  left behind: by a crash, or by a failed conversion that could not put the
-  original back because another client had taken the name.
-- Attributes and streams set on a link stay on the link. `touch -h` does not
-  change a link's times on HFS, the same as over AFP.
+- macOS clients see links as links and create them as usual. XSym link files from older releases keep working.
+- Windows `mklink` works. `mklink /D` (a directory symlink) is refused with "Access is denied"; directory links made by other clients can be followed and removed.
+- Linux clients can create links with any `symlink=` mount option, or with `mfsymlinks`. FIFOs, sockets and device nodes are refused (`EOPNOTSUPP`).
+- `touch -h` does not change a link's times on HFS, the same as over AFP.
 
-The devices' HFS driver has a journaling bug: a kernel panic, `jnl: start_tr:
-active_tr is NULL`, recorded in `/mnt/Flash/dmesg.panic`. Without a workaround,
-converting new SMB links triggered it within minutes of link-heavy testing, and
-journal replay after the unclean restart can overwrite recently reused blocks.
-Each conversion therefore ends with `sync()`. Keep the conversion path and that
-`sync()` together when changing either.
+The devices' HFS driver can panic its journal when many links are created quickly, so each conversion to a native link ends with `sync()`.
 
-Device checks: `.venv/bin/python -m tests.samba.links_device --env .env --afp`
-(see `tests/samba/README.md`).
+## Discovery controller
 
-## Discovery Controller Details
-
-The discovery controller is the `service discovery` role of `bin/service/service`.
-
-It is built from:
-- [build/native/discovery/](build/native/discovery/) (controller entry point, Bonjour registrant, ADisk TXT generation, and `wcifsnd` lifecycle/IPC)
-- [build/native/common/](build/native/common/) (the shared device plan)
-- [build/native/dnssd/](build/native/dnssd/) (Apple's `dns_sd` client stub, tag `mDNSResponder-379.38.1`, BSD-licensed, compiled unchanged with `-D_DNS_SD_LIBDISPATCH=0`)
-- [build/native/service.sources](build/native/service.sources) and [build/service.sh](build/service.sh) (the unified runtime image)
-
-Important properties:
-- static NetBSD 7 `earmv4` binary for the NetBSD 6 payload
-- static NetBSD 4 little-endian `earmv4` binary for the NetBSD 4 little-endian payload
-- static NetBSD 4 big-endian `armeb` binary for the NetBSD 4 big-endian payload
-- see the artifact section below for current checked-in binary sizes
-- linked into the unified service installed and run from `/mnt/Flash`
-- talks to `/var/run/mDNSResponder` for Bonjour and to the owned `/usr/libexec/wcifsnd` child over Apple's loopback UDP control protocol
-
-CLI: `service discovery [--diskless] [--netbios-name NAME] [--adisk-share NAME KEY UUID FLAGS]... [--debug-logging]`,
-plus `--help`. `service --print-link-plan` and
-`service --print-mast` are top-level diagnostics, not discovery-role aliases.
-Host builds with `TC_NATIVE_TEST` additionally accept `--facts-file F` to
-replace live collection with a text snapshot. Device binaries omit this
-option and its parser; live diagnostics remain available.
+The discovery controller is the `service discovery` role of `bin/service/service`, built from [build/native/discovery/](build/native/discovery/), [build/native/common/](build/native/common/) and Apple's unchanged `dns_sd` client code in [build/native/dnssd/](build/native/dnssd/). Each payload family has its own static binary, installed and run from `/mnt/Flash`.
 
 At runtime it:
-- registers `_smb._tcp` (port 445, empty TXT) on every link the plan grants `SVC_SMB`
-- registers `_adisk._tcp,_airport` (port 9) with the same TXT items as before v3.1.0 (`sys=waMA=…,adVF=0x1010` and one `dkN=adVF=…,adVN=…,adVU=…` per configured share) where the plan grants `SVC_ADISK` and `waMA` is known
-- registers `_afpovertcp._tcp` (port 548) only when `MDNS_ADVERTISE_AFP=1`
-- announces each `_adisk` registration's TXT again 5 and 20 minutes after it registers, by updating its TTL to 4499 s and then back to Apple's 4500 s. mDNSResponder announces a registration 8 times over about two minutes and then sends nothing unasked, so a Mac that stayed awake and connected and still heard none of those would keep the TXT it had before for up to 75 minutes: Apple's own, which advertises AFP, after an install, or ours from before the AFP setting changed. (A Mac re-checks its cached records when it wakes and drops those of a link it loses.) An update with the same TXT and TTL announces nothing, hence the TTL step. Deploy, activate and, on NetBSD 4, Disk Repair (which waits for the runtime after its reboot) also have the Mac that ran them re-check its cached copy once the runtime is verified (`services.runtime_verification.recheck_cached_adisk`)
-- uses Apple's shared default instance name with automatic renaming; callback names such as "Name (2)" are accepted without replacing registrations, and ACP name changes do not force a restart
-- treats a daemon that stops answering as degraded, retries on the backoff timer, and never spawns `/sbin/mDNSResponder`
-- starts `/usr/libexec/wcifsnd` only when the payload is ready, the canonical name is available, and the validated plan has an SMB-eligible IPv4 address
-- sequentially registers machine `<00>`, `WORKGROUP<00>` and machine `<20>` exactly once for each fresh child generation; Apple's daemon supplies native conflict processing and WINS-configured behavior
-- refreshes the active child with SIGHUP after valid plan refreshes and stops the exact owned child on loss of eligibility or shutdown; the manager removes orphans before replacement
-- publishes `nbns=disabled|waiting|starting|ready`, payload mode, diskless state, and the canonical name in its process title. Doctor requires a single controller and, when eligible, a single child whose parent is that controller and which owns UDP `137` and `138`
-- logs one line per register/deregister/callback and one per plan change to the manager-provided log file
+- registers `_smb._tcp`, `_adisk._tcp` and, with `MDNS_ADVERTISE_AFP=1`, `_afpovertcp._tcp` on every link allowed file sharing
+- announces each `_adisk` record again 5 and 20 minutes after registering it, so a Mac that missed the first announcements replaces an old TXT such as Apple's, which advertises AFP. Deploy and activate also tell the Mac that ran them to refresh its cached copy.
+- accepts Apple's conflict renames such as "Name (2)" as they are
+- starts Apple's `wcifsnd` when the network allows NBNS, and registers the machine name and `WORKGROUP` with it once per child
+- shows `nbns=disabled|waiting|starting|ready|none`, the payload state and the Samba name in its process title, which doctor reads
+- logs registrations and network changes to `discovery.log`
 
-## Native NBNS Scope
+`service --print-link-plan` and `service --print-mast` print the live plan and disk list.
 
-NBNS is provided automatically by Apple's firmware `wcifsnd`; this project no longer ships a separate NBNS responder or an enable/disable preference. Old `NBNS_ENABLED` flash values and saved app preferences are ignored. The removed `--no-nbns` CLI flag and `nbns_enabled` app API parameter are rejected.
+## Native NBNS scope
 
-`uninstall` stops the discovery role and any orphaned `wcifsnd`, then removes the flash runtime config. boot.sh's `/sbin/wcifsnd` guard stays until the next reboot, so Apple's NBNS returns with it.
+Apple's firmware `wcifsnd`, run by `service discovery`, provides NBNS. It cannot be turned off. Old `NBNS_ENABLED` flash values and saved app preferences are ignored, and the removed `--no-nbns` CLI flag is rejected.
 
-Discovery starts `wcifsnd` only when an SMB link of a validated plan has an address Apple's daemon would answer on. Its interface scan takes the IPv4 addresses of an interface that is UP and BROADCAST and not LOOPBACK, except `0.0.0.0`, and except a 169.254 address while the interface has any other IPv4 address, `0.0.0.0` included. With no DHCP server, `dhclient-script` leaves `0.0.0.0` on `bridge0` beside `link_local`'s 169.254 address, so such a device answers NBNS nowhere: discovery runs no child and its title says `nbns=none`, and doctor reports native NBNS off and skips its NBNS query. A lease replaces `0.0.0.0` and starts a child. Once running, Apple's daemon enumerates interfaces according to firmware policy, and native NBNS does not promise Bonjour's per-interface `SVC_SMB` filtering. Samba listens on wildcards and Apple's firewall enforces reachability. NBNS provides name registration and conflict handling, not SMB1, NetBIOS session transport, or every legacy Windows browsing feature.
+Discovery starts `wcifsnd` only when an SMB link has an IPv4 address Apple's daemon answers on: anything except `0.0.0.0`, and a 169.254 address only when the interface has no other IPv4 address. Without a DHCP server, the firmware leaves `0.0.0.0` beside the 169.254 address, so the device answers NBNS nowhere. The title then says `nbns=none`, and doctor reports NBNS as off and skips its NBNS query. A DHCP lease starts it. NBNS gives name registration and conflict handling. It does not give SMB1, NetBIOS sessions, or every legacy Windows browsing feature.
 
-## Service and Telemetry Helpers
+`uninstall` stops discovery and its `wcifsnd`. Apple's own NBNS comes back with the next reboot.
 
-The Flash-resident `service` image provides NT hashing, `--print-link-plan`, and the telemetry role. Telemetry posts a heartbeat at startup and every 12 hours, and downloads and runs a signed debug executable only after verifying signed server authorization. See [build/native/README.md](build/native/README.md) for sources, commands, protocol, and cleanup behavior.
+## Service and telemetry helpers
 
-`service --print-file-locks FILE...` lists each `fcntl()` lock another process holds on the files, with its PID (`F_GETLK`, one conflicting lock at a time); a TDB's read lock on byte 4 is marked `(TDB open marker)`, since every process with that TDB open holds one, and a `flock()` lock shows as `pid -1 write 0+0` (both kernels report flock locks to `F_GETLK` without an owner). An smbd asleep in `lockf` waits for a lock another process holds, either a TDB's `fcntl()` record lock or the `flock()` smbd takes on a file around each native HFS xattr write, and while it waits its client is not served; such a wait has needed a reboot to clear. When doctor's process list shows an smbd in `lockf`, it first reads the system call registers of each one that has slept there for 10 seconds or more (`service --print-syscall-registers`, from the kernel's saved trapframe, only while the process stays in `lockf`) and `fstat -p` for it, and records each one's reading in `smbd_lock_wait_calls`: the call (`flock LOCK_EX`, `fcntl F_SETLKW`, an Apple xattr call, `ambiguous` when the registers fit both an xattr call and a lock call whose descriptors are both files or neither, `not waiting in lockf`, `not a user-mode frame`, or `unrecognized`), the descriptor and fstat's row for it (mount point and inode). `remote_lock_waiters` keeps the registers and only fstat's rows for the descriptors the readings name. While a process is stuck in the kernel, fstat is left out (`remote_lock_waiters_fstat_skipped`), as the data disk's TDB listing is. The reading names the call and the file (Apple's `fstat` adds the file's name, not its directory, to an HFS row; the inode is the HFS catalog ID), not the holder of a `flock()`, nor which bytes an `fcntl()` waits for (the `struct flock` is in the process's memory). Then it lists the locks on the TDBs in `/mnt/Locks`, `/mnt/Memory/samba4/var` and `/mnt/Memory/samba4/private` into the debug field `remote_file_locks`, then, in a separate call, those under each data disk's `.samba4/private` and `.samba4/cache` (`xattr.tdb`; NetBSD 4's cache) into `remote_file_locks_disk`, so the holder can be identified. The RAM listing comes first because a disk that stopped answering blocks the second one; if the first fails, the second is not tried. An smbd that has slept in `lockf` for at least 2 minutes (ps's sleep time) fails doctor ("waited ... for a file lock") with its PIDs in `smbd_lock_waits`; nothing on the device ends such a wait, and a restart clears it.
+The `service` image on flash also computes NT password hashes, prints `--print-*` diagnostics, and runs telemetry. Telemetry sends a heartbeat at startup and every 12 hours. It downloads and runs a debug program only after checking the server's signed authorization. [build/native/README.md](build/native/README.md) has the sources, commands, protocol and cleanup rules.
 
-Sharing waits at cold start until mode, address ownership, and the relevant
-sharing permissions validate. Bridge names and PF heuristics no longer grant
-access. After validation, failed rereads retain the latest grants and denials
-on unchanged interfaces; new or recreated interfaces wait for validation.
-Each native plan loop keeps its latest validated policy in memory. Environment
-bind strings are not treated as validated history, and no policy file or text
-transport is used.
+## Setup workflow
 
-Router heartbeats include `debug_logging` (Samba or mDNS) and `advertise_afp`;
-they no longer send `nbns_enabled`, because NBNS is always on. A short `plan_error` is sent only when the fresh sharing
-facts do not validate; a valid plan adds no error field. This is not a live
-service-health assertion. The old `ps` registration-status probe and constant
-daemon label are removed; registration failures remain in the local logs.
-
-## Current User-Facing Workflow
-
-The intended user flow is:
-
-1. bootstrap the local host
+1. Prepare this computer:
    - [`./tcapsule bootstrap`](./tcapsule)
-2. generate local config and enable SSH when needed
+2. Write the local config, and turn SSH on if needed:
    - [src/timecapsulesmb/cli/configure.py](src/timecapsulesmb/cli/configure.py)
-3. deploy and reboot
+3. Deploy, which reboots the device:
    - [src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py)
-4. on NetBSD 4, optionally back up and inspect the firmware, then install the persistent boot hook with `tcapsule flash --patch` and manually power-cycle after a successful write
+4. On NetBSD 4, optionally back up and inspect the firmware, then install the boot hook with `tcapsule flash --patch` and power-cycle the device after a successful write:
    - [src/timecapsulesmb/cli/flash.py](src/timecapsulesmb/cli/flash.py)
-5. activate older NetBSD 4 devices that do not have the persistent hook or do not auto-start Samba after reboot
+5. On NetBSD 4, run activate when the boot hook is missing or Samba does not start after a reboot:
    - [src/timecapsulesmb/cli/activate.py](src/timecapsulesmb/cli/activate.py)
-6. run local diagnostics
+6. Check the result:
    - [src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py)
-7. optionally repair the HDD before redeploying
+7. Repair the HDD before redeploying, if needed:
    - [src/timecapsulesmb/cli/fsck.py](src/timecapsulesmb/cli/fsck.py)
-8. remove the payload later if needed
+8. Remove it later, if needed:
    - [src/timecapsulesmb/cli/uninstall.py](src/timecapsulesmb/cli/uninstall.py)
 
-`tcapsule set-ssh` still exists as an advanced SSH toggle helper, but it is no longer part of the normal setup flow.
+`tcapsule set-ssh` turns SSH on or off by itself. Normal setup does not need it.
 
-`tcapsule configure` writes repo-root `.env` by default; `--config` or `TCAPSULE_CONFIG` can select another path.
+`tcapsule configure` writes `.env` in the repo root unless `--config` or `TCAPSULE_CONFIG` names another path.
 
-Current important `.env` values include:
+`.env` values:
 - `TC_HOST`
 - `TC_PASSWORD`
 - `TC_SSH_OPTS`
+- `TC_AIRPORT_MAC`
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`
 - `TC_SMB_BROWSE_COMPATIBILITY`
 - `TC_MDNS_ADVERTISE_AFP`
@@ -1090,88 +451,67 @@ Current important `.env` values include:
 - `TC_ATA_STANDBY`
 - `TC_CONFIGURE_ID`
 
-Current `.bootstrap` values include:
+`.bootstrap` values:
 - `INSTALL_ID`
-- optional `TELEMETRY=false`
+- `TELEMETRY=false`, when telemetry is off
 
-## macOS App Advanced Checkboxes
+## macOS app Advanced checkboxes
 
-The Advanced panel stores these choices in the local device profile. Run **Install / Update Samba** afterward to write the corresponding runtime values to `/mnt/Flash/tcapsulesmb.conf`; changing a checkbox alone does not reconfigure the device. The defaults below are new-profile defaults, not necessarily the checked state shown for an existing saved profile.
+The Advanced panel saves these choices in the device profile on the Mac. Run Install / Update Samba afterward to write them to `/mnt/Flash/tcapsulesmb.conf`; changing a checkbox does not change the device by itself. The defaults below are for a new profile.
 
 ### NBNS (always on, no checkbox)
 
-Always enabled when eligible. When the payload is ready and an SMB link has an IPv4 address Apple's daemon answers on (see [Native NBNS Scope](#native-nbns-scope)), `service discovery` owns Apple's `wcifsnd` child (`/usr/libexec/wcifsnd`) and registers the Samba machine name plus `WORKGROUP`. Apple's daemon answers native NBNS traffic on UDP `137` and owns the NetBIOS datagram engine on UDP `138`. Its interface enumeration follows firmware policy after the coarse validated-plan gate; Bonjour-capable clients do not require it.
+On whenever the network allows it (see [Native NBNS scope](#native-nbns-scope)). Apple's `wcifsnd` answers NetBIOS name queries for the Samba machine name and `WORKGROUP` on UDP `137`/`138`. Clients that use Bonjour do not need it.
 
 ### Enable rsync
 
-Default: off. Enables `RSYNC_ENABLED=1`, causing the manager to stage the bundled daemon into RAM and expose a writable `shareroot` module on TCP `873`, running as Unix `root:wheel`. The generated rsync configuration has no rsync authentication block, so enable this only on a trusted LAN; the SMB link policy does not restrict the separate rsync daemon.
+Off by default. Starts the bundled rsync daemon with a writable `shareroot` module on TCP `873` that runs as `root` and asks for no password. Turn it on only on a LAN you trust; see [Optional rsync daemon](#optional-rsync-daemon).
 
 ### Share internal disk root
 
-Default: off. When off, an internal disk share points at `/Volumes/dkN/ShareRoot`; when on, it exposes the whole `/Volumes/dkN` root instead. External disks always use their volume root, and the `.samba4` payload remains hidden from SMB clients through the share veto rule.
+Off by default. When off, an internal disk's share is `/Volumes/dkN/ShareRoot`. When on, the share is the whole `/Volumes/dkN`. External disks always share their volume root, and the `.samba4` payload stays hidden from SMB clients either way.
 
 ### Allow SMB Share Browsing
 
-Default: off. Changes Samba's global `restrict anonymous` value from `2` to `0` so clients that need anonymous browse enumeration can list the server's shares. It does not enable guest file access: shares still use `guest ok = no`, require authentication, and map authenticated users to Unix `root`.
+Off by default. Changes Samba's `restrict anonymous` from `2` to `0`, so clients that browse anonymously can list the shares. Guests still cannot open files: every share requires a login.
 
 ### Advertise AFP over Bonjour
 
-Default: off, and leave it off. macOS 26.x/27 treats a Time Capsule that
-advertises AFP as an SMB1-only server and hides it from Finder and Time
-Machine. When on, the registrant adds `_afpovertcp._tcp` on port `548` on the
-same links as `_smb`, the generated ADISK flags change from SMB-only
-`adVF=0x82` to AFP+SMB `adVF=0x83`. Apple's `afpserver` stays running with
-either setting; this option controls advertising only. It does not configure
-or authenticate an AFP server.
-
-Bonjour records are link-scoped by the device plan (see "Discovery policy and Samba networking"
-above): LAN links get the full service set; WAN and guest links get it only in
-NAT mode with disks-over-WAN enabled, exactly as Apple's own file servers did;
-every other link is isolated. Apple's `_airport._tcp` and host records follow
-Apple's rules on every interface. Samba wildcard-listens on IPv4 and IPv6;
-Bonjour visibility plus Apple's firewall implement the AirPort Utility policy.
+Off by default, and leave it off. macOS 26 and later treats a Time Capsule that advertises AFP as an SMB1-only server and hides it from Finder and Time Machine. When on, discovery adds `_afpovertcp._tcp` on port `548`, and the ADisk flags change from SMB-only `adVF=0x82` to AFP+SMB `adVF=0x83`. Apple's `afpserver` runs with either setting; the checkbox changes only what is advertised.
 
 ### Use Netatalk metadata
 
-Default: on. Selects `fruit:metadata = netatalk`; turning it off selects `fruit:metadata = stream`. On HFS, the selection is used by the one-shot migrator to choose between conflicting legacy representations, after which `fruit` reads and writes native FinderInfo regardless of this setting. It remains the runtime backend choice for a future non-HFS filesystem.
+On by default. Selects `fruit:metadata = netatalk`; off selects `fruit:metadata = stream`. On HFS it only decides which legacy copy wins during migration. After that, Finder info is native either way.
 
 ### Enable debug logging
 
-Default: off. Enables `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1`, sets Samba to `log level = 10`, and removes the normal managed payload-log size cap. Use it only while troubleshooting because verbose unbounded logs can grow on the disk and add overhead.
+Off by default. Sets Samba to `log level = 10` and removes the usual log size limits. Use it only while troubleshooting: the logs grow on the disk without limit and slow the device down.
 
 ### Enable vfs_aio_fork
 
-Default: on. Adds the bounded `aio_fork` VFS module, enables asynchronous I/O for requests of at least one byte, keeps Samba's default 8 MiB SMB2 read/write sizes, and caps each client connection at two forked workers per share. It is the no-pthread asynchronous I/O path; clearing the checkbox saves `TC_VFS_AIO_FORK_DISABLED=true`, which deploys `VFS_AIO_FORK_ENABLED=0`. The old opt-in `TC_VFS_AIO_FORK_ENABLED` key and the app's old saved value are ignored, so neither turns it off.
+On by default. Lets each client connection use up to two helper processes per share for disk I/O, which these kernels need because they have no threads. Unchecking it saves `TC_VFS_AIO_FORK_DISABLED=true`.
 
 ### Allow Any SMB Protocol
 
-Default: off. Replaces the generated SMB2-to-SMB3 protocol lines with `server min protocol = NT1`, `ntlm auth = ntlmv1-permitted` and `smb1 unix extensions = no`, so SMB1 clients can connect as they could to Apple's firmware, including those that log in only with NTLMv1 (Windows XP's default, many old scanners and media players). Samba's own minimum since 4.11 is SMB 2.0.2, so SMB1 has to be named. SMB1 Unix extensions stay off, so a Linux SMB1 client cannot create POSIX links or change owners and modes around fruit and the native link handling. SMB1 and NTLMv1 are insecure; leave this off unless an old client needs it. It cannot be combined with **Require SMB Encryption**.
+Off by default. Allows SMB1 and NTLMv1 logins (`server min protocol = NT1`, `ntlm auth = ntlmv1-permitted`), as Apple's firmware did, for old clients such as Windows XP, scanners and media players. SMB1 Unix extensions stay off. SMB1 and NTLMv1 are insecure, so leave this off unless an old client needs it. It cannot be combined with Require SMB Encryption.
 
 ### Require SMB Encryption
 
-Default: off. Writes `server smb encrypt = required`, `server min protocol = SMB3_00`, and `server max protocol = SMB3`, so clients must negotiate encrypted SMB3. The app disables **Allow Any SMB Protocol** and **Disable SMB signing and encryption** when this option is selected.
+Off by default. Requires encrypted SMB3 (`server smb encrypt = required`, `server min protocol = SMB3_00`). Selecting it disables Allow Any SMB Protocol and Disable SMB signing and encryption.
 
 ### Disable SMB signing and encryption
 
-Default: off. Writes `server signing = disabled` and `server smb encrypt = off`. This may improve throughput when a client would otherwise require signing, but it weakens SMB transport security and cannot be combined with **Require SMB Encryption**.
+Off by default. Writes `server signing = disabled` and `server smb encrypt = off`. Throughput may improve when a client would otherwise sign, but traffic is no longer protected. It cannot be combined with Require SMB Encryption.
 
-## App Updates
+## App updates
 
-The macOS app updates itself with Sparkle. It checks `https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/appcast.xml` once a day by default (Settings, "Check for updates automatically") and on the app menu's Check for Updates.... GitHub redirects that URL to the newest published release that is not a prerelease, so drafts, prereleases and hidden builds are never offered.
+The macOS app updates itself with Sparkle from the latest GitHub release's `appcast.xml`. It checks once a day by default (Settings, "Check for updates automatically"), and Check for Updates... in the app menu checks at once. Prereleases and drafts are never offered. The app and the CLI stop when their version is below `min_supported_version` in `version.json`, and the CLI prints one line when a newer release exists.
 
-The appcast has one item, written by `macos/TimeCapsuleSMB/tools/sparkle_appcast.py` in the release job from the Info.plist inside the release zip: the version code (`sparkle:version`, which Sparkle compares with the app's `CFBundleVersion`), the version, the minimum macOS, a link to the release page as release notes, and the zip's URL with its length and EdDSA signature. Sparkle installs the zip only when that signature matches the app's `SUPublicEDKey`. An app that stops supporting Intel would carry `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`, so Intel Macs keep the last release that runs on them.
+The device page shows the version installed on the device and offers Install / Update Samba when it is older than the app. This check runs in the background and only with a saved password that works, so the page never asks for anything.
 
-`version.json` on `main` still matters beside the appcast:
-- apps from before Sparkle read it for their update notice and follow its download link to the newest release;
-- every app and the CLI stop when their version is below `min_supported_version`.
+## CLI command reference
 
-The CLI reads the same appcast and prints one line when it lists a newer version code than the CLI's own.
-
-The device page shows the version installed on the device. Each visit runs the SSH status check, then, once it has ended, the reachability check, at most once a minute per device. The reachability login reads `TC_DEPLOY_RELEASE_TAG` and `TC_DEPLOY_CLI_VERSION_CODE` from `/mnt/Flash/tcapsulesmb.conf` and compares the code with the app's own release (`install_state`: `current`, `outdated`, `newer`, `unknown` when the config has no version, `not_checked` without a login). An older install, or one without a version, gets a warning with "Install / Update Samba"; once an install starts, the row reads "Not checked" until a check that started after it. The reachability check runs only with a saved, working password that the keychain gives without a prompt: a failed login would blame the password, and the page never asks the user for anything. Both checks run in the background, one at a time per device: Activity does not list them, quitting does not ask about them, and a run you start does not wait for them.
-
-## CLI Command Reference
-
-The CLI entrypoint is `tcapsule COMMAND [ARGS...]`. In a normal checkout the first command is usually run through the repo-local launcher:
+Run the CLI as `tcapsule COMMAND [ARGS...]`. In a fresh checkout, start with the repo's launcher:
 
 ```bash
 ./tcapsule bootstrap
@@ -1183,7 +523,7 @@ After bootstrap, use the virtualenv command:
 .venv/bin/tcapsule <command>
 ```
 
-The top-level command dispatcher supports:
+Commands:
 - `activate`
 - `api`
 - `bootstrap`
@@ -1197,65 +537,67 @@ The top-level command dispatcher supports:
 - `set-ssh`
 - `uninstall`
 - `validate-install`
+- `wipe-internal-disk`
 
-Shared command behavior:
-- all commands except `api` perform the client version check before running, unless the invocation is only asking for `-h` or `--help`: they stop when `version.json` says this version is no longer supported (`min_supported_version`), and print one line naming a newer release when the app's update feed (`appcast.xml` on the latest release) lists one. The app's readiness `version-check` operation makes the same minimum-version check and refuses to run below it.
-- commands that read the device config accept `--config PATH`, which overrides `TCAPSULE_CONFIG` and the repo-local `.env`
-- commands that can prompt usually accept `--no-input`; in that mode they fail instead of asking for missing input or confirmation
-- commands that can make destructive or rebooting changes use `--yes` to skip confirmation in interactive and non-interactive runs
-- for commands where JSON describes a plan, `--json` is intentionally restricted to `--dry-run`
+Shared behavior:
+- every command but `api` stops when `version.json` says this version is no longer supported, and prints one line when a newer release exists
+- commands that read the device config accept `--config PATH`, which overrides `TCAPSULE_CONFIG` and the repo's `.env`
+- commands that can prompt usually accept `--no-input`, which makes them fail instead of asking
+- commands that change the device or reboot it accept `--yes` to skip the confirmation
+- `--json` works only with `--dry-run` on commands whose JSON output is a plan
+- every command checks that the device at the saved address is the saved AirPort (see [Saved device identity](#saved-device-identity))
 
 ### `bootstrap`
 
-`tcapsule bootstrap` prepares the local host. It validates the selected Python, creates or reuses `.venv`, installs `requirements.txt`, installs the repo into the virtualenv, and verifies required host tools. If `ssh` or `smbclient` is missing, it attempts host-tool installation through Homebrew on supported macOS versions or through the detected Linux package manager. Bootstrap and doctor reject OpenSSH older than 8.4 with an upgrade instruction; password-based SSH commands check the same requirement before connecting. On Intel Macs it skips `smbclient`, which Homebrew no longer builds for Intel; deploy does not need `smbclient`, but doctor's SMB checks do. SSH passwords reach the system `ssh` through `SSH_ASKPASS` (the `transport/ssh-askpass` helper, OpenSSH 8.4 or newer), not sshpass or a PTY. With Red Hat's OpenSSL, which refuses SHA-1 signatures unless its crypto policy allows them (Fedora, RHEL and their derivatives), every `ssh` child gets `OPENSSL_CONF` set to `transport/openssl-sha1.cnf`: it includes the config OpenSSL would otherwise read and then allows the SHA-1 signature the Time Capsule's ssh-rsa host key makes, leaving the rest of the policy in place. Doctor checks that the file is installed there.
+`tcapsule bootstrap` prepares this computer. It checks the selected Python, creates or reuses `.venv`, installs `requirements.txt` and the repo into it, and checks the host tools it needs. A missing `ssh` or `smbclient` is installed through Homebrew on supported macOS versions, or through the Linux package manager. OpenSSH 8.4 or newer is required. On Intel Macs it skips `smbclient`, which Homebrew no longer builds for Intel: deploy does not need it, but doctor's SMB checks do. On Fedora, RHEL and their derivatives, SSH gets an OpenSSL config that allows the SHA-1 signature the Time Capsule's host key uses.
 
 Arguments:
-- `--python PYTHON`: Python interpreter validated and used when creating a new `.venv`; defaults to the Python running the command. An existing `.venv` is reused with its existing interpreter. The selected interpreter must be Python 3.9 or newer.
+- `--python PYTHON`: the Python used to create a new `.venv`, by default the one running the command. It must be Python 3.9 or newer. An existing `.venv` keeps its interpreter.
 
-This command does not read `.env` for device credentials, but it does create or preserve the local install identity in `.bootstrap`.
+Bootstrap does not read device credentials from `.env`. It creates or keeps the install ID in `.bootstrap`.
 
 ### `paths`
 
-`tcapsule paths` resolves the local TimeCapsuleSMB paths and prints the distribution root, config path, state dir, package root, artifact manifest, and deployable artifacts with basic validity status. It is useful when debugging an install that may have been moved, wrapped, or invoked from a different working directory.
+`tcapsule paths` prints the local TimeCapsuleSMB paths: the distribution root, config path, state directory, package root, artifact manifest, and each deployable artifact with a basic check. Use it when an install has been moved, wrapped, or run from another directory.
 
 Arguments:
-- `--config PATH`: resolve paths as though this config file were selected
-- `--json`: emit the same path and artifact data as JSON
+- `--config PATH`: resolve paths as if this config file were selected
+- `--json`: print the same data as JSON
 
 ### `validate-install`
 
-`tcapsule validate-install` checks the repo-only install without touching the device. It validates the local distribution root, state/config path resolution, packaged files, and artifact metadata expected by the app and CLI.
+`tcapsule validate-install` checks the local install without touching the device: the distribution root, the state and config paths, the packaged files, and the artifact metadata the app and CLI expect.
 
 Arguments:
-- `--config PATH`: validate using the selected config path for local path resolution
-- `--json`: emit `{ "ok": ..., "checks": ... }` and return nonzero if validation fails
+- `--config PATH`: resolve local paths with this config path
+- `--json`: print `{ "ok": ..., "checks": ... }`, and exit nonzero if a check fails
 
 ### `discover`
 
-`tcapsule discover` browses Bonjour/mDNS for Apple AirPort storage services and prints both raw browse instances and resolved service records. Discovery uses Python zeroconf, not native `dns-sd`, so it remains usable on Linux and in non-macOS diagnostics.
+`tcapsule discover` browses Bonjour for Apple AirPort storage services and prints both the raw browse results and the resolved records. It uses native `dns-sd` when installed and Python zeroconf otherwise, so it also works on Linux.
 
 Arguments:
-- `--config PATH`: load optional config for telemetry context only; discovery itself does not require `.env`
-- `--timeout SECONDS`: Bonjour browse timeout; default is `6`
-- `--json`: emit discovered instances and resolved records as JSON
-- `--select`: after printing records, prompt for a device number and print only the selected display host
+- `--config PATH`: load a config for telemetry context only; discovery does not need `.env`
+- `--timeout SECONDS`: browse timeout, `6` by default
+- `--json`: print the results as JSON
+- `--select`: after printing, ask for a device number and print only that device's host
 
 ### `configure`
 
-`tcapsule configure` creates or updates `.env`. In interactive mode it attempts AirPort Bonjour discovery, prompts for the SSH target and device password, checks SSH reachability, enables SSH through ACP when needed, probes the device, derives identity/config defaults, and writes the managed config. The password is stored as `TC_PASSWORD` for host-side SSH/ACP access; Samba auth is generated on the device at boot from live AirPort `syPW`.
+`tcapsule configure` creates or updates `.env`. In interactive mode it looks for AirPorts over Bonjour, asks for the SSH target and device password, checks SSH, turns SSH on through ACP when needed, probes the device, fills in defaults (including the AirPort MAC), and writes the config. The password is saved as `TC_PASSWORD` for this computer's SSH and ACP access. Samba gets its password from the AirPort (`syPW`) at boot.
 
 Arguments:
-- `--config PATH`: write/read this config path instead of the default `.env`
-- `--no-input`: do not prompt; requires enough arguments or existing config to proceed
+- `--config PATH`: read and write this config instead of `.env`
+- `--no-input`: do not prompt; the arguments or existing config must supply everything
 - `--password-env NAME`: read the device password from environment variable `NAME`
-- `--password-file PATH`: read the device password from a file, stripping trailing newlines
-- `--password-stdin`: read the device password from stdin, stripping trailing newlines
-- `--host HOST`: set the device SSH target, for example `root@192.168.1.10`; custom SSH ports are rejected here and should be placed in `TC_SSH_OPTS`
-- `--skip-discovery`: skip Bonjour discovery and use the supplied or saved SSH target
-- `--yes`: approve ACP SSH enablement when SSH is closed
-- `--enable-ssh`: enable SSH via ACP if SSH is closed
-- `--no-enable-ssh`: fail instead of enabling SSH via ACP if SSH is closed
-- `--json`: emit a machine-readable result; requires `--no-input`
+- `--password-file PATH`: read the device password from a file, without trailing newlines
+- `--password-stdin`: read the device password from stdin, without trailing newlines
+- `--host HOST`: the device SSH target, for example `root@192.168.1.10`. A custom SSH port is rejected here; put it in `TC_SSH_OPTS`.
+- `--skip-discovery`: skip Bonjour and use the given or saved SSH target
+- `--yes`: approve turning SSH on through ACP when it is off
+- `--enable-ssh`: turn SSH on through ACP when it is off
+- `--no-enable-ssh`: fail when SSH is off
+- `--json`: print a machine-readable result; requires `--no-input`
 - `--force-disable-smb-signing-and-encryption` / `--no-force-disable-smb-signing-and-encryption`: write `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true|false`; `--disable-smb-security` and `--no-disable-smb-security` are aliases
 
 Hidden advanced arguments:
@@ -1265,12 +607,12 @@ Hidden advanced arguments:
 - `--any-protocol` / `--no-any-protocol`: write `TC_ANY_PROTOCOL=true|false`
 - `--require-smb-encryption` / `--no-require-smb-encryption`: write `TC_REQUIRE_SMB_ENCRYPTION=true|false`
 - `--netatalk` / `--no-netatalk`: write `TC_FRUIT_METADATA_NETATALK=true|false`
-- `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: writes `TC_VFS_AIO_FORK_DISABLED=false|true`; toggles the bounded `vfs_aio_fork` runtime profile
-- `--debug-logging` / `--no-debug-logging`: explicitly enable or disable managed runtime debug logging
-- `--ata-idle-seconds SECONDS`: writes `TC_ATA_IDLE_SECONDS`; must be a non-negative integer, with `0` disabling the ATA idle timer
-- `--ata-standby SECONDS`: writes `TC_ATA_STANDBY`; must be a non-negative integer, with `0` disabling standby and a blank saved value leaving standby unchanged
+- `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: write `TC_VFS_AIO_FORK_DISABLED=false|true`
+- `--debug-logging` / `--no-debug-logging`: turn debug logging on or off
+- `--ata-idle-seconds SECONDS`: write `TC_ATA_IDLE_SECONDS`, a whole number; `0` turns the ATA idle timer off
+- `--ata-standby SECONDS`: write `TC_ATA_STANDBY`, a whole number; `0` turns standby off, and a blank saved value leaves standby as it is
 
-`TC_ANY_PROTOCOL=true` cannot be combined with `TC_REQUIRE_SMB_ENCRYPTION=true`. Required encryption also cannot be combined with `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true`; configure rejects either conflict before writing `.env`.
+`TC_ANY_PROTOCOL=true` and `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true` each conflict with `TC_REQUIRE_SMB_ENCRYPTION=true`. Configure refuses either combination before writing `.env`.
 
 Non-interactive examples:
 
@@ -1281,42 +623,40 @@ printf '%s\n' 'airport-password' | .venv/bin/tcapsule configure --no-input --hos
 
 ### `set-ssh`
 
-`tcapsule set-ssh` is an advanced helper for toggling the firmware SSH debug flag. It uses the configured target from `.env`. If no explicit mode is selected, it preserves the older behavior: enable SSH when closed, or ask whether to disable it when already open.
+`tcapsule set-ssh` turns the firmware's SSH flag on or off for the device in `.env`. With no mode given, it turns SSH on when it is off, or asks whether to turn it off when it is on.
 
 Arguments:
-- `--config PATH`: use a non-default config
-- `--enable`: enable SSH via ACP if port 22 is closed; no-op if already open
-- `--disable`: remove the `dbug` property over SSH and reboot; no-op if SSH is already closed. It stops first, changing nothing, while a volume exists only until the next restart (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory))
-- `--status`: only report whether SSH port 22 is reachable; cannot be combined with `--no-wait`
-- `--yes`: skip the legacy prompt when SSH is already enabled and no explicit mode was selected
-- `--no-input`: fail instead of prompting in legacy mode
-- `--no-wait`: after enabling or disabling, return without waiting for the port/reboot verification
+- `--config PATH`: use another config
+- `--enable`: turn SSH on through ACP if port 22 is closed; nothing happens if it is open
+- `--disable`: remove the `dbug` property over SSH and reboot; nothing happens if SSH is already off. It refuses while a volume exists only until the next restart (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)).
+- `--status`: only report whether port 22 answers; cannot be combined with `--no-wait`
+- `--yes`: skip the question when SSH is already on and no mode was given
+- `--no-input`: fail instead of asking when no mode was given
+- `--no-wait`: return right after the change, without waiting for the port or the reboot
 
-Turning SSH on restarts the device. When SSH does not open, the restart wait's outcome picks the error code, for `set-ssh` and `configure` alike (`reboot.ssh_enable_error_code`): `ssh_enable_timeout` when no new boot answered within the 10-minute restart wait (`did_not_come_back_up`; some Time Capsules stop partway through a restart until unplugged, so the steps say to unplug it), and `ssh_closed_after_restart` when ACP answered on a new boot but SSH stayed closed for 4 minutes (`ssh_not_open`; the device is on the network and may not have kept the setting, so the first step is to try again). Both keep the message "SSH did not open after enabling via ACP.", which telemetry groups on.
+Turning SSH on restarts the device. If SSH does not open, the error says which case it was. With `ssh_enable_timeout`, the device did not come back within 10 minutes: unplug it, wait 10 seconds, plug it in, and try again after 2 minutes. With `ssh_closed_after_restart`, it came back with SSH still off: try again.
 
-Use `configure` for normal first-time setup. Use `set-ssh` only when you intentionally want to manage SSH separately from the main config flow.
+Use `configure` for first-time setup, and `set-ssh` to turn SSH on or off by itself.
 
 ### `deploy`
 
-`tcapsule deploy` installs or updates the managed Samba payload on the configured device. It validates the local artifacts, probes device compatibility, selects a writable HFS payload volume, uploads the payload and boot files, writes `/mnt/Flash/tcapsulesmb.conf`, installs the unified service and configuration that generate Samba auth files in RAM during boot or activation, applies permissions, and reboots. On NetBSD 4 devices, deploy checks the runtime after SSH returns and activates it only when firmware startup has not already done so.
+`tcapsule deploy` installs or updates TimeCapsuleSMB on the device. It checks the local artifacts, checks the device is compatible, picks a writable HFS volume for the payload, migrates old metadata, uploads the payload and boot files, writes `/mnt/Flash/tcapsulesmb.conf`, and reboots. On NetBSD 4 it checks the runtime once SSH is back and starts it only if the firmware did not. See [Deploy details](#deploy-details).
 
 Arguments:
-- `--config PATH`: use a non-default config
-- `--no-wait`: request reboot and return without waiting for SSH or runtime verification
-- `--yes`: do not prompt before reboot
-- `--no-input`: fail instead of prompting; non-dry-run deploys require `--yes`
-- `--dry-run`: build and print the deployment plan without changing the device
-- `--json`: emit the dry-run deployment plan as JSON; requires `--dry-run`
-- `--allow-unsupported`: continue when the detected device compatibility check is unsupported
-- `--enable-rsync`: write `RSYNC_ENABLED=1` so the manager stages and starts the bundled rsync daemon from RAM; the binary and config are uploaded even when this flag is omitted
-- `--mount-wait SECONDS`: per-attempt wait for deployment-time `diskd.useVolume` mount guards; default is `30`
+- `--config PATH`: use another config
+- `--no-wait`: request the reboot and return without waiting for SSH or checking the runtime
+- `--yes`: do not ask before rebooting
+- `--no-input`: fail instead of asking; a real deploy then needs `--yes`
+- `--dry-run`: print the plan without changing the device
+- `--json`: print the dry-run plan as JSON; requires `--dry-run`
+- `--allow-unsupported`: continue when the device is not a supported model
+- `--enable-rsync`: write `RSYNC_ENABLED=1` so the manager starts rsync; the rsync files are uploaded either way
+- `--mount-wait SECONDS`: how long each volume mount may take, `30` by default
 
 Hidden advanced arguments:
-- persisted profile settings accept positive/negative overrides for internal-share root, SMB browsing, AFP advertising, protocol/security choices, Netatalk metadata, debug logging, and `vfs_aio_fork`; omitting a pair preserves the saved `.env` value
-- `--debug-logging` / `--no-debug-logging`: override saved debug logging for this deploy; enabling increases runtime logging and disables the normal managed log size cap
-- `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: override the saved bounded `vfs_aio_fork` setting for this deployment
+- each saved profile setting (internal-share root, SMB browsing, AFP advertising, protocol and security, Netatalk metadata, debug logging, `vfs_aio_fork`) has an on/off override pair; without one, the saved `.env` value is used
 
-Useful plan modes:
+Plan modes:
 
 ```bash
 .venv/bin/tcapsule deploy --dry-run
@@ -1325,178 +665,151 @@ Useful plan modes:
 
 ### `activate`
 
-`tcapsule activate` manually starts an already-deployed NetBSD 4 payload without uploading files again. If the managed runtime is already ready, it skips re-running `/mnt/Flash/rc.local`; otherwise it stops any running launcher and reruns it.
-
-It starts an install of any release of this major version from v3.3.0 on (`OLDEST_ACTIVATABLE_RELEASE_TAG`), and refuses an older one with `runtime_outdated` before touching it, asking for a deploy first: its readiness check needs Apple's `mDNSResponder` left running (v3.1.0 on) and boot.sh's `/sbin/diskd` guard (v3.3.0 on). The restart after an fsck reboot on NetBSD 4 uses the same rule.
+`tcapsule activate` starts an installed NetBSD 4 runtime without uploading anything. If the runtime is already up, it leaves it running; otherwise it stops any running launcher and runs `/mnt/Flash/rc.local` again. It refuses installs older than v3.3.0 (`runtime_outdated`) and asks for a deploy first.
 
 Arguments:
-- `--config PATH`: use a non-default config
-- `--yes`: do not prompt before restarting deployed Samba services
-- `--no-input`: fail instead of prompting; non-dry-run activation requires `--yes`
-- `--dry-run`: print the activation actions without changing the device
-- `--json`: emit the dry-run activation plan as JSON; requires `--dry-run`
+- `--config PATH`: use another config
+- `--yes`: do not ask before restarting the Samba services
+- `--no-input`: fail instead of asking; a real activation then needs `--yes`
+- `--dry-run`: print the steps without changing the device
+- `--json`: print the dry-run plan as JSON; requires `--dry-run`
 
-This command is only supported for NetBSD 4 AirPort storage devices. NetBSD 6 devices should use `deploy` for persistent installs and normal updates.
+`activate` works only on NetBSD 4 AirPort devices. NetBSD 6 devices use `deploy` for installs and updates.
 
 ### `flash`
 
-`tcapsule flash` is the NetBSD 4 firmware-bank helper. By default it is read-only: it backs up and analyzes both flash banks, saves a manifest, and prints the firmware state. Write modes are explicit. `--patch` installs the persistent TimeCapsuleSMB boot hook into the primary bank. `--restore` writes Apple stock firmware to the uniquely selected active bank, or to the primary bank with a warning when both candidates pass active selection.
+`tcapsule flash` manages the NetBSD 4 firmware banks. By default it only reads: it backs up and analyzes both flash banks, saves a manifest, and prints the firmware state. Writing needs an explicit mode. `--patch` writes the TimeCapsuleSMB boot hook into the primary bank. `--restore` writes Apple's stock firmware to the active bank, or to the primary bank with a warning when both banks look active.
 
-Without `--force`, patching refuses unless both banks are valid backups, so an interrupted write always leaves a bank to start from. When the primary is a valid backup and the running bank and only the secondary is invalid, `--restore` rewrites the secondary instead: ACPd cannot write that bank on shipping units (its write-secondary command needs the factory `diag` unlock), so restore erases it with `/sbin/flashctl /dev/rflash1.raw erase` and writes a whole 7 MiB bank image of the newest Apple firmware for the model (footer last) through `dd` over SSH. It runs only on syAP 106, 109, 113 and 116, whose flash drivers were checked to keep the erase and the write inside that bank, and only when both this backup's read of the secondary and ACPd's own check (`cks2`) fail its footer; if one of them passes, the bank may still be a good copy, and restore and patch both refuse and ask for a fresh backup. The write is verified by reading the whole bank back, by `cks2` matching the new footer, and by `cks1` (the primary) not changing. The device keeps running its primary bank, so no reboot follows; the saved backup no longer describes the device, so back up again before patching.
+Without `--force`, `--patch` refuses unless both banks are valid backups, so a write that stops halfway always leaves a bank to start from. When only the secondary bank is invalid and the device runs from a valid primary, `--restore` rewrites the secondary with the newest Apple firmware for the model. This works only on models whose flash drivers were checked for it (syAP 106, 109, 113 and 116), and needs no reboot. Back up again before patching.
 
 Arguments:
-- `--config PATH`: use a non-default config
-- `--read-only`: dump and back up firmware banks without patch planning; this is also the default when no mode is provided
-- `--patch`: build and write the TimeCapsuleSMB LOGIN hook patch to the primary bank
-- `--restore`: restore the selected candidate bank from Apple stock firmware; when both candidates pass active selection, target the primary bank; when only the secondary bank is invalid, rewrite it with the newest Apple firmware for the model
-- `--check-apple`: check whether the candidate bank or banks match Apple stock firmware
-- `--download-only`: connect to the configured NetBSD 4 device, back up and analyze its banks, then download and validate Apple firmware without writing firmware
-- `--yes`: do not prompt before `--patch` or `--restore` writes; only valid for write modes
-- `--no-input`: fail instead of prompting; write modes require `--yes`
-- `--reboot`: after a validated `--restore` write to the active bank, request a software reboot
-- `--no-wait`: with `--restore --reboot`, return after the reboot request without waiting for the device
-- `--json`: emit flash analysis and plan JSON; only valid for read-only modes, not `--patch` or `--restore`
-- `--backup-dir PATH`: use `PATH` as this run's exact backup directory instead of creating a timestamped directory under the default backup root
-- `--force`: with `--patch`, bypass backup/active-candidate preflight and target the primary bank
-- `--firmware-template PATH`: use a local Apple `.basebinary` firmware template instead of auto-selecting from Apple's catalog
-- `--firmware-version VERSION`: select an Apple firmware version, for example `7.8.1`
+- `--config PATH`: use another config
+- `--read-only`: back up and analyze the banks without planning a patch; this is the default
+- `--patch`: write the TimeCapsuleSMB LOGIN hook into the primary bank
+- `--restore`: write Apple's stock firmware to the active bank, to the primary when both look active, or to the secondary when only it is invalid
+- `--check-apple`: check whether the bank or banks match Apple's stock firmware
+- `--download-only`: back up and analyze the banks, then download and check Apple's firmware without writing it
+- `--yes`: do not ask before a `--patch` or `--restore` write; valid only with those
+- `--no-input`: fail instead of asking; writes then need `--yes`
+- `--reboot`: after a verified `--restore` write to the active bank, request a software reboot
+- `--no-wait`: with `--restore --reboot`, return after requesting the reboot
+- `--json`: print the analysis and plan as JSON; read-only modes only
+- `--backup-dir PATH`: back up into exactly `PATH` instead of a new timestamped directory
+- `--force`: with `--patch`, skip the backup and active-bank checks and write the primary bank
+- `--firmware-template PATH`: use a local Apple `.basebinary` file instead of picking one from Apple's catalog
+- `--firmware-version VERSION`: pick an Apple firmware version, for example `7.8.1`
 
-Hidden unsupported argument:
-- `--poweroff`: currently rejected with an error; patch mode requires a manual power cycle after a validated write
+Hidden argument:
+- `--poweroff`: rejected; after a patch, power-cycle the device by hand
 
-Important mode restrictions:
-- `flash --patch --reboot` is rejected; patch mode cannot request a software reboot
-- `--reboot` is only valid with `--restore`
-- `flash --restore --reboot` is rejected when restore rewrites the secondary bank; that write needs no reboot
-- `--no-wait` is only valid with `--restore --reboot`
-- `--json` is only valid for read-only flash modes
-- patch mode requires `zopfli` gzip support on the host
+Mode rules:
+- `--patch --reboot` is rejected; a patch cannot request a software reboot
+- `--reboot` works only with `--restore`, and not when restore rewrites the secondary bank
+- `--no-wait` works only with `--restore --reboot`
+- `--json` works only in read-only modes
+- `--patch` needs `zopfli` gzip support on this computer
 
 ### `doctor`
 
-`tcapsule doctor` runs local and remote diagnostics without deploying, rebooting, or changing managed configuration. It validates config and local tools, checks artifact presence and checksums, probes SSH/network/runtime state, checks Bonjour and NBNS visibility, runs authenticated SMB listing and temporary CRUD checks, and verifies that Samba xattr state points at persistent storage.
+`tcapsule doctor` checks this computer and the device without deploying, rebooting or changing the configuration. [Doctor command](#doctor-command) lists the checks.
 
-Results come in two sections, each with its own status: **This computer** (its tools, `nsmb.conf`, SSH login, and its view of the device over the network) and **Device** (checked on the device over SSH, including the authenticated SMB checks through an SSH tunnel to the device's own smbd). Either section failing fails doctor. A failure on this computer that only repeats a device service the device reported down is a SKIP, and a device nothing ran on (SSH skipped or refused) is `not_checked`. `--json` adds `status` and `sections`.
+The results come in two sections, each with its own status. **This computer** covers its tools, `nsmb.conf`, the SSH login, and its view of the device over the network. **Device** covers what runs on the device, checked over SSH, including logged-in SMB checks through an SSH tunnel. A failure in either section fails doctor.
 
 Arguments:
-- `--config PATH`: use a non-default config
-- `--skip-ssh`: skip SSH reachability and remote checks
-- `--skip-bonjour`: skip Bonjour browse/resolve checks
-- `--skip-smb`: skip authenticated SMB listing and file-operation checks
-- `--json`: emit one structured final doctor payload
+- `--config PATH`: use another config
+- `--skip-ssh`: skip SSH and every check on the device
+- `--skip-bonjour`: skip the Bonjour checks
+- `--skip-smb`: skip the SMB listing and file checks
+- `--json`: print one JSON result at the end
 
-Doctor fails each volume that exists only until the next restart (code `disk_volumes_in_memory`; see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)), naming Wipe Internal Disk only for the internal disk. Disk Repair, Uninstall, Install and Disable SSH refuse to restart the device while one exists.
-
-`doctor` is the preferred post-deploy and post-reboot verification command. Its default SMB CRUD checks temporarily create, modify, and remove a hidden `.doctor-fileops-*` directory on a share. A timeout, interruption, or early failure can leave that directory behind; use `--skip-smb` when the diagnostic run must not write through SMB.
+Run `doctor` after a deploy or a reboot. Its SMB checks create, change and remove a hidden `.doctor-fileops-*` directory on a share. A timeout, interruption or early failure can leave that directory behind; use `--skip-smb` when doctor must not write through SMB.
 
 ### `fsck`
 
-`tcapsule fsck` runs remote `fsck_hfs` against a mounted HFS volume. It mounts/wakes the Apple volumes, selects or prompts for a volume, stops the managed runtime and Apple's file sharing with the same stop actions deploy uses (and aborts if anything will not stop), unmounts the selected disk, runs `fsck_hfs`, and reboots by default.
+`tcapsule fsck` runs `fsck_hfs` on the device against one HFS volume. It mounts and wakes Apple's volumes, picks a volume or asks for one, stops TimeCapsuleSMB and Apple's file sharing (and gives up if anything will not stop), unmounts the disk, runs `fsck_hfs`, and reboots. Unless `--no-reboot` is given, it refuses to start while a volume exists only in memory, because the reboot would take it (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)).
 
-Before a repair that restarts the device, it stops if a volume exists only until the next restart (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)); `--no-reboot` skips that check.
-
-A repair can take an hour or more on a large disk, most of it in one step (the catalog file), and a repair checks the volume again afterwards. The command says so before it asks to start; the app's confirmation and its running Disk Repair row say it too, and the row also shows how long the repair has run.
-
-How the repair runs and reports:
-- The remote script runs on a terminal (`ssh -tt`). On a pipe, `fsck_hfs` holds its output until it exits; on a terminal each `** Checking …` step line arrives as the step starts. The step lines become progress events (`phase`, plus `recheck` for steps after `Rechecking volume.`), and the CLI prints `fsck_hfs is still running (N min).` after each minute without a line. A damaged disk prints a line per file; the log keeps the first 200 of them and every step line.
-- The script ignores the terminal's hangup, so a session that drops (or the 3-hour command timeout) does not stop `fsck_hfs` mid-repair. The run then reports `fsck_session_dropped`: the repair keeps going on the device, file sharing stays off, and nothing restarts the device under it.
-- Before it stops anything, the script refuses to start while any `fsck_hfs` runs on the device, or when it cannot read the process list (`fsck_already_running`), so a second repair never runs on the same disk under the first.
-- Telemetry gets one `fsck_run` measurement: whether `fsck_hfs` started, its last step, seconds per step (steps after a repair as `recheck_<step>`), whether the session dropped, and the number of per-file lines. A run that exits non-zero also sends its last 20 `fsck_hfs` lines, each cut to 200 characters, as `fsck_output_tail`; these can name damaged files.
-- An exit status above 128 is a signal: the remote shell reports 128 plus its NetBSD number. A crash signal (SIGILL, SIGTRAP, SIGABRT, SIGEMT, SIGFPE, SIGBUS, SIGSEGV, SIGSYS; NetBSD's numbers, not the host's) says Apple's `fsck_hfs` crashed. Seen as SIGBUS (status 138), repeatably on one volume while Samba kept serving it, once during the recheck after a repair. The result then says another repair on the device will not get further, and to run First Aid in Disk Utility on a Mac: the internal disk through a SATA-to-USB adapter, a USB disk as it is (summary keys `fsck_crashed` and `fsck_crashed_usb`). SIGKILL, SIGTERM and other statuses keep the plain "exited with status N".
+- A repair can take an hour or more on a large disk, and then checks the volume again. Progress shows each `fsck_hfs` step as it starts.
+- If the SSH session drops, `fsck_hfs` keeps running on the device and file sharing stays off until it ends; the command reports `fsck_session_dropped`. A second repair is refused while one is running.
+- If `fsck_hfs` crashes (for example with SIGBUS, exit status 138), running it again on the device will stop at the same place. Connect the disk to a Mac (an internal disk through a SATA-to-USB adapter) and run First Aid in Disk Utility.
 
 Arguments:
-- `--config PATH`: use a non-default config
-- `--yes`: do not prompt before disk repair
-- `--no-input`: fail instead of prompting; repair requires `--yes`
-- `--no-reboot`: run `fsck_hfs` only and do not reboot afterward
-- `--no-wait`: when rebooting, do not wait for the device to restart and SSH to come back
-- `--volume VOLUME`: select the HFS volume device, for example `dk2` or `/dev/dk2`; if omitted and multiple mounted volumes exist, interactive mode prompts
+- `--config PATH`: use another config
+- `--yes`: do not ask before the repair
+- `--no-input`: fail instead of asking; a repair then needs `--yes`
+- `--no-reboot`: run `fsck_hfs` and do not reboot afterward
+- `--no-wait`: do not wait for the device and SSH to come back after the reboot
+- `--volume VOLUME`: the HFS volume, for example `dk2` or `/dev/dk2`; with several mounted volumes and no `--volume`, it asks
 
-Use this only when the disk needs repair before deploy or when doctor/troubleshooting points at filesystem problems.
+Run it when doctor or a failure points at the filesystem, or before a deploy to a damaged disk.
 
 ### `wipe-internal-disk`
 
-`tcapsule wipe-internal-disk` deletes everything on the device's internal disk and formats it for the device, the way AirPort Utility's Erase Disk does, including disks Erase Disk cannot format. Apple's `gpt` rejects some partition tables (`gpt: error: bogus map`: a table made for a bigger disk, partitions past the end or overlapping each other or the table, a legacy MBR beside a GPT), cannot create one beside a legacy MBR partition that reaches the last sector, and still exits 0, so Erase Disk formats partitions that exist only in memory and they are gone at the next boot. Wipe Internal Disk zeroes 10 MiB at each end of the disk first, which removes every such table, then asks Apple's disk service for the same Quick erase AirPort Utility uses.
+`tcapsule wipe-internal-disk` erases the device's internal disk and formats it as AirPort Utility's Erase Disk does, including disks Erase Disk cannot format. Apple's partitioning tool gives up on some partition tables (one made for a bigger disk, a broken one, or a Windows-style MBR) without reporting an error, and Erase Disk then formats volumes that exist only in memory and vanish at the next boot. Wipe Internal Disk first zeroes 10 MiB at each end of the disk, which clears any such table, then asks Apple's disk service for the same Quick erase AirPort Utility uses.
 
-What it does, in order:
-- Reads only: the disks from MaSt, the kernel's sector size and count (`drvctl -p`), the raw partition (`kern.rawpartition`), the other disks' GPT tables (`dd`), `gpt show` (killed after 60 s if the disk hangs), and which mounted volume holds the Samba files. It never mounts or claims a volume (`diskd.useVolume`).
-- Refuses an internal disk with no partitions that reports under 15 GB: that is a drive misreporting its size (the stock Seagates of TC8,119s at 3950 MiB), which an erase would format as that size. Refuses a disk diskd has lost (`softDisconnected`), and any disk while diskd is formatting a disk or checking or mounting a volume (its jobs name no disk). Refuses while another disk (MaSt's or the kernel's `hw.disknames`) has a partition named APconfig, APswap or APdata in either GPT table, or a table it cannot read; it checks again after the confirmation, before anything is written. A disk plugged in during the zeroing (seconds; minutes on a failing disk) is not checked: a later check would refuse with the internal disk already cleared. When the kernel's list cannot be read, or lacks the internal disk, that counts as a disk it cannot read. Apple's erase deletes the internal disk's wedges, then asks the kernel for new ones under those names; wedge names are unique across all disks, and the kernel names a disk's wedges after its GPT labels when the disk attaches, so a USB disk with those labels can hold the names and `dk0` to `dk2`. diskd ignores the kernel's refusal and runs `newfs_hfs` on its own guesses, `dk0` to `dk2`, which would be that USB disk. Unplugging the USB disk avoids it. Wipe Internal Disk never wipes a USB disk: Apple's erase of a USB disk beside the internal one formats the internal disk instead, for the same reason. Known limits: the check reads GPT labels, while the clash is between the kernel's wedge names, which nothing on the device can list; the two differ only when a disk's labels were changed after it attached. And if Apple's erase cannot delete one of the internal disk's own wedges (one in use), that wedge's name clashes too, and `dk0` to `dk2` are formatted, which goes wrong only if another disk owns them.
-- Asks, defaulting to No, naming the disk and what is on it (its volumes, else its partition formats in words). When this disk's own kernel errors, or unreadable Samba files that may be on it, say it is failing, the CLI first asks whether to wipe anyway; the app adds that warning to the same confirmation.
-- Checks the disk is still the one confirmed (MaSt's disk uuid, which hashes the drive's identity and survives a wipe), then calls `diskd.eraseDisk` with an invalid method to prove the request is accepted, only after the confirmation.
-- Stops the managed runtime, Apple's file sharing and afpserver, leaving the volumes mounted and idle, zeroes both ends of `/dev/r<disk><rawpart>` (it re-reads `drvctl` right before writing and stops if the disk changed), checks every `dd` wrote its full count, and reads sectors 0, 1 and the last one back on the Mac. A failure there stops without a reboot (a disk that stopped answering can hang one): file sharing stays off until the device restarts, and the guidance says to restart it first.
-- Asks for a Quick erase by the disk's uuid. Apple's erase disconnects AFP and SMB users, unmounts the disk's volumes, deletes its wedges, partitions it (APconfig, APswap, APdata) and formats the data volume. The volume keeps its old name when `newfs_hfs` can take it, else "Data".
-- Waits on diskd's jobs (up to 30 minutes; a minute without one and without the new volume is a failure; a format still running at the cap is never rebooted), reboots through ACP, checks the new volume is still there, and starts file sharing again as `fsck` does, unless the wiped disk held the Samba files: then run `tcapsule deploy`.
+Steps:
+- It reads the disk list and partition tables without mounting or changing anything.
+- It refuses an internal disk that reports under 15 GB with no partitions (a drive misreporting its size), a disk the firmware has lost, and any disk while Apple's disk service is busy. It also refuses while another disk has Apple's APconfig, APswap or APdata partitions, because Apple's erase would format that disk instead. Unplug such a USB disk first. It never wipes a USB disk.
+- It asks, with No as the default, naming the disk and what is on it, and warns when the disk shows signs of failing.
+- It stops file sharing, zeroes both ends of the disk, checks the writes, and asks for the Quick erase. The new disk gets APconfig, APswap and APdata partitions, and the volume keeps its old name when it can, else "Data".
+- It waits up to 30 minutes for the format, reboots, checks the new volume, and starts file sharing again. If the wiped disk held the Samba files, run `tcapsule deploy` next.
+
+Arguments:
+- `--config PATH`: use another config
+- `--dry-run`: read the disk and print the plan, including the wipe offsets, without changing anything
+- `--yes`: do not ask before wiping
+- `--no-input`: fail instead of asking; a wipe then needs `--yes`
 
 #### Volumes that exist only in memory
 
-When Apple's `gpt` cannot replace a disk's table, AirPort Utility's Erase Disk writes no table, yet diskd still creates its wedges, formats them and mounts the data volume. MaSt lists it, deploy could install onto it and Time Machine can back up to it, and the next restart takes it and everything saved on it. Two tables do this: one `gpt` rejects (`gpt: error: bogus map`, then `gpt: unable to open device 'r<disk><part>'`), and a legacy MBR whose partition reaches the last sector, as on a disk formatted for Windows: `gpt create` prints `gpt: r<disk><part>: error: no room for the backup header` (it writes only a protective MBR), and every later add `gpt: r<disk><part>: error: no primary GPT header; run create or recover`.
+When Apple's `gpt` cannot replace a disk's partition table, AirPort Utility's Erase Disk still formats and mounts the data volume but writes no table. The volume works and Time Machine can back up to it, but the next restart takes it and everything on it. This happens with a table `gpt` rejects (`gpt: error: bogus map`), and with a Windows-style MBR whose partition reaches the last sector.
 
-NetBSD 4 and NetBSD 6 do the same: Apple's `gpt` exits 0 after each of those errors, and diskd's erase stops only on a failing `gpt create`, `add` or `label`, so it then adds the wedge itself and runs `newfs_hfs` on it (both confirmed from the firmware's binaries; NetBSD 6's `gpt` names the internal disk `rwd0c`).
+Doctor finds these volumes from this boot's erase log and the disk's current table, and fails with `disk_volumes_in_memory` (internal disk) or `usb_disk_volumes_in_memory`. Install, Disk Repair, Uninstall and Disable SSH refuse to run while one exists, because each ends by restarting the device.
 
-Doctor and every command that restarts the device find such volumes in two steps (`device.wipe.read_in_memory_volumes_conn`):
-
-1. The manager's log (`/mnt/Memory/samba4/var/runtime.log`). diskd is the manager's child, so every erase's `gpt` and `newfs_hfs` output lands there. An erase runs `gpt` before each `newfs_hfs` (destroy and create, then add and label per partition), and a run that works prints nothing. Each `Initialized /dev/rdk<N>` line takes its verdict from the `gpt` lines since the one before it; a `gpt` line naming another disk starts that over, and a later format of the same wedge (another erase, Wipe Internal Disk's included) replaces it. A MaSt volume is a candidate when its wedge's latest format followed one of those errors for its own disk (`wedge_formats`, `in_memory_volumes`).
-2. Each candidate's disk, read with `gpt show` (60 s at most). The flag stays when the disk still holds the rejected table (`bogus_map`), only the protective MBR `gpt create` writes before it fails (`blank`), or cannot be read. It is dropped when the disk holds a table `gpt` reads (`apple_hfs`, `foreign`): a rejected erase never leaves one, so the disk changed since the erase the log shows.
-
-The log is in RAM, so it starts empty at every boot, and within a boot it is only appended to: boot.sh and the manager's role launches open it for appending, rerunning `rc.local` keeps it, and the manager's trim keeps its last 16 KiB in place, on the same inode, so diskd keeps writing to it. It is therefore this boot's history, and a verdict in it goes stale when its disk changes with no format logged: a USB disk plugged back in (erased on a Mac or not), another disk taking the same `sd`/`dk` numbers, or `gpt` lines from an erase that never reached `newfs_hfs` before one of the same disk that worked. Step 2 catches each of those. A disk is read only when the log flags it, so a normal run touches no disk and wakes no sleeping one.
-
-- Doctor fails each one (`disk_volumes_in_memory`), naming the volume and its disk and saying to copy off what is needed before the device restarts, then Wipe Internal Disk for the internal disk, or for a USB disk to disconnect it and erase it on a Mac before connecting it again; the app's dashboard shows it as its own row. The manager's "Samba files are missing … run Install" line is left out beside it: Install would stop on the volume. A log it cannot read gives no verdict and no result; the reason is in telemetry.
-- Install, Disk Repair, Uninstall and Disable SSH stop before they change anything while any volume is in memory (`services.storage.require_no_in_memory_volumes`): each ends by restarting the device, which would take it. Install checks right after reading MaSt, before it claims a volume from diskd, waits for mounts or writes anything, and also stops on a volume MaSt lists but has not mounted; Disk Repair checks before `fsck_hfs` and Uninstall before it mounts the volumes, both only when they restart (not with `--no-reboot` or `--dry-run`); `set-ssh --disable` checks before it removes the SSH setting. Wipe Internal Disk stops only for a USB volume: the internal disk's is what it fixes. The code is the internal disk's (`disk_volumes_in_memory`, whose recovery offers Wipe Internal Disk) when it has one, else `usb_disk_volumes_in_memory` (copy off, disconnect the disk, erase it on a Mac before connecting it again). A MaSt read that fails gives no verdict. Flash restore and the restarts that turn SSH on are not checked: the first must work when ACPd or MaSt does not, and with SSH off neither the log nor the disk can be read.
-- Telemetry: `erase_log` on `doctor_finished` and on each command's finished event, with whether the log was read (or why not), its size, the wedges formatted and the disk each was rejected for, what `gpt show` found on each disk the log flagged, and the volumes flagged.
-
-It misses some: a device erased before TimeCapsuleSMB's runtime ever ran (diskd was ACPd's then, and its output went nowhere), a log trimmed past the erase (the manager keeps its last 16 KiB once the log passes 32 KiB), a `gpt` line another writer split, and other `gpt` failures, such as a dying disk's. One case goes the other way: a USB disk whose table `gpt` rejects, erased that way, then disconnected and connected again without a Mac erase, may mount volumes from that old table, which `gpt show` still calls rejected, so they stay flagged until the next restart; the newfs of the in-memory erase overwrote part of them anyway.
-
-Arguments:
-- `--config PATH`: use a non-default config
-- `--dry-run`: read the disk and print what would be done, including the wipe offsets, without changing anything or calling the disk service
-- `--yes`: do not prompt before wiping
-- `--no-input`: fail instead of prompting; a wipe requires `--yes`
+Copy off anything you need from the volume first. For the internal disk, run Wipe Internal Disk. For a USB disk, disconnect it, erase it on a Mac, and connect it again. Volumes erased before TimeCapsuleSMB was installed cannot be detected.
 
 ### `uninstall`
 
-`tcapsule uninstall` removes managed TimeCapsuleSMB files from the configured device. It stops the manager, removes the payload directories from mounted HFS volumes, removes loader files under `/mnt/Flash` and runtime state, and reboots by default so Apple services and the root filesystem return to their clean state. After a waited reboot it verifies that managed files are gone. It does not restore a firmware bank changed by `flash --patch`; use `flash --restore` for that separate operation.
-
-Unless it is a dry run or `--no-reboot`, it stops before mounting anything if a volume exists only until the next restart, which its restart would take (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)).
+`tcapsule uninstall` removes TimeCapsuleSMB's files from the device. It stops the manager, removes the payload directories from the mounted HFS volumes, removes the loader files under `/mnt/Flash` and the runtime state, and reboots so Apple's services and the root filesystem start clean. After a waited reboot it checks the files are gone. Unless `--no-reboot` or `--dry-run` is given, it stops before mounting anything while a volume exists only in memory. It does not restore a firmware bank changed by `flash --patch`; `flash --restore` does that.
 
 Arguments:
-- `--config PATH`: use a non-default config
-- `--mount-wait SECONDS`: per-attempt wait for each `diskd.useVolume` mount guard to see the volume mounted; default is `30`
-- `--no-wait`: request reboot and return without waiting for post-uninstall verification
-- `--yes`: do not prompt before reboot
-- `--no-input`: fail instead of prompting; non-dry-run rebooting uninstalls require `--yes` unless `--no-reboot` is used
-- `--no-reboot`: remove files but do not reboot the device
-- `--dry-run`: print the uninstall plan without changing the device
-- `--json`: emit the dry-run uninstall plan as JSON; requires `--dry-run`
+- `--config PATH`: use another config
+- `--mount-wait SECONDS`: how long each volume mount may take, `30` by default
+- `--no-wait`: request the reboot and return without checking the result
+- `--yes`: do not ask before rebooting
+- `--no-input`: fail instead of asking; an uninstall that reboots then needs `--yes`
+- `--no-reboot`: remove the files without rebooting
+- `--dry-run`: print the plan without changing the device
+- `--json`: print the dry-run plan as JSON; requires `--dry-run`
 
-`uninstall` does not re-enable Apple AFP or SMB settings or restore a patched firmware bank; it only removes TimeCapsuleSMB-managed files and runtime state.
+`uninstall` does not turn Apple's AFP or SMB settings back on.
 
 ### `api`
 
-`tcapsule api` is the structured backend used by the macOS app. It reads one JSON object from stdin, runs the requested operation, and writes app-event NDJSON to stdout. The request must be a JSON object with:
-- `operation`: required operation name
-- `params`: optional JSON object; defaults to `{}`
-- `request_id`: optional request identifier echoed on emitted events
+`tcapsule api` is the backend for the macOS app. It reads one JSON object from stdin, runs the operation, and writes app events as NDJSON to stdout. The object has:
+- `operation`: the operation name (required)
+- `params`: a JSON object, `{}` by default
+- `request_id`: an identifier copied onto each event
 
 Arguments:
-- `--pretty-error`: also write request parsing errors to stderr for local debugging
+- `--pretty-error`: also print request parsing errors to stderr
 
-Known public app operations are `activate`, `capabilities`, `configure`, `deploy`, `discover`, `doctor`, `flash`, `fsck`, `reachability`, `set-ssh`, `set-telemetry`, `uninstall`, `validate-install`, and `version-check`. The backend also accepts internal non-public operations such as `update-config-settings`. This is not the normal human CLI surface; prefer the direct commands above unless you are integrating with the GUI helper contract.
+Use the commands above; `api` is for the app.
 
-## Local Test Coverage
+## Local test coverage
 
-`make install` installs `coverage.py` through the `dev` optional dependency. `./tcapsule bootstrap` installs `requirements.txt` and the normal editable package, but does not install the development-only coverage dependency.
+`make install` installs `coverage.py` through the `dev` extra. `./tcapsule bootstrap` installs only `requirements.txt` and the editable package.
 
-Test and coverage entry points:
-- `make test` runs C compile checks plus the pytest suite
-- `make test-parallel` runs the same C compile checks and the pytest suite through `pytest-xdist`
-- `make coverage` runs the pytest suite with branch coverage and prints missing source lines
-- `make coverage-html` writes the browsable report to `htmlcov/index.html`
-- `make coverage-native` reports native C coverage; see [native checks](build/native/README.md#builds-and-checks)
-- `cd macos/TimeCapsuleSMB && swift test` runs the macOS app/helper unit tests; the package supplies the Xcode platform framework search path needed for XCTest/Swift Testing imports
+Test and coverage commands:
+- `make test`: C compile checks and the pytest suite
+- `make test-parallel`: the same, with pytest running in parallel through `pytest-xdist`
+- `make coverage`: pytest with branch coverage, printing the missing lines
+- `make coverage-html`: the same report as HTML in `htmlcov/index.html`
+- `make coverage-native`: native C coverage; see [native checks](build/native/README.md#builds-and-checks)
+- `cd macos/TimeCapsuleSMB && swift test`: the macOS app and helper unit tests
 
-The root `make test` targets do not run the Swift suite; run both the Python/C and Swift entry points when a change crosses the backend/app boundary.
+`make test` does not run the Swift tests. Run both when a change touches both the backend and the app.
 
-Current defaults and fixed values:
+Defaults and fixed values:
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT=false`
 - `TC_SMB_BROWSE_COMPATIBILITY=false`
 - `TC_MDNS_ADVERTISE_AFP=false`
@@ -1507,216 +820,130 @@ Current defaults and fixed values:
 - `TC_VFS_AIO_FORK_DISABLED=false`
 - `TC_DEBUG_LOGGING=false`
 - `TC_ATA_IDLE_SECONDS=300`
-- `TC_ATA_STANDBY=` leaves the standby timer unchanged; set `0` to disable standby
-- `TC_SSH_OPTS` includes the legacy SSH algorithms required by AirPort firmware
-- docs and examples use SMB username `admin`
-- the managed payload directory is fixed at `.samba4`
+- `TC_ATA_STANDBY=`, which leaves the standby timer as it is; `0` turns standby off
+- `TC_SSH_OPTS` includes the old SSH algorithms AirPort firmware needs
+- the docs use the SMB username `admin`
+- the payload directory is always `.samba4`
 
-Samba NetBIOS and Samba server string are derived on the device at runtime from `/usr/bin/acp -q syNm` and `/bin/hostname`; they are not configured in `.env`.
+The Samba NetBIOS name and server string come from `/usr/bin/acp -q syNm` and `/bin/hostname` on the device at runtime. They are not set in `.env`.
 
-Current validation behavior:
-- `TC_HOST`: must be non-empty.
-- `TC_PASSWORD`: Doctor, flash, and non-status `set-ssh` operations require a configured value; deploy and activate can prompt interactively when it is absent, while fsck and uninstall allow passwordless SSH key/agent authentication.
-- `TC_SSH_OPTS`: is written by `configure` with the legacy SSH options needed for AirPort firmware.
-- the managed share, browsing, AFP, protocol/security, Netatalk metadata, `vfs_aio_fork`, and debug settings listed above must contain recognized boolean values.
-- `TC_INTERNAL_SHARE_USE_DISK_ROOT`: internal disks use `ShareRoot` by default, and external disks always use the disk root.
-- the protocol/security validator rejects required encryption combined with either `TC_ANY_PROTOCOL=true` or `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true`.
-- `TC_ATA_IDLE_SECONDS`: optional non-negative integer; default `300`, and `0` disables the ATA idle timer through `atactl setidle 0`.
-- `TC_ATA_STANDBY`: optional non-negative integer; blank leaves standby unchanged, and `0` disables standby through `atactl setstandby 0`.
-- `TC_CONFIGURE_ID`: is a local configuration revision ID and is not user-validated.
+Validation:
+- `TC_HOST` must not be empty.
+- `TC_PASSWORD` is required by doctor, flash and `set-ssh` (except `--status`). Deploy and activate ask for it when it is missing. fsck and uninstall can log in with an SSH key or agent instead.
+- `TC_SSH_OPTS` is written by `configure` with the old SSH options AirPort firmware needs.
+- The share, browsing, AFP, protocol and security, Netatalk metadata, `vfs_aio_fork` and debug settings above must be `true` or `false`.
+- Required encryption cannot be combined with `TC_ANY_PROTOCOL=true` or `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true`.
+- `TC_ATA_IDLE_SECONDS` is an optional whole number, `300` by default; `0` turns the ATA idle timer off with `atactl setidle 0`.
+- `TC_ATA_STANDBY` is an optional whole number; blank leaves standby as it is, and `0` turns it off with `atactl setstandby 0`.
+- `TC_CONFIGURE_ID` is a local revision ID and is not checked.
 
-Workflow details:
-- `configure` now starts by attempting mDNS discovery of the Time Capsule on the local network
-- if SSH is already reachable, `configure` validates the SSH target/password and then probes the device directly
-- if SSH is closed, `configure` enables SSH with the built-in Python 3 ACP client, reboots the device through ACP, waits for SSH to come back, and then probes the device directly
-- ACP authentication failures during `configure` reprompt for the Time Capsule password; non-authentication ACP failures stop configuration with the underlying error
-- `configure` uses discovered and probed Apple identity metadata to classify compatibility and present device details, but it does not persist model or `syAP` hints in managed `.env`
-- for NetBSD 4 devices, the probe/compatibility layer uses endianness and on-device `acp` identity data to classify the exact generation when possible
-- `configure` validates managed `.env` inputs before writing `.env`
-- `deploy`, `activate`, and `doctor` fail early when managed `.env` config values are invalid
-- the command entrypoints live under [src/timecapsulesmb/cli/](src/timecapsulesmb/cli)
-- reusable workflows live under [src/timecapsulesmb/services/](src/timecapsulesmb/services), with deployment plans/execution under [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and device probes/state under [src/timecapsulesmb/device/](src/timecapsulesmb/device)
-- the checked-in binaries and build tooling are visible in the repo, so advanced users can swap binaries, rebuild artifacts, or trace the exact boot/runtime layout
+How `configure` works:
+- It starts by looking for the Time Capsule over mDNS.
+- If SSH answers, it checks the SSH target and password and probes the device.
+- If SSH is off, it turns SSH on with its built-in Python ACP client, reboots the device through ACP, waits for SSH, and then probes the device.
+- A wrong password over ACP asks for the password again. Any other ACP failure stops configure with that error.
+- On NetBSD 4, it uses the byte order and the device's `acp` identity to name the exact generation when it can.
+- It checks the `.env` values before writing them, and `deploy`, `activate` and `doctor` stop early on invalid values.
 
-## Host-Side Architecture
+The binaries and build tooling are in the repo, so you can swap binaries, rebuild them, or trace the boot and runtime layout yourself.
 
-Current important package areas:
-- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `paths`, `validate-install`, `discover`, `configure`, `set-ssh`, `deploy`, `flash`, `activate`, `doctor`, `fsck`, `uninstall`, and the app-facing `api` helper
-- [src/timecapsulesmb/app/](src/timecapsulesmb/app): structured API request handling, operation contracts, progress/result events, confirmations, recovery guidance, and app-specific operation adapters
-- [src/timecapsulesmb/services/](src/timecapsulesmb/services): reusable configure, deploy, activation, maintenance, storage, reboot, Doctor, and runtime workflows shared by the CLI and app/API entrypoints
-- [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
-- [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH command, tunnel, and upload helpers
-- [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
-- [src/timecapsulesmb/integrations/](src/timecapsulesmb/integrations): self-contained Python 3 ACP client for SSH enable/reboot support
-- [src/timecapsulesmb/checks/](src/timecapsulesmb/checks): reusable local, network, Bonjour, and SMB verification checks
-- [src/timecapsulesmb/device/](src/timecapsulesmb/device): remote probing for device-specific layout, `MaSt` volume parsing, payload-home selection, plus generation / compatibility classification
-- [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy): deployment planning, remote actions, upload execution, dry-run formatting, artifact resolution, and post-deploy verification
-- [src/timecapsulesmb/assets/](src/timecapsulesmb/assets): packaged boot templates and artifact metadata
-- [src/timecapsulesmb/identity.py](src/timecapsulesmb/identity.py): local install identity loaded from `.bootstrap`
-- [src/timecapsulesmb/telemetry/](src/timecapsulesmb/telemetry): best-effort client telemetry for user-facing commands
-- [macos/TimeCapsuleSMB/](macos/TimeCapsuleSMB): the Swift macOS app, helper launcher, saved device profiles, workflow stores, localized UI, and Swift tests
-- [build/](build): maintainer build tooling, including Samba cross-exec record/replay helpers
+## Host-side architecture
 
-Developer note:
-- [src/timecapsulesmb/cli/context.py](src/timecapsulesmb/cli/context.py) owns shared per-command lifecycle state such as timing, command IDs, result state, and finish handling.
-- [src/timecapsulesmb/services/runtime.py](src/timecapsulesmb/services/runtime.py) owns shared `.env` loading, SSH connection resolution, managed-target validation, and compatibility probing; [src/timecapsulesmb/cli/runtime.py](src/timecapsulesmb/cli/runtime.py) provides CLI argument, prompting, rendering, and compatibility-display helpers.
-- Normal users should not need these details; they mostly keep command entrypoints smaller and more consistent.
+Package areas:
+- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints and the app's `api` helper
+- [src/timecapsulesmb/app/](src/timecapsulesmb/app): the app API: request handling, operation contracts, progress and result events, confirmations, and recovery guidance
+- [src/timecapsulesmb/services/](src/timecapsulesmb/services): configure, deploy, activation, maintenance, storage, reboot, doctor and runtime workflows shared by the CLI and the app
+- [src/timecapsulesmb/core/](src/timecapsulesmb/core): config parsing, defaults, and common models
+- [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local commands, and SSH commands, tunnels and uploads
+- [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour device discovery
+- [src/timecapsulesmb/integrations/](src/timecapsulesmb/integrations): a self-contained Python ACP client for turning SSH on and rebooting
+- [src/timecapsulesmb/checks/](src/timecapsulesmb/checks): local, network, Bonjour and SMB checks
+- [src/timecapsulesmb/device/](src/timecapsulesmb/device): device probes, `MaSt` parsing, payload volume choice, and generation and compatibility detection
+- [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy): deploy planning, remote actions, uploads, dry-run output, artifact lookup, and post-deploy checks
+- [src/timecapsulesmb/assets/](src/timecapsulesmb/assets): boot templates and artifact metadata
+- [src/timecapsulesmb/telemetry/](src/timecapsulesmb/telemetry): client telemetry for the commands
+- [macos/TimeCapsuleSMB/](macos/TimeCapsuleSMB): the Swift macOS app, its helper launcher, saved device profiles, workflows, translations, and Swift tests
+- [build/](build): build tooling
 
-Practical consequence:
-- if you want to modify how the box is discovered, start in `discovery/`
-- if you want to change shared install behavior, start in `services/deploy.py`; for the action plan and transfer mechanics, inspect `deploy/planner.py` and `deploy/executor.py`
-- if you want to change the app contract or progress events, start in `app/` and then follow the matching shared service
-- if you want to change the on-device boot behavior, inspect the packaged boot assets and the runtime layout sections below
-- if you want to replace binaries or rebuild them, inspect the artifact manifest plus the `build/` tree
+Where to start:
+- device discovery: `discovery/`
+- install behavior: `services/deploy.py`, then `deploy/planner.py` and `deploy/executor.py` for the plan and the transfers
+- the app contract and progress events: `app/`, then the matching service
+- boot behavior on the device: the boot templates in `assets/` and [build/native/](build/native/)
+- replacing or rebuilding binaries: the artifact manifest and `build/`
 
-## Doctor Command
+## Doctor command
 
-[src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py) is a local diagnostic helper that does not deploy, reboot, or change managed configuration.
+[src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py) checks:
+- `.env` values, the local tools, and the checksums of the checked-in binaries
+- SSH, device compatibility and payload family, and the installed release in `/mnt/Flash/tcapsulesmb.conf`
+- the manager's verdicts (`payload=missing`, `damaged`, `unreadable`, `unmounted=`; see [Native manager](#native-manager)); any of them is doctor's whole result
+- this boot's kernel disk errors, reported as the cause (`disk_failing`) when Samba is off
+- each disk's SMART status and volume sizes as AirPort Utility shows them; a failing SMART status is a warning
+- processes stuck in the kernel, and a disk that has stopped responding (`disk_not_responding`)
+- Apple ACPd's health (see [Firmware problems](#firmware-problems))
+- volumes that exist only in memory (`disk_volumes_in_memory`)
+- `smbd`, the discovery role, Apple's `mDNSResponder`, the loopback `diskd` and its guards, NBNS, and rsync when it is on
+- an `smbd` that has waited 2 minutes or more for a file lock, which only a restart clears
+- that Apple's `printd` still advertises a shared USB printer
+- the RAM copies of the binary, config and login files, the mounted share volumes, and the service sockets
+- the IPv4 and IPv6 SMB addresses and TCP 445 reachability
+- the device's own Bonjour records (found by its MAC), their names and hosts, the `_adisk` Time Machine flags and disk rows, and another device using the same name
+- NBNS name lookup, when the device has an address NBNS answers on
+- a logged-in `smbclient -L` listing, at least one share in it, and temporary SMB file operations
+- that the non-HFS `xattr_tdb:file` setting points at the disk, not the RAM disk
 
-It checks:
-- `.env` completeness and invalid `.env` values
-- required local tools
-- whether the required checked-in binaries exist and match the expected checksums
-- deployed release/version metadata in `/mnt/Flash/tcapsulesmb.conf`
-- that the managed RAM runtime directory exists
-- the manager's own verdicts, read from its process title before any startup wait. `payload=missing`: every disk was inspected and none holds the Samba files, as after an Erase in AirPort Utility, so the fix is a reinstall. `payload=damaged`: smbd on the disk does not match the CRC-32 deploy recorded in the payload's `checksums` file, so the fix is a reinstall. `payload=unreadable`: the disk could not read smbd or the `checksums` file (EIO), or returned smbd so slowly that the manager's read budget ran out (90 s while bytes remain; a healthy disk takes seconds), so the disk is failing and the fix is a new disk; the manager keeps checking the disk copy, at waits that double from 60 s up to a day so a failing disk is not kept busy, and clears the verdict once it reads whole; its own code `payload_unreadable_on_disk` carries the failing disk's way out; since the manager's first checks follow within seconds, doctor waits out its startup window through this verdict, and deploy and Activate their verification's, and report it only if it still stands then; NetBSD 4's kernel log often keeps no line of it, and this verdict does not depend on one. `unmounted=`: a disk `MaSt` lists has not mounted for 10 minutes (time diskd spends in `fsck_hfs` or `newfs_hfs` not counted) and no other disk holds the Samba files, so Samba is off; diskd can hang on a disk that stopped answering, and the fix is a restart, then Disk Repair. Each is doctor's whole result. With `unmounted=` doctor also records `MaSt`, the kernel's disk messages and, on NetBSD 6, diskd's threads
-- this boot's disk errors (`device/disk_errors.py`), parsed from the kernel disk messages doctor already reads (`DISK_EVIDENCE_COMMANDS`, which never touch a data disk): a `wdN: error reading fsbn ...` line without `, retrying` (each attempt but the last ends in it; `soft error (corrected)` and retried timeouts do not count), or NetBSD 4's Marvell `NetBSD IAL (ERROR) ... device error`. NetBSD 6 keeps an earlier boot's lines across a soft restart, so only lines after the last kernel banner count. When the manager keeps Samba off they are the cause: they replace `payload=damaged` (a reinstall does not fix the disk) and `payload=unreadable` (they name the error) and come before `unmounted=`; after an Erase (`payload=missing`) they are left out. A failed run without a manager verdict reports them too, as when diskd keeps exiting before anything is staged. Deploy, Activate and the restart after Disk Repair raise the same `disk_failing` when Samba does not start, and Install, Uninstall and Disk Repair warn before they change anything, from the kernel's lines or, without them, from the manager title's `payload=unreadable` or `rsync=unreadable`, with Cancel as the app's default
-- each disk MaSt lists (`acp MaSt`, the XML form, since the text form prints names unescaped; read right after the ACPd check, so with or without the runtime; it never wakes a sleeping disk): Apple diskd's `smartStatus`, the "Disk status" AirPort Utility shows, and each volume's `sizeUsed`/`sizeFree`/`size` (MiB, whatever the volume's format, FAT32 included) in decimal units, left out when the sizes are missing or zero, as for a volume diskd has not mounted. A read that fails (SSH, acp's failed get on stderr with exit 0, which is the reason even behind lines the SSH client printed, a non-zero exit, output without `MaSt=`, or anything but a plist whose root is an array of disk dictionaries with array partitions, a bare `MaSt=` included) is an INFO, `disk_info_unavailable`: "Attempt to read Apple ACPd's MaSt to get disk information failed: REASON"; an empty array (no disks) is not. When the ACPd check found ACPd unable to answer (`quit`, `restart_never_happened`, `syut_silent`), doctor goes on past it while Samba serves but does not ask MaSt, whose read would only wait out its timeout; the reason is "Apple ACPd is not answering". `smartStatus="failing"` is a WARN (`disk_smart_failing`): Samba still serves, so the app keeps the runtime verified when it is the device's only warning. Anything else is INFO (`disk_info`), and a disk without the key, as diskd leaves USB disks, says "SMART not reported". Only `builtin` marks the internal disk, never its name: it is `sd0` on NetBSD 4, and a USB disk is `sd0` on NetBSD 6. `product` is the internal disk's serial number and is never read. Every run's telemetry carries `disk_health`: each disk as doctor parsed it (device, label, `builtin`, SMART status, model from `vendor`, firmware from `revision`, `softDisconnected`, and each volume's name, format, sizes and `users`; `softDisconnected=true` with `users=0` is diskd's hang signature), or the reason MaSt could not be read
-- SSH reachability
-- detected device compatibility and payload family
-- managed `smbd`, the discovery role (Apple `mDNSResponder` on UDP `5353`, loopback `diskd`, boot.sh's `/sbin/diskd` and `/sbin/wcifsnd` guards (each no longer a hard link to `/sbin/ACPd`; the runtime readiness check that deploy, `activate` and the post-reboot checks share fails on a missing `diskd` guard and only reports a missing `wcifsnd` guard, as it does native NBNS), a valid plan, and eligible native NBNS ready through the exact owned `wcifsnd` child), and enabled/disabled rsync readiness
-- a shared USB printer: when `acp -A prni` lists a plugged-in printer, Apple's `printd` must advertise it (`_pdl-datastream`/`_riousbprint`/`_printer`/`_ipp`) — we never touch printd, so this guards the one thing v3.1.0 changed for printers (v3.0 re-advertised them itself because it killed the responder); skipped when no printer is attached
-- active Samba version, RAM-staged binary/config/auth paths, manager state, mounted share volumes, and required service sockets
-- discovered IPv4/IPv6 SMB endpoints, client-local link-local scopes, route testability, and bounded family-specific TCP 445 reachability
-- advertised Bonjour instance name
-- advertised Bonjour host label
-- `_smb._tcp`, `_adisk._tcp`, `_device-info._tcp`, and `_airport._tcp` target consistency for the active instance
-- `_adisk._tcp` Time Machine flags, advertised disk rows, active share coverage, and target-host agreement with `_smb._tcp`
-- that advertised host addresses match the reachable runtime target
-- active Samba NetBIOS name
-- active Samba share names
-- SMB reachability
-- `_smb._tcp` browse and resolve
-- this device's own Bonjour records, found by its MAC in every address family; Apple's conflict renames of its names; and another device on the link with the same name, a warning because Apple's unsaved renames let the two swap names after a restart (Bonjour Names)
-- NBNS name resolution when a reachable IPv4 SMB address and NetBIOS name are available. A query that times out from a computer outside every device subnet is skipped, not failed: Apple's `wcifsnd` answers such a client from UDP `922` instead of `137`, and routers differ in whether that answer arrives. Doctor reads the device's subnets with `/sbin/ifconfig -a` only after a timeout and applies `wcifsnd`'s own match (`(source & mask) | ~mask` equals the interface broadcast). It uses this computer's source address, so a router that translates addresses between the subnets, or `wcifsnd` still holding an address from before a renumber, can make the result differ from what `wcifsnd` saw
-- authenticated `smbclient -L` listing
-- authenticated SMB CRUD operations via `smbclient`
-- that at least one active Samba share is present in the authenticated SMB listing
-- that the configured non-HFS `xattr_tdb:file` fallback in `/mnt/Memory/samba4/etc/smb.conf` points at persistent storage instead of the ramdisk; the HFS backend does not require the TDB file to exist
-
-It does not:
-- deploy
-- reboot
-- change managed device configuration
-
-Its authenticated SMB CRUD checks do temporarily write to a share. They normally remove their hidden `.doctor-fileops-*` test directory, but an interruption, timeout, or early failure can leave it behind. Use `--skip-smb` when the diagnostic run must not perform SMB writes.
-
-Current output behavior:
-- in normal human-readable mode, checks are printed as they complete rather than being buffered until the end
-- `--json` still emits one structured payload at the end
-- during the first `180` seconds after the manager starts, doctor first waits, polling every 10 seconds, while Samba (including its staging after a boot) or mDNS and NBNS are still starting, until they are ready or the 180 seconds end; the checks then report what they find, with nothing excused as still starting
-
-Typical usage:
+Results print as each check finishes; `--json` prints one result at the end. For the first 180 seconds after the manager starts, doctor waits, checking every 10 seconds, while Samba, mDNS and NBNS start.
 
 ```bash
 .venv/bin/tcapsule doctor
-```
-
-Machine-readable output:
-
-```bash
 .venv/bin/tcapsule doctor --json
-```
-
-Optional skips:
-
-```bash
 .venv/bin/tcapsule doctor --skip-ssh
 .venv/bin/tcapsule doctor --skip-bonjour
 .venv/bin/tcapsule doctor --skip-smb
 ```
 
-The normal goal is to use it as a quick health check after:
-- local setup
-- deploy
-- reboot
+Run it after setup, after a deploy, and after a reboot.
 
-Current doctor caveats:
-- the xattr persistence check inspects the active runtime config under `/mnt/Memory/samba4`, not the persistent template on disk
+## Deploy details
 
-## Deploy Details
+[src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py) calls shared modules in [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and [src/timecapsulesmb/device/](src/timecapsulesmb/device). In order, deploy:
 
-[src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py) is now mostly an orchestrator over shared modules in [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and [src/timecapsulesmb/device/](src/timecapsulesmb/device).
+- loads `.env` and checks it before touching the device
+- checks the binaries against the artifact manifest
+- checks the device is compatible, before uploading anything
+- refuses a device whose ACPd is unhealthy or whose disk is not responding (see [Firmware problems](#firmware-problems))
+- reads Apple's `MaSt` disk list from the device
+- picks one writable HFS volume for the payload:
+  - the first writable internal (`builtin=true`) HFS volume
+  - else the first writable external HFS volume
+  - else it fails with `Deploy could not write to any deployable HFS volume.` (`deploy_disk_not_writable`)
+- stops before changing anything while a volume exists only in memory (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory))
+- builds the plan and the configuration on this computer before stopping anything
+- asks before stopping or replacing anything, unless `--yes` is given; answering no leaves the device as it was
+- stops the current and older TimeCapsuleSMB processes and Apple's file servers, and disables `rc.local`
+- migrates old metadata (see [Migrating older metadata](#migrating-older-metadata))
+- removes known obsolete programs, keeping data, metadata, quarantined databases, logs, SSH keys and Apple's settings
+- checks the free space on flash, with a small margin
+- uploads `smbd`, `rsync` and `rsyncd.conf` to the payload, and the `service` image, `boot.sh` and `dfree.sh` to flash
+- checks the uploaded sizes and sets file and directory permissions
+- uploads no password files; the device writes them to RAM at boot from the AirPort password (`syPW`)
+- writes the new `/mnt/Flash/tcapsulesmb.conf` and `rc.local` last, then runs `sync`, waits ten seconds, and runs `sync` again
+- reboots
+- after the reboot, checks that:
+  - `smbd` listens on TCP `445`
+  - Apple's `mDNSResponder` runs and is alone on UDP `5353`, `diskd` runs on loopback, and `service discovery` has a valid plan and the expected NBNS state
+  - rsync listens on TCP `873` when on, and no rsync daemon runs when off
+- on NetBSD 4, once SSH is back, runs `/mnt/Flash/rc.local` only when the firmware boot hook is missing, and otherwise waits for the runtime the firmware started
 
-Current deploy flow:
+Running deploy again after an interruption finishes the install; there is no rollback. User data, unmigrated metadata, quarantined databases and logs are kept. A connection lost during the install reports `install_interrupted`, which asks for another run. `--no-wait` returns after requesting the reboot and does not check the runtime.
 
-- loads `.env`
-- validates the managed config before touching the device
-- validates the required binary artifacts against the artifact manifest
-- probes device compatibility and rejects unsupported targets before upload
-- reads Apple `MaSt` disk metadata from the device
-- selects exactly one writable persistent payload home:
-  - first writable internal `builtin=true` HFS volume
-  - else first writable external HFS volume
-  - else fails with `Deploy could not write to any deployable HFS volume.` (code `deploy_disk_not_writable`), and `MaSt found N deployable HFS volume(s).` as its detail
-- stops right after reading MaSt, before anything is claimed, written, stopped or uploaded, while any volume exists only until the next restart (code `disk_volumes_in_memory` when one is on the internal disk, its recovery offering Wipe Internal Disk, else `usb_disk_volumes_in_memory`): deploy's own restart would take it; see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)
-- computes the device-specific runtime and payload paths from that payload home
-- claims each volume it uses from diskd (`diskd.useVolume`) once: choosing the payload home claims it, and every later mount check in the same deploy (metadata inventory, migration, uploads, plan actions, payload verification) only confirms the volume is still mounted, claiming it again only if diskd unmounted it (`device.storage.VolumeClaims`). diskd counts claims per volume and only a reboot clears them, so a deploy that stops before its reboot leaves one claim per volume, where it used to leave one per uploaded file. fsck and uninstall claim each volume once the same way
-- builds the plan and renders configuration locally before stopping services
-- confirms installation and reboot before stopping or replacing managed software (unless `--yes` is used)
-- stops current and historical supervisors before their workers and verifies they have stopped
-- disables `rc.local` and removes an explicit inventory of replaceable software; preserves data, metadata, quarantines, logs, SSH keys and Apple settings
-- inventories active metadata in current and older payload layouts before software deletion
-- stops writers, disables and flushes `rc.local`, then rechecks the inventory
-- uploads the migrator to RAM only when a TDB exists, and copies merged metadata before replacing software
-- removes known obsolete programs from all detected payload homes while preserving metadata and logs
-- checks actual free Flash space after cleanup, including a small margin
-- uploads checked-in `smbd` and `rsync` to the payload, and the unified `service` to Flash
-- uploads `rsyncd.conf`, `boot.sh`, and `dfree.sh`
-- retains old `tcapsulesmb.conf` until metadata cleanup succeeds or reports accepted partial migration
-- installs new `/mnt/Flash/tcapsulesmb.conf` and enables `rc.local` last
-- does not upload password-derived Samba auth files; runtime staging generates RAM auth from live AirPort `syPW`
-- automatically runs Apple’s native NBNS service when eligible
-- disables rsync by default while keeping its HDD payload installed:
-  - `RSYNC_ENABLED=0` in flash config unless `--enable-rsync` is used
-- verifies transfer sizes and applies file and directory permissions
-- verifies and flushes the replacement payload before migration cleanup can retire exported metadata
-- uploads `rc.local` last, then runs sync, waits ten seconds, and syncs again; any error stops deployment
-- reboots after every successful install; rejecting confirmation leaves the installed software untouched
-- supports rerunning an interrupted installation through the same sequence, without rollback state
-- verifies managed runtime readiness after reboot:
-  - managed `smbd` on TCP `445`
-  - Apple `mDNSResponder` running and alone on UDP `5353`, `diskd` on loopback, and `service discovery` with a valid plan and matching native-NBNS readiness state
-  - enabled rsync from RAM on TCP `873`, or disabled rsync with no live daemon
-- on NetBSD 4, deploy uploads the NetBSD 4 artifact set, reboots to clear RAM runtime state, waits for SSH to return, and runs `/mnt/Flash/rc.local` only when firmware autostart is missing; otherwise it waits for the firmware-started runtime
+Doctor does the full Bonjour, SMB listing, SMB file, share, NBNS, metadata and installed-version checks.
 
-Full Bonjour browse/resolve checks, authenticated SMB listings, SMB CRUD checks, share checks, NBNS checks, xattr persistence checks, and deployed-version checks are handled by `doctor`.
-
-Current compatibility behavior:
-- little-endian NetBSD 6 devices are accepted for the current `netbsd6_samba4` payload family
-- NetBSD 4 devices use `netbsd4le_samba4` or `netbsd4be_samba4` according to detected ELF endianness
-- `configure` reuses the same classification logic for compatibility and displayed device identity
-
-NetBSD 4 activation behavior:
-- `tcapsule deploy` uploads the NetBSD 4 payload, reboots, waits for SSH, reads `/etc/rc.d/LOGIN`, and runs `/mnt/Flash/rc.local` only when the firmware hook is missing; then it verifies managed `smbd` plus the discovery role
-- Deployment always reboots. It stops current and historical managed processes, removes owned software, copies directly to final paths, verifies and flushes the payload, completes metadata migration, then writes `rc.local` last and flushes again before rebooting. Rerunning an interrupted installation finishes it; user data, pending metadata, quarantines and logs are preserved. A failure between stopping the processes and flushing `rc.local` that is not a timeout, with the shared SSH connection gone (`ssh -O check` fails), reports `install_interrupted`, which asks for the install to be run again; a failure with that connection still up (an error the device reported, or a command whose shell was killed) keeps its own error. `--no-wait` returns after requesting reboot without claiming runtime verification. Legacy API `no_reboot=true` requests are rejected before mutation.
-- `tcapsule activate` starts an already installed runtime without re-uploading files
-- Apple `mDNSResponder` is never stopped; the manager moves Apple's `diskd` to loopback and `service discovery` registers through the daemon
-- tested 1st-generation NetBSD 4 hardware without a firmware boot-hook patch does not persist an `/etc` hook and therefore needs manual activation after reboot
-- other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven
-- `activate` skips running `/mnt/Flash/rc.local` when `smbd`, the discovery role, and any enabled rsync are already ready
-
-The current password flow is:
-- `TC_PASSWORD` is retained for app/CLI SSH and ACP access
-- runtime staging reads `/usr/bin/acp -q syPW`, generates an NT hash through `service`, and writes RAM-only `smbpasswd`
-- no deploy-time password-derived auth file is persisted to the hard disk
-
-This gives a near-enough user experience:
-- same password as the current AirPort device password
-- password changes made in AirPort Utility are picked up after reboot/runtime staging
-- without reverse-engineering Apple’s actual SMB auth backend
-
-Useful operator modes:
+On NetBSD 4:
+- tested 1st-generation hardware without the firmware boot-hook patch keeps no `/etc` hook, so it needs `tcapsule activate` after each reboot
+- other NetBSD 4 generations may start on their own if their firmware runs `/mnt/Flash/rc.local` early in boot; this is not proven
+- `activate` does not rerun `/mnt/Flash/rc.local` when `smbd`, discovery and rsync (if on) are already up
 
 ```bash
 .venv/bin/tcapsule deploy --dry-run
@@ -1725,99 +952,51 @@ Useful operator modes:
 .venv/bin/tcapsule activate
 ```
 
-The dry-run modes are intended for users who want to inspect the exact remote actions before touching the box.
+Dry runs print the exact steps without changing the device.
 
-Hidden operator mode:
-- `tcapsule deploy --debug-logging` writes `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1` to flash config.
-- at runtime, Samba writes `log.smbd` under `<payload>/logs/`, sets `max log size = 0`, and enables `log level = 10`.
-- `log.smbd` is normally capped at `128 KiB` and other payload logs are trimmed to their last `16 KiB` past `32 KiB`; `--debug-logging` leaves them unbounded.
-- this flag is intentionally not documented in the normal command help because it is for active debugging, not normal installs.
+Debug logging:
+- `tcapsule deploy --debug-logging` writes `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1` to the flash config, and sets Samba to `log level = 10` and `max log size = 0`.
+- `log.smbd` is normally capped at `128 KiB`, and the other payload logs are cut to their last `16 KiB` once they pass `32 KiB`. With `--debug-logging` they grow without limit.
+- The flag is left out of the command help because it is only for debugging.
 
-## Client Telemetry
+## Client telemetry
 
-Client telemetry is now emitted by:
-- `tcapsule api`
-- `tcapsule bootstrap`
-- `tcapsule paths`
-- `tcapsule validate-install`
-- `tcapsule discover`
-- `tcapsule configure`
-- `tcapsule set-ssh`
-- `tcapsule deploy`
-- `tcapsule flash`
-- `tcapsule activate`
-- `tcapsule doctor`
-- `tcapsule fsck`
-- `tcapsule uninstall`
+Every `tcapsule` command, and every app operation through `tcapsule api`, sends a `<command>_started` and a `<command>_finished` event (for example `deploy_started` and `deploy_finished`).
 
-Current event model:
-- app helper operations emit operation-specific app events through the `api` command
-- `bootstrap_started`
-- `bootstrap_finished`
-- `paths_started`
-- `paths_finished`
-- `validate_install_started`
-- `validate_install_finished`
-- `discover_started`
-- `discover_finished`
-- `configure_started`
-- `configure_finished`
-- `set_ssh_started`
-- `set_ssh_finished`
-- `deploy_started`
-- `deploy_finished`
-- `flash_started`
-- `flash_finished`
-- `activate_started`
-- `activate_finished`
-- `doctor_started`
-- `doctor_finished`
-- `fsck_started`
-- `fsck_finished`
-- `uninstall_started`
-- `uninstall_finished`
+Identity:
+- `.bootstrap` holds a stable `INSTALL_ID` for this install
+- `.env` holds a `TC_CONFIGURE_ID` that changes with each configure
 
-Current identity model:
-- `.bootstrap` stores a stable local `INSTALL_ID`
-- `.env` stores a rotating `TC_CONFIGURE_ID`
-
-Current transport behavior:
-- events are sent to the configured HTTPS telemetry endpoint
-- started events are sent asynchronously
-- finished events are sent synchronously so they are not lost at process exit
-- if `.bootstrap` contains `TELEMETRY=false`, telemetry is disabled
+Sending:
+- events go to the HTTPS telemetry endpoint
+- started events are sent in the background
+- finished events are sent before the command exits, so they are not lost
+- `TELEMETRY=false` in `.bootstrap` turns telemetry off
 
 ## Uninstall
 
-Current uninstall behavior:
-- stops the manager first so it cannot restart `smbd` during teardown
-- discovers and mounts the current `MaSt` HFS volumes, then removes `.samba4` from every mounted candidate rather than assuming one fixed payload disk
-- if no HFS volume is mounted, still removes loader files and runtime state while reporting that only flash/runtime cleanup was possible
-- removes loader files under `/mnt/Flash`, the RAM runtime tree, and compatibility symlinks; it does not restore a firmware bank changed by `flash --patch`
-- runs remote uninstall actions sequentially over SSH
-- prompts before reboot by default
-- supports human and JSON dry-run plans, `--mount-wait`, `--no-reboot`, and request-only `--no-wait` reboot behavior
-- after a waited reboot, verifies that every planned payload directory, flash loader, RAM path, and compatibility symlink is absent
+Uninstall:
+- stops the manager first, so it cannot restart `smbd` during removal
+- mounts the current `MaSt` HFS volumes and removes `.samba4` from each
+- with no HFS volume mounted, still removes the loader files and runtime state, and reports that only flash and RAM were cleaned
+- removes the loader files under `/mnt/Flash`, the RAM runtime, and compatibility symlinks, but not a firmware bank changed by `flash --patch`
+- asks before rebooting
+- after a waited reboot, checks that every payload directory, flash loader, RAM path and compatibility symlink it planned to remove is gone
 
-## Artifact Resolution
+## Artifact resolution
 
-The active deployable binaries live in the repo under [bin/](bin).
-
-The host-side code does not hardcode the binary repo paths directly. Artifact path knowledge is centralized in:
+The deployable binaries are in [bin/](bin). Their paths are not hardcoded in the host code; three files own them:
 - [src/timecapsulesmb/assets/artifact-manifest.json](src/timecapsulesmb/assets/artifact-manifest.json)
 - [src/timecapsulesmb/deploy/artifact_resolver.py](src/timecapsulesmb/deploy/artifact_resolver.py)
 - [src/timecapsulesmb/deploy/artifacts.py](src/timecapsulesmb/deploy/artifacts.py)
 
-This is useful if you are hacking on the repo because:
-- deploy and doctor now resolve artifacts by logical name instead of constructing `bin/...` paths ad hoc
-- checksum validation and path resolution happen through one layer
-- future work can change where artifacts come from without rewriting deploy and doctor again
+Deploy and doctor look artifacts up by name, and checksums and paths are checked in one place.
 
-## What The Build Pipeline Produces
+## What the build pipeline produces
 
-The build pipeline under [build/](build) is for maintainers, not normal users.
+The build pipeline under [build/](build) is for maintainers.
 
-Current important outputs:
+Outputs:
 - [bin/samba4/smbd](bin/samba4/smbd)
 - [bin/samba4-netbsd4le/smbd](bin/samba4-netbsd4le/smbd)
 - [bin/samba4-netbsd4be/smbd](bin/samba4-netbsd4be/smbd)
@@ -1831,225 +1010,96 @@ Current important outputs:
 - [bin/xattr-migrate-netbsd4le/xattr-hfs-migrate](bin/xattr-migrate-netbsd4le/xattr-hfs-migrate)
 - [bin/xattr-migrate-netbsd4be/xattr-hfs-migrate](bin/xattr-migrate-netbsd4be/xattr-hfs-migrate)
 
-Current active deploy artifact sizes (stripped bytes, v3.1.1):
-- NetBSD 6 `smbd`: about `9.8M`
-- NetBSD 6 `service`: `362,300`
-- NetBSD 6 `rsync`: about `1.0M`
-- NetBSD 4 little-endian `smbd`: about `9.8M`
-- NetBSD 4 big-endian `smbd`: about `9.8M`
-- NetBSD 4 little-endian `service`: `321,540`
-- NetBSD 4 big-endian `service`: `320,940`
-- NetBSD 4 little-endian `rsync`: about `878K`
-- NetBSD 4 big-endian `rsync`: about `872K`
+The `service` image runs from `/mnt/Flash`; `smbd` and rsync are copied to RAM from the payload.
 
-The unified service lives on `/mnt/Flash`; `smbd` and optional rsync are
-RAM-staged from the payload. Deploy checks free Flash space after removing
-old software, verifies the replacement, removes legacy
-standalone binaries, and flushes that cleanup.
+Building needs a NetBSD VM, a root-owned cross-build tree under `/root`, and `su` for the build steps. NetBSD 6-era devices build from NetBSD 7, and NetBSD 4-era devices from NetBSD 4. NetBSD 10 was useful only for early experiments.
 
-It assumes:
-- a NetBSD VM
-- root-owned cross-build tree under `/root`
-- `su` for the actual build steps
+Build scripts:
+- NetBSD 7 SDK: [build/download.sh](build/download.sh), [build/bootstrap.sh](build/bootstrap.sh)
+- NetBSD 4 SDKs: [build/downloadoldle.sh](build/downloadoldle.sh), [build/bootstrapoldle.sh](build/bootstrapoldle.sh), [build/downloadoldbe.sh](build/downloadoldbe.sh), [build/bootstrapoldbe.sh](build/bootstrapoldbe.sh)
+- Samba 4.25.0: [build/downloadsamba4x.sh](build/downloadsamba4x.sh) and [build/samba4x.sh](build/samba4x.sh); [build/downloadsamba4xoldle.sh](build/downloadsamba4xoldle.sh), [build/samba4xoldle.sh](build/samba4xoldle.sh), [build/downloadsamba4xoldbe.sh](build/downloadsamba4xoldbe.sh), [build/samba4xoldbe.sh](build/samba4xoldbe.sh); or [build/samba4xall.sh](build/samba4xall.sh) for all three
+- rsync: [build/downloadrsync.sh](build/downloadrsync.sh), [build/rsync.sh](build/rsync.sh), [build/rsyncoldle.sh](build/rsyncoldle.sh), [build/rsyncoldbe.sh](build/rsyncoldbe.sh)
+- `service`: [build/service.sh](build/service.sh), [build/serviceoldle.sh](build/serviceoldle.sh), [build/serviceoldbe.sh](build/serviceoldbe.sh)
 
-Important note:
-- the active supported build paths are NetBSD 7 for NetBSD 6-era devices and NetBSD 4 for older NetBSD 4-era devices
-- NetBSD 10 was useful for early experiments but is not the supported Samba 4 build source path
+The plain scripts build the NetBSD 7 lane; `*oldle.sh` and `*oldbe.sh` build the NetBSD 4 little-endian and big-endian lanes. The VM-side [build/Makefile](build/Makefile) has per-family and all-lane targets.
 
-Current validated maintainer flows:
-- NetBSD 7 full path:
-  - [build/download.sh](build/download.sh)
-  - [build/bootstrap.sh](build/bootstrap.sh)
-  - [build/downloadsamba4x.sh](build/downloadsamba4x.sh)
-  - [build/samba4x.sh](build/samba4x.sh)
-  - [build/downloadrsync.sh](build/downloadrsync.sh)
-  - [build/rsync.sh](build/rsync.sh)
-  - [build/service.sh](build/service.sh)
-- NetBSD 4 path:
-  - [build/downloadoldle.sh](build/downloadoldle.sh)
-  - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
-  - [build/downloadoldbe.sh](build/downloadoldbe.sh)
-  - [build/bootstrapoldbe.sh](build/bootstrapoldbe.sh)
-  - [build/hellooldle.sh](build/hellooldle.sh)
-  - [build/hellooldbe.sh](build/hellooldbe.sh)
-  - [build/downloadsamba4xoldle.sh](build/downloadsamba4xoldle.sh)
-  - [build/downloadsamba4xoldbe.sh](build/downloadsamba4xoldbe.sh)
-  - [build/samba4xoldle.sh](build/samba4xoldle.sh)
-  - [build/samba4xoldbe.sh](build/samba4xoldbe.sh)
-  - [build/downloadrsync.sh](build/downloadrsync.sh)
-  - [build/rsyncoldle.sh](build/rsyncoldle.sh)
-  - [build/rsyncoldbe.sh](build/rsyncoldbe.sh)
-  - [build/serviceoldle.sh](build/serviceoldle.sh)
-  - [build/serviceoldbe.sh](build/serviceoldbe.sh)
+Output directories:
+- NetBSD 7 SDK: `/root/tc-earmv4-netbsd7`
+- NetBSD 4 little-endian SDK: `/root/tc-earmv4-netbsd4`
+- NetBSD 4 big-endian SDK: `/root/tc-armeb-netbsd4`
+- NetBSD 7 runtime outputs: `/root/tc-netbsd7`
+- NetBSD 4 little-endian runtime outputs: `/root/tc-netbsd4le`
+- NetBSD 4 big-endian runtime outputs: `/root/tc-netbsd4be`
 
-Current path split:
-- NetBSD 7 SDK output defaults under `/root/tc-earmv4-netbsd7`
-- NetBSD 4 little-endian SDK output defaults under `/root/tc-earmv4-netbsd4`
-- NetBSD 4 big-endian SDK output defaults under `/root/tc-armeb-netbsd4`
-- NetBSD 7 staged runtime outputs default under `/root/tc-netbsd7`
-- NetBSD 4 little-endian staged runtime outputs default under `/root/tc-netbsd4le`
-- NetBSD 4 big-endian staged runtime outputs default under `/root/tc-netbsd4be`
-
-## Important Historical Findings
-
-These are the findings that matter to future maintainers.
+## Important historical findings
 
 ### The internal disk can be mounted locally
 
-This was a major breakthrough. The Time Capsule can locally mount `/dev/dk2` with `mount_hfs` without needing a Mac to first trigger Apple sharing.
+The Time Capsule can mount `/dev/dk2` itself with `mount_hfs`; a Mac does not have to start Apple's file sharing first. The rest of the project depends on this.
 
 ### Running `smbd` from the HDD is a bad idea
 
-The HDD may be unmounted or slept by Apple later. That is why `smbd` is staged into RAM.
+Apple may unmount or sleep the HDD at any time, so `smbd` runs from RAM.
 
-### Running the unified service from the HDD would be unsafe
+### Running the `service` image from the HDD would be unsafe
 
-The manager and discovery sockets must survive HDD unmounts. The runtime starts
-the unified image from `/mnt/Flash` instead of the HDD or RAM disk, which saves
-RAM headroom and avoids depending on the HDD staying mounted.
+The manager and discovery have to keep running when the HDD is unmounted. The runtime runs the `service` image from `/mnt/Flash`, which also saves RAM.
 
-### Apple’s SMB advertisement path is not a harmless metadata layer
+### Apple's SMB advertisements send Finder to Apple's servers
 
-If Apple’s own SMB/AFP stack is allowed to reclaim its native path, Finder may reconnect through Apple services rather than our Samba. Apple's `diskd` registers those names unconditionally.
+If Apple's own SMB and AFP stack gets its advertisements back, Finder may connect to Apple's servers and bypass our Samba. Apple's `diskd` registers those names whatever the settings say.
 
-Before v3.1.0 we killed Apple's `mDNSResponder` and ran our own responder. Since v3.1.0 we keep Apple's daemon (it owns `_airport`, `_device-info` and the host records, and nothing respawns it), relaunch `diskd` on loopback so its registrations never reach the LAN, and register our own names through the daemon's IPC.
+Releases before v3.1.0 killed Apple's `mDNSResponder` and ran their own responder. Since v3.1.0 we keep Apple's daemon (it owns `_airport`, `_device-info` and the host records, and nothing restarts it), run `diskd` on loopback so its registrations never reach the LAN, and register our own names through the daemon.
 
-### The Time Capsule firmware is missing small utility commands you might expect
+### The firmware lacks common small commands
 
-Examples encountered during debugging:
-- no `grep`
-- no `dirname`
-- no `find`
-- no `strings`
+The device has no `grep`, `dirname`, `find` or `strings`, among others. Shell scripts that run on it must make do without them.
 
-Shell scripts must be written very conservatively.
+### Non-root Unix identities fail
 
-### Apple mDNSResponder facts ledger (verified on devices, 2026-09-16)
+Earlier Samba builds on this firmware failed to switch privileges when users mapped to non-root identities, so every login maps to `root`.
 
-The v3.1.0 move from our own responder to Apple's on-device `mDNSResponder`
-rests on these measured facts.
+## Firmware problems
 
-| # | Fact |
-| --- | --- |
-| F1 | Both lanes ship `mDNSResponder-397.32` inside one crunched static binary (`/sbin/mDNSResponder`, `diskd`, `printd`, `afpserver`, `wcifsfs`, … are hard links). The IPC is the standard `dns_sd` Unix-socket protocol, `VERSION 1`, at `/var/run/mDNSResponder` (created only while the daemon runs). |
-| F2 | Apple's client stub from tag `mDNSResponder-379.38.1` (`build/native/dnssd/`) compiles unchanged with `-D_DNS_SD_LIBDISPATCH=0` on all three lanes (gcc 4.1.2 on NetBSD 4) and registers/browses against the 397.32 daemon; cost ≈60 KB over a hello-world. |
-| F3 | The daemon's interface indexes are the kernel's (`bridge0` = `ifconfig … scopeid`). `interfaceIndex=0` means all interfaces. |
-| F4 | Apple's kernel `struct if_msghdr` is 152 bytes on NetBSD 4 while the SDK's is 144, so libc `getifaddrs()` reads the `AF_LINK` sockaddr from inside `if_data`: names are garbage and `if_nametoindex()` returns 0. Walking `sysctl(NET_RT_IFLIST)` ourselves and locating the `sockaddr_dl` by `sdl_family==AF_LINK && sdl_index==ifm_index` yields correct names and indexes. On NetBSD 6 the messages are `RTM_VERSION 4` (`RTM_IFINFO` 0x14, 24-byte `ifa_msghdr` with the index at offset 16, 8-byte `RT_ROUNDUP`); on NetBSD 4 they are version 3 (`RTM_IFINFO` 0xf, 20-byte header, index at 12, 4-byte roundup). Fixtures: `tests/native/fixtures/iflist/`. |
-| F5 | Under the Apple stack `ACPd` registers `_airport._tcp`; `diskd` registers `_smb._tcp`, `_adisk._tcp,_airport` and `_afpovertcp._tcp`; the daemon itself registers `_device-info._tcp` (`model=` from `/etc/mdnsd.conf`); `printd` registers printers. `wcifsfs`, `wcifsnd`, `afpserver` register nothing. |
-| F6 | `diskd` registers unconditionally: killing `wcifsfs`/`wcifsnd`/`afpserver` closes the ports but leaves the records. ACPd respawns none of them. |
-| F7 | `diskd` is load-bearing: it populates `acp -q MaSt` and serves `acp rpc diskd.useVolume`. |
-| F8 | `/sbin/diskd -i lo0 -d local.` relaunched by us still serves MaSt and `diskd.useVolume` while its `_smb`/`_adisk`/`_afpovertcp` stay on loopback. |
-| F9 | Registering a name another client already holds auto-renames to "Name (2)" unless `kDNSServiceFlagsNoAutoRename` is passed (then the callback reports `kDNSServiceErr_NameConflict`). |
-| F10 | Apple's host records on the LAN: fe80 plus every IPv4 including 169.254, no GUA. Hostname `AirPort-Time-Capsule.local.` (mixed case); SRV targets of our registrations are that hostname automatically. |
-| F11 | Killing the daemon is unrecoverable without a reboot: ACPd never respawns it and a hand-started daemon lacks `_airport`. The runtime must never kill it. |
-| F13 | `/etc/mdnsd.conf` (RAM root, regenerated each boot) carries `Hardware TimeCapsule6,116` / `TimeCapsule8,119`, `Software 7.8.1` / `7.9.1`, `PrimaryIPv4Interface bridge0`. |
-| F14 | Samba's IPv6 `interfaces=` tokens must use the embedded-scope form `fe80:<index hex>::…/64`; Apple's pf opens 445/139/137/138/548 on the WAN iff `usbF & 0x8` in NAT mode; router mode is `(raNA,raDS)`: `(0,0)` bridge, `(0,1)` DHCP-only, `(1,1)` NAT; the guest bridge owns `gnRo`. |
-| F15 | Device shell quirks: NetBSD 4 `sed` has no `\|` alternation; `reboot`, `ifconfig` need full paths in non-login shells; `/etc` edits do not persist; `/mnt/Memory` is the 15 MB RAM staging area; `/mnt/Flash` is ≈1 MB. |
-| F16 | ACPd keeps one table of `diskd.*` RPC names. A second diskd's duplicate registration is rejected, but when it exits ACPd deletes the names it tried, which are the first diskd's, in registration order (`getHomeVolumeInfo`, `getVolumeCounts`, `useVolume`, ...). `acp rpc` exits 22 for every failure; stderr carries the code (-6727 for a missing name). Measured on NetBSD 4 LE, 2026-10-03. |
+These failures come from Apple's firmware. TimeCapsuleSMB detects them and says what to do, but none can be fixed over the network. [build/native/README.md](build/native/README.md#apple-acpd) has the measured details.
 
 ### Apple ACPd can hang during its own restart
 
-Seen in v3.4.0 telemetry (installs 809f4968, 14e606f2, 26282dfa, TimeCapsule8,119) and in every older release:
+ACPd is Apple's AirPort management service. On some devices it accepts a restart request, shuts down its own services, and never restarts the system. SSH may still answer, but AirPort Utility, file sharing and Bonjour are gone until the device is unplugged. The warning sign is a second ACPd process stuck under the first.
 
-- **What happens:** ACPd accepts the `acRB` reboot request and starts its own teardown. It stops mDNSResponder, diskd, printd, afpserver, iCloudd, link_local and rtsold, and stops answering port 5009, but never runs `/sbin/shutdown`.
-  - The kernel keeps running, so the process list after the "reboot" shows the same PIDs as before.
-  - sshd is ACPd's child and is stopped late in that path, so it survives and SSH still works.
-  - The device stays off the network until it is unplugged.
-- **What predicts it:** before the request, ACPd had a child process also named `ACPd`, asleep in nanosleep (`ps` shows `nanoslp`; NetBSD 4 truncates it to `nanoslee`). On 809f4968 it had been there since early boot (PID 352). A healthy device runs one ACPd, whose parent is init; 535 telemetry process listings showed the child only on these devices.
-- **A related state:** ACPd stops answering its local IPC, so the device's own `/usr/bin/acp` fails or hangs while the device otherwise runs.
-- **How acp reports a failed get:** it prints `### get 'X' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>` to stderr and exits 0, for an unknown property as well (the `%m` is a format Apple's printf does not support). That text alone proves nothing. `syUT` always exists, so a `syUT` read that fails, or that the device ends at its 15 s deadline twice, is what blames ACPd.
-  - The read runs `acp` in the background with a shell watchdog that kills it after 15 s, so a hung `acp` is never left running on the device and answers with empty output. An SSH session that itself hangs (a slow device, a dropped network) never reaches ACPd at all: it times out after 30 s on this computer and is reported as the SSH failure it is, not as ACPd. v3.4.0 telemetry has such sessions: `/bin/echo ok` timed out on 7 installs.
+Before every restart and every flash write, TimeCapsuleSMB checks ACPd. It refuses with `acpd_broken` ("Nothing was changed") on the warning sign, on an ACPd that does not answer, and after a restart that never happened. When a restart it requested does not happen, it reports that about two minutes after the request. Doctor reports the same problems. TimeCapsuleSMB never retries the restart itself.
 
-What TimeCapsuleSMB does about it:
-
-- **The restart marker:** just before every ACP restart request that SSH can see (all but set-ssh enable and configure, whose device has SSH off), `reboot_device` writes the empty file `/mnt/Memory/acp-reboot` (`device/acpd.py`). `/mnt/Memory` is Apple's RAM disk, so a real restart empties it, and a marker that is still there proves the kernel never restarted. No clock is trusted: NTP steps the device's clock by weeks just after boot, and the Mac may sleep during the wait. Nothing on the device reads the marker. `reboot_cycle` records `restart_marker` (`written` or `unwritten`) on every wait; a restart whose marker could not be written keeps the usual 10-minute limit.
-  - A read counts the marker only while no `shutdown` or `reboot` process runs: a real restart runs `/sbin/shutdown -r now` (ACPd's reboot path, issue #177), and its last step stops sshd, so a slow shutdown can still show the marker over SSH.
-- **One list of problems** (`acpd_problems`) serves both the check before a restart and doctor: a marker that outlived its request (`restart_never_happened`), a `syUT` read that does not answer (`syut_silent`, worded for the user as the AirPort service being stuck), the stuck child (`stuck_child`), a TCP listener that stopped answering (`network_silent`), and an ACPd that is not running at all (`quit`, see [ACPd that quit](#apple-acpd-can-quit-after-file-sharing-starts)). A marker that outlived its request is reported alone: the torn-down ACPd also fails `syUT` and may leave its fork, and all three have the one fix. An ACPd that quit is reported alone too, and its `syUT` is not read: it could only fail the same way.
-  - `network_silent`: the device's own `/usr/bin/acp` (ACPd's multi-call binary) reaches ACPd over a Unix socket (`/var/run/ACPIPC` on NetBSD 6, `/tmp/ACPIPC` on NetBSD 4), never TCP 5009, so its answer says nothing about the listener this computer uses. When this computer's network read goes unanswered and the device's own `syUT` read answers, `acpd_answers_network` reads `syUT` again through an SSH forward to the device's own `127.0.0.1:5009`, with the local read's 15 s deadline. Any reply counts as an answer (a rejected password or a malformed reply too); only a lost connection is silence. The listener can stop answering while sharing and the device's own `acp` keep working: the Mac's TCP connection is accepted and gets no reply, or is not accepted at all, and it clears only after hours or a restart.
-    - The cause is not established. A full file table looks the same from this computer: both kernels' `accept()` takes a file before it takes a connection off the queue (`falloc` in NetBSD 4's `sys_accept`, `fd_allocfile` in NetBSD 6's `do_sys_accept`), so with no file free the connection stays queued and unanswered, and the queue then fills. smbd fills that table when several Macs connect, which is why the manager raises `kern.maxfiles`. Against it: the device's own `acp` and the SSH commands, which need files too, worked in the same minute. So `network_silent` carries `remote_kern_limits` and the kernel's last five `table is full` messages (`/sbin/dmesg`, `remote_kernel_table_full`) to telemetry from both `require_acpd_ready` and doctor; an SSH failure reading them leaves them out and still reports the silence. The messages carry no time: one shows the table filled at some point since boot, not that it was full when ACP went silent.
-- **`require_acpd_ready`** (`services/runtime.py`) runs before every flash command and every ACP reboot that SSH can see beforehand, before anything changes. It refuses with `acpd_broken` ("Nothing was changed") on any of those problems, naming the first; an ACPd that quit refuses with `acpd_quit` instead. Another restart request to a device whose last one never happened would fail the same way. The debug field `acpd_problems` lists them all.
-  - When network ACP does not answer this computer but ACPd answers both the device's own `acp` and the read through SSH, the path from this computer is blocked: `device_off_network` or `acp_unreachable`, with no unplug advice.
-- **The reboot wait** (`services/reboot.py`) looks for the marker once ACP has been quiet for 90 s, at most every 30 s, when port 22 answers. The marker found on two looks in a row ends the wait as `acpd_broken` (`reboot_cycle` result `acpd_stopped_without_reboot`, about 130 s after the request instead of 10 minutes); `reboot_cycle` counts the looks in `acpd_hang_checks`, records the last one's outcome in `hang_check_last` (`ssh_closed`, `marked`, `restarting` for no marker or a shutdown under way, or `ssh_failed`) and the longest run of marked looks in `acpd_marked_checks_max`. A closed SSH port, as in a real restart, starts the run again; a read that fails with the port open shows nothing either way and leaves the run as it is. A look that reached sshd may have opened a shared SSH connection to the old kernel, so once the new boot is seen the wait closes it and the next command logs in afresh.
-  - Two looks, not one: the result tells the user to unplug the device, and during a real restart whose ACPd is still tearing down (old sshd up, no `shutdown` yet) that could cut ACPd's own flash writes. In v3.4.0 and v3.5.0 telemetry every look that found SSH answering reached the new kernel, but only 22 restarts got that far.
-- **MaSt and `diskd.useVolume`** (`device/storage.py`): a failed or hung call is confirmed with one `syUT` check per disk wait, then a process listing. A process stuck on the disk raises `disk_not_responding` whatever `syUT` said (see [A disk can stop responding behind ACPd](#a-disk-can-stop-responding-behind-acpd)); otherwise a failing `syUT` raises `acpd_broken`, an answering one keeps the usual disk handling, and a hung call stays a timeout with the SSH error as its cause when SSH itself fails.
-- **Doctor** has its own step right after the stuck-process step, reusing that step's process list. It FAILs each problem (code `apple_acpd_broken`, with `acpd_problem` naming it and `acpd_gone` true for `quit` and `restart_never_happened`, which the app reads), and `doctor_finished` reports `acpd_problems` on passing runs too. It skips when SSH checks are off or the process list timed out. A restart that never happened, like an ACPd that quit, is the whole verdict while no `smbd` runs (see [ACPd that quit](#apple-acpd-can-quit-after-file-sharing-starts)).
-- **ACP silent while the device answers** needs no SSH: it sees `network_silent` from outside. A connect that times out at one of the address's addresses and is refused at none is unanswered (`transport.local.connect_unanswered`): a port nothing listens on is refused, and the kernel completes connections a listener has not accepted yet until that listener's queue is full, so only a full queue, a filter or an absent host drops them. When ACP's port goes unanswered, one connect to port 22 tells a device that is up (it connects, or refuses while SSH is off: `connect_answered`) from one that is off or gone. Comparing each address's result keeps a name with IPv4 and IPv6 addresses from hiding it. Two places use this, both raising `acpd_broken`, whose next steps say to unplug the device (issue #396):
-  - **Before SSH is on** (configure and set-ssh enable, `services/acp_ssh.py`): all three ACP port connects must go unanswered. Telemetry records port 22's answer as `acp_port_probe_ssh_port`. What answered on port 22 may be another host that took the address, so the device is first looked for by its MAC where one is known: configure by the selected Bonjour record's, after the probe; set-ssh by the saved one, before it (`follow_saved_device`, as every command does). Found elsewhere, it gets SSH there. SSH that opened between the first check and the probe also counts as an answer; that window is accepted. These failures used to count as `remote_error` (configure) or `device_unreachable` (set-ssh); `stage=acp_port_probe` tells them from the SSH-side `acpd_broken`.
-  - **A closed SSH port** (`checks.network.closed_ssh_port_error`, for Checkup's SSH check and every command's failed probe): one ACP connect, then port 22 when it goes unanswered (Checkup reuses its own port 22 result). The error's detail says whether port 22 refused or accepted the connection. Checkup's row has the ACPd step's code, `apple_acpd_broken` with `acpd_problem` `acp_port_unanswered`, and its wording; `doctor_finished` reports that problem in `acpd_problems`, since the ACPd step needs SSH and does not run. The dashboard shows a generic failed Checkup for it: its ACPd row says ACPd has stopped, which does not fit. Commands look for the device by its MAC before they probe, so this verdict comes after that.
-  - **Not handled:** a filter that drops ACP's port but not port 22 looks the same, and gets the same unplug advice. One case would be a Mac on the WAN side of a router-mode AirPort sharing its subnet, if Apple's WAN filter drops 5009 while the kernel refuses 22; that has not been checked on a device. Requiring a Bonjour record that lists the address would rule it out (Bonjour does not cross NAT), but devices entered by address would lose the verdict.
-- **No automatic fix:** nothing sends a second `acRB` or reboots the OS itself; the user unplugs the device, which also clears the marker.
-- **Not caught:** a NetBSD 4 hang that also takes SSH and the network down until the device is unplugged; nothing can read the marker then, and the wait ends at its 10-minute limit.
-
-Checked on 2026-10-11 on NetBSD 6 and NetBSD 4 LE, with no NetBSD 4 BE device available:
-
-- `/usr/bin/acp` is present; `hw.ncpu` is 1 on both.
-- `acp -q syUT` and `acp -A MaSt` answer in under 1 s.
-
-Checked on 2026-10-15 on NetBSD 6 and NetBSD 4 LE:
-
-- `: > /mnt/Memory/acp-reboot` writes the marker (`/mnt/Memory` is tmpfs on NetBSD 6, mfs on NetBSD 4). The read, `[ -e … ] && STUCK_PROCESS_PS_COMMAND` (the process table without command lines, parsed by `parse_ps_rows`), exits 1 without it and lists the table with it: on NetBSD 6 all 36 rows parsed, in 0.04 s. The earlier checks on both families read the same table as `ps ax -o ucomm=`.
-- A deploy's restart on each wrote the marker, and the new boot's RAM disk had none. A marker placed by hand made doctor fail and deploy refuse with nothing changed, on both.
-- In a real restart, port 22 and port 5009 closed within the same second on both families (polled once a second): the old sshd does not outlive ACP. The new boot answered ACP 54 s (NetBSD 6) and 64 s (NetBSD 4) later, and SSH 2-3 s after ACP.
-- NetBSD 4, ACPd killed the moment the marker appeared, before the request: the request was refused, ACP stayed quiet, and the wait ended `acpd_stopped_without_reboot` after its two looks, 134 s after the request. A killed ACPd is not started again, so the device stayed in that state, with SSH up, until it was power-cycled; then doctor reported the restart that never happened as its one ACPd failure, deploy refused, and the power cycle cleared the marker.
+Unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, and try again.
 
 ### Apple ACPd can quit after file sharing starts
 
-Seen on NetBSD 4 TC6,116 and TC6,113 devices, always when the deploy started file sharing about 25 s after the restart it requested. Starts on the same device at the same uptime also worked, and the cause is not established.
+On some NetBSD 4 devices, ACPd exits soon after file sharing starts following a restart, and NetBSD 4 never starts it again. A Samba that was already serving keeps serving, but the disk list, AirPort Utility, updates and restarts stop working. If Samba had not started, file sharing stays off. Install, Activate and Disk Repair report `acpd_quit`, and doctor says whether sharing still works.
 
-- **What happens:** ACPd exits. Its children that keep running (sshd, mDNSResponder, snmpd, printd, sntpd, dhclient) have init as their parent; its diskd, wcifsnd, wcifsfs and afpserver are gone. NetBSD 4 does not start ACPd again, so it stays that way until the device restarts.
-  - The manager then logs `MaSt unavailable; retaining last valid inventory`, `settings: device authentication unavailable` and `diskd exited; retry in N ms` in a loop, and never starts Samba. The device's own `acp` fails at once.
-  - Unplugging the device and running Activate afterwards fixes it.
-  - Samba is the manager's child, not ACPd's, so an ACPd that quits after Samba started leaves it serving: with ACPd killed on NetBSD 4 LE, the manager, its loopback diskd and smbd kept running. Nothing else works until the device restarts: AirPort Utility, the next install and every ACP restart need ACPd.
-- **How it is found:** from a process listing that finished. ACPd is among the last rows `ps` prints, so the listing that can say it is gone (`PROCESS_SNAPSHOT_COMMAND`) ends with the line `tcapsule-ps: end`, which they print only after the last row. A listing without that line never says ACPd is gone (`processes.acpd_running`), and neither does one without a live `sshd`: the sshd serving the listing is always in it, so its absence means the rows did not parse (another layout, an error line). Nor does one taken while a `shutdown` or `reboot` process runs: a real restart stops ACPd before sshd.
-  - **Two listings, everywhere:** NetBSD 4 never starts ACPd again, but on NetBSD 6 that is not known, so one listing could fall between two ACPds. The wait counts two listings in a row, one attempt apart; every other check (`acpd.acpd_quit`) reads a second listing `ACPD_RECHECK_SECONDS` (5 s) after a first without ACPd. Only a device whose ACPd is already gone waits for it: the device's own `acp` then fails in about 0.03 s.
-- **What TimeCapsuleSMB does about it:**
-  - **The wait for the runtime** (`probe_managed_runtime_conn`) already lists the processes after each attempt that is not ready, for the manager's verdicts. Two listings in a row without ACPd, one attempt apart, end the wait at once with the `acpd_quit` step, instead of after 200 s and the final checks. Two, not one: NetBSD 6 is not known never to start ACPd again. While Samba serves, the wait goes on as before.
-  - **The error** is `acpd_quit` (`AcpdQuitError`), with the checks that failed as its facts. Only this boot's disk errors come before it; the manager's verdicts come after it, since without ACPd the manager sees no disk: a verdict seen while the last listing lacked ACPd waits for the next listing, which either shows ACPd again (the verdict stands) or ends the wait as `acpd_quit`. Deploy's start after its restart, Activate and the restart after a disk repair all raise it, and its next steps are to unplug the device, run Checkup, and run Activate on NetBSD 4 when Checkup says Samba is not running. After deploy's restart its card also says the update is installed (`deploy.acpd_quit.<stage>`), so the user restarts the device instead of installing again.
-  - **Activate** first probes the runtime for up to 20 s (`decide_manual_activation`). That probe's wait ends once two listings show ACPd gone, and Activate checks this boot's kernel disk errors before refusing, without asking ACPd again. Unrecoverable disk errors take precedence; without them, including when the kernel log cannot be read, the ACPd refusal stands. Otherwise it checks ACPd before it starts anything (`require_acpd_for_start`): an ACPd that quit, a restart that never happened, or a `syUT` read that does not answer refuses the start ("Nothing was started"). A stuck fork of ACPd does not, as it only hangs the next restart.
-  - **Doctor and `require_acpd_ready`** report it as the `quit` problem, and every message for it says whether `smbd` still runs in the second listing (`AcpdProblem.sharing_off`, `acpd_quit_smbd_running` in the debug fields): "File sharing stays off until the device restarts", or "Sharing may work now, but until the device is unplugged it cannot be updated or restarted over the network, and AirPort Utility cannot reach it". `require_acpd_ready` refuses with `acpd_quit` ("Nothing was changed"), whose next steps hold either way.
-    - For doctor, an ACPd gone while no `smbd` runs stops the dependent runtime checks, with the manager's log tails in its debug fields. Before stopping, it also checks this boot's kernel disk errors: failed disk transfers remain meaningful without ACPd and are reported alongside its failure, so the dashboard can prioritize the failing disk. The manager's stale payload verdicts are not used for this check. Without the stop it would list the side effects as FAILs of their own (smbd not running, no TCP 445 listener, the SMB listing, Bonjour), after waiting out its startup window for nearly two minutes. A restart that never happened tore ACPd down the same way and stops doctor alike. While `smbd` runs, doctor goes on, and the checks after it say how sharing is. Both problems' lines add that NetBSD 4 needs Activate if file sharing does not start after the restart.
-    - The app's dashboard names it (`runtime-acpd-gone`, "Unplug the device…") for either problem, ahead of a disk that will not mount, which ACPd's diskd going with it explains; only a failing disk comes first.
-  - **Reading the disks** (`storage.raise_if_acpd_silent`): a failed or hung MaSt or `diskd.useVolume` lists the processes after its `syUT` read. A process stuck on the disk comes first (`disk_not_responding`); then, when `syUT` also failed, an ACPd that quit raises `acpd_quit` ("Its disks cannot be read", after the same note on `smbd`) instead of the `acpd_broken` "not answering". A device whose `syUT` answers is checked for a stuck disk only.
-  - **Configure** over SSH reads the AirPort MAC through ACPd. A device that answered SSH but gave no MAC is listed, and an ACPd that quit refuses configure with `acpd_quit` before anything is saved, instead of saving the profile without a MAC; its next steps say to restart the device and try again.
-- **What telemetry records:** every wait for the runtime, successful or not, ends with one more listing and the device's monotonic clock (`probe_manager_startup_age_conn`), recorded as the `acpd_after_start` measurement: `result` (`running`, `quit` or `unreadable`), `acpd_running`, `acpd_pids` (another pid on a unit whose uptime ran on is an ACPd started again), `manager_started_sec` (the uptime the manager started at, from its title) and `checked_at_sec` (the clock, read whether or not a manager runs). With the event's operation and stage, its `activation_decision` (boot hook or not) and its `reboot_cycle`, it counts how many starts of each kind keep ACPd. A reading without ACPd counts as `quit` only when a second one, `ACPD_RECHECK_SECONDS` later, agrees, as everywhere else; `rechecked` marks a reading that was read twice, so a `running` with it is an ACPd that one listing missed. The read comes after the result's lines and is best effort: it never fails the operation, and an ACPd that quits after it is not seen there. When it finds ACPd gone while Samba serves, the operation still succeeds and prints the "Sharing may work now" message, as the next command's `require_acpd_ready` would refuse.
+Unplug the device and plug it back in, then run Checkup. On NetBSD 4, run Activate if Checkup says Samba is not running. When this follows an install, the update is already on the device and does not need installing again.
 
 ### A disk can stop responding behind ACPd
 
-Seen in v3.6.0 telemetry: a TC8,119 whose `mount_hfs` slept on `biolock` at every boot (814be275), and a TC6,106 whose `smbd` waited on `genput`/`vnlock` with `diskd` on `vnlock` (9215f8a5).
+When a disk stops answering, the processes waiting for it hang in the kernel. ACPd waits on Apple's disk service, so it stops answering as well, and the failure looks like ACPd's. TimeCapsuleSMB checks for a stuck disk first and reports `disk_not_responding` ("A disk on the device has stopped responding").
 
-- **What happens:** a disk stops answering, and a process waiting for it sleeps in the kernel for minutes in one sleep. Apple's ACPd waits on diskd, which waits for the disk, so ACPd stops answering MaSt, its own `syUT` read or its TCP listener, and every check that only looks at ACPd blames Apple's firmware for what is the disk. A restart clears a passing stall; one that comes back after the restart is a failing disk.
-- **What counts** (`processes.disk_io_stalls`): a process `stuck_processes` reports (uninterruptible, one sleep of at least 120 s, or named in the manager's `stuck=` title) that waits on a disk I/O channel (`biowait`, `biolock` or `genput`), or that is one of the programs that only work on a disk (`diskd`, `mount_hfs`, `fsck_hfs`, `newfs_hfs`) on any channel. The stuck processes do not say which disk, so every message fits an internal or a USB disk: "A disk on the device has stopped responding".
-- **Where it is checked, and what it outranks:**
-  - `require_acpd_ready` reads the process list first and refuses with `disk_not_responding` ("Nothing was changed") before ACPd is read. When ACPd's only problems are the ones a stuck disk causes (`syut_silent`, `network_silent`; `acpd.DISK_STALL_PROBLEMS`), it reads the list again before refusing with `acpd_broken`: ACPd's reads take up to 45 s, long enough for a `mount_hfs` that stopped at boot to pass the 120 s threshold after the first listing, as on a retry 2 minutes after unplugging. A quit, a restart that never happened and a stuck fork of ACPd are ACPd's own and are never rechecked.
-  - `storage.raise_if_acpd_silent` (MaSt and `diskd.useVolume`): see above. Wipe Internal Disk keeps the code when its erase gets no answer (`wipe-disk.disk_not_responding.erase_disk`, reason `disk_stalled`), instead of turning it into `acpd_broken`.
-  - Doctor: the stuck-process step reports one FAIL with code `disk_not_responding` and the stuck processes in place of the generic "blocked in the kernel" line, and records them on `ProcessSnapshotState.disk_stalls`. The ACPd step drops `syut_silent` and `network_silent` behind it (still listed in `acpd_problems`), and reads the list again when those are its only problems and the first listing showed no stall, adding the disk's FAIL then (`remote_process_snapshot_after_acpd`). A disk that has not mounted for 10 minutes is not reported again beside it: its "run Disk Repair" would wait on the same disk.
-  - The runtime wait after Install, Activate and Disk Repair (`runtime_failure_error`): when Samba is off, this boot's kernel disk errors come first, then a stuck disk (`DiskNotRespondingError`, `disk_io_stalls` in the debug fields), then an ACPd that quit and the manager's verdicts. NetBSD 4's kernel log often keeps no line of a disk that stopped answering.
-  - The app's dashboard names it (`runtime-disk-not-responding`) after a failing disk and ahead of an ACPd that is gone and a disk that will not mount, and on NetBSD 4 instead of Activate, which cannot start Samba from that disk.
-- **The way out:** unplug the device, wait 10 seconds, plug it back in and wait 2 minutes, then try again; a stall that comes back is a failing disk, whose files come off first (a USB disk connects to a Mac as it is, an internal one through a SATA-to-USB adapter).
+Unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, and try again. If the problem comes back, the disk is failing. Copy its files off (a USB disk connects to a Mac as it is, an internal disk through a SATA-to-USB adapter) and replace it.
 
-### Non-root Unix identity handling is risky
+## Known risks and caveats
 
-Earlier Samba attempts on this firmware ran into privilege-switch and identity issues with non-root mappings.
+- Use TimeCapsuleSMB only on a local network.
+- Every login accesses files as `root`.
+- `/mnt/Memory` is tight: about `1-2 MiB` may be free after staging.
+- The code assumes AirPort storage firmware behavior, including:
+  - AirPort-style IPv4 and interface layout
+  - HFS partitions named `dk…`, found through Apple's `MaSt`
+  - the `ShareRoot` layout on internal volumes
+- Apple's firmware may still mount disks late or change their state in unusual cases.
+- Apple's ACPd can hang during its own restart and leave the device off the network until it is unplugged (see [Firmware problems](#firmware-problems)).
 
-That is why the current authenticated design still maps to `root`.
+## Verification commands
 
-## Known Risks And Caveats
+Checks to run from a Mac.
 
-- This is still LAN-only software.
-- The current authenticated design still maps file access to `root`.
-- `/mnt/Memory` is tight; only about `1-2 MiB` may remain free after staging.
-- The repo still assumes AirPort storage firmware behavior such as:
-  - AirPort-style IPv4/interface layout
-  - HFS partition identifiers beginning with `dk`, discovered through Apple `MaSt` metadata
-  - the internal-volume `ShareRoot` layout
-- Apple firmware behavior may still change runtime mount timing or disk state in edge cases.
-- Apple's ACPd can hang during its own restart and leave the device off the network until it is unplugged (see "Apple ACPd can hang during its own restart"); TimeCapsuleSMB refuses to reboot a device that shows the warning sign and says to unplug it when the hang happens anyway.
-
-## Verification Commands
-
-Current useful checks from the Mac:
-
-Browse SMB service advertisements:
+Browse SMB advertisements:
 
 ```bash
 dns-sd -B _smb._tcp local.
@@ -2061,45 +1111,42 @@ Resolve the SMB service:
 dns-sd -L "<advertised-instance-name>" _smb._tcp local.
 ```
 
-List shares as authenticated user:
+List the shares with a login:
 
 ```bash
 smbutil view //admin:<password>@<configured-or-advertised-host>
 ```
 
-Mount the share:
+Mount a share:
 
 ```bash
 mount_smbfs //admin:<password>@<configured-or-advertised-host>/<share-name> /tmp/tc-auth-mount
 ```
 
-Current expected result:
-- `IPC$`
-- at least one `MaSt`-derived share name
+The listing should show `IPC$` and at least one share named after a `MaSt` volume.
 
-Expected negative test:
+A guest login should fail with an authentication error:
 
 ```bash
 smbutil view //guest:@<configured-or-advertised-host>
 ```
 
-That should fail with an authentication error.
+## Files worth reading
 
-## Files Worth Reading
-
-Short overview:
-- [README.md](README.md)
+- [README.md](README.md): overview and quick start
+- [FAQ.md](FAQ.md): common questions and troubleshooting
+- [build/native/README.md](build/native/README.md): the on-device service and firmware facts
 
 ## Summary
 
-The current system is no longer just an experiment:
-- it builds reproducibly
-- deploys from checked-in artifacts
-- survives reboot on the NetBSD 6 path
-- can use the persistent firmware boot-hook patch on NetBSD 4, or be manually reactivated after reboot on tested unpatched gen1 hardware
+TimeCapsuleSMB:
+- builds reproducibly
+- deploys from checked-in binaries
+- survives a reboot on NetBSD 6
+- on NetBSD 4, starts at boot with the firmware boot-hook patch, or with `activate` after each reboot on tested unpatched 1st-generation hardware
 - advertises itself over Bonjour
-- authenticates with the configured password; docs and examples use SMB username `admin`
+- logs in with the AirPort password; the docs use the SMB username `admin`
 - serves the internal disk through Samba 4.25.0
-- supports Time Machine via `vfs_fruit`
+- works as a Time Machine destination through `vfs_fruit`
 
-The main remaining “nice to have” work is polish, not core functionality.
+The core features work. What remains is polish.

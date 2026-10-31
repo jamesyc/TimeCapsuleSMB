@@ -350,3 +350,93 @@ test executable. Test-only builds use a separate key and local endpoints.
 Production endpoints/keys are not used by integration tests. Test children have
 deadlines and isolated workspaces. Coverage uses LLVM tools and retains its HTML
 report under the temporary output directory printed at completion.
+
+## Firmware facts
+
+Measured on the devices. The runtime's design rests on them; code comments
+cite them by number. ([DETAIL.md](../../DETAIL.md) has the user-facing side.)
+
+### mDNSResponder, diskd and the network stack
+
+| # | Fact |
+| --- | --- |
+| F1 | Both lanes ship `mDNSResponder-397.32` inside one crunched static binary (`/sbin/mDNSResponder`, `diskd`, `printd`, `afpserver`, `wcifsfs`, … are hard links). The IPC is the standard `dns_sd` Unix-socket protocol, `VERSION 1`, at `/var/run/mDNSResponder` (created only while the daemon runs). |
+| F2 | Apple's client stub from tag `mDNSResponder-379.38.1` (`dnssd/`) compiles unchanged with `-D_DNS_SD_LIBDISPATCH=0` on all three lanes (gcc 4.1.2 on NetBSD 4) and registers/browses against the 397.32 daemon; cost ≈60 KB over a hello-world. |
+| F3 | The daemon's interface indexes are the kernel's (`bridge0` = `ifconfig … scopeid`). `interfaceIndex=0` means all interfaces. |
+| F4 | Apple's kernel `struct if_msghdr` is 152 bytes on NetBSD 4 while the SDK's is 144, so libc `getifaddrs()` reads the `AF_LINK` sockaddr from inside `if_data`: names are garbage and `if_nametoindex()` returns 0. Walking `sysctl(NET_RT_IFLIST)` ourselves and locating the `sockaddr_dl` by `sdl_family==AF_LINK && sdl_index==ifm_index` yields correct names and indexes. On NetBSD 6 the messages are `RTM_VERSION 4` (`RTM_IFINFO` 0x14, 24-byte `ifa_msghdr` with the index at offset 16, 8-byte `RT_ROUNDUP`); on NetBSD 4 they are version 3 (`RTM_IFINFO` 0xf, 20-byte header, index at 12, 4-byte roundup). Fixtures: `tests/native/fixtures/iflist/`. |
+| F5 | Under the Apple stack `ACPd` registers `_airport._tcp`; `diskd` registers `_smb._tcp`, `_adisk._tcp,_airport` and `_afpovertcp._tcp`; the daemon itself registers `_device-info._tcp` (`model=` from `/etc/mdnsd.conf`); `printd` registers printers. `wcifsfs`, `wcifsnd`, `afpserver` register nothing. |
+| F6 | `diskd` registers unconditionally: killing `wcifsfs`/`wcifsnd`/`afpserver` closes the ports but leaves the records. ACPd respawns none of them. |
+| F7 | `diskd` is load-bearing: it populates `acp -q MaSt` and serves `acp rpc diskd.useVolume`. |
+| F8 | `/sbin/diskd -i lo0 -d local.` relaunched by us still serves MaSt and `diskd.useVolume` while its `_smb`/`_adisk`/`_afpovertcp` stay on loopback. |
+| F9 | Registering a name another client already holds auto-renames to "Name (2)" unless `kDNSServiceFlagsNoAutoRename` is passed (then the callback reports `kDNSServiceErr_NameConflict`). A stock `diskd` renames SMB and ADisk together after an SMB-only conflict, leaving `syNm` and the hostname alone. |
+| F10 | Apple's host records on the LAN: fe80 plus every IPv4 including 169.254, no GUA. Hostname `AirPort-Time-Capsule.local.` (mixed case); SRV targets of our registrations are that hostname automatically. |
+| F11 | Killing the daemon is unrecoverable without a reboot: ACPd never respawns it and a hand-started daemon lacks `_airport`. The runtime must never kill it. |
+| F13 | `/etc/mdnsd.conf` (RAM root, regenerated each boot) carries `Hardware TimeCapsule6,116` / `TimeCapsule8,119`, `Software 7.8.1` / `7.9.1`, `PrimaryIPv4Interface bridge0`. |
+| F14 | Samba's IPv6 `interfaces=` tokens must use the embedded-scope form `fe80:<index hex>::…/64`; Apple's pf opens 445/139/137/138/548 on the WAN iff `usbF & 0x8` in NAT mode; router mode is `(raNA,raDS)`: `(0,0)` bridge, `(0,1)` DHCP-only, `(1,1)` NAT; the guest bridge owns `gnRo`. |
+| F15 | Device shell quirks: NetBSD 4 `sed` has no `\|` alternation; `reboot`, `ifconfig` need full paths in non-login shells; `/etc` edits do not persist; `/mnt/Memory` is the 15 MB RAM staging area; `/mnt/Flash` is ≈1 MB. |
+| F16 | ACPd keeps one table of `diskd.*` RPC names. A second diskd's duplicate registration is rejected, but when it exits ACPd deletes the names it tried, which are the first diskd's, in registration order (`getHomeVolumeInfo`, `getVolumeCounts`, `useVolume`, ...). `acp rpc` exits 22 for every failure; stderr carries the code (-6727 for a missing name). Measured on NetBSD 4 LE. |
+
+### Apple ACPd
+
+- **Restart hang.** ACPd can accept an `acRB` reboot request, stop
+  mDNSResponder, diskd, printd, afpserver, iCloudd, link_local and rtsold, stop
+  answering port 5009, and never run `/sbin/shutdown`. The kernel keeps running
+  with the same PIDs; sshd, ACPd's child stopped late in that path, survives,
+  so SSH still works. The device stays off the network until unplugged. The
+  predictor is a child process also named `ACPd`, asleep in nanosleep (`ps`
+  shows `nanoslp`; NetBSD 4 truncates it to `nanoslee`); a healthy device runs
+  one ACPd whose parent is init. A NetBSD 4 variant also takes SSH and the
+  network down. The runtime detects a restart that never happened with the RAM
+  marker `/mnt/Memory/acp-reboot` (`device/acpd.py`), which only a real restart
+  empties.
+- **Real restart timing.** Ports 22 and 5009 close within the same second; the
+  old sshd does not outlive ACP. The new boot answers ACP 54 s (NetBSD 6) to
+  64 s (NetBSD 4) later, and SSH 2-3 s after ACP. NTP steps the clock by weeks
+  just after boot, so no restart check may trust the device clock.
+- **Failed gets.** `acp` prints `### get 'X' failed: <<UNKNOWN FORMAT
+  CONVERSION CODE %m>>` to stderr and exits 0 for any failed get, unknown
+  properties included. Only a failing `acp -q syUT` (`syUT` always exists)
+  blames ACPd.
+- **IPC vs network listener.** The device's own `/usr/bin/acp` reaches ACPd
+  over a Unix socket (`/var/run/ACPIPC` on NetBSD 6, `/tmp/ACPIPC` on
+  NetBSD 4), never TCP 5009, so a local answer says nothing about the listener
+  a Mac uses. The listener can stop answering for hours while sharing and the
+  local `acp` work. The cause is not established: a full file table looks the
+  same from outside (both kernels' `accept()` takes a file before dequeuing a
+  connection), but the local `acp` and SSH, which need files too, worked in the
+  same minute.
+- **ACPd quits.** On NetBSD 4 TC6,116 and TC6,113 units, ACPd has exited when
+  file sharing started about 25 s after a restart (the same start also
+  worked; cause unknown). Its surviving children (sshd, mDNSResponder, snmpd,
+  printd, sntpd, dhclient) reparent to init; diskd, wcifsnd, wcifsfs and
+  afpserver go. NetBSD 4 never starts ACPd again. A Samba already serving keeps
+  serving, since it is the manager's child. ACPd is among the last rows `ps`
+  prints, so only a complete listing can show it gone.
+- **Disk stalls look like ACPd.** ACPd waits on diskd, which waits on the disk,
+  so a disk that stops answering (processes asleep in `biowait`, `biolock` or
+  `genput`, or `diskd`/`mount_hfs`/`fsck_hfs`/`newfs_hfs` stuck on any channel)
+  stops MaSt, `syUT` and the TCP listener too. ACPd's reads take up to 45 s,
+  long enough for a stalled `mount_hfs` to cross a 120 s threshold between two
+  process listings.
+
+### Disks and HFS
+
+- `gpt` exits 0 after `gpt: error: bogus map` and after `no room for the backup
+  header` (a legacy MBR partition reaching the last sector), and diskd's erase
+  stops only on a failing `gpt create`, `add` or `label`, so Erase Disk then
+  formats wedges that exist only in memory. NetBSD 6's `gpt` names the internal
+  disk `rwd0c`.
+- diskd's erase formats `dk0`-`dk2` by name; wedge names are unique across
+  disks, so a USB disk holding those names (from APconfig/APswap/APdata GPT
+  labels) gets formatted instead.
+- Apple's HFS stores at most 3,802 bytes in one attribute: Darwin 8's
+  inline-only `hfs_setxattr` allows (attributes B-tree node size - 20) / 2 -
+  284, rounded down to even, for its 8 KiB nodes, and fails larger values with
+  `E2BIG`. It is the only writer of attribute records, AFP included.
+- The HFS driver's journal can panic (`jnl: start_tr: active_tr is NULL`,
+  recorded in `/mnt/Flash/dmesg.panic`) under bursts of link conversions, and
+  replay after that unclean restart can overwrite recently reused blocks. Each
+  native symlink conversion therefore ends with `sync()`.
+- `fsck_hfs` holds its output until exit on a pipe; on a terminal (`ssh -tt`)
+  each `** Checking …` line arrives as the step starts. It has crashed with
+  SIGBUS (status 138) repeatably on one volume.

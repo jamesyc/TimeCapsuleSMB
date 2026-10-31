@@ -2418,7 +2418,7 @@ def _doctor_check_apple_acpd(
 ) -> StepDecision:
     """Apple's ACPd: a restart it took but never ran, a stuck fork of it that
     hangs the next restart, a syUT read it does not answer
-    (DETAIL.md, "Apple ACPd can hang during its own restart"), and a network
+    (build/native/README.md, "Apple ACPd"), and a network
     read it left unanswered that it does not answer through SSH either. None
     clears in the time a check takes. Read from the stuck-process step's
     listing; a device whose ps did not answer is asked nothing more.

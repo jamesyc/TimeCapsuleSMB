@@ -53,7 +53,7 @@ SSH_CLOSED_CHECK_UPTIME_SECONDS = 60
 FOLLOW_AFTER_DOWN_SECONDS = 60
 FOLLOW_INTERVAL_SECONDS = 30
 # Apple's ACPd can take a reboot request, tear itself down and never run
-# shutdown (DETAIL.md, "Apple ACPd can hang during its own restart"): ACP goes
+# shutdown (build/native/README.md, "Apple ACPd"): ACP goes
 # quiet as in a reboot, but the old kernel and its sshd keep running. The
 # restart marker written before the request tells: a real restart clears it.
 # The hang tells the user to unplug the device, which during a real restart

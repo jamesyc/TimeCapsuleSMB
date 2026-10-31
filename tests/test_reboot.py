@@ -574,7 +574,7 @@ if __name__ == "__main__":
 class AcpdHangTests(unittest.TestCase):
     """Apple's ACPd takes the request, tears itself down and never restarts
     the device: ACP goes quiet as in a reboot, while the old kernel keeps
-    running (DETAIL.md, "Apple ACPd can hang during its own restart"). The
+    running (build/native/README.md, "Apple ACPd"). The
     marker written on the RAM disk before the request outlives only a restart
     that never happened."""
 

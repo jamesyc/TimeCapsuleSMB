@@ -238,10 +238,10 @@
   <div class="wrap hero">
     <div>
       <h1>Keep backing up to your Time Capsule.</h1>
-      <p class="lede">Apple removed AFP support in macOS 27, which is the protocol AirPort Time Capsules use for Time Machine. TimeCapsuleSMB will directly install Samba on the Time Capsule, so it stays compatible with macOS.</p>
+      <p class="lede">In macOS 27, Apple dropped AFP support, which was the protocol AirPort Time Capsules use for Time Machine. TimeCapsuleSMB allows you to directly install Samba on the Time Capsule, so it stays compatible with macOS.</p>
       <a class="download" href="https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/TimeCapsuleSMB.app.zip">Download for Mac</a>
-      <p class="fineprint">Free and open source. Needs macOS 14 or later on an Intel or Apple silicon Mac</p>
-      <p class="cli-note"><a href="#command-line">Use the command line instead</a>. Supports Linux and older macOS</p>
+      <p class="fineprint">Free and open source. Needs macOS 14 or later on an Intel or Apple silicon Mac.</p>
+      <p class="cli-note"><a href="#command-line">Use the command line instead</a> for Linux or older macOS devices.</p>
     </div>
     <div class="stage" aria-hidden="true">
       <svg class="device" viewBox="0 0 197 356" xmlns="http://www.w3.org/2000/svg">
@@ -261,14 +261,14 @@
   <section>
     <div class="wrap">
       <h2>Features of TimeCapsuleSMB</h2>
-      <p class="intro">The Time Capsule runs Samba 4.25 and speaks SMB 3, the file sharing protocol current Macs use. Nothing keeps running on your Mac.</p>
+      <p class="intro">The Time Capsule runs Samba 4.25 and uses SMB 3, the file sharing protocol that current macOS uses. Nothing gets installed to the Mac, so any unmodified Mac can still talk to the Time Capsule.</p>
       <dl class="facts">
         <div>
           <dt>Your existing backups keep working</dt>
           <dd>The disk is not wiped or reformatted. Time Machine picks up the backups already on it.</dd>
         </div>
         <div>
-          <dt>It finds itself on the network</dt>
+          <dt>It shows up on the network</dt>
           <dd>The Time Capsule appears in Finder's Network list and in Time Machine settings, even if its IP address changes.</dd>
         </div>
         <div>
@@ -285,7 +285,7 @@
 
   <section id="install">
     <div class="wrap">
-      <h2>How to Install</h2>
+      <h2>How to install</h2>
       <p class="intro">Expect 10 to 20 minutes, most of it waiting for the Time Capsule to restart and start Samba.</p>
       <ol class="steps">
         <li><div>
@@ -301,7 +301,7 @@
           <p>Select the device, open the Install / Update tab and click Install / Update Samba. The app copies the server to the Time Capsule, restarts it and checks that file sharing came back up.</p>
           <figure>
             <img src="assets/install-button.png" alt="The Install / Update tab with every step checked off and Install / Update Verified" width="1087" height="779" loading="lazy">
-            <figcaption>A finished install. Run Checkup confirms everything is working.</figcaption>
+            <figcaption>A finished install. Click Run Checkup any time to check that everything still works.</figcaption>
           </figure>
         </div></li>
         <li><div>
@@ -343,7 +343,7 @@
           </tr>
           <tr>
             <th scope="row">AirPort Extreme with a hard disk</th>
-            <td>Works, but not officially supported and less tested. The server is stored on the disk, so a model without one cannot run it.</td>
+            <td>Works, but has had less testing and is not officially supported. The server is stored on the disk, so a device without a hard drive cannot run it.</td>
           </tr>
         </tbody>
       </table>
@@ -355,7 +355,8 @@
       <h2>Before you start</h2>
       <ul class="checklist">
         <li>Turn off VPN and firewall software on your Mac. It can block the app from reaching the Time Capsule.</li>
-        <li>If your Mac connects straight to the Time Capsule, use an Ethernet cable. A direct Wi-Fi connection drops every time the Time Capsule restarts.</li>      </ul>
+        <li>If your Mac connects straight to the Time Capsule, use an Ethernet cable. A direct Wi-Fi connection drops every time the Time Capsule restarts.</li>
+      </ul>
     </div>
   </section>
 
@@ -379,7 +380,7 @@ cd TimeCapsuleSMB
       <ul class="links">
         <li><a href="https://github.com/jamesyc/TimeCapsuleSMB/blob/main/FAQ.md">FAQ</a> <span>for common problems, such as the disk showing as full or not appearing in Finder.</span></li>
         <li><a href="https://github.com/jamesyc/TimeCapsuleSMB/issues">Report a problem</a> <span>if the FAQ does not solve it.</span></li>
-        <li><a href="https://github.com/jamesyc/TimeCapsuleSMB/blob/main/DETAIL.md">How it works</a> <span>for the full technical story.</span></li>
+        <li><a href="https://github.com/jamesyc/TimeCapsuleSMB/blob/main/DETAIL.md">How it works</a> <span>for an explanation of what runs on the device, and every setting or command.</span></li>
         <li><a href="https://buymeacoffee.com/jamesyc">Buy me a coffee</a> <span>if TimeCapsuleSMB saved your backups.</span></li>
       </ul>
     </div>

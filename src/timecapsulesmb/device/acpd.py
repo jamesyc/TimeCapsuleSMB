@@ -2,7 +2,7 @@
 ACPd took but never ran (RESTART_MARKER).
 
 ACPd serves both network ACP (port 5009) and the device's own /usr/bin/acp.
-It can hang (DETAIL.md, "Apple ACPd can hang during its own restart"), and
+It can hang (build/native/README.md, "Apple ACPd"), and
 acp's failure text proves nothing on its own: a failed get prints
 `### get 'X' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>` to stderr and
 exits 0, for an unknown property too. syUT always exists, so a syUT read that

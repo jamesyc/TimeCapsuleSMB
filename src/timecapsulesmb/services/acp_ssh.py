@@ -60,7 +60,7 @@ class ACPStuckError(ACPConnectionError):
     connection. The device is up and ACPd's listen queue is full: Apple's ACPd
     is stuck. With SSH off and ACP not answering, nothing can ask the device to
     restart, so only unplugging it brings ACPd back. A filter that drops only
-    ACP's port would look the same (DETAIL.md)."""
+    ACP's port would look the same."""
 
     code = ErrorCode.ACPD_BROKEN
 
