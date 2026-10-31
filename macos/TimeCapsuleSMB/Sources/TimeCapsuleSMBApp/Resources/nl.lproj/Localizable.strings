@@ -969,10 +969,6 @@
 "backend.recovery.deploy.remote_error.verify_payload_upload.message" = "De gekopieerde installatiebestanden konden niet op de HFS-schijf worden gecontroleerd.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.1" = "Haal de schijf uit de slaapstand en probeer het opnieuw.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.2" = "Mislukt het nog steeds, voer dan ‘Schijfreparatie’ uit.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.title" = "De installatiebestanden zijn na het opslaan veranderd";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.message" = "De gekopieerde installatiebestanden kwamen niet meer overeen nadat de schrijfbewerkingen op de schijf waren opgeslagen.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.1" = "Voer ‘Samba installeren / bijwerken’ opnieuw uit.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.2" = "Mislukt het nog steeds, voer dan ‘Schijfreparatie’ uit.";
 "backend.recovery.reboot_not_started.title" = "Het opnieuw opstarten is niet begonnen";
 "backend.recovery.reboot_not_started.message" = "Het herstartverzoek is verzonden, maar het apparaat is niet opnieuw opgestart.";
 "backend.recovery.reboot_not_started.action.1" = "Schakel het apparaat uit en weer in.";
@@ -1279,8 +1275,6 @@
 "timeline.stage.validate_install.title" = "App-pakket controleren";
 "timeline.stage.verify_payload_upload.detail" = "Controleren of de geüploade bestanden aanwezig zijn.";
 "timeline.stage.verify_payload_upload.title" = "Upload controleren";
-"timeline.stage.verify_payload_upload_after_sync.detail" = "De installatiebestanden opnieuw controleren nadat alle schrijfbewerkingen naar schijf zijn voltooid.";
-"timeline.stage.verify_payload_upload_after_sync.title" = "Upload controleren na wegschrijven";
 "timeline.stage.verify_post_uninstall.title" = "Verwijdering controleren";
 "timeline.stage.verify_runtime_activation.title" = "SMB-start controleren";
 "timeline.stage.verify_runtime_reboot.detail" = "Het apparaat is weer online. Wachten tot de beheerde services zijn opgestart.";

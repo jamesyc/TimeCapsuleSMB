@@ -119,27 +119,22 @@ def test_python_and_shell_agree_on_which_rows_are_migrations(tmp_path, comm, sta
     assert bool(running_migrations(listing.stdout)) == (expected == 1 and comm in migrations)
 
 
-@pytest.mark.parametrize('failed_sync', [0, 1, 2])
-def test_flash_flush_waits_ten_seconds_and_propagates_each_failure(tmp_path, failed_sync):
-    # Apple may reformat unclean Flash at boot, losing ACP settings and SSH
-    # keys. Both syncs must succeed before the installer can request reboot.
+@pytest.mark.parametrize('sync_fails', [False, True])
+def test_flush_syncs_once_without_waiting_and_propagates_a_failure(tmp_path, sync_fails):
+    # One sync and its exit status, with no settle wait: the ACP restart runs
+    # its own sync. The installer's handling of a failed sync is tested in
+    # test_cli_deploy.
     import shlex
     from timecapsulesmb.deploy.executor import FLUSH_REMOTE_FILESYSTEMS_COMMAND
-    script = shlex.split(FLUSH_REMOTE_FILESYSTEMS_COMMAND)[2]
-    script = script.replace('/bin/sync', 'test_sync').replace('/bin/sleep', 'test_sleep')
+    script = FLUSH_REMOTE_FILESYSTEMS_COMMAND.replace('/bin/sync', 'test_sync').replace('/bin/sleep', 'sleep')
     log = tmp_path / 'flush-order'
     helpers = f'''
-count=0
-test_sync() {{
-    count=$((count + 1))
-    echo sync >> {shlex.quote(str(log))}
-    [ "$count" != {failed_sync} ]
-}}
-test_sleep() {{ echo "sleep $1" >> {shlex.quote(str(log))}; }}
+test_sync() {{ echo sync >> {shlex.quote(str(log))}; [ {int(sync_fails)} = 0 ]; }}
+sleep() {{ echo "sleep $1" >> {shlex.quote(str(log))}; }}
 '''
     result = subprocess.run(['/bin/sh', '-c', helpers + script])
-    assert (result.returncode == 0) == (failed_sync == 0)
-    assert log.read_text().splitlines() == (['sync'] if failed_sync == 1 else ['sync', 'sleep 10', 'sync'])
+    assert (result.returncode == 0) == (not sync_fails)
+    assert log.read_text().splitlines() == ['sync']
 
 @pytest.mark.parametrize('scenario', [
     'manager_starts_helper', 'boot_spawns_manager', 'shell_needs_kill',

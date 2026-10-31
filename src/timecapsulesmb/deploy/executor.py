@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable, Mapping
@@ -14,10 +13,10 @@ if TYPE_CHECKING:
     from timecapsulesmb.deploy.migration import OversizedSummary, SkippedSummary
 
 
-PAYLOAD_FLUSH_SETTLE_SECONDS = 10
-FLUSH_REMOTE_FILESYSTEMS_COMMAND = (
-    f"/bin/sh -c {shlex.quote(f'/bin/sync && /bin/sleep {PAYLOAD_FLUSH_SETTLE_SECONDS} && /bin/sync')}"
-)
+# One sync, no settle wait. /mnt/Flash is mounted synchronously, so a Flash
+# write is on flash when it returns; the sync is for the HFS payload disk. The
+# ACP restart that follows deploy runs its own sync before its SIGKILL.
+FLUSH_REMOTE_FILESYSTEMS_COMMAND = "/bin/sync"
 # Time Capsule HFS disks can spend well over 30 seconds flushing the Samba
 # payload after a slow upload. Keep this bounded, but long enough for real disks.
 FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS = 300

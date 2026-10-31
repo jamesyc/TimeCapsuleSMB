@@ -1054,20 +1054,17 @@ def _verify_deployed_payload(
     payload_home: PayloadHome,
     *,
     wait_seconds: int,
-    post_sync: bool,
     claims: VolumeClaims,
     verify_payload_home=None,
-    on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
+    on_verified: Callable[[PayloadVerificationResult], None] | None = None,
 ) -> None:
     if verify_payload_home is None:
         verify_payload_home = verify_payload_home_conn
-    callbacks.stage("verify_payload_upload_after_sync" if post_sync else "verify_payload_upload")
+    callbacks.stage("verify_payload_upload")
     verification = verify_payload_home(connection, payload_home, wait_seconds=wait_seconds, claims=claims)
-    callbacks.debug(
-        **{"payload_post_sync_verification" if post_sync else "payload_upload_verification": verification.detail}
-    )
+    callbacks.debug(payload_upload_verification=verification.detail)
     if on_verified is not None:
-        on_verified(verification, post_sync)
+        on_verified(verification)
     if not verification.ok:
         raise payload_verification_error(payload_home, verification)
 
@@ -1151,9 +1148,9 @@ def upload_and_verify_deployment_payload(
     on_uploaded: Callable[[FileTransfer], None] | None = None,
     on_uploading: Callable[[FileTransfer], None] | None = None,
     on_before_post_upload_actions: Callable[[], None] | None = None,
-    on_before_verify: Callable[[bool], None] | None = None,
+    on_before_verify: Callable[[], None] | None = None,
     on_before_flush: Callable[[], None] | None = None,
-    on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
+    on_verified: Callable[[PayloadVerificationResult], None] | None = None,
     run_remote_actions_func=None,
     upload_payload_func=None,
     verify_payload_home=None,
@@ -1354,8 +1351,9 @@ def upload_and_verify_deployment_payload(
             if _manager_stop_timed_out(exc):
                 raise DeployDeviceError(MANAGER_STOP_TIMEOUT_MESSAGE, code=ErrorCode.MANAGER_STOP_TIMEOUT) from exc
             raise
-        # Disabling rc.local is a Flash write; make it durable before any
-        # metadata conversion or removal of the historical runtime.
+        # rc.local is gone before any metadata conversion or removal of the
+        # historical runtime. The synchronous Flash mount already wrote the
+        # removal; the sync also writes out the new payload directories.
         flush_remote_writes(connection)
         # A legacy writer could create its first TDB between the initial
         # inventory and shutdown. Probe again now that writers are stopped;
@@ -1546,33 +1544,23 @@ def upload_and_verify_deployment_payload(
             on_before_post_upload_actions()
         run_remote_actions_func(connection, plan.post_upload_actions)
         if on_before_verify is not None:
-            on_before_verify(False)
+            on_before_verify()
         _verify_deployed_payload(
             callbacks,
             connection,
             payload_home,
             wait_seconds=plan.apple_mount_wait_seconds,
-            post_sync=False,
             claims=claims,
             verify_payload_home=verify_payload_home,
             on_verified=on_verified,
         )
+        # The payload reaches the disk before the config and rc.local, which
+        # the synchronous Flash mount makes durable as soon as they are
+        # written: a restart in between must never boot a partial payload.
         callbacks.stage("flush_payload_upload")
         if on_before_flush is not None:
             on_before_flush()
         flush_remote_writes(connection)
-        if on_before_verify is not None:
-            on_before_verify(True)
-        _verify_deployed_payload(
-            callbacks,
-            connection,
-            payload_home,
-            wait_seconds=plan.apple_mount_wait_seconds,
-            post_sync=True,
-            claims=claims,
-            verify_payload_home=verify_payload_home,
-            on_verified=on_verified,
-        )
         if inventory.candidates:
             run_xattr_migration_phase("cleanup")
 
@@ -1594,6 +1582,8 @@ def upload_and_verify_deployment_payload(
         run_remote_actions_func(connection, [
             InstallPermissionsAction((RemotePermission(plan.boot_upload.destination, "755"),)),
         ])
+        # Last write before the reboot. NetBSD 4's ACP restart can leave an
+        # HFS volume unmounted uncleanly, so what was written must be on disk.
         callbacks.stage("flush_boot_hook")
         flush_remote_writes(connection)
         migration_helper_cleanup_safe = True

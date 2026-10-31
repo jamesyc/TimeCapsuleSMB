@@ -73,7 +73,7 @@ class CliDeployTests(CliTestCase):
         payload_home_selection: PayloadHomeSelection | None = None,
         select_payload_home_side_effect=None,
         payload_verification: PayloadVerificationResult | None = None,
-        payload_verification_side_effect=None,
+        flush_side_effect=None,
         login_autostart_enabled: bool = False,
         verify_runtime=None,
         device: FakeAcpDevice | None = None,
@@ -171,13 +171,12 @@ class CliDeployTests(CliTestCase):
                     mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload", side_effect=upload_side_effect)
                 )
             mocks.flush_remote_filesystem_writes = stack.enter_context(
-                mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes")
+                mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes",
+                           side_effect=flush_side_effect)
             )
-            payload_verification_patch_kwargs = (
-                {"side_effect": payload_verification_side_effect}
-                if payload_verification_side_effect is not None
-                else {"return_value": payload_verification or PayloadVerificationResult(True, "ok")}
-            )
+            payload_verification_patch_kwargs = {
+                "return_value": payload_verification or PayloadVerificationResult(True, "ok"),
+            }
             mocks.verify_payload_home_conn = stack.enter_context(
                 mock.patch(
                     "timecapsulesmb.services.deploy.verify_payload_home_conn",
@@ -353,13 +352,9 @@ class CliDeployTests(CliTestCase):
         self.assertEqual(len(inventory_claims), 2)
         self.assertTrue(all(inventory_claim is claims for inventory_claim in inventory_claims))
         payload_home =PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
-        result.mocks.verify_payload_home_conn.assert_has_calls(
-            [
-                mock.call(result.mocks.wait_for_mast_volumes_conn.call_args.args[0], payload_home, wait_seconds=7, claims=claims),
-                mock.call(result.mocks.wait_for_mast_volumes_conn.call_args.args[0], payload_home, wait_seconds=7, claims=claims),
-            ]
+        result.mocks.verify_payload_home_conn.assert_called_once_with(
+            result.mocks.wait_for_mast_volumes_conn.call_args.args[0], payload_home, wait_seconds=7, claims=claims,
         )
-        self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
         self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 3)
         self.assertTrue(all(
             call.args == (result.mocks.wait_for_mast_volumes_conn.call_args.args[0],)
@@ -960,32 +955,34 @@ class CliDeployTests(CliTestCase):
         self.assertIn("stage=verify_payload_upload", telemetry_error)
         self.assertIn("managed payload verification failed", telemetry_error)
 
-    def test_deploy_post_sync_payload_verification_failure_aborts_before_reboot(self) -> None:
-        result = self.run_deploy_cli(
-            ["--yes"],
-            patch_actions=True,
-            patch_upload=True,
-            payload_verification_side_effect=[
-                PayloadVerificationResult(True, "ok"),
-                PayloadVerificationResult(False, "missing payload directory"),
-            ],
-            raises=SystemExit,
-        )
+    def test_deploy_sync_that_times_out_never_reaches_the_reboot(self) -> None:
+        # The disk is the one thing a sync can fail on, and a failing disk shows
+        # up as a timeout. Failing the payload sync (the second) must also keep
+        # the config and the boot hook off Flash.
+        for failing_sync, stage, flash_written in ((2, "flush_payload_upload", False),
+                                                   (3, "flush_boot_hook", True)):
+            with self.subTest(stage=stage):
+                timeout = SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/sync")
+                result = self.run_deploy_cli(
+                    ["--yes"],
+                    patch_actions=True,
+                    patch_upload=True,
+                    flush_side_effect=[None] * (failing_sync - 1) + [timeout],
+                    raises=SystemExit,
+                )
 
-        self.assertEqual(
-            str(result.exception),
-            "The installed files could not be verified on the disk.\n"
-            "managed payload verification failed at /Volumes/dk2/.samba4: missing payload directory\n\n"
-            "Next steps:\n"
-            "  1. Run `tcapsule deploy` again.\n"
-            "  2. If it keeps failing, run `tcapsule fsck`.",
-        )
-        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
-        self.assertNotIn("request", result.mocks.device.calls)
-        self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
-        telemetry_error = self.telemetry_payload("deploy_finished")["error"]
-        self.assertIn("stage=verify_payload_upload_after_sync", telemetry_error)
-        self.assertIn("payload_post_sync_verification=missing payload directory", telemetry_error)
+                self.assertNotIn("request", result.mocks.device.calls)
+                self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, failing_sync)
+                written = {
+                    transfer.destination
+                    for upload in result.mocks.upload_deployment_payload.call_args_list
+                    for transfer in upload.args[0].uploads
+                }
+                self.assertEqual("/mnt/Flash/tcapsulesmb.conf" in written, flash_written)
+                self.assertEqual("/mnt/Flash/rc.local" in written, flash_written)
+                finished = self.telemetry_payload("deploy_finished")
+                self.assertEqual(finished["result"], "failure")
+                self.assertIn(f"stage={stage}", finished["error"])
 
     def test_deploy_declined_confirmation_returns_before_mutation(self) -> None:
         result = self.run_deploy_cli(
@@ -1290,7 +1287,7 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.mocks.run_remote_actions.call_count, 8)
-        self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
+        self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 1)
         self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 3)
         self.assertEqual(result.mocks.device.calls.count("request"), 1)
         self.assertEqual(

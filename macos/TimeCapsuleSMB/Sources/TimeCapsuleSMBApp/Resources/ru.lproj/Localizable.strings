@@ -969,10 +969,6 @@
 "backend.recovery.deploy.remote_error.verify_payload_upload.message" = "Не удалось проверить скопированные файлы установки на диске HFS.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.1" = "Выведите диск из режима ожидания и повторите попытку.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.2" = "Если ошибка повторяется, запустите «Исправление диска».";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.title" = "Файлы установки изменились после сохранения";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.message" = "Скопированные файлы установки не совпали после сохранения записанных данных на диск.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.1" = "Снова запустите «Установить/обновить Samba».";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.2" = "Если ошибка повторяется, запустите «Исправление диска».";
 "backend.recovery.reboot_not_started.title" = "Перезагрузка не началась";
 "backend.recovery.reboot_not_started.message" = "Запрос перезагрузки отправлен, но устройство не перезагрузилось.";
 "backend.recovery.reboot_not_started.action.1" = "Отключите устройство от питания и снова подключите его.";
@@ -1279,8 +1275,6 @@
 "timeline.stage.validate_install.title" = "Проверка пакета приложения";
 "timeline.stage.verify_payload_upload.detail" = "Проверка наличия загруженных файлов.";
 "timeline.stage.verify_payload_upload.title" = "Проверить отправку файлов";
-"timeline.stage.verify_payload_upload_after_sync.detail" = "Повторная проверка файлов установки после синхронизации записи на диск.";
-"timeline.stage.verify_payload_upload_after_sync.title" = "Проверить загрузку после синхронизации";
 "timeline.stage.verify_post_uninstall.title" = "Проверка удаления";
 "timeline.stage.verify_runtime_activation.title" = "Проверить запуск SMB";
 "timeline.stage.verify_runtime_reboot.detail" = "Устройство снова в сети. Ожидание завершения запуска управляемых служб.";

@@ -6,6 +6,7 @@ import sys
 import tempfile
 import os
 import plistlib
+import re
 import unittest
 from contextlib import ExitStack
 from dataclasses import replace
@@ -301,7 +302,7 @@ class DeployModuleTests(unittest.TestCase):
             finish_fields,
         )
 
-    def test_flush_remote_filesystem_writes_syncs_and_waits(self) -> None:
+    def test_flush_remote_filesystem_writes_syncs_with_room_for_a_slow_disk(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             flush_remote_filesystem_writes(connection)
@@ -310,8 +311,7 @@ class DeployModuleTests(unittest.TestCase):
             FLUSH_REMOTE_FILESYSTEMS_COMMAND,
             timeout=FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS,
         )
-        self.assertIn("/bin/sync", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
-        self.assertIn("/bin/sleep 10", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
+        # A slow HFS disk can spend well over 30 s in sync.
         self.assertGreaterEqual(FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS, 300)
 
     def test_run_remote_actions_reports_completed_actions(self) -> None:
@@ -1456,7 +1456,6 @@ class DeployModuleTests(unittest.TestCase):
                 "migrate:copy",
                 "upload:payload",
                 "verify",
-                "verify",
                 "migrate:cleanup",
                 "upload:config",
                 "upload:boot",
@@ -1496,6 +1495,108 @@ class DeployModuleTests(unittest.TestCase):
         )
 
         self.assertEqual(migration_states, [("copy", False), ("cleanup", False)])
+
+    def _deploy_writes_in_order(self, *, legacy: bool, verified: bool = True):
+        """Every remote write, sync, migration phase and verification, in order."""
+        prepared_plan = self._prepared_deploy_plan()
+        events: list[tuple] = []
+
+        def run_actions(_connection, actions, **_kwargs):
+            for action in actions:
+                if isinstance(action, RemovePathsAction):
+                    events.append(("remove", action.paths))
+                elif isinstance(action, InstallPermissionsAction):
+                    events.append(("chmod", tuple(permission.path for permission in action.permissions)))
+
+        def migrate(_connection, _plan, *, phase, inventory, claims):
+            events.append(("migrate", phase))
+            return XattrMigrationResult("migration=complete", ())
+
+        def verify(*_args, **_kwargs):
+            events.append(("verify",))
+            return PayloadVerificationResult(verified, "ok" if verified else "missing smbd")
+
+        inventory = fake_inventory() if legacy else MigrationInventory((), [], [], [], "")
+        callbacks, stages, _logs, _debug, _finish = self._operation_callbacks()
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch(
+                "timecapsulesmb.services.deploy.inventory_metadata", return_value=inventory))
+            if not verified:
+                stack.enter_context(self.assertRaises(DeviceError))
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}),
+                SshConnection("host", "pw", "-o foo"),
+                prepared_plan,
+                DeployRuntimeConfig(),
+                callbacks=callbacks,
+                run_remote_actions_func=run_actions,
+                upload_payload_func=lambda plan, **_kwargs: events.append(
+                    ("upload", tuple(transfer.destination for transfer in plan.uploads))),
+                migrate_xattrs_func=migrate,
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                flush_remote_writes=lambda _connection: events.append(("sync",)),
+                verify_payload_home=verify,
+            )
+        return prepared_plan.plan, events, stages
+
+    def test_the_payload_reaches_the_disk_before_the_boot_hook_and_the_reboot(self) -> None:
+        def first(events, predicate):
+            return next(index for index, event in enumerate(events) if predicate(event))
+
+        def writes(event, path):
+            return event[0] in ("remove", "upload", "chmod") and path in event[1]
+
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                plan, events, stages = self._deploy_writes_in_order(legacy=legacy)
+                syncs = [index for index, event in enumerate(events) if event == ("sync",)]
+                self.assertEqual(len(syncs), 3)
+                after_stop, before_boot_hook, before_reboot = syncs
+                smbd = plan.payload_targets["smbd"]
+
+                # rc.local is gone, and synced, before any metadata conversion
+                # or removal of the old software.
+                self.assertLess(first(events, lambda e: writes(e, "/mnt/Flash/rc.local")), after_stop)
+                self.assertGreater(first(events, lambda e: writes(e, "/mnt/Flash/boot.sh")), after_stop)
+                if legacy:
+                    self.assertGreater(first(events, lambda e: writes(e, plan.migration_upload.destination)), after_stop)
+                    self.assertGreater(events.index(("migrate", "copy")), after_stop)
+
+                # The payload, its permissions and its one verification come
+                # before the sync that precedes the config and the boot hook.
+                self.assertEqual(events.count(("verify",)), 1)
+                self.assertLess(first(events, lambda e: e[0] == "upload" and smbd in e[1]), before_boot_hook)
+                self.assertLess(first(events, lambda e: e[0] == "chmod" and smbd in e[1]), before_boot_hook)
+                self.assertLess(events.index(("verify",)), before_boot_hook)
+                config = first(events, lambda e: e[0] == "upload" and "/mnt/Flash/tcapsulesmb.conf" in e[1])
+                boot_hook = first(events, lambda e: e == ("upload", ("/mnt/Flash/rc.local",)))
+                self.assertGreater(config, before_boot_hook)
+                self.assertGreater(boot_hook, config)
+                if legacy:
+                    self.assertGreater(events.index(("migrate", "cleanup")), before_boot_hook)
+                    self.assertLess(events.index(("migrate", "cleanup")), config)
+
+                # The last sync follows the boot hook and its mode; after it
+                # only the RAM copy of the migrator is removed.
+                self.assertGreater(before_reboot, events.index(("chmod", ("/mnt/Flash/rc.local",))))
+                self.assertEqual(
+                    events[before_reboot + 1:],
+                    [("remove", (plan.migration_upload.destination,))] if legacy else [],
+                )
+                self.assertEqual(stages.count("verify_payload_upload"), 1)
+                self.assertEqual(stages[-1], "flush_boot_hook")
+
+    def test_a_payload_that_fails_verification_never_gets_its_config_or_boot_hook(self) -> None:
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                _plan, events, stages = self._deploy_writes_in_order(legacy=legacy, verified=False)
+                self.assertEqual(events.count(("sync",)), 1)
+                self.assertFalse(any(
+                    event[0] == "upload" and ("/mnt/Flash/tcapsulesmb.conf" in event[1] or "/mnt/Flash/rc.local" in event[1])
+                    for event in events
+                ))
+                self.assertNotIn(("migrate", "cleanup"), events)
+                self.assertEqual(stages[-1], "verify_payload_upload")
 
     def test_afp_stop_failure_aborts_before_migration(self) -> None:
         prepared_plan = self._prepared_deploy_plan()
@@ -4117,6 +4218,31 @@ describe_managed_smbd_status "" ""
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4be", text)
         self.assertIn(f"chmod 755 {payload_dir}/cache", text)
         self.assertIn(f"chmod 700 {payload_dir}/private", text)
+
+    def test_format_deployment_plan_shows_each_sync_where_deploy_runs_it(self) -> None:
+        paths = self._payload_home("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
+        lines = [line.strip() for line in format_deployment_plan(plan).splitlines()]
+
+        def at(text: str) -> int:
+            return lines.index(text)
+
+        # "sync" as a word: rsync's lines do not count.
+        word = re.compile(r"(?<![\w-])sync\b")
+        syncs = [index for index, line in enumerate(lines) if word.search(line)]
+        self.assertEqual([lines[index] for index in syncs], [
+            "sync before any metadata conversion or software removal",
+            "After payload verification, a sync and migration cleanup:",
+            "make rc.local executable, sync, then reboot",
+        ])
+        # After the stop and the rc.local removal, before the old software goes.
+        self.assertGreater(syncs[0], at(render_remote_action(plan.pre_upload_actions[-1])))
+        self.assertLess(syncs[0], at(render_remote_action(plan.replace_software_actions[0])))
+        # After the payload and its permissions, before the config and the boot hook.
+        self.assertGreater(syncs[1], at(render_remote_action(plan.post_upload_actions[-1])))
+        self.assertLess(syncs[1], at(f"upload {plan.config_upload.description} -> {plan.config_upload.destination}"))
+        # After the boot hook, as the last step before the reboot.
+        self.assertGreater(syncs[2], at(f"upload {plan.boot_upload.description} -> {plan.boot_upload.destination}"))
 
     def test_reboot_then_activate_plan_contains_activation_actions(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")

@@ -969,10 +969,6 @@
 "backend.recovery.deploy.remote_error.verify_payload_upload.message" = "The copied installation files could not be checked on the HFS disk.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.1" = "Wake the disk, then try again.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.2" = "If it keeps failing, run “Disk Repair”.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.title" = "The installation files changed after saving";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.message" = "The copied installation files did not match after the writes were saved to the disk.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.1" = "Run “Install / Update Samba” again.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.2" = "If it keeps failing, run “Disk Repair”.";
 "backend.recovery.reboot_not_started.title" = "Reboot did not start";
 "backend.recovery.reboot_not_started.message" = "The reboot request was sent, but the device did not restart.";
 "backend.recovery.reboot_not_started.action.1" = "Power-cycle the device.";
@@ -1279,8 +1275,6 @@
 "timeline.stage.validate_install.title" = "Validating App Bundle";
 "timeline.stage.verify_payload_upload.detail" = "Checking that the uploaded files are present.";
 "timeline.stage.verify_payload_upload.title" = "Verify Upload";
-"timeline.stage.verify_payload_upload_after_sync.detail" = "Checking the payload again after disk flush.";
-"timeline.stage.verify_payload_upload_after_sync.title" = "Verify Flushed Upload";
 "timeline.stage.verify_post_uninstall.title" = "Verifying Removal";
 "timeline.stage.verify_runtime_activation.title" = "Verify SMB Startup";
 "timeline.stage.verify_runtime_reboot.detail" = "Device is back online. Waiting for managed runtime to finish starting.";

@@ -969,10 +969,6 @@
 "backend.recovery.deploy.remote_error.verify_payload_upload.message" = "Les fichiers d’installation copiés n’ont pas pu être vérifiés sur le disque HFS.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.1" = "Sortez le disque de veille, puis réessayez.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.2" = "Si l’échec persiste, lancez « Réparation de disque ».";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.title" = "Les fichiers d’installation ont changé après l’enregistrement";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.message" = "Les fichiers d’installation copiés ne correspondaient plus une fois les écritures enregistrées sur le disque.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.1" = "Relancez « Installer / mettre à jour Samba ».";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.2" = "Si l’échec persiste, lancez « Réparation de disque ».";
 "backend.recovery.reboot_not_started.title" = "Le redémarrage n’a pas commencé";
 "backend.recovery.reboot_not_started.message" = "La demande de redémarrage a été envoyée, mais l’appareil n’a pas redémarré.";
 "backend.recovery.reboot_not_started.action.1" = "Débranchez puis rebranchez l’appareil.";
@@ -1279,8 +1275,6 @@
 "timeline.stage.validate_install.title" = "Vérification du paquet de l’app";
 "timeline.stage.verify_payload_upload.detail" = "Vérification de la présence des fichiers envoyés.";
 "timeline.stage.verify_payload_upload.title" = "Vérifier l’envoi";
-"timeline.stage.verify_payload_upload_after_sync.detail" = "Nouvelle vérification des fichiers d’installation après synchronisation du disque.";
-"timeline.stage.verify_payload_upload_after_sync.title" = "Vérifier l’envoi après synchronisation";
 "timeline.stage.verify_post_uninstall.title" = "Vérification de la suppression";
 "timeline.stage.verify_runtime_activation.title" = "Vérifier le démarrage de SMB";
 "timeline.stage.verify_runtime_reboot.detail" = "L’appareil est de nouveau en ligne. Attente de la fin du démarrage des services gérés.";

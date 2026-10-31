@@ -969,10 +969,6 @@
 "backend.recovery.deploy.remote_error.verify_payload_upload.message" = "无法在 HFS 磁盘上检查已复制的安装文件。";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.1" = "唤醒磁盘，然后重试。";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.2" = "如果仍然失败，请运行“磁盘修复”。";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.title" = "保存后安装文件发生了变化";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.message" = "写入内容保存到磁盘后，已复制的安装文件不再一致。";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.1" = "请再次运行“安装 / 更新 Samba”。";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.2" = "如果仍然失败，请运行“磁盘修复”。";
 "backend.recovery.reboot_not_started.title" = "重启未开始";
 "backend.recovery.reboot_not_started.message" = "重启请求已发送，但设备未重启。";
 "backend.recovery.reboot_not_started.action.1" = "将设备断电重启。";
@@ -1279,8 +1275,6 @@
 "timeline.stage.validate_install.title" = "正在验证应用包";
 "timeline.stage.verify_payload_upload.detail" = "正在检查上传的文件是否存在。";
 "timeline.stage.verify_payload_upload.title" = "验证上传";
-"timeline.stage.verify_payload_upload_after_sync.detail" = "磁盘写入同步后，正在再次检查安装文件。";
-"timeline.stage.verify_payload_upload_after_sync.title" = "验证同步后的上传文件";
 "timeline.stage.verify_post_uninstall.title" = "正在验证移除结果";
 "timeline.stage.verify_runtime_activation.title" = "验证 SMB 启动";
 "timeline.stage.verify_runtime_reboot.detail" = "设备已重新上线。正在等待受管理服务启动完成。";

@@ -921,14 +921,14 @@ Run it after setup, after a deploy, and after a reboot.
 - stops before changing anything while a volume exists only in memory (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory))
 - builds the plan and the configuration on this computer before stopping anything
 - asks before stopping or replacing anything, unless `--yes` is given; answering no leaves the device as it was
-- stops the current and older TimeCapsuleSMB processes and Apple's file servers, and disables `rc.local`
+- stops the current and older TimeCapsuleSMB processes and Apple's file servers, disables `rc.local`, and runs `sync`
 - migrates old metadata (see [Migrating older metadata](#migrating-older-metadata))
 - removes known obsolete programs, keeping data, metadata, quarantined databases, logs, SSH keys and Apple's settings
 - checks the free space on flash, with a small margin
 - uploads `smbd`, `rsync` and `rsyncd.conf` to the payload, and the `service` image, `boot.sh` and `dfree.sh` to flash
-- checks the uploaded sizes and sets file and directory permissions
+- checks the uploaded sizes and sets file and directory permissions, then runs `sync`
 - uploads no password files; the device writes them to RAM at boot from the AirPort password (`syPW`)
-- writes the new `/mnt/Flash/tcapsulesmb.conf` and `rc.local` last, then runs `sync`, waits ten seconds, and runs `sync` again
+- writes the new `/mnt/Flash/tcapsulesmb.conf` and `rc.local` last, then runs `sync` again
 - reboots
 - after the reboot, checks that:
   - `smbd` listens on TCP `445`

@@ -969,10 +969,6 @@
 "backend.recovery.deploy.remote_error.verify_payload_upload.message" = "No se pudieron comprobar en el disco HFS los archivos de instalación copiados.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.1" = "Saque el disco del reposo y vuelva a intentarlo.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.2" = "Si sigue fallando, ejecute «Reparación de disco».";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.title" = "Los archivos de instalación cambiaron después de guardarse";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.message" = "Los archivos de instalación copiados no coincidían después de guardar las escrituras en el disco.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.1" = "Vuelva a ejecutar «Instalar / actualizar Samba».";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.2" = "Si sigue fallando, ejecute «Reparación de disco».";
 "backend.recovery.reboot_not_started.title" = "El reinicio no comenzó";
 "backend.recovery.reboot_not_started.message" = "Se envió la solicitud de reinicio, pero el dispositivo no se reinició.";
 "backend.recovery.reboot_not_started.action.1" = "Desconecte la alimentación del dispositivo y vuelva a conectarla.";
@@ -1279,8 +1275,6 @@
 "timeline.stage.validate_install.title" = "Verificando el paquete de la app";
 "timeline.stage.verify_payload_upload.detail" = "Comprobando que los archivos cargados estén presentes.";
 "timeline.stage.verify_payload_upload.title" = "Verificar carga";
-"timeline.stage.verify_payload_upload_after_sync.detail" = "Comprobando de nuevo los archivos de instalación tras sincronizar las escrituras en disco.";
-"timeline.stage.verify_payload_upload_after_sync.title" = "Verificar la subida tras sincronizar";
 "timeline.stage.verify_post_uninstall.title" = "Comprobando la eliminación";
 "timeline.stage.verify_runtime_activation.title" = "Verificar inicio de SMB";
 "timeline.stage.verify_runtime_reboot.detail" = "El dispositivo vuelve a estar conectado. Esperando a que los servicios administrados terminen de iniciarse.";

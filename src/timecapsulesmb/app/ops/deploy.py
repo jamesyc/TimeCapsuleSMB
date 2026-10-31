@@ -342,9 +342,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         current_upload_stage = stage
         context.stage(stage)
 
-    def log_payload_verification(verification, _post_sync: bool) -> None:
-        context.log(verification.detail)
-
     try:
         upload_and_verify_deployment_payload(
             config,
@@ -369,7 +366,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             initial_upload_stage=None,
             on_uploading=stage_upload,
             on_before_flush=lambda: context.log("Flushing deployed payload to disk..."),
-            on_verified=log_payload_verification,
+            on_verified=lambda verification: context.log(verification.detail),
         )
     except ValueError as exc:
         raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc

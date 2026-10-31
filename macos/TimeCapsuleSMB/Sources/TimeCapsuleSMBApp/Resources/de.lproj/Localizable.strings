@@ -969,10 +969,6 @@
 "backend.recovery.deploy.remote_error.verify_payload_upload.message" = "Die kopierten Installationsdateien konnten auf dem HFS-Datenträger nicht geprüft werden.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.1" = "Wecken Sie den Datenträger auf und versuchen Sie es dann erneut.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.2" = "Wenn es weiterhin fehlschlägt, führen Sie die „Festplattenreparatur“ aus.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.title" = "Die Installationsdateien haben sich nach dem Speichern geändert";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.message" = "Die kopierten Installationsdateien stimmten nicht mehr überein, nachdem die Schreibvorgänge auf der Festplatte gespeichert wurden.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.1" = "Führen Sie „Samba installieren / aktualisieren“ erneut aus.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.2" = "Wenn es weiterhin fehlschlägt, führen Sie die „Festplattenreparatur“ aus.";
 "backend.recovery.reboot_not_started.title" = "Neustart hat nicht begonnen";
 "backend.recovery.reboot_not_started.message" = "Die Neustartanforderung wurde gesendet, aber das Gerät ist nicht neu gestartet.";
 "backend.recovery.reboot_not_started.action.1" = "Trennen Sie das Gerät kurz vom Strom und schließen Sie es wieder an.";
@@ -1279,8 +1275,6 @@
 "timeline.stage.validate_install.title" = "Validierung des App-Pakets";
 "timeline.stage.verify_payload_upload.detail" = "Überprüfung, ob die hochgeladenen Dateien vorhanden sind.";
 "timeline.stage.verify_payload_upload.title" = "Upload überprüfen";
-"timeline.stage.verify_payload_upload_after_sync.detail" = "Die Installationsdateien werden nach der Datenträgersynchronisierung erneut geprüft.";
-"timeline.stage.verify_payload_upload_after_sync.title" = "Nach dem Synchronisieren prüfen";
 "timeline.stage.verify_post_uninstall.title" = "Entfernung wird überprüft";
 "timeline.stage.verify_runtime_activation.title" = "SMB-Start prüfen";
 "timeline.stage.verify_runtime_reboot.detail" = "Das Gerät ist wieder online. Warten, bis die verwalteten Dienste vollständig gestartet sind.";

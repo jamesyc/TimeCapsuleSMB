@@ -969,10 +969,6 @@
 "backend.recovery.deploy.remote_error.verify_payload_upload.message" = "Não foi possível verificar no disco HFS os arquivos de instalação copiados.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.1" = "Retire o disco do modo de espera e tente novamente.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.2" = "Se continuar falhando, execute “Reparo de disco”.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.title" = "Os arquivos de instalação mudaram depois de salvos";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.message" = "Os arquivos de instalação copiados não correspondiam depois que as gravações foram salvas no disco.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.1" = "Execute “Instalar/atualizar Samba” novamente.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.2" = "Se continuar falhando, execute “Reparo de disco”.";
 "backend.recovery.reboot_not_started.title" = "A reinicialização não começou";
 "backend.recovery.reboot_not_started.message" = "A solicitação de reinicialização foi enviada, mas o dispositivo não reiniciou.";
 "backend.recovery.reboot_not_started.action.1" = "Desconecte e reconecte a alimentação do dispositivo.";
@@ -1279,8 +1275,6 @@
 "timeline.stage.validate_install.title" = "Verificando o pacote do app";
 "timeline.stage.verify_payload_upload.detail" = "Verificando se os arquivos enviados estão presentes.";
 "timeline.stage.verify_payload_upload.title" = "Verificar upload";
-"timeline.stage.verify_payload_upload_after_sync.detail" = "Verificando novamente os arquivos de instalação após sincronizar as gravações no disco.";
-"timeline.stage.verify_payload_upload_after_sync.title" = "Verificar envio após sincronização";
 "timeline.stage.verify_post_uninstall.title" = "Verificando a remoção";
 "timeline.stage.verify_runtime_activation.title" = "Verificar inicialização de SMB";
 "timeline.stage.verify_runtime_reboot.detail" = "O dispositivo está online novamente. Aguardando os serviços gerenciados terminarem de iniciar.";

@@ -380,7 +380,6 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "flush_payload_upload",
             "enable_boot",
             "flush_boot_hook",
-            "verify_payload_upload_after_sync",
             "reboot",
             "wait_for_reboot_down",
             "wait_for_reboot_up",

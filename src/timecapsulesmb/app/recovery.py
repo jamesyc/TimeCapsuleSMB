@@ -1122,16 +1122,6 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
-    ("deploy", ErrorCode.REMOTE_ERROR, "verify_payload_upload_after_sync"): RecoveryInfo(
-        "The installation files changed after saving",
-        "The copied installation files did not match after the writes were saved to the disk.",
-        (
-            "Run “Install / Update Samba” again.",
-            "If it keeps failing, run “Disk Repair”.",
-        ),
-        retryable=True,
-        suggested_operation="deploy",
-    ),
     ("deploy", ErrorCode.REMOTE_ERROR, "verify_runtime_reboot"): RecoveryInfo(
         "Runtime not ready",
         "The device rebooted, but the managed Samba runtime did not become healthy.",

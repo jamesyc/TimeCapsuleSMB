@@ -969,10 +969,6 @@
 "backend.recovery.deploy.remote_error.verify_payload_upload.message" = "Nepavyko patikrinti nukopijuotų diegimo failų HFS diske.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.1" = "Pažadinkite diską, tada bandykite dar kartą.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.2" = "Jei vis tiek nepavyksta, paleiskite operaciją „Disko taisymas“.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.title" = "Išsaugojus pasikeitė diegimo failai";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.message" = "Įrašus išsaugojus diske, nukopijuoti diegimo failai nebesutapo.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.1" = "Dar kartą paleiskite „Įdiegti / atnaujinti Samba“.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.2" = "Jei vis tiek nepavyksta, paleiskite operaciją „Disko taisymas“.";
 "backend.recovery.reboot_not_started.title" = "Paleidimas iš naujo neprasidėjo";
 "backend.recovery.reboot_not_started.message" = "Paleidimo iš naujo užklausa išsiųsta, bet įrenginys nebuvo paleistas iš naujo.";
 "backend.recovery.reboot_not_started.action.1" = "Atjunkite įrenginį nuo maitinimo ir vėl prijunkite.";
@@ -1279,8 +1275,6 @@
 "timeline.stage.validate_install.title" = "Tikrinamas programos paketas";
 "timeline.stage.verify_payload_upload.detail" = "Tikrinama, ar įkelti failai yra vietoje.";
 "timeline.stage.verify_payload_upload.title" = "Patvirtinti įkėlimą";
-"timeline.stage.verify_payload_upload_after_sync.detail" = "Diegimo failai dar kartą tikrinami po įrašymo į diską.";
-"timeline.stage.verify_payload_upload_after_sync.title" = "Patvirtinti išvalytą įkėlimą";
 "timeline.stage.verify_post_uninstall.title" = "Tikrinamas pašalinimas";
 "timeline.stage.verify_runtime_activation.title" = "Patvirtinti SMB paleistį";
 "timeline.stage.verify_runtime_reboot.detail" = "Įrenginys vėl veikia. Laukiama, kol valdoma aplinka baigs paleistis.";

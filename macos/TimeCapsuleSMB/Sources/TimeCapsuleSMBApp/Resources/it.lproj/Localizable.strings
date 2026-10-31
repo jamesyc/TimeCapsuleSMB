@@ -969,10 +969,6 @@
 "backend.recovery.deploy.remote_error.verify_payload_upload.message" = "Non è stato possibile controllare sul disco HFS i file di installazione copiati.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.1" = "Risveglia il disco, poi riprova.";
 "backend.recovery.deploy.remote_error.verify_payload_upload.action.2" = "Se continua a non riuscire, esegui “Riparazione disco”.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.title" = "I file di installazione sono cambiati dopo il salvataggio";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.message" = "I file di installazione copiati non corrispondevano più dopo il salvataggio delle scritture sul disco.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.1" = "Esegui di nuovo “Installa/aggiorna Samba”.";
-"backend.recovery.deploy.remote_error.verify_payload_upload_after_sync.action.2" = "Se continua a non riuscire, esegui “Riparazione disco”.";
 "backend.recovery.reboot_not_started.title" = "Il riavvio non è iniziato";
 "backend.recovery.reboot_not_started.message" = "La richiesta di riavvio è stata inviata, ma il dispositivo non si è riavviato.";
 "backend.recovery.reboot_not_started.action.1" = "Scollega e ricollega l’alimentazione del dispositivo.";
@@ -1279,8 +1275,6 @@
 "timeline.stage.validate_install.title" = "Verifica del pacchetto dell’app";
 "timeline.stage.verify_payload_upload.detail" = "Verifica che i file caricati siano presenti.";
 "timeline.stage.verify_payload_upload.title" = "Verifica caricamento";
-"timeline.stage.verify_payload_upload_after_sync.detail" = "Nuova verifica dei file di installazione dopo la sincronizzazione delle scritture su disco.";
-"timeline.stage.verify_payload_upload_after_sync.title" = "Verifica caricamento dopo la sincronizzazione";
 "timeline.stage.verify_post_uninstall.title" = "Verifica della rimozione";
 "timeline.stage.verify_runtime_activation.title" = "Verifica avvio SMB";
 "timeline.stage.verify_runtime_reboot.detail" = "Il dispositivo è di nuovo online. Attesa del completamento dell’avvio dei servizi gestiti.";

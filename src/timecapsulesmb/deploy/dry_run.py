@@ -110,6 +110,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("Remote actions (pre-upload):")
     for command in render_remote_actions(plan.pre_upload_actions):
         lines.append(f"  {command}")
+    lines.append("  sync before any metadata conversion or software removal")
     lines.append("")
     migration_upload = plan.migration_upload
     migration_timeout = _upload_timeout_text(migration_upload.timeout_seconds)
@@ -140,10 +141,10 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     for command in render_remote_actions(plan.post_upload_actions):
         lines.append(f"  {command}")
     lines.append("")
-    lines.append("After payload verification, flush and migration cleanup:")
+    lines.append("After payload verification, a sync and migration cleanup:")
     lines.append(f"  upload {plan.config_upload.description} -> {plan.config_upload.destination}")
     lines.append(f"  upload {plan.boot_upload.description} -> {plan.boot_upload.destination}")
-    lines.append("  make rc.local executable, sync, wait ten seconds, sync, then reboot")
+    lines.append("  make rc.local executable, sync, then reboot")
     lines.append("")
     if plan.activation_actions:
         if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:

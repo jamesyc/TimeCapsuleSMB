@@ -355,7 +355,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 on_uploading=stage_upload,
                 on_uploaded=report_uploaded_file,
                 on_before_post_upload_actions=lambda: print("Applying file permissions...", flush=True),
-                on_before_verify=lambda post_sync: None if post_sync else print("Verifying uploaded payload...", flush=True),
+                on_before_verify=lambda: print("Verifying uploaded payload...", flush=True),
                 on_before_flush=lambda: print("Flushing payload to disk...", flush=True),
             )
         except DeviceError as exc:
