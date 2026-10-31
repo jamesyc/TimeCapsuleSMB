@@ -55,7 +55,7 @@ For a full local release check, run:
 ```bash
 make test-parallel
 swift test --package-path macos/TimeCapsuleSMB
-python3 macos/TimeCapsuleSMB/tools/package_app.py --configuration release --full-validation
+uv run macos/TimeCapsuleSMB/tools/package_app.py --configuration release --full-validation
 ```
 
 Full validation fails if any bundled binary declares a newer minimum macOS than the app's own, 14.0 (`MINIMUM_MACOS` in `package_app.py`).
@@ -93,15 +93,15 @@ On NetBSD 4 LE, build the tests with `SAMBA4X_BUILD_REGRESSION_TESTS=1 ./build/s
 
 ## Release Builds
 
-A pushed `v*` tag builds the release in CI (`.github/workflows/ci.yml`), after the tests, the packaging check, the Intel check and the dependency audit pass for that commit. The audit looks up `pyproject.toml`'s dependencies, resolved for every Python it allows (`uv audit --no-dev`), and the app's pinned packages and build tools in `bundled-requirements.txt` and `build-requirements.txt` (`pip-audit`) in the advisory databases. On other pushes a finding marks the audit job failed without failing the run. A tag with a finding builds nothing until the dependency is upgraded or the step that found it ignores the advisory (`--ignore ID` for `uv audit`, `--ignore-vuln ID` for `pip-audit`) with a comment that says why it does not affect users. The release steps:
+A pushed `v*` tag builds the release in CI (`.github/workflows/ci.yml`), after the tests, the packaging check, the Intel check and the dependency audit pass for that commit. The audit looks up `pyproject.toml`'s dependencies, resolved for every Python it allows (`uv audit --no-dev`), in the advisory databases. The packages the app bundles are resolved when it is packaged, so `pip-audit` checks them in the packaging job and again in Build Release, from the `python-packages.txt` that packaging writes beside the app. On other pushes a finding marks its step failed without failing the run. A tag with a finding builds nothing until the dependency is upgraded or the step that found it ignores the advisory (`--ignore ID` for `uv audit`, `--ignore-vuln ID` for `pip-audit`) with a comment that says why it does not affect users. The release steps:
 
 1. **Build Release** (`macos-26`) checks the tag with `check_release.py`, sets up a temporary signing keychain and the `tcapsulesmb-notary` profile from the `release` environment's secrets, checks that the Sparkle key belongs to the app (so a wrong certificate, notary key or Sparkle key fails in the first minute), and runs the release command:
 
    ```bash
-   python3 macos/TimeCapsuleSMB/tools/package_app.py --configuration release --arch universal --zip --full-validation --codesign-identity "Developer ID Application: Yushen Chang (M22Z394H44)" --notarize --notary-profile tcapsulesmb-notary
+   uv run macos/TimeCapsuleSMB/tools/package_app.py --configuration release --arch universal --zip --full-validation --codesign-identity "Developer ID Application: Yushen Chang (M22Z394H44)" --notarize --notary-profile tcapsulesmb-notary
    ```
 
-   It then writes `appcast.xml` with `sparkle_appcast.py`, signing the zip with the Sparkle key. That refuses a key that does not belong to the app's `SUPublicEDKey` and an app that is not universal.
+   It then audits the bundled packages and writes `appcast.xml` with `sparkle_appcast.py`, signing the zip with the Sparkle key. That refuses a key that does not belong to the app's `SUPublicEDKey` and an app that is not universal.
 2. **Check Release on Intel** (`macos-15-intel`) launches the signed, notarized app's code on a real Intel Mac (`package_app.py --check-app`) and runs Gatekeeper's assessment (`spctl -a -t exec`) on it.
 3. **Create Draft Release** makes a draft release for the tag with `TimeCapsuleSMB.app.zip` and `appcast.xml`. A hidden build's draft is a prerelease.
 
@@ -122,7 +122,7 @@ Export the `.p12` from Keychain Access's login keychain, under "My Certificates"
 
 ## Packaging The App
 
-`macos/TimeCapsuleSMB/tools/package_app.py` needs `uv`. It installs the app's Python packages from `macos/TimeCapsuleSMB/tools/bundled-requirements.txt` and builds the project with the tools pinned in `build-requirements.txt`, checking everything it downloads by hash. Its uv commands ignore uv's configuration files and take only releases at least a day old, and dependabot waits the same day before it proposes a new pin. After changing a dependency or `[build-system]` in `pyproject.toml`, or `PYTHON_RUNTIME_VERSION` in `package_app.py`, regenerate both files with `python3 macos/TimeCapsuleSMB/tools/update_python_requirements.py` (Python 3.11 or newer). It keeps the versions already pinned where they still fit; add `--upgrade` to move every pin to the newest release that is at least a day old. A new `PYTHON_RUNTIME_VERSION` also needs its package's `PYTHON_RUNTIME_SHA256`: download the package from python.org, check that `pkgutil --check-signature` names `Developer ID Installer: Python Software Foundation (BMM5U3QVKW)`, a team ID a lookalike certificate cannot share, and says Apple notarized it, and only then record `shasum -a 256` of it. Never copy the hash from packaging's mismatch error, which reports whatever was downloaded.
+Run `macos/TimeCapsuleSMB/tools/package_app.py` with `uv run`, which gives it the Python 3.15 its header asks for, on an Apple silicon Mac: zeroconf publishes its Python 3.15 macOS wheels for arm64 only, and packaging installs wheels only. Nothing is pinned. Each build bundles the newest final Python 3.15 that python.org publishes as `python-3.15.N-macos11.pkg`, and only when `pkgutil --check-signature` names `Developer ID Installer: Python Software Foundation (BMM5U3QVKW)`, a team ID a lookalike certificate cannot share, and Gatekeeper accepts the package (`spctl -a -t install`). It then installs the newest releases of the project's dependencies and certifi that have wheels, and builds the project with the newest build tools. Its uv commands ignore uv's configuration files and take only releases at least a day old. The build log names the bundled Python and lists the packages, and `dist/python-packages.txt` holds both: a `# Python 3.15.N` line, then `name==version` lines. CI keys its package cache on that file, `package_app.py` and the app icon, so a new Python or package release saves a new cache and a change to the sources alone does not. To move to the next Python series, change `PYTHON_RUNTIME_SERIES` in `package_app.py` and the `requires-python` in its header and `sparkle_appcast.py`'s; a test fails until all three agree.
 
 A universal build on Apple silicon runs the smoke test (the helper's requests, the app's launch and the bundled Python imports) a second time as x86_64, under Rosetta. A Mac without Rosetta skips that pass and says so. Nothing relies on it: the "Check App on Intel" CI job runs the x86_64 half on a real Intel Mac.
 
