@@ -10,6 +10,7 @@ import platform
 import plistlib
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -2508,6 +2509,295 @@ def test_package_app_result_includes_zip_and_notarization_archive(
     assert "Bundled Python runtime: 3.15.2\n" in capsys.readouterr().err
 
 
+
+def test_the_disk_image_shows_the_app_beside_applications_with_the_apps_icon(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    background = tmp_path / "drawn" / "background.png"
+
+    settings = package_app.dmg_settings(app, background)
+
+    assert (settings["format"], settings["filesystem"]) == ("ULMO", "HFS+")
+    assert settings["files"] == [str(app)]
+    assert settings["symlinks"] == {"Applications": "/Applications"}
+    assert settings["icon"] == str(app / "Contents" / "Resources" / "TimeCapsuleSMB.icns")
+    assert settings["background"] == str(background)
+    # The window is the background's content area with Finder's title bar above it.
+    assert settings["window_rect"] == ((200, 120), (640, 440))
+    assert settings["icon_size"] == 128
+    assert settings["icon_locations"] == {"TimeCapsuleSMB.app": (170, 160), "Applications": (470, 160)}
+    # A hidden extension is a Finder flag on the bundle, which strict codesign rejects.
+    assert "hide_extensions" not in settings
+
+
+def test_the_background_is_drawn_for_the_windows_own_layout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    commands: list[list[str]] = []
+    monkeypatch.setattr(package_app, "run", lambda cmd, **kwargs: commands.append(cmd))
+    monkeypatch.setattr(package_app, "DMG_CONTENT_SIZE", (500, 300))
+    monkeypatch.setattr(package_app, "DMG_APP_POSITION", (120, 110))
+    monkeypatch.setattr(package_app, "DMG_APPLICATIONS_POSITION", (380, 110))
+
+    assert package_app.draw_dmg_background(tmp_path) == tmp_path / "background.png"
+
+    # The same values lay out the window, so the arrow follows any change to
+    # them. The picture is as tall as the frame (300 + the 40-point title bar),
+    # so a shorter real title bar still leaves no plain strip at the bottom.
+    assert commands == [[
+        "xcrun", "swift", str(package_app.DMG_BACKGROUND_SCRIPT), str(tmp_path),
+        "500", "340", "120", "110", "380", "110",
+    ]]
+
+
+def png_size(path: Path) -> tuple[int, int]:
+    """Width and height from a PNG's IHDR, the first chunk."""
+    return struct.unpack(">II", path.read_bytes()[16:24])
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not shutil.which("xcrun"), reason="draws with AppKit and SF Symbols")
+@pytest.mark.parametrize("content", [(640, 400), (500, 320)])
+def test_the_background_script_fills_any_content_area_at_1x_and_2x(tmp_path: Path, content: tuple[int, int]) -> None:
+    package_app = load_package_app_module()
+    width, height = content
+    subprocess.run(
+        ["xcrun", "swift", str(package_app.DMG_BACKGROUND_SCRIPT), str(tmp_path), str(width), str(height),
+         "170", "160", "470", "160"],
+        check=True, capture_output=True,
+    )
+
+    # 1x for standard displays, 2x for Retina, both covering the same points.
+    assert png_size(tmp_path / "background.png") == (width, height)
+    assert png_size(tmp_path / "background@2x.png") == (width * 2, height * 2)
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not shutil.which("xcrun"), reason="runs the Swift script")
+def test_the_background_script_refuses_an_incomplete_layout(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    completed = subprocess.run(
+        ["xcrun", "swift", str(package_app.DMG_BACKGROUND_SCRIPT), str(tmp_path), "640", "400", "x"],
+        capture_output=True, text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "usage: dmg_background.swift" in completed.stderr
+    assert not (tmp_path / "background.png").exists()
+
+
+def test_create_app_dmg_builds_over_the_drawn_background_then_validates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    calls: list[object] = []
+    dmg = tmp_path / "dist" / "TimeCapsuleSMB.dmg"
+    dmg.parent.mkdir()
+    dmg.write_bytes(b"old image")
+
+    def draw(directory: Path) -> Path:
+        calls.append("draw")
+        (directory / "background.png").write_bytes(b"png")
+        return directory / "background.png"
+
+    def build(filename: str, volume_name: str, settings: dict[str, object]) -> None:
+        background = Path(settings["background"])
+        calls.append(("build", filename, volume_name, settings["files"], Path(filename).exists(), background.read_bytes()))
+
+    monkeypatch.setitem(sys.modules, "dmgbuild", SimpleNamespace(build_dmg=build))
+    monkeypatch.setattr(package_app, "draw_dmg_background", draw)
+    monkeypatch.setattr(package_app, "validate_app_dmg", lambda path, name: calls.append(("validate", path, name)))
+    app = tmp_path / "TimeCapsuleSMB.app"
+
+    package_app.create_app_dmg(app, dmg)
+
+    # The old image is gone before dmgbuild writes the new one over the fresh background.
+    assert calls == [
+        "draw",
+        ("build", str(dmg), "TimeCapsuleSMB", [str(app)], False, b"png"),
+        ("validate", dmg, "TimeCapsuleSMB.app"),
+    ]
+
+
+def mount_disk_image(monkeypatch: pytest.MonkeyPatch, package_app, contents, *, detach_fails: bool = False) -> list[list[str]]:
+    """hdiutil attach fills the mount point with `contents(mountpoint)`; the
+    commands run are returned, detach included."""
+    commands: list[list[str]] = []
+
+    def fake_run_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        if cmd[:2] == ["hdiutil", "attach"]:
+            contents(Path(cmd[cmd.index("-mountpoint") + 1]))
+        elif detach_fails:
+            raise subprocess.CalledProcessError(16, cmd, "", "hdiutil: couldn't unmount disk7")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(package_app, "run_quiet", fake_run_quiet)
+    monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: commands.append(["verify", app.name]))
+    return commands
+
+
+def complete_volume(mountpoint: Path, *, app: bool = True, link: str | None = "/Applications", icon: bool = True,
+                    appledouble: bool = False) -> None:
+    if app:
+        (mountpoint / "TimeCapsuleSMB.app" / "Contents").mkdir(parents=True)
+    if link is not None:
+        (mountpoint / "Applications").symlink_to(link)
+    if icon:
+        (mountpoint / ".VolumeIcon.icns").write_bytes(b"icns")
+    if appledouble:
+        (mountpoint / "._TimeCapsuleSMB.app").write_bytes(b"")
+
+
+def test_a_complete_disk_image_is_mounted_read_only_checked_and_detached(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    commands = mount_disk_image(monkeypatch, package_app, complete_volume)
+
+    package_app.validate_app_dmg(tmp_path / "TimeCapsuleSMB.dmg", "TimeCapsuleSMB.app")
+
+    attach, verify, detach = commands
+    assert attach[:5] == ["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen"]
+    assert attach[-1] == str(tmp_path / "TimeCapsuleSMB.dmg")
+    assert verify == ["verify", "TimeCapsuleSMB.app"]
+    # Forced, by the mount point, which ejects the whole read-only image.
+    assert detach == ["hdiutil", "detach", "-force", attach[attach.index("-mountpoint") + 1]]
+
+
+def test_a_detach_that_fails_stops_packaging(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    mount_disk_image(monkeypatch, package_app, complete_volume, detach_fails=True)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        package_app.validate_app_dmg(tmp_path / "TimeCapsuleSMB.dmg", "TimeCapsuleSMB.app")
+
+
+@pytest.mark.parametrize("volume,problem", [
+    ({"app": False}, "does not hold TimeCapsuleSMB.app"),
+    ({"link": None}, "no Applications link"),
+    ({"link": "/Users/someone/Applications"}, "no Applications link"),
+    ({"icon": False}, "no volume icon"),
+    ({"appledouble": True}, "AppleDouble"),
+])
+def test_an_incomplete_disk_image_fails_and_is_still_detached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, volume: dict[str, object], problem: str,
+) -> None:
+    package_app = load_package_app_module()
+    commands = mount_disk_image(monkeypatch, package_app, lambda mountpoint: complete_volume(mountpoint, **volume))
+
+    with pytest.raises(RuntimeError, match=problem):
+        package_app.validate_app_dmg(tmp_path / "TimeCapsuleSMB.dmg", "TimeCapsuleSMB.app")
+    assert commands[-1][:3] == ["hdiutil", "detach", "-force"]
+
+
+def test_a_disk_image_is_signed_with_a_timestamp_and_verified(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    commands: list[list[str]] = []
+    monkeypatch.setattr(package_app, "run", lambda cmd, **kwargs: commands.append(cmd))
+    dmg = tmp_path / "TimeCapsuleSMB.dmg"
+
+    package_app.codesign_dmg(dmg, "Developer ID Application: Example (TEAMID)")
+
+    assert commands == [
+        ["codesign", "--force", "--timestamp", "--sign", "Developer ID Application: Example (TEAMID)", str(dmg)],
+        ["codesign", "--verify", "--verbose=2", str(dmg)],
+    ]
+
+
+def test_a_disk_image_is_notarized_stapled_and_assessed_as_opened(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    calls: list[object] = []
+    monkeypatch.setattr(package_app, "notarize_archive", lambda path, profile, timeout: calls.append(("notarize", path, profile, timeout)) or "id-1")
+    monkeypatch.setattr(package_app, "staple_notarization_ticket", lambda path: calls.append(("staple", path)))
+    monkeypatch.setattr(package_app.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "accepted"))
+    dmg = tmp_path / "TimeCapsuleSMB.dmg"
+
+    assert package_app.notarize_dmg(dmg, profile="tcapsulesmb-notary", timeout="30m") == "id-1"
+
+    assert calls == [
+        ("notarize", dmg, "tcapsulesmb-notary", "30m"),
+        ("staple", dmg),
+        ["spctl", "-a", "-t", "open", "--context", "context:primary-signature", "-vvv", str(dmg)],
+    ]
+
+
+def test_gatekeeper_refusing_the_disk_image_stops_packaging(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app.subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 3, "", "rejected\nsource=no usable signature"))
+
+    with pytest.raises(RuntimeError, match="Gatekeeper assessment failed:\nrejected"):
+        package_app.assert_gatekeeper_accepts(tmp_path / "TimeCapsuleSMB.dmg", "open", "--context", "context:primary-signature")
+
+
+def packaging_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **args: object) -> tuple[list[str], object]:
+    """package_app with every step faked, recording the steps after the app
+    is built, in order."""
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    build = tmp_path / "swift-build"
+    build.mkdir()
+    for name in ("TimeCapsuleSMB", "tcapsule"):
+        (build / name).write_text("#!/bin/sh\n", encoding="utf-8")
+    steps: list[str] = []
+    for name, fake in {
+        "resolve_architectures": lambda arch: ("arm64",),
+        "uv_executable": lambda: "uv",
+        "build_swift": lambda configuration, architectures: (build / "TimeCapsuleSMB", build / "tcapsule", build),
+        "copy_resources": lambda source, resources: None,
+        "copy_helper_executable": lambda source, destination: None,
+        "copy_python_runtime": lambda args, resources, architectures: resources / "python3",
+        "python_version": lambda python: "3.15.2",
+        "create_python_packages": lambda python, resources, architectures, use_cache=True: PACKAGES,
+        "finalize_python_bundle": lambda resources, *, sign: None,
+        "copy_distribution": lambda resources: None,
+        "add_framework_rpath": lambda executable: None,
+        "strip_debug_map": lambda executable: None,
+        "copy_sparkle_framework": lambda build_dir, app: None,
+        "remove_appledouble_files": lambda app: None,
+        "assert_no_appledouble_files": lambda app: None,
+        "assert_bundle_layout": lambda app, **kwargs: None,
+        "ad_hoc_codesign_app_bundle": lambda app: steps.append("sign app ad hoc"),
+        "developer_id_codesign_app_bundle": lambda app, identity, *, use_cache: steps.append("sign app"),
+        "notarize_app": lambda app, output_dir, **kwargs: steps.append("notarize and staple app"),
+        "create_app_zip": lambda app, zip_path: steps.append(f"zip {zip_path.name}"),
+        "create_app_dmg": lambda app, dmg_path: steps.append(f"dmg {dmg_path.name}"),
+        "codesign_dmg": lambda dmg_path, identity: steps.append("sign dmg"),
+        "notarize_dmg": lambda dmg_path, **kwargs: steps.append("notarize and staple dmg"),
+    }.items():
+        monkeypatch.setattr(package_app, name, fake)
+    values = dict(
+        arch="native", configuration="debug", output=tmp_path / "dist", icon=None, no_cache=False,
+        full_validation=False, skip_smoke=True, codesign_identity=None, notarize=False,
+        notary_profile="tcapsulesmb-notary", notary_timeout="30m", zip=False, zip_output=None, dmg=False, dmg_output=None,
+    )
+    values.update(args)
+    result = package_app.package_app(SimpleNamespace(**values))
+    return steps, result
+
+
+def test_a_release_disk_image_is_built_from_the_stapled_app_then_signed_and_notarized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    steps, result = packaging_order(
+        monkeypatch, tmp_path, zip=True, dmg=True, notarize=True, codesign_identity="Developer ID Application: Example (TEAMID)",
+    )
+
+    assert steps == [
+        "sign app", "notarize and staple app", "zip TimeCapsuleSMB.app.zip",
+        "dmg TimeCapsuleSMB.dmg", "sign dmg", "notarize and staple dmg",
+    ]
+    assert result.dmg_path == tmp_path / "dist" / "TimeCapsuleSMB.dmg"
+
+
+def test_an_unsigned_disk_image_is_only_built(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    steps, result = packaging_order(monkeypatch, tmp_path, dmg_output=tmp_path / "out" / "custom.dmg")
+
+    # --dmg-output alone asks for the image.
+    assert steps == ["sign app ad hoc", "dmg custom.dmg"]
+    assert result.dmg_path == tmp_path / "out" / "custom.dmg"
+
+
+def test_no_disk_image_unless_asked(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    steps, result = packaging_order(monkeypatch, tmp_path, zip=True)
+
+    assert steps == ["sign app ad hoc", "zip TimeCapsuleSMB.app.zip"]
+    assert result.dmg_path is None
+
+
 def test_main_prints_labeled_artifact_paths(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -2518,6 +2808,7 @@ def test_main_prints_labeled_artifact_paths(
         app=tmp_path / "TimeCapsuleSMB.app",
         notarization_archive=tmp_path / "TimeCapsuleSMB-notary.zip",
         zip_path=tmp_path / "TimeCapsuleSMB.app.zip",
+        dmg_path=tmp_path / "TimeCapsuleSMB.dmg",
     )
     monkeypatch.setattr(package_app, "package_app", lambda args: result)
 
@@ -2527,6 +2818,7 @@ def test_main_prints_labeled_artifact_paths(
         f"App bundle: {result.app}",
         f"Notarization archive: {result.notarization_archive}",
         f"Distributable zip: {result.zip_path}",
+        f"Disk image: {result.dmg_path}",
     ]
 
 

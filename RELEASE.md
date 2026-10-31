@@ -22,15 +22,15 @@ mounted-share checks documented in `tests/samba/README.md`.
 
 ## Release Assets
 
-The primary user-facing release asset is `TimeCapsuleSMB.app.zip` on the GitHub release page. GitHub shows the SHA256 digest for uploaded release assets in the asset metadata. Users can verify a downloaded app zip with:
+People download `TimeCapsuleSMB.dmg` from the GitHub release page: a signed, notarized disk image that holds the app beside a link to Applications. GitHub shows the SHA256 digest of each release asset. Users can check a downloaded image with:
 
 ```bash
-shasum -a 256 TimeCapsuleSMB.app.zip
+shasum -a 256 TimeCapsuleSMB.dmg
 ```
 
 The digest printed by `shasum` should match the `sha256:` value shown for the asset on GitHub.
 
-Each release also carries `appcast.xml`, the feed the app's updater reads; it is not for users to download.
+Each release also carries `TimeCapsuleSMB.app.zip` and `appcast.xml`, which the app's updater reads. Apps from before the updater open the newest release's page, whose notes point to the disk image. The downloaded `.dmg` file shows the generic disk image icon in Finder: a file's own icon does not survive GitHub's upload and a browser download. The mounted volume has the app's icon.
 
 ## Checked-In Device Artifacts
 
@@ -55,7 +55,7 @@ For a full local release check, run:
 ```bash
 make test-parallel
 swift test --package-path macos/TimeCapsuleSMB
-uv run macos/TimeCapsuleSMB/tools/package_app.py --configuration release --full-validation
+uv run macos/TimeCapsuleSMB/tools/package_app.py --configuration release --dmg --full-validation
 ```
 
 Full validation fails if any bundled binary declares a newer minimum macOS than the app's own, 14.0 (`MINIMUM_MACOS` in `package_app.py`).
@@ -98,12 +98,12 @@ A pushed `v*` tag builds the release in CI (`.github/workflows/ci.yml`), after t
 1. **Build Release** (`macos-26`) checks the tag with `check_release.py`, sets up a temporary signing keychain and the `tcapsulesmb-notary` profile from the `release` environment's secrets, checks that the Sparkle key belongs to the app (so a wrong certificate, notary key or Sparkle key fails in the first minute), and runs the release command:
 
    ```bash
-   uv run macos/TimeCapsuleSMB/tools/package_app.py --configuration release --arch universal --zip --full-validation --codesign-identity "Developer ID Application: Yushen Chang (M22Z394H44)" --notarize --notary-profile tcapsulesmb-notary
+   uv run macos/TimeCapsuleSMB/tools/package_app.py --configuration release --arch universal --zip --dmg --full-validation --codesign-identity "Developer ID Application: Yushen Chang (M22Z394H44)" --notarize --notary-profile tcapsulesmb-notary
    ```
 
-   It then audits the bundled packages and writes `appcast.xml` with `sparkle_appcast.py`, signing the zip with the Sparkle key. That refuses a key that does not belong to the app's `SUPublicEDKey` and an app that is not universal.
-2. **Check Release on Intel** (`macos-15-intel`) launches the signed, notarized app's code on a real Intel Mac (`package_app.py --check-app`) and runs Gatekeeper's assessment (`spctl -a -t exec`) on it.
-3. **Create Draft Release** makes a draft release for the tag with `TimeCapsuleSMB.app.zip` and `appcast.xml`. A hidden build's draft is a prerelease.
+   After notarizing and stapling the app, it zips it and builds `TimeCapsuleSMB.dmg` from it, signs the image, notarizes it and staples its ticket, and checks that Gatekeeper accepts it (`spctl -a -t open --context context:primary-signature`). It then audits the bundled packages and writes `appcast.xml` with `sparkle_appcast.py`, signing the zip with the Sparkle key. That refuses a key that does not belong to the app's `SUPublicEDKey` and an app that is not universal.
+2. **Check Release on Intel** (`macos-15-intel`) launches the signed, notarized app's code on a real Intel Mac (`package_app.py --check-app`), runs Gatekeeper's assessment (`spctl -a -t exec`) on it, and assesses the disk image as Gatekeeper does when it is opened.
+3. **Create Draft Release** makes a draft release for the tag with `TimeCapsuleSMB.dmg`, `TimeCapsuleSMB.app.zip` and `appcast.xml`. A hidden build's draft is a prerelease.
 
 Nothing reaches users until the draft is published. Never push a `v*` tag to try the workflow: every one starts a release. A run that fails or builds something wrong publishes nothing; fix it, delete the draft (and the tag, if the fix needs a new commit) and push the tag again.
 
@@ -141,7 +141,7 @@ A universal build on Apple silicon runs the smoke test (the helper's requests, t
 - Rebuild any changed NetBSD artifacts and update `artifact-manifest.json`.
 - For Samba changes, run the device regression tests on NetBSD 6 (full suite) and NetBSD 4 LE (the cases that fit).
 - Push the release commit to `main`, then push its tag (`git tag v<version> && git push origin v<version>`).
-- When the run has made the draft, download its `TimeCapsuleSMB.app.zip`, unzip it, move the app out of Downloads with Finder (macOS runs a downloaded app from a read-only copy until Finder moves it, and Sparkle cannot update that copy), open it, and check that Check for Updates... is enabled.
+- When the run has made the draft, download its `TimeCapsuleSMB.dmg`, open it, drag the app to Applications, open it from there, and check that Check for Updates... is enabled. An app run from the disk image itself is read-only, and Sparkle cannot update it.
 - Write the release notes in the draft, with compatibility or flash-safety warnings when applicable.
 - Publish with "Set as the latest release" ticked. A hidden build's draft is a prerelease: publish it as a prerelease, never as the latest release, so it never becomes the feed.
 - Confirm the asset SHA256 digests are visible on GitHub.

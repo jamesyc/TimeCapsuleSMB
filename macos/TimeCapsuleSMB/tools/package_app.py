@@ -1,7 +1,9 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.15,<3.16"
-# dependencies = []
+# dependencies = ["dmgbuild"]
+# [tool.uv]
+# exclude-newer = "1 day"
 # ///
 from __future__ import annotations
 
@@ -128,10 +130,12 @@ class PackageResult:
         *,
         app: Path,
         zip_path: Path | None = None,
+        dmg_path: Path | None = None,
         notarization_archive: Path | None = None,
     ) -> None:
         self.app = app
         self.zip_path = zip_path
+        self.dmg_path = dmg_path
         self.notarization_archive = notarization_archive
 
 
@@ -2050,6 +2054,122 @@ def create_app_zip(app: Path, zip_path: Path) -> None:
     validate_app_zip(zip_path, app.name)
 
 
+# The disk image people download: the app beside an Applications link, over
+# a gray arrow, with the app's icon as the volume's. These values lay out
+# both the window and its background, which tools/dmg_background.swift draws
+# for them on every build, so the arrow always sits between the icons.
+DMG_SCREEN_ORIGIN = (200, 120)
+# The content area, in points, below Finder's title bar; the window's frame
+# is both together. Where a Mac shows Finder's tab, path or status bars they
+# cover about the bottom 80 points, so the icons sit above the middle.
+DMG_CONTENT_SIZE = (640, 400)
+DMG_TITLE_BAR = 40
+DMG_ICON_SIZE = 128
+# Icon centres in the content area, counted from its top left.
+DMG_APP_POSITION = (170, 160)
+DMG_APPLICATIONS_POSITION = (470, 160)
+DMG_BACKGROUND_SCRIPT = PACKAGE_ROOT / "tools" / "dmg_background.swift"
+
+
+def draw_dmg_background(directory: Path) -> Path:
+    """Draw the background for the layout above; dmgbuild finds the
+    background@2x.png written beside the returned 1x picture."""
+    width, height = DMG_CONTENT_SIZE
+    # As tall as the whole frame: Finder pins the picture to the content's top
+    # left, and its real title bar is shorter than DMG_TITLE_BAR, so a picture
+    # only as tall as the content would stop short of the window's bottom.
+    run([
+        "xcrun", "swift", str(DMG_BACKGROUND_SCRIPT), str(directory),
+        *map(str, (width, height + DMG_TITLE_BAR, *DMG_APP_POSITION, *DMG_APPLICATIONS_POSITION)),
+    ])
+    return directory / "background.png"
+
+
+def dmg_settings(app: Path, background: Path) -> dict[str, object]:
+    width, height = DMG_CONTENT_SIZE
+    return {
+        # ULMO (LZMA) is the smallest format; every macOS the app runs on reads it.
+        "format": "ULMO",
+        "filesystem": "HFS+",
+        "files": [str(app)],
+        "symlinks": {"Applications": "/Applications"},
+        "icon": str(app / "Contents" / "Resources" / APP_ICON_FILE),
+        "background": str(background),
+        "window_rect": (DMG_SCREEN_ORIGIN, (width, height + DMG_TITLE_BAR)),
+        "icon_size": DMG_ICON_SIZE,
+        "icon_locations": {app.name: DMG_APP_POSITION, "Applications": DMG_APPLICATIONS_POSITION},
+        "show_status_bar": False,
+        "show_tab_view": False,
+        "show_toolbar": False,
+        "show_pathbar": False,
+        "show_sidebar": False,
+        # No hide_extensions: hiding the .app extension sets a Finder flag on
+        # the bundle, which `codesign --verify --strict` rejects as detritus.
+    }
+
+
+@timed_step("Creating disk image")
+def create_app_dmg(app: Path, dmg_path: Path) -> None:
+    # Imported here: tests and sparkle_appcast.py import this module without it.
+    import dmgbuild
+
+    if dmg_path.exists():
+        dmg_path.unlink()
+    dmg_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-dmg-background-") as tmp:
+        background = draw_dmg_background(Path(tmp))
+        dmgbuild.build_dmg(str(dmg_path), APP_NAME, settings=dmg_settings(app, background))
+    validate_app_dmg(dmg_path, app.name)
+
+
+@contextlib.contextmanager
+def attached_dmg(dmg_path: Path) -> Iterator[Path]:
+    """The image mounted read-only, hidden from Finder, on a private folder;
+    detached afterwards whatever happens."""
+    with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-dmg-") as tmp:
+        mountpoint = Path(tmp) / "volume"
+        mountpoint.mkdir()
+        run_quiet(["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", str(mountpoint), str(dmg_path)])
+        try:
+            yield mountpoint
+        finally:
+            # Detaching the mount point ejects the whole image. Forced because
+            # a volume macOS has only just mounted can be busy for a moment
+            # (Spotlight, fseventsd); the image is read-only, so nothing is lost.
+            run_quiet(["hdiutil", "detach", "-force", str(mountpoint)])
+
+
+@timed_step("Mounting and validating disk image")
+def validate_app_dmg(dmg_path: Path, app_name: str) -> None:
+    """The image holds the signed app, the Applications link and the volume
+    icon, and no AppleDouble files; it is always detached again."""
+    with attached_dmg(dmg_path) as mountpoint:
+        app = mountpoint / app_name
+        if not app.is_dir():
+            raise RuntimeError(f"Disk image does not hold {app_name}: {dmg_path}")
+        applications = mountpoint / "Applications"
+        if not applications.is_symlink() or os.readlink(applications) != "/Applications":
+            raise RuntimeError(f"Disk image has no Applications link to /Applications: {dmg_path}")
+        if not (mountpoint / ".VolumeIcon.icns").is_file():
+            raise RuntimeError(f"Disk image has no volume icon: {dmg_path}")
+        assert_no_appledouble_files(mountpoint)
+        assert_app_bundle_signature_valid(app)
+
+
+@timed_step("Signing disk image")
+def codesign_dmg(dmg_path: Path, identity: str) -> None:
+    run(["codesign", "--force", "--timestamp", "--sign", identity, str(dmg_path)])
+    run(["codesign", "--verify", "--verbose=2", str(dmg_path)])
+
+
+def notarize_dmg(dmg_path: Path, *, profile: str, timeout: str) -> str:
+    """notarytool takes a disk image as it is; its ticket is stapled to the image."""
+    submission_id = notarize_archive(dmg_path, profile, timeout)
+    staple_notarization_ticket(dmg_path)
+    assert_gatekeeper_accepts(dmg_path, "open", "--context", "context:primary-signature")
+    return submission_id
+
+
 def notarization_archive_path(output_dir: Path) -> Path:
     return output_dir / f"{APP_NAME}-notary.zip"
 
@@ -2113,9 +2233,11 @@ def staple_notarization_ticket(app: Path) -> None:
 
 
 @timed_step("Checking Gatekeeper acceptance")
-def assert_gatekeeper_accepts_app(app: Path) -> None:
+def assert_gatekeeper_accepts(path: Path, assessment: str = "exec", *options: str) -> None:
+    """spctl's verdict for `path` as an app to run ("exec") or a disk image
+    to open ("open")."""
     completed = subprocess.run(
-        ["spctl", "-a", "-t", "exec", "-vvv", str(app)],
+        ["spctl", "-a", "-t", assessment, *options, "-vvv", str(path)],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -2134,7 +2256,7 @@ def notarize_app(app: Path, output_dir: Path, *, profile: str, timeout: str) -> 
     create_notarization_archive(app, archive)
     submission_id = notarize_archive(archive, profile, timeout)
     staple_notarization_ticket(app)
-    assert_gatekeeper_accepts_app(app)
+    assert_gatekeeper_accepts(app)
     return submission_id
 
 
@@ -2222,7 +2344,16 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
     if getattr(args, "zip", False) or getattr(args, "zip_output", None):
         zip_path = (args.zip_output or (output_dir / f"{APP_NAME}.app.zip")).resolve()
         create_app_zip(app, zip_path)
-    return PackageResult(app=app, zip_path=zip_path, notarization_archive=notarization_archive)
+    dmg_path: Path | None = None
+    if getattr(args, "dmg", False) or getattr(args, "dmg_output", None):
+        # From the stapled app, so the copy people drag out carries its ticket.
+        dmg_path = (args.dmg_output or (output_dir / f"{APP_NAME}.dmg")).resolve()
+        create_app_dmg(app, dmg_path)
+        if args.codesign_identity:
+            codesign_dmg(dmg_path, args.codesign_identity)
+        if args.notarize:
+            notarize_dmg(dmg_path, profile=args.notary_profile, timeout=args.notary_timeout)
+    return PackageResult(app=app, zip_path=zip_path, dmg_path=dmg_path, notarization_archive=notarization_archive)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -2274,6 +2405,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--zip", action="store_true", help="Create and validate TimeCapsuleSMB.app.zip next to the app bundle.")
     parser.add_argument("--zip-output", type=Path, help="Zip output path; implies --zip.")
     parser.add_argument(
+        "--dmg",
+        action="store_true",
+        help="Create and validate TimeCapsuleSMB.dmg next to the app bundle; signed with "
+        "--codesign-identity and notarized with --notarize, as the app is.",
+    )
+    parser.add_argument("--dmg-output", type=Path, help="Disk image output path; implies --dmg.")
+    parser.add_argument(
         "--check-app",
         type=Path,
         help="Build nothing: launch an existing TimeCapsuleSMB.app's code on this Mac (its app, Python and helper checks).",
@@ -2308,6 +2446,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Notarization archive: {result.notarization_archive}")
     if result.zip_path is not None:
         print(f"Distributable zip: {result.zip_path}")
+    if result.dmg_path is not None:
+        print(f"Disk image: {result.dmg_path}")
     return 0
 
 

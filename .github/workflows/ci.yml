@@ -185,6 +185,7 @@ jobs:
             --configuration release \
             --arch universal \
             --zip \
+            --dmg \
             --full-validation
 
       - name: Name the package cache
@@ -211,7 +212,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: TimeCapsuleSMB-app
-          path: macos/TimeCapsuleSMB/dist/TimeCapsuleSMB.app.zip
+          path: macos/TimeCapsuleSMB/dist/TimeCapsuleSMB.dmg
           if-no-files-found: error
           retention-days: 3
           # "Re-run all jobs" uploads it again within the same run.
@@ -242,9 +243,11 @@ jobs:
       - name: Launch the app's code on Intel
         run: |
           test "$(uname -m)" = x86_64
-          # ditto keeps the bundle's symlinks and permissions, as a user's unzip does.
-          ditto -x -k "$RUNNER_TEMP/app/TimeCapsuleSMB.app.zip" "$RUNNER_TEMP/app"
-          uv run macos/TimeCapsuleSMB/tools/package_app.py --check-app "$RUNNER_TEMP/app/TimeCapsuleSMB.app"
+          # The app as people get it: from the disk image, read-only.
+          mkdir -p "$RUNNER_TEMP/volume"
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$RUNNER_TEMP/volume" "$RUNNER_TEMP/app/TimeCapsuleSMB.dmg"
+          trap 'hdiutil detach "$RUNNER_TEMP/volume"' EXIT
+          uv run macos/TimeCapsuleSMB/tools/package_app.py --check-app "$RUNNER_TEMP/volume/TimeCapsuleSMB.app"
 
   # A pushed v* tag builds the release: signed, notarized, its appcast
   # written, checked on a real Intel Mac, then left as a draft release for the
@@ -368,6 +371,7 @@ jobs:
             --configuration release \
             --arch universal \
             --zip \
+            --dmg \
             --full-validation \
             --codesign-identity "$SIGNING_IDENTITY" \
             --notarize \
@@ -395,6 +399,7 @@ jobs:
         with:
           name: release-files
           path: |
+            macos/TimeCapsuleSMB/dist/TimeCapsuleSMB.dmg
             macos/TimeCapsuleSMB/dist/TimeCapsuleSMB.app.zip
             macos/TimeCapsuleSMB/dist/appcast.xml
           if-no-files-found: error
@@ -445,6 +450,8 @@ jobs:
           app="$RUNNER_TEMP/release/app/TimeCapsuleSMB.app"
           uv run macos/TimeCapsuleSMB/tools/package_app.py --check-app "$app"
           spctl -a -t exec -vvv "$app"
+          # The disk image people download, as Gatekeeper judges it when opened.
+          spctl -a -t open --context context:primary-signature -vvv "$RUNNER_TEMP/release/TimeCapsuleSMB.dmg"
 
   release-draft:
     name: Create Draft Release
@@ -483,7 +490,9 @@ jobs:
             --draft \
             --verify-tag \
             --title "$GITHUB_REF_NAME" \
-            --notes "### macOS GUI installer app (for macOS 14+)" \
+            --notes "### macOS app (for macOS 14+)
+          Download **TimeCapsuleSMB.dmg**, open it, and drag TimeCapsuleSMB to Applications. The app installs later updates itself; \`TimeCapsuleSMB.app.zip\` and \`appcast.xml\` are for that." \
             "${prerelease[@]}" \
+            release/TimeCapsuleSMB.dmg \
             release/TimeCapsuleSMB.app.zip \
             release/appcast.xml
