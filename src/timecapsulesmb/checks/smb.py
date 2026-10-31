@@ -133,7 +133,7 @@ def _smbclient_base_args(smbclient: str) -> list[str]:
 
 def _smbclient_env() -> dict[str, str]:
     env = {
-        "PATH": os.environ.get("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
         "HOME": os.environ.get("HOME", ""),
         "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
         "LANG": os.environ.get("LANG", "C"),

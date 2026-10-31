@@ -307,8 +307,6 @@
 "bundle_issue.recovery.reinstall" = "Installieren Sie TimeCapsuleSMB neu.";
 "bundle_issue.state_directory_unavailable.message" = "TimeCapsuleSMB kann sein Verzeichnis für den Laufzeitstatus nicht schreiben.";
 "bundle_issue.state_directory_unavailable.recovery" = "Reparieren Sie die Zugriffsrechte für das konfigurierte Statusverzeichnis.";
-"bundle_issue.tools_directory_missing.message" = "Mitgelieferte Befehlszeilenwerkzeuge fehlen.";
-"bundle_issue.tools_directory_missing.recovery" = "Einige Diagnosefunktionen sind möglicherweise erst nach Reparatur des App-Pakets verfügbar.";
 "bundle_issue.unsupported_version.message" = "Diese TimeCapsuleSMB-Version wird nicht unterstützt.";
 "bundle_issue.unsupported_version.recovery" = "Aktualisieren Sie TimeCapsuleSMB.";
 "bundle_issue.version_metadata_unavailable.message" = "Update-Metadaten sind nicht verfügbar.";

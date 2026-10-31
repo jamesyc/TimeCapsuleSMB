@@ -10,12 +10,10 @@ import json
 import os
 import platform
 import plistlib
-import posixpath
 import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import threading
 import time
@@ -70,14 +68,9 @@ PYTHON_RUNTIME_CACHE_VERSION = 2
 # 3: uv installs the pinned requirements files instead of pip.
 PYTHON_SITE_PACKAGES_CACHE_VERSION = 3
 APP_ICON_CACHE_VERSION = 1
-# 2: Homebrew's arm64 samba 4.25.0 links its own libraries through @rpath; cached
-# layers from version 1 left those references pointing into the Cellar.
-# 3: tools come from pinned macOS Sonoma bottles instead of the installed Homebrew.
-NATIVE_TOOLS_CACHE_VERSION = 3
 DEFAULT_NOTARY_PROFILE = "tcapsulesmb-notary"
 DEFAULT_NOTARY_TIMEOUT = "30m"
 CACHE_COMPLETE_MARKER = ".complete"
-CACHE_MANIFEST_FILE = "manifest.json"
 _MACHO_INSPECTIONS: ContextVar[dict[tuple[str, Path], object] | None] = ContextVar("macho_inspections", default=None)
 _MACHO_TOOL_CACHE: ContextVar[MachoToolCache | None] = ContextVar("macho_tool_cache", default=None)
 # Bump when a cached tool's command or output parsing changes.
@@ -109,26 +102,11 @@ APP_ICON_ENTRIES = [
     ("icon_512x512.png", 512),
     ("icon_512x512@2x.png", 1024),
 ]
-REQUIRED_HOST_TOOLS = ("smbclient",)
-# The bundled tools come from Homebrew bottles built on macOS 14 (Sonoma), not
-# from the packaging Mac's Homebrew: a Mac on a newer macOS gets bottles built
-# for it, which v3.1.2's first build shipped. samba 4.24.6 (homebrew-core
-# d2c74899bd, 2026-08-13) is the last version with Sonoma bottles for both
-# architectures, and every runtime dependency its bottles record has Sonoma
-# bottles at those versions (checked 2026-09-30). The dependencies come from the
-# bottles' own records, so they are the versions samba was built against.
-HOMEBREW_BOTTLE_ROOTS = {"samba": "4.24.6"}
-HOMEBREW_BOTTLE_TAGS = {"arm64": "arm64_sonoma", "x86_64": "sonoma"}
-HOMEBREW_TOOL_FORMULAE = {"smbclient": "samba"}
-HOMEBREW_BOTTLES_CACHE_VERSION = 1
-GHCR_URL = "https://ghcr.io"
-GHCR_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
-# Sonoma bottles of samba declare macOS 14.8; the app still opens on 14.0
-# because dyld does not enforce a binary's minimum macOS (a binary declaring
-# 30.0 ran on 26.6.2). What fails on an older macOS is a missing symbol, and
-# these bottles were built against the macOS 14.5 SDK. A bundled binary that
-# declares more than this was built for a newer macOS than we support.
-MAXIMUM_BUNDLED_MINIMUM_MACOS = "14.8"
+# The oldest macOS the app supports, as in Package.swift's platforms. dyld does
+# not enforce a binary's declared minimum macOS (a binary declaring 30.0 ran on
+# 26.6.2): one built for a newer macOS opens and then fails on a missing symbol,
+# so full validation refuses a bundled binary that declares more than this.
+MINIMUM_MACOS = "14.0"
 BONJOUR_SERVICE_TYPES = [
     "_airport._tcp",
     "_smb._tcp",
@@ -276,8 +254,7 @@ def macho_tool_cache(enabled: bool = True) -> Iterator[None]:
 def macho_tool(args: list[str], path: Path, *, keep_pass: bool = True, keep_failure: bool = True) -> subprocess.CompletedProcess[str]:
     """Run a read-only Mach-O tool on path, or reuse its output for the same
     bytes during a packaging run (MachoToolCache)."""
-    # A path that is not there (the tool layer is checked without the app's
-    # executables) has no bytes to key on; the tool itself reports it.
+    # A path that is not there has no bytes to key on; the tool itself reports it.
     cache = _MACHO_TOOL_CACHE.get() if path.is_file() else None
 
     def kept(completed: subprocess.CompletedProcess[str]) -> bool:
@@ -432,7 +409,7 @@ def write_info_plist(contents_dir: Path, *, languages: list[str], icon_name: str
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": APP_VERSION,
         "CFBundleVersion": APP_VERSION_CODE,
-        "LSMinimumSystemVersion": "14.0",
+        "LSMinimumSystemVersion": MINIMUM_MACOS,
         "NSBonjourServices": BONJOUR_SERVICE_TYPES,
         "NSHighResolutionCapable": True,
         "NSLocalNetworkUsageDescription": "TimeCapsuleSMB discovers and connects to Apple AirPort devices on your local network.",
@@ -691,359 +668,11 @@ def replace_path(source: Path, destination: Path) -> None:
     shutil.move(str(source), str(destination))
 
 
-def copy_path(source: Path, destination: Path) -> None:
-    if destination.exists() or destination.is_symlink():
-        if destination.is_dir() and not destination.is_symlink():
-            shutil.rmtree(destination)
-        else:
-            destination.unlink()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if source.is_dir():
-        shutil.copytree(source, destination, symlinks=True)
-    else:
-        shutil.copy2(source, destination)
-
-
-def cache_manifest_path(entry: Path) -> Path:
-    return entry / CACHE_MANIFEST_FILE
-
-
-def input_fingerprint(path: Path) -> dict[str, str]:
-    resolved = path.resolve()
-    return {"path": str(resolved), "sha256": sha256_file(resolved)}
-
-
-def input_fingerprints(paths: list[Path] | set[Path]) -> list[dict[str, str]]:
-    return [input_fingerprint(path) for path in sorted({path.resolve() for path in paths})]
-
-
-def write_cache_manifest(entry: Path, manifest: dict[str, object]) -> None:
-    cache_manifest_path(entry).write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def read_cache_manifest(entry: Path) -> dict[str, object] | None:
-    path = cache_manifest_path(entry)
-    if not path.is_file():
-        return None
-    value = json.loads(path.read_text(encoding="utf-8"))
-    return value if isinstance(value, dict) else None
-
-
-def cache_manifest_inputs_miss_reason(entry: Path) -> str | None:
-    manifest = read_cache_manifest(entry)
-    if manifest is None:
-        return "cache manifest is missing"
-    inputs = manifest.get("inputs")
-    if not isinstance(inputs, list):
-        return "cache manifest inputs are invalid"
-    for record in inputs:
-        if not isinstance(record, dict):
-            return "cache manifest input record is invalid"
-        path_value = record.get("path")
-        sha256_value = record.get("sha256")
-        if not isinstance(path_value, str) or not isinstance(sha256_value, str):
-            return "cache manifest input record is incomplete"
-        path = Path(path_value)
-        if not path.is_file():
-            return f"cached input is missing: {path}"
-        current_sha256 = sha256_file(path)
-        if current_sha256 != sha256_value:
-            return f"cached input changed: {path}"
-    return None
-
-
-def cache_manifest_output_miss_reason(entry: Path, output_root: Path) -> str | None:
-    manifest = read_cache_manifest(entry)
-    if manifest is None:
-        return "cache manifest is missing"
-    expected = manifest.get("output_tree_sha256")
-    if not isinstance(expected, str):
-        return "cache manifest output hash is invalid"
-    if not output_root.is_dir():
-        return f"cached output directory is missing: {output_root}"
-    if sha256_tree(output_root) != expected:
-        return f"cached output tree changed: {output_root}"
-    return None
-
-
 def download_file(url: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(url, timeout=60) as response:
         with destination.open("wb") as handle:
             shutil.copyfileobj(response, handle)
-
-
-class GhcrClient:
-    """Anonymous reads from Homebrew's bottle registry, ghcr.io/homebrew/core."""
-
-    def __init__(self, urlopen=None) -> None:
-        self._urlopen = urlopen or urllib.request.urlopen
-        self._tokens: dict[str, str] = {}
-
-    @staticmethod
-    def repository(formula: str) -> str:
-        # Homebrew's own mapping of formula names to registry paths.
-        return "homebrew/core/" + formula.replace("@", "/").replace("+", "x")
-
-    def _token(self, formula: str) -> str:
-        repository = self.repository(formula)
-        if repository not in self._tokens:
-            url = f"{GHCR_URL}/token?service=ghcr.io&scope=repository:{repository}:pull"
-            with self._urlopen(url, timeout=60) as response:
-                self._tokens[repository] = json.load(response)["token"]
-        return self._tokens[repository]
-
-    def open(self, formula: str, path: str, *, accept: str | None = None):
-        headers = {"Authorization": f"Bearer {self._token(formula)}"}
-        if accept:
-            headers["Accept"] = accept
-        request = urllib.request.Request(f"{GHCR_URL}/v2/{self.repository(formula)}/{path}", headers=headers)
-        return self._urlopen(request, timeout=60)
-
-    def json(self, formula: str, path: str, *, accept: str | None = None) -> dict:
-        with self.open(formula, path, accept=accept) as response:
-            value = json.load(response)
-        if not isinstance(value, dict):
-            raise RuntimeError(f"Unexpected registry response for {formula} {path}")
-        return value
-
-
-def bottle_entry_name(version: str, tag: str, rebuild: int) -> str:
-    """A bottle's name inside its version's manifest index. Rebuild N of a
-    version is tagged <version>-N but its entries are <version>.<tag>.N."""
-    return f"{version}.{tag}" + (f".{rebuild}" if rebuild else "")
-
-
-def bottle_rebuilds(tags: list[str], version: str) -> list[tuple[int, str]]:
-    """The registry tags of one version's rebuilds, newest first."""
-    rebuilds: list[tuple[int, str]] = []
-    for tag in tags:
-        if tag == version:
-            rebuilds.append((0, tag))
-        elif match := re.fullmatch(re.escape(version) + r"-(\d+)", tag):
-            rebuilds.append((int(match.group(1)), tag))
-    return sorted(rebuilds, reverse=True)
-
-
-def resolve_bottle(client: GhcrClient, formula: str, version: str, tag: str) -> tuple[dict[str, object], dict]:
-    """The newest rebuild of formula at version with a bottle for tag, or with
-    an "all" bottle (data-only formulae such as ca-certificates)."""
-    rebuilds = bottle_rebuilds(client.json(formula, "tags/list").get("tags") or [], version)
-    for rebuild, reference in rebuilds:
-        index = client.json(formula, f"manifests/{reference}", accept=GHCR_INDEX_MEDIA_TYPE)
-        entries = {
-            entry.get("annotations", {}).get("org.opencontainers.image.ref.name"): entry.get("annotations", {})
-            for entry in index.get("manifests", [])
-        }
-        for candidate in (tag, "all"):
-            name = bottle_entry_name(version, candidate, rebuild)
-            annotations = entries.get(name)
-            if annotations is None:
-                continue
-            digest = annotations.get("sh.brew.bottle.digest", "")
-            if not re.fullmatch(r"[0-9a-f]{64}", digest):
-                raise RuntimeError(f"Bottle {name} of {formula} has no valid digest")
-            return {"formula": formula, "version": version, "reference": reference, "bottle": name,
-                    "sha256": digest}, annotations
-    tried = ", ".join(reference for _, reference in rebuilds) or "none"
-    raise RuntimeError(f"No {tag} or all bottle of {formula} {version} (registry tags tried: {tried})")
-
-
-def bottle_runtime_dependencies(formula: str, annotations: dict) -> list[tuple[str, str]]:
-    try:
-        tab = json.loads(annotations["sh.brew.tab"])
-        return [(str(item["full_name"]), str(item["pkg_version"])) for item in tab.get("runtime_dependencies") or []]
-    except (KeyError, TypeError, ValueError) as error:
-        raise RuntimeError(f"Bottle of {formula} has no readable runtime dependency record") from error
-
-
-def resolve_homebrew_bottles(client: GhcrClient, architecture: str) -> list[dict[str, object]]:
-    """Every bottle the pinned tools need on one architecture.
-
-    A bottle's record lists all of its formula's runtime dependencies,
-    indirect ones included, at the versions it was built against; each
-    dependency's own record must name only formulae already in the set.
-    """
-    tag = HOMEBREW_BOTTLE_TAGS[architecture]
-    resolved: dict[str, dict[str, object]] = {}
-    needs: dict[str, list[tuple[str, str]]] = {}
-
-    def add(formula: str, version: str, wanted_by: str) -> None:
-        if formula in resolved:
-            if resolved[formula]["version"] != version:
-                raise RuntimeError(f"{wanted_by} needs {formula} {version}, but {resolved[formula]['version']} is already selected")
-            return
-        record, annotations = resolve_bottle(client, formula, version, tag)
-        resolved[formula] = record
-        needs[formula] = bottle_runtime_dependencies(formula, annotations)
-
-    for root, version in HOMEBREW_BOTTLE_ROOTS.items():
-        add(root, version, "pin")
-        for formula, dependency_version in needs[root]:
-            add(formula, dependency_version, root)
-    for formula, dependencies in needs.items():
-        missing = [name for name, _ in dependencies if name not in resolved]
-        if missing:
-            raise RuntimeError(f"{formula} needs {', '.join(missing)}, which no pinned bottle records")
-    return [resolved[name] for name in sorted(resolved)]
-
-
-def homebrew_bottles_dir() -> Path:
-    return package_cache_dir("homebrew-bottles")
-
-
-def cached_bottle_resolution(client: GhcrClient, architecture: str, *, use_cache: bool) -> list[dict[str, object]]:
-    key = cache_key({
-        "kind": "homebrew-bottles",
-        "version": HOMEBREW_BOTTLES_CACHE_VERSION,
-        "roots": HOMEBREW_BOTTLE_ROOTS,
-        "tag": HOMEBREW_BOTTLE_TAGS[architecture],
-    })
-    path = homebrew_bottles_dir() / "resolved" / f"{architecture}-{key}.json"
-    if use_cache and path.is_file():
-        try:
-            records = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(records, list) and records and all(
-                isinstance(record, dict) and re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256", "")))
-                for record in records
-            ):
-                return records
-        except ValueError:
-            pass
-    records = resolve_homebrew_bottles(client, architecture)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(records, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(path)
-    return records
-
-
-def fetch_bottle(client: GhcrClient, record: dict[str, object]) -> Path:
-    """The bottle file, downloaded once and kept under its own sha256."""
-    digest = str(record["sha256"])
-    blob = homebrew_bottles_dir() / "blobs" / f"{digest}.tar.gz"
-    if blob.is_file() and sha256_file(blob) == digest:
-        return blob
-    blob.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Downloading {record['bottle']} of {record['formula']}.", file=sys.stderr)
-    partial = blob.with_name(blob.name + ".part")
-    try:
-        with client.open(str(record["formula"]), f"blobs/sha256:{digest}") as response, partial.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
-        actual = sha256_file(partial)
-        if actual != digest:
-            raise RuntimeError(f"Bottle {record['bottle']} of {record['formula']} has sha256 {actual}, expected {digest}")
-        partial.replace(blob)
-    finally:
-        partial.unlink(missing_ok=True)
-    return blob
-
-
-def safe_bottle_members(archive: tarfile.TarFile, formula: str, version: str) -> list[tarfile.TarInfo]:
-    """Every member, checked to stay inside <formula>/<version>/.
-
-    A bottle holds only that folder; anything else (an absolute or .. path, a
-    link leading out of it, a device or hard link) is refused before writing.
-    """
-    keg = f"{formula}/{version}"
-    members = archive.getmembers()
-    for member in members:
-        name = member.name.rstrip("/")
-        parts = name.split("/")
-        if name.startswith("/") or ".." in parts or not (name == formula or name == keg or name.startswith(keg + "/")):
-            raise RuntimeError(f"Bottle of {formula} holds a path outside {keg}: {member.name}")
-        if not (member.isfile() or member.isdir() or member.issym()):
-            raise RuntimeError(f"Bottle of {formula} holds an unsupported entry: {member.name}")
-        if member.issym():
-            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), member.linkname))
-            if member.linkname.startswith("/") or not target.startswith(keg + "/"):
-                raise RuntimeError(f"Bottle of {formula} links {member.name} outside {keg}: {member.linkname}")
-    return members
-
-
-def extract_bottle(blob: Path, record: dict[str, object]) -> Path:
-    """The bottle's keg folder, unpacked once next to its blob."""
-    formula, version, digest = str(record["formula"]), str(record["version"]), str(record["sha256"])
-    entry = homebrew_bottles_dir() / "kegs" / digest
-    keg = entry / formula / version
-    if (entry / CACHE_COMPLETE_MARKER).is_file() and keg.is_dir():
-        return keg
-    entry.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f"{digest}.tmp-", dir=entry.parent) as tmp:
-        staging = Path(tmp) / "entry"
-        staging.mkdir()
-        with tarfile.open(blob, "r:gz") as archive:
-            members = safe_bottle_members(archive, formula, version)
-            # The members are checked above; the tar filter is a second guard
-            # where Python has it (3.12+ and security backports).
-            options = {"filter": "tar"} if hasattr(tarfile, "tar_filter") else {}
-            archive.extractall(staging, members=members, **options)
-        if not (staging / formula / version).is_dir():
-            raise RuntimeError(f"Bottle {record['bottle']} of {formula} does not hold {formula}/{version}")
-        # Bottles ship read-only folders; a later cleanup must be able to remove them.
-        for path in [staging, *staging.rglob("*")]:
-            if path.is_dir() and not path.is_symlink():
-                path.chmod(path.stat().st_mode | 0o700)
-        mark_cache_complete(staging)
-        replace_path(staging, entry)
-    return keg
-
-
-class HomebrewBottles:
-    """The unpacked kegs of every pinned bottle, per architecture."""
-
-    def __init__(self, records: dict[str, list[dict[str, object]]], kegs: dict[str, dict[str, Path]],
-                 blobs: list[Path]) -> None:
-        self.records = records
-        self.kegs = kegs
-        self.blobs = blobs
-
-    def tool(self, tool: str, architecture: str) -> Path:
-        path = self.kegs[architecture][HOMEBREW_TOOL_FORMULAE[tool]] / "bin" / tool
-        if not path.is_file():
-            raise RuntimeError(f"Bottle of {HOMEBREW_TOOL_FORMULAE[tool]} has no bin/{tool}")
-        return path
-
-
-@timed_step("Preparing pinned native tool bottles")
-def prepare_homebrew_bottles(architectures: tuple[str, ...], *, use_cache: bool = True,
-                             client: GhcrClient | None = None) -> HomebrewBottles:
-    client = client or GhcrClient()
-    records: dict[str, list[dict[str, object]]] = {}
-    kegs: dict[str, dict[str, Path]] = {}
-    blobs: list[Path] = []
-    for architecture in architectures:
-        records[architecture] = cached_bottle_resolution(client, architecture, use_cache=use_cache)
-        kegs[architecture] = {}
-        for record in records[architecture]:
-            blob = fetch_bottle(client, record)
-            blobs.append(blob)
-            kegs[architecture][str(record["formula"])] = extract_bottle(blob, record)
-    return HomebrewBottles(records, kegs, blobs)
-
-
-def homebrew_placeholder_path(path: str, kegs: dict[str, Path]) -> Path | None:
-    """Where a bottle's @@HOMEBREW_...@@ reference points among the unpacked
-    kegs, or None for a path without a placeholder. Homebrew fills these in
-    when it installs a bottle; packaging never installs one."""
-    if path.startswith("@@HOMEBREW_CELLAR@@/"):
-        formula, version, *rest = path.removeprefix("@@HOMEBREW_CELLAR@@/").split("/")
-        keg = kegs.get(formula)
-        if keg is None or keg.name != version:
-            raise RuntimeError(f"Bottle reference {path} names no pinned keg")
-        return keg.joinpath(*rest)
-    if path.startswith("@@HOMEBREW_PREFIX@@/opt/"):
-        formula, *rest = path.removeprefix("@@HOMEBREW_PREFIX@@/opt/").split("/")
-        keg = kegs.get(formula)
-        if keg is None:
-            raise RuntimeError(f"Bottle reference {path} names no pinned keg")
-        return keg.joinpath(*rest)
-    if path.startswith("@@"):
-        raise RuntimeError(f"Unsupported bottle placeholder: {path}")
-    return None
 
 
 def python_runtime_pkg(args: argparse.Namespace) -> Path:
@@ -1516,68 +1145,6 @@ def macho_architectures(path: Path) -> set[str]:
     return set(completed.stdout.strip().split())
 
 
-def copy_arch_tool(source: Path, tools_bin: Path, name: str, architecture: str) -> None:
-    destination = tools_bin / architecture / name
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
-    destination.chmod(0o755)
-
-
-def write_tool_arch_wrapper(tools_bin: Path, name: str, architectures: tuple[str, ...]) -> None:
-    cases = "\n".join(
-        f"    {architecture}) exec \"$tool_dir/{architecture}/{name}\" \"$@\" ;;"
-        for architecture in architectures
-    )
-    wrapper = tools_bin / name
-    wrapper.write_text(
-        f"""#!/bin/sh
-set -eu
-tool_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-arch="$(/usr/bin/uname -m)"
-case "$arch" in
-{cases}
-esac
-echo "{name} is not bundled for architecture $arch" >&2
-exit 127
-""",
-        encoding="utf-8",
-    )
-    wrapper.chmod(0o755)
-
-
-def bottle_tool_sources(bottles: HomebrewBottles, architectures: tuple[str, ...]) -> dict[tuple[str, str], Path]:
-    return {(tool, architecture): bottles.tool(tool, architecture)
-            for tool in REQUIRED_HOST_TOOLS for architecture in architectures}
-
-
-def copy_tools_from_sources(
-    resources_dir: Path,
-    architectures: tuple[str, ...],
-    sources: dict[tuple[str, str], Path],
-) -> dict[Path, tuple[Path, str]]:
-    """Copy each tool into Tools/bin; returns each copy's source and architecture."""
-    tools_bin = resources_dir / "Tools" / "bin"
-    tools_bin.mkdir(parents=True, exist_ok=True)
-    copies: dict[Path, tuple[Path, str]] = {}
-
-    if len(architectures) == 1:
-        architecture = architectures[0]
-        for tool in REQUIRED_HOST_TOOLS:
-            source = sources[(tool, architecture)]
-            destination = tools_bin / tool
-            shutil.copy2(source, destination)
-            destination.chmod(0o755)
-            copies[destination] = (source, architecture)
-        return copies
-
-    for tool in REQUIRED_HOST_TOOLS:
-        for architecture in architectures:
-            copy_arch_tool(sources[(tool, architecture)], tools_bin, tool, architecture)
-            copies[tools_bin / architecture / tool] = (sources[(tool, architecture)], architecture)
-        write_tool_arch_wrapper(tools_bin, tool, architectures)
-    return copies
-
-
 @cached_macho_inspection
 def macho_dependencies(path: Path) -> list[str] | None:
     completed = macho_tool(["otool", "-L"], path)
@@ -1679,39 +1246,9 @@ def resolve_macho_dependency(loader: Path, app: Path, dependency: str) -> Path |
     return None
 
 
-def bundled_dependency_name(source: Path, used_names: set[str], *, preferred_name: str | None = None) -> str:
-    name = preferred_name or source.name
-    if name not in used_names:
-        used_names.add(name)
-        return name
-    digest = hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:10]
-    suffix = "".join(source.suffixes)
-    stem = source.name[: -len(suffix)] if suffix else source.name
-    candidate = f"{stem}-{digest}{suffix}"
-    used_names.add(candidate)
-    return candidate
-
-
-def loader_path_reference(loader: Path, dependency: Path, frameworks_dir: Path) -> str:
-    relative_frameworks = os.path.relpath(frameworks_dir, loader.parent)
-    relative_dependency = Path(relative_frameworks) / dependency.name
-    return f"@loader_path/{relative_dependency.as_posix()}"
-
-
 def is_library_like_macho(path: Path) -> bool:
     framework_binary = path.parent.name.endswith(".framework") and path.name == path.parent.stem
     return path.suffix in {".dylib", ".so"} or framework_binary or path.parent.name in {"lib", "private"}
-
-
-def set_macho_id_if_supported(path: Path) -> None:
-    if not is_library_like_macho(path):
-        return
-    subprocess.run(
-        ["install_name_tool", "-id", f"@loader_path/{path.name}", str(path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
 
 
 def files_under(roots: list[Path]) -> list[Path]:
@@ -1737,20 +1274,11 @@ def macho_files_under(roots: list[Path]) -> list[Path]:
     return [path for path in files_under(roots) if is_macho_candidate(path)]
 
 
-def macho_vendor_roots(app: Path) -> list[Path]:
-    contents = app / "Contents"
-    return macho_files_under([
-        contents / "Resources" / "Tools" / "bin",
-        contents / "Frameworks",
-    ])
-
-
 def macho_validation_roots(app: Path) -> list[Path]:
     contents = app / "Contents"
     return macho_files_under([
         contents / "MacOS",
         contents / "Helpers",
-        contents / "Resources" / "Tools" / "bin",
         contents / "Resources" / "Python" / "Runtime",
         contents / "Resources" / "Python" / "site-packages",
         contents / "Frameworks",
@@ -1798,8 +1326,8 @@ class DeveloperIdSignatureCache:
     Signing a file that is not a bundle's main executable depends only on its
     bytes, its name (the default identifier) and the certificate; the secure
     timestamp records when it was signed, and an older one is as valid for
-    notarization. Every run used to re-sign over 300 unchanged Python and
-    native tool files, each waiting on Apple's timestamp server.
+    notarization. Every run used to re-sign hundreds of unchanged Python
+    files, each waiting on Apple's timestamp server.
     """
 
     def __init__(self, root: Path, certificate: str) -> None:
@@ -1876,7 +1404,7 @@ def nested_helper_code_paths(app: Path) -> list[Path]:
 
 @timed_step("Ad-hoc signing app and helper")
 def ad_hoc_codesign_app_bundle(app: Path) -> None:
-    # Python.framework and the tool libraries are signed where they are added;
+    # Python.framework and site-packages are signed where they are added;
     # Sparkle is copied in last and its seal broken, so it is signed here.
     # Autoupdate is Sparkle's one executable that no bundle signs for it.
     autoupdate = sparkle_framework(app) / "Versions" / "B" / "Autoupdate"
@@ -1920,19 +1448,6 @@ def finalize_python_bundle(resources_dir: Path, *, sign: bool = True) -> None:
             ad_hoc_codesign_site_packages(site_packages)
 
 
-def codesign_order(path: Path, app: Path) -> tuple[int, str]:
-    try:
-        relative = path.resolve().relative_to(app.resolve())
-    except ValueError:
-        return (50, str(path))
-    parts = relative.parts
-    if len(parts) >= 3 and parts[:2] == ("Contents", "MacOS"):
-        return (90, str(path))
-    if len(parts) >= 2 and parts[:2] == ("Contents", "Frameworks"):
-        return (10, str(path))
-    return (20, str(path))
-
-
 def should_codesign_packaged_macho(path: Path, app: Path) -> bool:
     try:
         relative = path.resolve().relative_to(app.resolve())
@@ -1943,15 +1458,6 @@ def should_codesign_packaged_macho(path: Path, app: Path) -> bool:
         ("Contents", "Frameworks"),
         ("Contents", "Resources"),
     }
-
-
-def ad_hoc_codesign_macho_bundle(app: Path) -> None:
-    for path in sorted(macho_validation_roots(app), key=lambda candidate: codesign_order(candidate, app)):
-        if should_codesign_packaged_macho(path, app) and macho_architectures(path):
-            ad_hoc_codesign(path)
-    framework = bundled_python_framework(app)
-    if framework.is_dir():
-        ad_hoc_codesign(framework)
 
 
 @timed_step("Signing app and bundled binaries with Developer ID")
@@ -1980,233 +1486,6 @@ def developer_id_codesign_app_bundle(app: Path, identity: str, *, use_cache: boo
     for bundle in nested_bundles(app):
         developer_id_codesign(bundle, identity)
     developer_id_codesign(app, identity)
-
-
-def vendor_macho_dependencies(
-    app: Path,
-    *,
-    kegs: dict[str, dict[str, Path]] | None = None,
-    tool_sources: dict[Path, tuple[Path, str]] | None = None,
-) -> set[Path]:
-    """Copy every library the bundled tools load from outside the app into
-    Frameworks and point their references at the copies.
-
-    tool_sources maps each bundled tool to the bottle file it was copied from
-    and its architecture; kegs holds that architecture's unpacked bottles,
-    where the bottles' @@HOMEBREW_...@@ references resolve.
-    """
-    frameworks_dir = app / "Contents" / "Frameworks"
-    frameworks_dir.mkdir(exist_ok=True)
-    source_to_bundle: dict[Path, Path] = {}
-    bundle_to_source: dict[Path, Path] = {}
-    # A library is placed with the architecture of the tool that loads it.
-    architecture_of: dict[Path, str] = {}
-    for copy, (source, architecture) in (tool_sources or {}).items():
-        bundle_to_source[copy.resolve()] = source
-        architecture_of[copy.resolve()] = architecture
-    vendored_sources: set[Path] = set()
-    used_names: set[str] = set()
-    # Stable architecture/name assignment must not depend on directory enumeration order.
-    queue = sorted(macho_vendor_roots(app))
-    visited: set[Path] = set()
-    # dyld resolves a library's @rpath/ names through its own rpaths and then
-    # those of every image that loaded it, up to the executable: Homebrew's
-    # libutil-reg finds libgenrand in lib/private only through smbclient's.
-    inherited: dict[Path, list[Path]] = {}
-
-    while queue:
-        current = queue.pop(0)
-        current_resolved = current.resolve()
-        if current_resolved in visited:
-            continue
-        visited.add(current_resolved)
-
-        dependencies = macho_dependencies(current)
-        if dependencies is None:
-            continue
-        # Homebrew's arm64 samba links its own libraries as @rpath/ names with
-        # LC_RPATHs into the Cellar. A copy keeps those rpaths, so search them
-        # from where the copy came from.
-        own_name = macho_install_name(current)
-        rpaths = macho_rpaths(current)
-        origin_dir = bundle_to_source.get(current_resolved, current_resolved).parent
-        architecture = architecture_of.get(current_resolved)
-
-        def bottle_path(reference: str) -> Path | None:
-            if not reference.startswith("@@"):
-                return None
-            if architecture is None or kegs is None or architecture not in kegs:
-                raise RuntimeError(f"{current} references {reference} but no bottle is unpacked for it")
-            return homebrew_placeholder_path(reference, kegs[architecture])
-
-        search = [bottle_path(rpath) or expand_rpath(rpath, origin_dir, origin_dir) for rpath in rpaths]
-        search += [directory for directory in inherited.get(current_resolved, []) if directory not in search]
-
-        for dependency in dependencies:
-            preferred_name: str
-            if dependency == own_name:
-                # otool -L lists a library's own install name; set_macho_id_if_supported rewrites it.
-                continue
-            if placeholder := bottle_path(dependency):
-                source = placeholder.resolve()
-                preferred_name = placeholder.name
-            elif dependency.startswith("@rpath/"):
-                target = search_rpaths(dependency, search)
-                if target is None:
-                    raise RuntimeError(
-                        f"Mach-O dependency does not resolve through its rpaths: {dependency} referenced by {current}"
-                        f" (rpaths: {', '.join(map(str, search)) or 'none'})"
-                    )
-                if is_inside(target, app):
-                    continue
-                source = target.resolve()
-                preferred_name = Path(dependency).name
-            elif is_external_macho_dependency(dependency):
-                source_path = Path(dependency)
-                source = source_path.resolve()
-                preferred_name = source_path.name
-            elif dependency.startswith("@loader_path/") and current_resolved in bundle_to_source:
-                relative_dependency = dependency.removeprefix("@loader_path/")
-                source = (bundle_to_source[current_resolved].parent / relative_dependency).resolve()
-                preferred_name = Path(relative_dependency).name
-                if not source.is_file():
-                    resolved_dependency = resolve_macho_dependency(current, app, dependency)
-                    if resolved_dependency is None or not resolved_dependency.exists():
-                        raise RuntimeError(f"Mach-O dependency does not exist: {dependency} referenced by {current}")
-                    continue
-            else:
-                continue
-            if not source.is_file():
-                raise RuntimeError(f"Mach-O dependency does not exist: {dependency} referenced by {current}")
-            vendored_sources.add(source)
-            bundled = source_to_bundle.get(source)
-            if bundled is None:
-                bundled = frameworks_dir / bundled_dependency_name(source, used_names, preferred_name=preferred_name)
-                shutil.copy2(source, bundled)
-                bundled.chmod(bundled.stat().st_mode | 0o200)
-                source_to_bundle[source] = bundled
-                bundle_to_source[bundled.resolve()] = source
-                if architecture is not None:
-                    architecture_of[bundled.resolve()] = architecture
-                queue.append(bundled)
-            # Every loader's rpaths count, whichever loader is visited first.
-            loaded = inherited.setdefault(bundled.resolve(), [])
-            loaded.extend(directory for directory in search if directory not in loaded)
-            run_quiet([
-                "install_name_tool",
-                "-change",
-                dependency,
-                loader_path_reference(current, bundled, frameworks_dir),
-                str(current),
-            ])
-
-        # Every outside reference now names the bundled copy. An rpath left
-        # pointing outside the app would make dyld load a Homebrew library
-        # when one is installed; with the app's Team ID it refuses that copy.
-        for rpath in dict.fromkeys(rpaths):
-            if not rpath.startswith(("@loader_path", "@executable_path")):
-                run_quiet(["install_name_tool", "-delete_rpath", rpath, str(current)])
-
-        set_macho_id_if_supported(current)
-    return vendored_sources
-
-
-def native_tools_cache_entry(architectures: tuple[str, ...], bottles: HomebrewBottles) -> Path:
-    key = cache_key({
-        "kind": "native-tools",
-        "version": NATIVE_TOOLS_CACHE_VERSION,
-        "architectures": architectures,
-        "bottles": {architecture: bottles.records[architecture] for architecture in architectures},
-    })
-    return evict_stale_cache_entries(package_cache_dir("native-tools") / key)
-
-
-@timed_step("Checking native tool cache fingerprints")
-def native_tools_cache_miss_reason(entry: Path) -> str | None:
-    tools_bin = entry / "Contents" / "Resources" / "Tools" / "bin"
-    frameworks = entry / "Contents" / "Frameworks"
-    contents = entry / "Contents"
-    if not cache_is_complete(entry, tools_bin):
-        return "cache entry is incomplete or missing bundled tools"
-    if not frameworks.is_dir():
-        return f"cached Frameworks directory is missing: {frameworks}"
-    if reason := cache_manifest_inputs_miss_reason(entry):
-        return reason
-    if reason := cache_manifest_output_miss_reason(entry, contents):
-        return reason
-    return None
-
-
-def write_native_tools_manifest(
-    entry: Path,
-    architectures: tuple[str, ...],
-    bottles: HomebrewBottles,
-    sources: dict[tuple[str, str], Path],
-    dependency_sources: set[Path],
-) -> None:
-    # The bottle files, and the unpacked files actually copied from them.
-    input_paths = set(bottles.blobs) | set(sources.values()) | dependency_sources
-    write_cache_manifest(entry, {
-        "schema_version": 1,
-        "kind": "native-tools",
-        "cache_version": NATIVE_TOOLS_CACHE_VERSION,
-        "architectures": list(architectures),
-        "bottles": {architecture: bottles.records[architecture] for architecture in architectures},
-        "inputs": input_fingerprints(input_paths),
-        "output_tree_sha256": sha256_tree(entry / "Contents"),
-    })
-
-
-def build_native_tools(app: Path, architectures: tuple[str, ...], bottles: HomebrewBottles) -> tuple[dict[tuple[str, str], Path], set[Path]]:
-    """Bundle the pinned tools and their libraries into app, and validate them."""
-    sources = bottle_tool_sources(bottles, architectures)
-    copies = copy_tools_from_sources(app / "Contents" / "Resources", architectures, sources)
-    dependency_sources = vendor_macho_dependencies(
-        app, kegs={architecture: bottles.kegs[architecture] for architecture in architectures}, tool_sources=copies,
-    )
-    remove_appledouble_files(app)
-    ad_hoc_codesign_macho_bundle(app)
-    with macho_inspection_session():
-        assert_tool_architectures(app, architectures)
-        assert_runtime_macho_architectures(app, architectures)
-        assert_no_external_macho_dependencies(app)
-        assert_macho_minimum_macos(macho_vendor_roots(app))
-        assert_macho_code_signatures_valid(app)
-    return sources, dependency_sources
-
-
-def prepared_native_tools_layer(architectures: tuple[str, ...], bottles: HomebrewBottles) -> Path:
-    entry = native_tools_cache_entry(architectures, bottles)
-    miss_reason = native_tools_cache_miss_reason(entry)
-    if miss_reason is None:
-        print("Using cached native tool layer.", file=sys.stderr)
-        return entry
-    print(f"Rebuilding native tool layer: {miss_reason}", file=sys.stderr)
-
-    cache_root = entry.parent
-    cache_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f"{entry.name}.tmp-", dir=cache_root) as tmp:
-        staging = Path(tmp) / "entry"
-        (staging / "Contents" / "Resources").mkdir(parents=True)
-        sources, dependency_sources = build_native_tools(staging, architectures, bottles)
-        write_native_tools_manifest(staging, architectures, bottles, sources, dependency_sources)
-        mark_cache_complete(staging)
-        replace_path(staging, entry)
-    return entry
-
-
-@timed_step("Preparing and copying native tool layer")
-def copy_native_tools_layer(app: Path, architectures: tuple[str, ...], *, use_cache: bool = True) -> None:
-    # Without the cache the bottles are resolved again; downloaded bottle
-    # files are still reused, since each is checked against its sha256.
-    bottles = prepare_homebrew_bottles(architectures, use_cache=use_cache)
-    contents = app / "Contents"
-    if use_cache:
-        layer = prepared_native_tools_layer(architectures, bottles)
-        copy_path(layer / "Contents" / "Resources" / "Tools", contents / "Resources" / "Tools")
-        copy_path(layer / "Contents" / "Frameworks", contents / "Frameworks")
-        return
-    build_native_tools(app, architectures, bottles)
 
 
 def assert_macho_code_signatures_valid_for_paths(paths: list[Path]) -> None:
@@ -2262,25 +1541,26 @@ def assert_app_bundle_signature_valid(app: Path) -> None:
 def assert_no_external_macho_dependencies_for_paths(paths: list[Path], app: Path | None = None) -> None:
     """No bundled Mach-O may load a library from outside the bundle.
 
-    With app, @rpath/ references must resolve inside it, and its bundled tools
-    and Frameworks may keep no rpath outside it (macho_vendor_roots).
+    With app, @rpath/ references must also resolve inside it, and code in
+    Contents/Frameworks (Sparkle) may keep no rpath outside it: such an rpath
+    is searched on the user's Mac, where it may exist even though it does not
+    here, so resolving it at build time cannot rule it out.
     """
     external: list[str] = []
-    vendored = {path.resolve() for path in macho_vendor_roots(app)} if app else set()
+    frameworks = (app / "Contents" / "Frameworks").resolve() if app else None
     for path in paths:
         dependencies = macho_dependencies(path)
         if dependencies is None:
             continue
         rpaths = macho_rpaths(path) if app else []
         for dependency in dependencies:
-            # An unresolved bottle placeholder loads nothing on a user's Mac.
-            if is_external_macho_dependency(dependency) or dependency.startswith("@@"):
+            if is_external_macho_dependency(dependency):
                 external.append(f"{path}: {dependency}")
             elif app and dependency.startswith("@rpath/") and dependency != macho_install_name(path):
                 target = rpath_dependency_target(dependency, rpaths, path.parent, app / "Contents" / "MacOS")
                 if target is None or not is_inside(target, app):
                     external.append(f"{path}: {dependency} -> {target or 'unresolved'}")
-        if path.resolve() in vendored:
+        if frameworks is not None and is_inside(path.resolve(), frameworks):
             external.extend(
                 f"{path}: LC_RPATH {rpath}"
                 for rpath in rpaths
@@ -2324,17 +1604,17 @@ def macho_minimum_macos(path: Path) -> dict[str, str]:
 
 
 @timed_step("Checking minimum macOS versions")
-def assert_macho_minimum_macos(paths: list[Path], maximum: str = MAXIMUM_BUNDLED_MINIMUM_MACOS) -> None:
+def assert_macho_minimum_macos(paths: list[Path], supported: str = MINIMUM_MACOS) -> None:
     """No bundled binary may be built for a newer macOS than we support."""
     newer = [
         f"{path} ({architecture}): {version}"
         for path in paths
         for architecture, version in sorted(macho_minimum_macos(path).items())
-        if version_tuple(version) > version_tuple(maximum)
+        if version_tuple(version) > version_tuple(supported)
     ]
     if newer:
         joined = "\n  - ".join(newer)
-        raise RuntimeError(f"Bundled Mach-O file(s) need a newer macOS than {maximum}:\n  - {joined}")
+        raise RuntimeError(f"Bundled Mach-O file(s) need a newer macOS than {supported}:\n  - {joined}")
 
 
 def assert_no_external_macho_dependencies_for_roots(roots: list[Path]) -> None:
@@ -2440,40 +1720,6 @@ def assert_python_extension_architectures(app: Path, architectures: tuple[str, .
         raise RuntimeError(f"Bundled Python extension(s) are missing required architecture(s):\n  - {joined}")
 
 
-@timed_step("Checking native tool architectures")
-def assert_tool_architectures(app: Path, architectures: tuple[str, ...]) -> None:
-    tools_bin = app / "Contents" / "Resources" / "Tools" / "bin"
-    failures: list[str] = []
-    for tool in REQUIRED_HOST_TOOLS:
-        if len(architectures) == 1:
-            candidate = tools_bin / tool
-            if not candidate.is_file() or not os.access(candidate, os.X_OK):
-                failures.append(f"{candidate}: missing")
-                continue
-            if candidate.is_file() and macho_architectures(candidate):
-                missing = [architecture for architecture in architectures if architecture not in macho_architectures(candidate)]
-                if missing:
-                    failures.append(f"{candidate}: missing {', '.join(missing)}")
-            continue
-
-        wrapper = tools_bin / tool
-        if not wrapper.is_file() or not os.access(wrapper, os.X_OK):
-            failures.append(f"{wrapper}: missing architecture dispatch wrapper")
-        for architecture in architectures:
-            candidate = tools_bin / architecture / tool
-            if not candidate.is_file() or not os.access(candidate, os.X_OK):
-                failures.append(f"{candidate}: missing")
-                continue
-            if architecture not in macho_architectures(candidate):
-                failures.append(
-                    f"{candidate}: missing {architecture} "
-                    f"(found: {', '.join(sorted(macho_architectures(candidate))) or 'none'})"
-                )
-    if failures:
-        joined = "\n  - ".join(failures)
-        raise RuntimeError(f"Bundled tool architecture validation failed:\n  - {joined}")
-
-
 def assert_macho_architectures_for_roots(roots: list[Path], architectures: tuple[str, ...], label: str) -> None:
     failures: list[str] = []
     for path in macho_files_under(roots):
@@ -2512,13 +1758,6 @@ def runtime_architecture_roots(app: Path, architectures: tuple[str, ...]) -> lis
         for path in site_packages.rglob("*"):
             if path.is_file() and path.suffix in {".so", ".dylib"}:
                 roots.extend((path, architecture) for architecture in architectures)
-
-    tools_bin = contents / "Resources" / "Tools" / "bin"
-    for tool in REQUIRED_HOST_TOOLS:
-        if len(architectures) == 1:
-            roots.append((tools_bin / tool, architectures[0]))
-            continue
-        roots.extend((tools_bin / architecture / tool, architecture) for architecture in architectures)
     return roots
 
 
@@ -2640,7 +1879,6 @@ def assert_bundle_layout(
     resource_bundle = app / "Contents" / "Resources" / RESOURCE_BUNDLE_NAME
     distribution = app / "Contents" / "Resources" / "Distribution"
     artifact_manifest = distribution / "artifact-manifest.json"
-    tools_bin = app / "Contents" / "Resources" / "Tools" / "bin"
     python_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
     assert_no_appledouble_files(app)
     required_executables = [executable, helper, python_executable]
@@ -2657,7 +1895,6 @@ def assert_bundle_layout(
         assert_macho_has_architectures(python_dylib, architectures, "Bundled Python framework")
         assert_macho_has_architectures(sparkle_framework(app) / "Versions" / "B" / "Sparkle", architectures, "Sparkle framework")
         assert_python_extension_architectures(app, architectures)
-        assert_tool_architectures(app, architectures)
         if full_validation:
             assert_runtime_macho_architectures(app, architectures)
     english = resource_bundle_localization(resource_bundle, "en")
@@ -2676,8 +1913,6 @@ def assert_bundle_layout(
         raise RuntimeError(f"App bundle is missing bundled payload directory: {distribution / 'bin'}")
     if not artifact_manifest.is_file():
         raise RuntimeError(f"App bundle is missing bundled artifact manifest: {artifact_manifest}")
-    if not tools_bin.is_dir():
-        raise RuntimeError(f"App bundle is missing bundled tools directory: {tools_bin}")
     if icon_name:
         icon_file = app / "Contents" / "Resources" / f"{icon_name}.icns"
         if not icon_file.is_file():
@@ -2723,7 +1958,7 @@ def smoke_architectures(architectures: tuple[str, ...]) -> list[str | None]:
     return passes
 
 
-@timed_step("Running helper and native tool smoke tests")
+@timed_step("Running helper smoke tests")
 def smoke_test(app: Path, architectures: tuple[str, ...]) -> None:
     helper = app / "Contents" / "Helpers" / "tcapsule"
     for architecture in smoke_architectures(architectures):
@@ -2731,35 +1966,11 @@ def smoke_test(app: Path, architectures: tuple[str, ...]) -> None:
             state_dir = Path(tmp)
             smoke_request(helper, "capabilities", state_dir, architecture=architecture)
             smoke_request(helper, "validate-install", state_dir, architecture=architecture)
-        smoke_tools(app, architecture=architecture)
         if architecture:
             # The native pass's app launch and imports ran in assert_bundle_layout.
             # The helper's requests load none of the compiled Python modules.
             validate_app_resources(app, architecture=architecture)
             assert_python_dependencies_are_bundled(app, architecture=architecture)
-
-
-# Arguments that make each bundled tool print its version and exit 0.
-TOOL_VERSION_ARGS = {"smbclient": ["--version"]}
-
-
-def smoke_tools(app: Path, *, architecture: str | None = None) -> None:
-    """Launch each bundled tool for this Mac's architecture, or under
-    ``arch -<architecture>``: each architecture's tools come from its own
-    bottles. dyld rejects a library it cannot load only at launch, and only a
-    signed app enforces the Team ID check (v3.1.2's first build shipped an
-    smbclient that aborted)."""
-    tools_bin = app / "Contents" / "Resources" / "Tools" / "bin"
-    prefix = ["arch", f"-{architecture}"] if architecture else []
-    for tool in REQUIRED_HOST_TOOLS:
-        completed = subprocess.run([*prefix, str(tools_bin / tool), *TOOL_VERSION_ARGS[tool]], stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, text=True, check=False, timeout=30)
-        if completed.returncode != 0:
-            label = f"{tool} ({architecture})" if architecture else tool
-            raise RuntimeError(
-                f"Bundled {label} does not run (rc={completed.returncode}):\n"
-                f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
-            )
 
 
 @timed_step("Launching the packaged app's code on this Mac")
@@ -2945,8 +2156,6 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
     create_python_packages(str(python_executable), resources, architectures, use_cache=not args.no_cache)
     finalize_python_bundle(resources, sign=not args.codesign_identity)
     copy_distribution(resources)
-    copy_native_tools_layer(app, architectures, use_cache=not args.no_cache)
-    # After the tools layer, which replaces Contents/Frameworks whole.
     copy_sparkle_framework(resource_build_dir, app)
     with timed_step("Cleaning and checking app metadata sidecars"):
         remove_appledouble_files(app)

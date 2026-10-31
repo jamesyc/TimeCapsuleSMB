@@ -58,7 +58,7 @@ swift test --package-path macos/TimeCapsuleSMB
 python3 macos/TimeCapsuleSMB/tools/package_app.py --configuration release --full-validation
 ```
 
-The app bundles `smbclient` from Homebrew's macOS 14 (Sonoma) bottles, pinned in `HOMEBREW_BOTTLE_ROOTS` in `package_app.py`. Packaging downloads them and their recorded dependencies from ghcr.io; it does not use the packaging Mac's Homebrew, whose bottles are built for that Mac's macOS. Full validation fails if any bundled binary declares a newer minimum macOS than 14.8. To move the pin, pick a version whose bottles still include both `arm64_sonoma` and `sonoma`.
+Full validation fails if any bundled binary declares a newer minimum macOS than the app's own, 14.0 (`MINIMUM_MACOS` in `package_app.py`).
 
 CI packages the universal app on every push, and its "Check App on Intel" job launches the app, its Python modules and the helper on a real Intel Mac (`package_app.py --check-app`, on GitHub's `macos-15-intel` image until GitHub retires it in fall 2027). Nothing else runs the app's x86_64 half on a real Intel Mac before release. `sparkle_appcast.py` refuses an app that is not universal, because Sparkle would install it over a working app on Intel Macs, where it cannot launch. If the app ever drops Intel, pass `--arm64-only` so Intel Macs stop being offered updates. That protects only apps with Sparkle: apps from before Sparkle still download whatever `releases/latest` holds, so the release notes of such a release must say it needs Apple silicon.
 
@@ -124,7 +124,7 @@ Export the `.p12` from Keychain Access's login keychain, under "My Certificates"
 
 `macos/TimeCapsuleSMB/tools/package_app.py` needs `uv`. It installs the app's Python packages from `macos/TimeCapsuleSMB/tools/bundled-requirements.txt` and builds the project with the tools pinned in `build-requirements.txt`, checking everything it downloads by hash. Its uv commands ignore uv's configuration files and take only releases at least a day old, and dependabot waits the same day before it proposes a new pin. After changing a dependency or `[build-system]` in `pyproject.toml`, or `PYTHON_RUNTIME_VERSION` in `package_app.py`, regenerate both files with `python3 macos/TimeCapsuleSMB/tools/update_python_requirements.py` (Python 3.11 or newer). It keeps the versions already pinned where they still fit; add `--upgrade` to move every pin to the newest release that is at least a day old. A new `PYTHON_RUNTIME_VERSION` also needs its package's `PYTHON_RUNTIME_SHA256`: download the package from python.org, check that `pkgutil --check-signature` names `Developer ID Installer: Python Software Foundation (BMM5U3QVKW)`, a team ID a lookalike certificate cannot share, and says Apple notarized it, and only then record `shasum -a 256` of it. Never copy the hash from packaging's mismatch error, which reports whatever was downloaded.
 
-A universal build on Apple silicon runs the smoke test (the helper's requests, the bundled tools, the app's launch and the bundled Python imports) a second time as x86_64, under Rosetta. A Mac without Rosetta skips that pass and says so. Nothing relies on it: the "Check App on Intel" CI job runs the x86_64 half on a real Intel Mac.
+A universal build on Apple silicon runs the smoke test (the helper's requests, the app's launch and the bundled Python imports) a second time as x86_64, under Rosetta. A Mac without Rosetta skips that pass and says so. Nothing relies on it: the "Check App on Intel" CI job runs the x86_64 half on a real Intel Mac.
 
 ## Version Sources
 

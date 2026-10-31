@@ -35,10 +35,9 @@ You will need:
 
 For the python setup, you need:  
 - Python 3.9+
-- On Linux, `smbclient` for `doctor`. On a Mac, `doctor` uses macOS's own SMB client.
-- Homebrew installed for macOS users (requires an Apple Silicon computer). Without Homebrew, use the macOS app, which includes `smbclient`.
+- On Linux, `smbclient` for `doctor`. On a Mac, `doctor` uses macOS's own SMB client, so the CLI needs no Homebrew.
 
-If you have a Linux computer, then you must use the python CLI version. On an Intel Mac the CLI works without Homebrew: deploy needs nothing extra, and `doctor` uses macOS's own SMB client. 
+If you have a Linux computer, then you must use the python CLI version.
 
 During first-time setup, if necessary `configure` can enable SSH on the Time Capsule.
 
@@ -103,7 +102,7 @@ Run:
 
 This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs the Python dependencies needed for discovery, deployment, and verification, and sets up the local `tcapsule` command into that virtualenv.
 
-If `ssh` or `smbclient` is missing, `bootstrap` will try to install it with Homebrew on macOS 14+ or the detected package manager on Linux. Bootstrap and doctor require OpenSSH 8.4 or newer; upgrade an older SSH client manually. Older macOS versions can continue only when `smbclient` is already installed manually. On Intel Macs `bootstrap` skips `smbclient`, because Homebrew no longer builds it for Intel; on a Mac neither deploy nor `doctor` needs it. SSH logins use the system `ssh` (OpenSSH 8.4 or newer) with TimeCapsuleSMB's own password helper, so no other tool is needed.
+On Linux, if `ssh` or `smbclient` is missing, `bootstrap` will try to install it with the detected package manager. On a Mac it needs only `ssh`, which comes with macOS. Bootstrap and doctor require OpenSSH 8.4 or newer; upgrade an older SSH client manually. SSH logins use the system `ssh` (OpenSSH 8.4 or newer) with TimeCapsuleSMB's own password helper, so no other tool is needed.
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` to run a command.
 

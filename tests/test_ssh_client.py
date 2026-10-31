@@ -94,16 +94,16 @@ def test_doctor_reports_an_old_client_as_failure():
     assert results[1].status == "PASS"
 
 
-@pytest.mark.parametrize("missing,intel,expected_checks", [([], False, 1), (["smbclient"], True, 1), (["ssh"], False, 1)])
-def test_bootstrap_checks_existing_skipped_and_newly_installed_clients(missing, intel, expected_checks):
+@pytest.mark.parametrize("missing,expected_checks", [([], 1), (["smbclient"], 1), (["ssh"], 1)])
+def test_bootstrap_checks_existing_and_newly_installed_clients(missing, expected_checks):
+    # An existing ssh is checked before anything is installed; a newly
+    # installed one is checked after.
     with mock.patch.object(bootstrap, "_missing_required_host_tools", side_effect=[missing, []]), \
-         mock.patch.object(bootstrap, "current_platform_label", return_value="macOS" if intel else "Linux"), \
-         mock.patch.object(bootstrap, "_macos_intel_host", return_value=intel), \
          mock.patch.object(bootstrap, "_linux_package_manager", return_value="apt-get"), \
          mock.patch.object(bootstrap, "_install_with_linux_package_manager", return_value="apt-get install openssh-client") as install, \
          mock.patch.object(bootstrap, "require_local_ssh", side_effect=SshClientConfigError("Upgrade OpenSSH")) as check:
         with pytest.raises(bootstrap.BootstrapError, match="Upgrade OpenSSH"):
-            bootstrap.install_required_host_tools()
+            bootstrap.install_required_host_tools("Linux")
     assert check.call_count == expected_checks
     assert install.call_count == (1 if "ssh" in missing else 0)
 

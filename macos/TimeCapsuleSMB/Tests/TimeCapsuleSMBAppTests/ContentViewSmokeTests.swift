@@ -647,7 +647,6 @@ private struct BlockingRuntimeResolver: AppRuntimeResolving {
         HelperResolution(
             executableURL: URL(fileURLWithPath: "/tmp/tcapsule"),
             distributionRootURL: nil,
-            toolsBinURL: nil,
             mode: .developmentCheckout,
             attemptedPaths: []
         )

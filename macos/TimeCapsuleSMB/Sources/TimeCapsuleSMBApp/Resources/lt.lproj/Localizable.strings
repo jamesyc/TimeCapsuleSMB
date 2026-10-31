@@ -307,8 +307,6 @@
 "bundle_issue.recovery.reinstall" = "Įdiekite TimeCapsuleSMB iš naujo.";
 "bundle_issue.state_directory_unavailable.message" = "TimeCapsuleSMB negali įrašyti į savo aplinkos būsenos katalogą.";
 "bundle_issue.state_directory_unavailable.recovery" = "Pataisykite sukonfigūruoto būsenos katalogo leidimus.";
-"bundle_issue.tools_directory_missing.message" = "Trūksta įdiegtų komandinės eilutės įrankių.";
-"bundle_issue.tools_directory_missing.recovery" = "Kai kurios diagnostikos funkcijos gali būti nepasiekiamos, kol programos paketas nebus pataisytas.";
 "bundle_issue.unsupported_version.message" = "Ši TimeCapsuleSMB versija nepalaikoma.";
 "bundle_issue.unsupported_version.recovery" = "Atnaujinkite TimeCapsuleSMB.";
 "bundle_issue.version_metadata_unavailable.message" = "Naujinimų metaduomenys nepasiekiami.";

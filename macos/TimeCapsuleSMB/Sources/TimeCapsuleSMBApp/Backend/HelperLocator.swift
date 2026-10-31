@@ -3,7 +3,6 @@ import Foundation
 public struct HelperResolution: Equatable {
     public let executableURL: URL
     public let distributionRootURL: URL?
-    public let toolsBinURL: URL?
     public let mode: BundleRuntimeMode
     public let attemptedPaths: [String]
 }
@@ -53,7 +52,6 @@ public struct HelperLocator {
                 return HelperResolution(
                     executableURL: candidate.url,
                     distributionRootURL: distributionRoot(for: candidate.url, mode: candidate.mode),
-                    toolsBinURL: toolsBinURL(for: candidate.mode),
                     mode: candidate.mode,
                     attemptedPaths: attempts
                 )
@@ -78,9 +76,6 @@ public struct HelperLocator {
         }
         if output["TCAPSULE_DISTRIBUTION_ROOT"] == nil, let distributionRoot = resolution.distributionRootURL {
             output["TCAPSULE_DISTRIBUTION_ROOT"] = distributionRoot.path
-        }
-        if let toolsBin = resolution.toolsBinURL, isDirectory(toolsBin) {
-            output["PATH"] = pathByPrepending(toolsBin.path, to: output["PATH"])
         }
         if output["TCAPSULE_CLIENT"] == nil {
             output["TCAPSULE_CLIENT"] = "macos_gui"
@@ -107,7 +102,6 @@ public struct HelperLocator {
         return HelperResolution(
             executableURL: candidate,
             distributionRootURL: distributionRoot(for: candidate, mode: .explicit),
-            toolsBinURL: toolsBinURL(for: .explicit),
             mode: .explicit,
             attemptedPaths: attempts
         )
@@ -169,13 +163,6 @@ public struct HelperLocator {
         return nil
     }
 
-    private func toolsBinURL(for mode: BundleRuntimeMode) -> URL? {
-        guard mode == .productionBundle else {
-            return nil
-        }
-        return BundleLayout.productionCandidate(bundle: bundle, fileManager: fileManager)?.toolsBinURL
-    }
-
     private func repoRoot(containing helperURL: URL) -> URL? {
         for candidate in ancestorDirectories(startingAt: helperURL.deletingLastPathComponent()) {
             if isRepoRoot(candidate) {
@@ -231,13 +218,6 @@ public struct HelperLocator {
 
     private func applicationSupportDirectory() -> URL? {
         BundleLayout.applicationSupportDirectory(fileManager: fileManager)
-    }
-
-    private func pathByPrepending(_ prefix: String, to path: String?) -> String {
-        guard let path, !path.isEmpty else {
-            return prefix
-        }
-        return "\(prefix):\(path)"
     }
 }
 

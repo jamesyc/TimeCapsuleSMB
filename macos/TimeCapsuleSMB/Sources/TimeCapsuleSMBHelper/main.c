@@ -148,18 +148,10 @@ static char *configure_environment(const char *contents_dir) {
     char *distribution_root = join_path(resources_dir, "Distribution");
     set_if_empty("TCAPSULE_DISTRIBUTION_ROOT", distribution_root);
 
-    char *tools_bin = join_path(resources_dir, "Tools/bin");
     const char *old_path = getenv("PATH");
     if (old_path == NULL || old_path[0] == '\0') {
-        old_path = "/usr/bin:/bin:/usr/sbin:/sbin";
+        setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin", 1);
     }
-    char *path_value = malloc(strlen(tools_bin) + 1 + strlen(old_path) + 1);
-    if (path_value == NULL) {
-        perror("malloc");
-        exit(70);
-    }
-    sprintf(path_value, "%s:%s", tools_bin, old_path);
-    setenv("PATH", path_value, 1);
 
     const char *old_pythonpath = getenv("PYTHONPATH");
     char *pythonpath_value = NULL;
@@ -193,8 +185,6 @@ static char *configure_environment(const char *contents_dir) {
     free(state_dir);
     free(default_config);
     free(distribution_root);
-    free(tools_bin);
-    free(path_value);
     free(pythonpath_value);
     return library;
 }

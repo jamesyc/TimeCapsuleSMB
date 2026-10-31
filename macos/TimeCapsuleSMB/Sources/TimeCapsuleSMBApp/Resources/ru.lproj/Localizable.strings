@@ -307,8 +307,6 @@
 "bundle_issue.recovery.reinstall" = "Переустановите TimeCapsuleSMB.";
 "bundle_issue.state_directory_unavailable.message" = "TimeCapsuleSMB не может записать данные в каталог состояния выполнения.";
 "bundle_issue.state_directory_unavailable.recovery" = "Исправьте права доступа к настроенному каталогу состояния.";
-"bundle_issue.tools_directory_missing.message" = "Отсутствуют инструменты командной строки из комплекта приложения.";
-"bundle_issue.tools_directory_missing.recovery" = "Некоторые функции диагностики могут быть недоступны до восстановления пакета приложения.";
 "bundle_issue.unsupported_version.message" = "Эта версия TimeCapsuleSMB не поддерживается.";
 "bundle_issue.unsupported_version.recovery" = "Обновите TimeCapsuleSMB.";
 "bundle_issue.version_metadata_unavailable.message" = "Метаданные обновления недоступны.";

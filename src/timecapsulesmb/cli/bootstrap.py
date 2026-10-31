@@ -25,21 +25,11 @@ VENVDIR = REPO_ROOT / ".venv"
 # Present only in a source checkout, which bootstrap installs from.
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 HOMEBREW_INSTALL_COMMAND = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-# The Mac app bundles its own smbclient for both Mac architectures.
+# The Mac app uses macOS's own ssh and SMB client.
 MAC_APP_HINT = (
-    "Or use the TimeCapsuleSMB Mac app, which includes these tools and needs no Homebrew: "
+    "Or use the TimeCapsuleSMB Mac app, which needs no Homebrew: "
     "https://github.com/jamesyc/TimeCapsuleSMB/releases"
 )
-# Homebrew stopped building packages for Intel Macs in September 2026; its
-# samba (smbclient) has none for them, so an install builds it and its
-# dependency tree from source or fails. Deploy does not use smbclient, only
-# doctor's SMB checks do.
-INTEL_SMBCLIENT_SKIPPED = (
-    "Homebrew no longer builds smbclient for Intel Macs, so bootstrap skips it. "
-    "Deploy works without it; `doctor` will report it missing and cannot run its SMB checks."
-)
-# ssh logs in to the device; every Mac has it, minimal Linux installs may not.
-REQUIRED_HOST_TOOLS = ("ssh", "smbclient")
 MIN_BOOTSTRAP_PYTHON = (3, 9)
 FIXED_ZEROCONF_PYTHON = (3, 10)
 OLD_ZEROCONF_NOTE = (
@@ -49,10 +39,7 @@ OLD_ZEROCONF_NOTE = (
 )
 MIN_MACOS_AUTO_HOST_TOOL_INSTALL = (14, 0)
 PYTHON_VERSION_PROBE = "import sys; print('%d.%d.%d' % sys.version_info[:3])"
-MACOS_HOST_TOOL_PACKAGES = {
-    "ssh": "openssh",
-    "smbclient": "samba",
-}
+MACOS_HOST_TOOL_PACKAGES = {"ssh": "openssh"}
 LINUX_HOST_TOOL_PACKAGES = {
     "apt-get": {"ssh": "openssh-client", "smbclient": "smbclient"},
     "dnf": {"ssh": "openssh-clients", "smbclient": "samba-client"},
@@ -290,32 +277,25 @@ def detect_macos_product_version() -> str | None:
     return platform.mac_ver()[0] or None
 
 
-def _macos_intel_host() -> bool:
-    # hw.optional.arm64 is 1 on Apple Silicon, also for a process running
-    # under Rosetta. Intel Macs do not have the key, so sysctl fails there.
-    try:
-        proc = run_process(
-            ["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
-        return True
-    return proc.returncode != 0 or proc.stdout.strip() != "1"
+def required_host_tools(platform_label: str) -> tuple[str, ...]:
+    """ssh logs in to the device; every Mac has it, minimal Linux installs may
+    not. smbclient runs doctor's SMB checks, except on macOS, where doctor uses
+    Apple's own SMB client (checks/smb_macos.py)."""
+    if platform_label == "macOS":
+        return ("ssh",)
+    return ("ssh", "smbclient")
 
 
-def _required_host_tool_paths() -> dict[str, str | None]:
-    return {tool: find_command(tool) for tool in REQUIRED_HOST_TOOLS}
+def _required_host_tool_paths(platform_label: str) -> dict[str, str | None]:
+    return {tool: find_command(tool) for tool in required_host_tools(platform_label)}
 
 
 def _missing_tools_from_paths(paths: dict[str, str | None]) -> list[str]:
-    return [tool for tool in REQUIRED_HOST_TOOLS if paths.get(tool) is None]
+    return [tool for tool, path in paths.items() if path is None]
 
 
 def _print_host_tool_status(paths: dict[str, str | None]) -> None:
-    for tool in REQUIRED_HOST_TOOLS:
-        path = paths.get(tool)
+    for tool, path in paths.items():
         if path:
             print(f"Found {tool}: {path}", flush=True)
         else:
@@ -329,13 +309,12 @@ def check_macos_host_tool_install_support(platform_label: str) -> dict[str, obje
     macos_version = detect_macos_product_version()
     parsed = _parse_version_prefix(macos_version) if macos_version else None
     auto_install_supported = parsed is not None and _version_at_least(parsed, MIN_MACOS_AUTO_HOST_TOOL_INSTALL)
-    paths = _required_host_tool_paths()
+    paths = _required_host_tool_paths(platform_label)
     missing_tools = _missing_tools_from_paths(paths)
     fields: dict[str, object] = {
         "host_os_version": macos_version or "unknown",
         "macos_auto_host_tool_install_supported": auto_install_supported,
         "missing_host_tools": _format_tools(missing_tools),
-        "smbclient_path": paths.get("smbclient"),
     }
     if auto_install_supported:
         return fields
@@ -352,7 +331,7 @@ def check_macos_host_tool_install_support(platform_label: str) -> dict[str, obje
         "then rerun './tcapsule bootstrap'."
     )
     print(color_red(message), flush=True)
-    print(color_red("Required host tools: ssh and smbclient"), flush=True)
+    print(color_red(f"Required host tools: {_format_tools(list(paths))}"), flush=True)
     raise BootstrapPreflightError(message, fields)
 
 
@@ -391,8 +370,8 @@ def install_python_requirements(venv_python: Path) -> None:
     run([str(venv_python), "-m", "pip", "install", "-U", "--upgrade-strategy", "eager", "-e", str(REPO_ROOT)])
 
 
-def _missing_required_host_tools() -> list[str]:
-    return [tool for tool in REQUIRED_HOST_TOOLS if find_command(tool) is None]
+def _missing_required_host_tools(platform_label: str) -> list[str]:
+    return _missing_tools_from_paths(_required_host_tool_paths(platform_label))
 
 
 def _format_tools(tools: list[str]) -> str:
@@ -521,26 +500,15 @@ def _require_supported_ssh() -> None:
         raise BootstrapError(str(exc)) from exc
 
 
-def install_required_host_tools() -> list[str]:
-    """Install missing host tools; return the ones skipped on purpose."""
-    missing_tools = _missing_required_host_tools()
+def install_required_host_tools(platform_label: str) -> None:
+    missing_tools = _missing_required_host_tools(platform_label)
     if "ssh" not in missing_tools:
         _require_supported_ssh()
     if not missing_tools:
-        print(f"Found required host tools: {_format_tools(list(REQUIRED_HOST_TOOLS))}", flush=True)
-        return []
+        print(f"Found required host tools: {_format_tools(list(required_host_tools(platform_label)))}", flush=True)
+        return
 
     print(f"Missing required host tools: {_format_tools(missing_tools)}", flush=True)
-    platform_label = current_platform_label()
-    skipped: list[str] = []
-    if platform_label == "macOS" and "smbclient" in missing_tools and _macos_intel_host():
-        skipped = ["smbclient"]
-        missing_tools = [tool for tool in missing_tools if tool != "smbclient"]
-        # The app hint comes once, at the end: in the summary of a successful
-        # run, or in the error when Homebrew is missing.
-        print(INTEL_SMBCLIENT_SKIPPED, flush=True)
-        if not missing_tools:
-            return skipped
     tools = _format_tools(missing_tools)
     if platform_label == "macOS":
         manual_command = _macos_manual_install_command(missing_tools)
@@ -560,7 +528,7 @@ def install_required_host_tools() -> list[str]:
             f"Install {tools} with your OS package manager.",
         )
 
-    still_missing = [tool for tool in _missing_required_host_tools() if tool not in skipped]
+    still_missing = _missing_required_host_tools(platform_label)
     if still_missing:
         _raise_host_tool_install_error(
             f"Required host tools are still missing after install attempt: {_format_tools(still_missing)}",
@@ -568,7 +536,6 @@ def install_required_host_tools() -> list[str]:
         )
     _require_supported_ssh()
     print(f"Installed required host tools: {tools}", flush=True)
-    return skipped
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -631,9 +598,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.set_stage("install_python_requirements")
             install_python_requirements(venv_python)
             command_context.set_stage("install_host_tools")
-            skipped_tools = install_required_host_tools()
-            if skipped_tools:
-                command_context.update_fields(skipped_host_tools=_format_tools(skipped_tools))
+            install_required_host_tools(platform_label)
         except BootstrapCommandError as e:
             message = _format_command_error(e)
             print(message, file=sys.stderr)
@@ -661,13 +626,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         # An existing .venv keeps the Python it was made with, whatever --python says.
         venv_version = venv_python_version(venv_python.parent.parent) or selected_python_version
         command_context.update_fields(
-            smbclient_available_after=find_command("smbclient") is not None,
             venv_exists_after=VENVDIR.exists(),
             venv_python_version=venv_version,
         )
-        if skipped_tools:
-            print(f"\nNot installed: {_format_tools(skipped_tools)}. {INTEL_SMBCLIENT_SKIPPED}", flush=True)
-            print(MAC_APP_HINT, flush=True)
+        if platform_label != "macOS":
+            # Doctor uses Apple's own SMB client on a Mac.
+            command_context.update_fields(smbclient_available_after=find_command("smbclient") is not None)
         zeroconf_note = old_zeroconf_note(
             platform_label, venv_version, dns_sd_installed=find_command("dns-sd") is not None,
         )

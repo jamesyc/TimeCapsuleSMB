@@ -487,7 +487,6 @@ private struct DiscoveryMonitorTestRuntimeResolver: AppRuntimeResolving {
         HelperResolution(
             executableURL: URL(fileURLWithPath: "/bundle/Contents/Helpers/tcapsule"),
             distributionRootURL: URL(fileURLWithPath: "/bundle/Contents/Resources/Distribution", isDirectory: true),
-            toolsBinURL: URL(fileURLWithPath: "/bundle/Contents/Resources/Tools/bin", isDirectory: true),
             mode: .productionBundle,
             attemptedPaths: ["/bundle/Contents/Helpers/tcapsule"]
         )

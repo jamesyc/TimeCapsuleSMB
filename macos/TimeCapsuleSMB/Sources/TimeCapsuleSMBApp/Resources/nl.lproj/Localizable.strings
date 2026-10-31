@@ -307,8 +307,6 @@
 "bundle_issue.recovery.reinstall" = "Installeer TimeCapsuleSMB opnieuw.";
 "bundle_issue.state_directory_unavailable.message" = "TimeCapsuleSMB kan niet schrijven naar de map voor de runtimestatus.";
 "bundle_issue.state_directory_unavailable.recovery" = "Herstel de toegangsrechten van de ingestelde statusmap.";
-"bundle_issue.tools_directory_missing.message" = "Gebundelde opdrachtregelprogramma's ontbreken.";
-"bundle_issue.tools_directory_missing.recovery" = "Sommige diagnostische functies zijn mogelijk niet beschikbaar totdat het app-pakket is hersteld.";
 "bundle_issue.unsupported_version.message" = "Deze TimeCapsuleSMB-versie wordt niet ondersteund.";
 "bundle_issue.unsupported_version.recovery" = "Werk TimeCapsuleSMB bij.";
 "bundle_issue.version_metadata_unavailable.message" = "Updatemetadata zijn niet beschikbaar.";

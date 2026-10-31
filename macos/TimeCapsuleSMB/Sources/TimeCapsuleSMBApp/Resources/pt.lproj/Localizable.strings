@@ -307,8 +307,6 @@
 "bundle_issue.recovery.reinstall" = "Reinstale TimeCapsuleSMB.";
 "bundle_issue.state_directory_unavailable.message" = "TimeCapsuleSMB não pode gravar no diretório de estado de execução.";
 "bundle_issue.state_directory_unavailable.recovery" = "Repare as permissões do diretório de estado configurado.";
-"bundle_issue.tools_directory_missing.message" = "As ferramentas de linha de comando incluídas estão faltando.";
-"bundle_issue.tools_directory_missing.recovery" = "Algumas funções de diagnóstico podem ficar indisponíveis até que o pacote do app seja reparado.";
 "bundle_issue.unsupported_version.message" = "Esta versão TimeCapsuleSMB não é suportada.";
 "bundle_issue.unsupported_version.recovery" = "Atualize TimeCapsuleSMB.";
 "bundle_issue.version_metadata_unavailable.message" = "Os metadados de atualização não estão disponíveis.";

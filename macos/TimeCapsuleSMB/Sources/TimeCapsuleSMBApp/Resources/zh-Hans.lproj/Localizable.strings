@@ -307,8 +307,6 @@
 "bundle_issue.recovery.reinstall" = "重新安装 TimeCapsuleSMB。";
 "bundle_issue.state_directory_unavailable.message" = "TimeCapsuleSMB 无法写入其运行状态目录。";
 "bundle_issue.state_directory_unavailable.recovery" = "修复已配置状态目录的权限。";
-"bundle_issue.tools_directory_missing.message" = "缺少捆绑的命令行工具。";
-"bundle_issue.tools_directory_missing.recovery" = "在修复应用包前，某些诊断可能不可用。";
 "bundle_issue.unsupported_version.message" = "此 TimeCapsuleSMB 版本不受支持。";
 "bundle_issue.unsupported_version.recovery" = "更新 TimeCapsuleSMB。";
 "bundle_issue.version_metadata_unavailable.message" = "更新元数据不可用。";

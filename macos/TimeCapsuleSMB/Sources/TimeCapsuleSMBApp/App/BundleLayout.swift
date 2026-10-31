@@ -19,7 +19,6 @@ public enum BundleRuntimeIssueCode: String, CaseIterable, Equatable, Sendable {
     case artifactManifestMissing
     case artifactManifestInvalid
     case distributionArtifactsMissing
-    case toolsDirectoryMissing
     case applicationSupportUnavailable
     case stateDirectoryUnavailable
     case unsupportedVersion
@@ -82,8 +81,6 @@ public struct BundleRuntimeIssue: Identifiable, Equatable, Sendable {
                 return L10n.format("bundle_issue.distribution_artifacts_missing_count.message", count)
             }
             return L10n.string("bundle_issue.distribution_artifacts_missing.message")
-        case .toolsDirectoryMissing:
-            return L10n.string("bundle_issue.tools_directory_missing.message")
         case .applicationSupportUnavailable:
             return L10n.string("bundle_issue.application_support_unavailable.message")
         case .stateDirectoryUnavailable:
@@ -113,8 +110,6 @@ public struct BundleRuntimeIssue: Identifiable, Equatable, Sendable {
              .artifactManifestInvalid,
              .distributionArtifactsMissing:
             return L10n.string("bundle_issue.recovery.reinstall")
-        case .toolsDirectoryMissing:
-            return L10n.string("bundle_issue.tools_directory_missing.recovery")
         case .applicationSupportUnavailable:
             return L10n.string("bundle_issue.application_support_unavailable.recovery")
         case .stateDirectoryUnavailable:
@@ -144,7 +139,6 @@ public struct BundleLayout: Equatable, Sendable {
     public let helperURL: URL
     public let distributionRootURL: URL
     public let artifactManifestURL: URL
-    public let toolsBinURL: URL
     public let pythonPackagesURL: URL
     public let applicationSupportURL: URL
     public let configURL: URL
@@ -157,7 +151,6 @@ public struct BundleLayout: Equatable, Sendable {
         helperURL: URL,
         distributionRootURL: URL? = nil,
         artifactManifestURL: URL? = nil,
-        toolsBinURL: URL? = nil,
         pythonPackagesURL: URL? = nil,
         applicationSupportURL: URL,
         configURL: URL? = nil,
@@ -171,7 +164,6 @@ public struct BundleLayout: Equatable, Sendable {
         self.distributionRootURL = resolvedDistributionRoot
         self.artifactManifestURL = artifactManifestURL
             ?? resolvedDistributionRoot.appendingPathComponent("artifact-manifest.json")
-        self.toolsBinURL = toolsBinURL ?? resourceURL.appendingPathComponent("Tools/bin", isDirectory: true)
         self.pythonPackagesURL = pythonPackagesURL
             ?? resourceURL
                 .appendingPathComponent("Python", isDirectory: true)
@@ -242,12 +234,6 @@ public struct BundleLayout: Equatable, Sendable {
                 ))
             }
             issues.append(contentsOf: artifactManifestIssues(fileManager: fileManager))
-        }
-        if !isDirectory(toolsBinURL, fileManager: fileManager) {
-            issues.append(BundleRuntimeIssue(
-                code: .toolsDirectoryMissing,
-                severity: .warning
-            ))
         }
         if !isWritableDirectory(applicationSupportURL, fileManager: fileManager) {
             issues.append(BundleRuntimeIssue(

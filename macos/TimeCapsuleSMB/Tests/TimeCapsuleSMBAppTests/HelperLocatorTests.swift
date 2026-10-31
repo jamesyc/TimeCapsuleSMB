@@ -21,7 +21,6 @@ final class HelperLocatorTests: XCTestCase {
 
         XCTAssertEqual(resolution.executableURL.path, helper.path)
         XCTAssertEqual(resolution.mode, .explicit)
-        XCTAssertNil(resolution.toolsBinURL)
         XCTAssertNotNil(environment["TCAPSULE_CONFIG"])
         XCTAssertNotNil(environment["TCAPSULE_STATE_DIR"])
         XCTAssertEqual(environment["TCAPSULE_CLIENT"], "macos_gui")
@@ -90,7 +89,6 @@ final class HelperLocatorTests: XCTestCase {
         XCTAssertEqual(resolution.executableURL.path, helper.path)
         XCTAssertEqual(resolution.distributionRootURL?.path, repo.path)
         XCTAssertEqual(resolution.mode, .developmentCheckout)
-        XCTAssertNil(resolution.toolsBinURL)
         XCTAssertEqual(environment["TCAPSULE_DISTRIBUTION_ROOT"], repo.path)
     }
 
@@ -111,10 +109,10 @@ final class HelperLocatorTests: XCTestCase {
         XCTAssertEqual(resolution.mode, .productionBundle)
         XCTAssertEqual(resolution.executableURL.path, bundle.bundleURL.appendingPathComponent("Contents/Helpers/tcapsule").path)
         XCTAssertEqual(resolution.distributionRootURL?.path, bundle.resourceURL?.appendingPathComponent("Distribution").path)
-        XCTAssertEqual(resolution.toolsBinURL?.path, bundle.resourceURL?.appendingPathComponent("Tools/bin").path)
     }
 
-    func testLocatorPrependsBundledToolsToPath() throws {
+    func testLocatorPassesThePathThroughUnchanged() throws {
+        // The app bundles no command-line tools for the helper to find first.
         let temp = try TemporaryDirectory()
         let bundle = try makeAppBundle(in: temp.url)
         let locator = HelperLocator(
@@ -127,19 +125,8 @@ final class HelperLocatorTests: XCTestCase {
         let resolution = try locator.resolve(helperPath: nil)
         let environment = locator.helperEnvironment(for: resolution)
 
-        XCTAssertEqual(environment["PATH"], "\(resolution.toolsBinURL!.path):/usr/bin")
+        XCTAssertEqual(environment["PATH"], "/usr/bin")
         XCTAssertEqual(environment["TCAPSULE_DISTRIBUTION_ROOT"], resolution.distributionRootURL?.path)
-    }
-
-    func testProductionRuntimeIssuesReportMissingToolsAsWarning() throws {
-        let temp = try TemporaryDirectory()
-        let bundle = try makeAppBundle(in: temp.url, createTools: false)
-        let locator = HelperLocator(environment: [:], currentDirectory: temp.url, bundle: bundle, fileManager: .default)
-
-        let resolution = try locator.resolve(helperPath: nil)
-        let issues = locator.runtimeIssues(for: resolution)
-
-        XCTAssertTrue(issues.contains(where: { $0.code == .toolsDirectoryMissing && $0.severity == .warning }))
     }
 
     func testLocatorReportsAttemptedPathsWhenMissing() throws {
@@ -171,7 +158,7 @@ final class HelperLocatorTests: XCTestCase {
         return repo
     }
 
-    private func makeAppBundle(in directory: URL, createTools: Bool = true) throws -> Bundle {
+    private func makeAppBundle(in directory: URL) throws -> Bundle {
         let app = directory.appendingPathComponent("TimeCapsuleSMB.app", isDirectory: true)
         let contents = app.appendingPathComponent("Contents", isDirectory: true)
         let macOS = contents.appendingPathComponent("MacOS", isDirectory: true)
@@ -203,9 +190,6 @@ final class HelperLocatorTests: XCTestCase {
             at: resources.appendingPathComponent("Distribution/bin", isDirectory: true),
             withIntermediateDirectories: true
         )
-        if createTools {
-            try FileManager.default.createDirectory(at: resources.appendingPathComponent("Tools/bin", isDirectory: true), withIntermediateDirectories: true)
-        }
         guard let bundle = Bundle(url: app) else {
             throw NSError(domain: "HelperLocatorTests", code: 1)
         }

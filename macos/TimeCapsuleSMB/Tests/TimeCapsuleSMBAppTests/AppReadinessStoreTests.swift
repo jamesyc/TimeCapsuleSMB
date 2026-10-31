@@ -208,9 +208,9 @@ final class AppReadinessStoreTests: XCTestCase {
 
     func testRuntimeWarningProducesDegradedStateAfterValidationSuccess() async throws {
         let warning = BundleRuntimeIssue(
-            code: .toolsDirectoryMissing,
+            code: .versionMetadataUnavailable,
             severity: .warning,
-            message: "missing tools",
+            message: "no version metadata",
             recovery: "repair app"
         )
         let runner = StoreTestRunner(responses: [
@@ -443,7 +443,6 @@ private struct TestRuntimeResolver: AppRuntimeResolving {
         return HelperResolution(
             executableURL: URL(fileURLWithPath: "/bundle/Contents/Helpers/tcapsule"),
             distributionRootURL: URL(fileURLWithPath: "/bundle/Contents/Resources/Distribution", isDirectory: true),
-            toolsBinURL: URL(fileURLWithPath: "/bundle/Contents/Resources/Tools/bin", isDirectory: true),
             mode: .productionBundle,
             attemptedPaths: ["/bundle/Contents/Helpers/tcapsule"]
         )

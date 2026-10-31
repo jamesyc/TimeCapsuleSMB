@@ -72,7 +72,6 @@ final class BundleLayoutTests: XCTestCase {
                 .artifactManifestMissing,
                 .artifactManifestInvalid,
                 .distributionArtifactsMissing,
-                .toolsDirectoryMissing,
                 .applicationSupportUnavailable,
                 .stateDirectoryUnavailable,
                 .unsupportedVersion,
@@ -171,14 +170,6 @@ final class BundleLayoutTests: XCTestCase {
         XCTAssertTrue(issues.contains(where: { $0.code == .pythonPackagesMissing && $0.severity == .error }))
     }
 
-    func testMissingToolsDirectoryIsWarningIssue() throws {
-        let layout = try makeLayout(createTools: false)
-
-        let issues = layout.validationIssues()
-
-        XCTAssertTrue(issues.contains(where: { $0.code == .toolsDirectoryMissing && $0.severity == .warning }))
-    }
-
     func testApplicationSupportPathMustBeWritableDirectory() throws {
         let temp = try TemporaryDirectory()
         let appSupportFile = temp.url.appendingPathComponent("Application Support")
@@ -199,7 +190,6 @@ final class BundleLayoutTests: XCTestCase {
         artifactManifestContents: String? = nil,
         createManifestArtifact: Bool = true,
         createPythonPackages: Bool = true,
-        createTools: Bool = true,
         applicationSupportURL: URL? = nil
     ) throws -> BundleLayout {
         let temp = try TemporaryDirectory()
@@ -254,12 +244,6 @@ final class BundleLayoutTests: XCTestCase {
                 .appendingPathComponent("Python", isDirectory: true)
                 .appendingPathComponent("site-packages", isDirectory: true)
             try FileManager.default.createDirectory(at: pythonPackages, withIntermediateDirectories: true)
-        }
-        if createTools {
-            try FileManager.default.createDirectory(
-                at: resources.appendingPathComponent("Tools/bin", isDirectory: true),
-                withIntermediateDirectories: true
-            )
         }
         return BundleLayout(
             appBundleURL: app,
