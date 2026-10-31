@@ -44,10 +44,18 @@ classifiers = [
 dependencies = [
   # Bootstrap still installs these on Python 3.9 (the macOS Command Line Tools
   # Python, RHEL 9), so no floor may rise above the newest release for 3.9.
+  # A higher floor behind a `python_version >= '3.10'` marker is fine.
   "ifaddr>=0.2.0",
   "pycryptodome>=4.1.0,<5",
   "zopfli>=0.2.3.post1",
-  "zeroconf>=0.148.0",
+  # Every fix for zeroconf's mDNS advisories (0.149.5 to 0.149.16) needs
+  # Python 3.10, so 3.9 stays on 0.148. On macOS the CLI uses dns-sd, and
+  # configure and validate-install only import zeroconf to check that it is
+  # installed, so only Linux on 3.9 runs the old packet code. CI's audit
+  # ignores those advisories, which is safe only while 3.10 and newer cannot
+  # resolve an affected release.
+  "zeroconf>=0.148.0; python_version < '3.10'",
+  "zeroconf>=0.149.16; python_version >= '3.10'",
 ]
 
 [project.urls]

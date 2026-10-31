@@ -93,7 +93,7 @@ On NetBSD 4 LE, build the tests with `SAMBA4X_BUILD_REGRESSION_TESTS=1 ./build/s
 
 ## Release Builds
 
-A pushed `v*` tag builds the release in CI (`.github/workflows/ci.yml`), after the tests, the packaging check and the Intel check pass for that commit:
+A pushed `v*` tag builds the release in CI (`.github/workflows/ci.yml`), after the tests, the packaging check, the Intel check and the dependency audit pass for that commit. The audit looks up `pyproject.toml`'s dependencies, resolved for every Python it allows (`uv audit --no-dev`), and the app's pinned packages and build tools in `bundled-requirements.txt` and `build-requirements.txt` (`pip-audit`) in the advisory databases. On other pushes a finding marks the audit job failed without failing the run. A tag with a finding builds nothing until the dependency is upgraded or the step that found it ignores the advisory (`--ignore ID` for `uv audit`, `--ignore-vuln ID` for `pip-audit`) with a comment that says why it does not affect users. The release steps:
 
 1. **Build Release** (`macos-26`) checks the tag with `check_release.py`, sets up a temporary signing keychain and the `tcapsulesmb-notary` profile from the `release` environment's secrets, checks that the Sparkle key belongs to the app (so a wrong certificate, notary key or Sparkle key fails in the first minute), and runs the release command:
 

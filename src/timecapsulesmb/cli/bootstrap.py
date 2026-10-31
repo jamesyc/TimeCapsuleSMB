@@ -41,6 +41,12 @@ INTEL_SMBCLIENT_SKIPPED = (
 # ssh logs in to the device; every Mac has it, minimal Linux installs may not.
 REQUIRED_HOST_TOOLS = ("ssh", "smbclient")
 MIN_BOOTSTRAP_PYTHON = (3, 9)
+FIXED_ZEROCONF_PYTHON = (3, 10)
+OLD_ZEROCONF_NOTE = (
+    "Note: .venv uses Python 3.9, so Bonjour discovery runs zeroconf 0.148, which has known bugs "
+    "that a crafted mDNS packet on your network can trigger. For the fixed zeroconf, delete .venv "
+    "and rerun './tcapsule bootstrap --python /path/to/python3.10' with Python 3.10 or newer."
+)
 MIN_MACOS_AUTO_HOST_TOOL_INSTALL = (14, 0)
 PYTHON_VERSION_PROBE = "import sys; print('%d.%d.%d' % sys.version_info[:3])"
 MACOS_HOST_TOOL_PACKAGES = {
@@ -220,6 +226,33 @@ def detect_selected_python_version(python: str) -> str:
     if not lines:
         raise BootstrapError(f"Selected Python did not print a version: {python}")
     return lines[-1]
+
+
+def venv_python_version(venv_dir: Path) -> str | None:
+    """The Python a venv was made with, from its pyvenv.cfg: `version` from
+    `python -m venv`, `version_info` from uv. None when it cannot be read."""
+    try:
+        lines = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if sep and key.strip() in ("version", "version_info") and value.strip():
+            return value.strip()
+    return None
+
+
+def old_zeroconf_note(platform_label: str, python_version: str, *, dns_sd_installed: bool) -> str | None:
+    """Linux on Python 3.9 gets zeroconf 0.148, whose mDNS fixes need 3.10
+    (pyproject.toml). Bonjour uses dns-sd whenever it is installed
+    (discovery/bonjour.py), as it always is on macOS, and then never runs
+    zeroconf, so only Linux without dns-sd gets the note."""
+    if platform_label != "Linux" or dns_sd_installed:
+        return None
+    parsed = _parse_version_prefix(python_version)
+    if parsed is None or _version_at_least(parsed, FIXED_ZEROCONF_PYTHON):
+        return None
+    return OLD_ZEROCONF_NOTE
 
 
 def validate_selected_python(python: str) -> str:
@@ -625,13 +658,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
 
         command_context.set_stage("complete")
+        # An existing .venv keeps the Python it was made with, whatever --python says.
+        venv_version = venv_python_version(venv_python.parent.parent) or selected_python_version
         command_context.update_fields(
             smbclient_available_after=find_command("smbclient") is not None,
             venv_exists_after=VENVDIR.exists(),
+            venv_python_version=venv_version,
         )
         if skipped_tools:
             print(f"\nNot installed: {_format_tools(skipped_tools)}. {INTEL_SMBCLIENT_SKIPPED}", flush=True)
             print(MAC_APP_HINT, flush=True)
+        zeroconf_note = old_zeroconf_note(
+            platform_label, venv_version, dns_sd_installed=find_command("dns-sd") is not None,
+        )
+        if zeroconf_note:
+            print(f"\n{zeroconf_note}", flush=True)
         print("\nHost setup complete.", flush=True)
         print("Next steps:", flush=True)
         print(f"  1. {VENVDIR / 'bin' / 'tcapsule'} configure", flush=True)

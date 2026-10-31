@@ -23,6 +23,47 @@ jobs:
       - name: Build and run the no-pthread Samba tests with sanitizers
         run: python3 -m tests.samba.run host --work "$RUNNER_TEMP/samba-regressions" --jobs "$(nproc)" --sanitizers
 
+  # Checks against known advisories what users install (pyproject.toml's
+  # dependencies, resolved for every Python it allows) and what the Mac app
+  # bundles and builds with. Dev tools are left out: no user runs them, and the
+  # release job never installs them. A known vulnerability marks this job
+  # failed on every push, but only a release tag waits on it.
+  audit:
+    name: Audit Python dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
+      # The ignored advisories are zeroconf's mDNS bugs in 0.148, the last
+      # release for Python 3.9. pyproject.toml gives 3.10 and newer a fixed
+      # release, and on macOS the CLI uses dns-sd and never runs zeroconf's
+      # packet code, so they reach only Linux on Python 3.9.
+      - name: Audit the dependencies users install
+        run: >-
+          uv audit --no-dev --preview-features audit-command
+          --ignore GHSA-9663-mqmp-p9mm
+          --ignore GHSA-9pgc-3ccv-5297
+          --ignore GHSA-phvx-9mgw-67r5
+          --ignore GHSA-qc2x-6f54-m6h9
+          --ignore GHSA-rfg2-pjw2-56x2
+
+      # The app installs these exact pins, not pyproject.toml's ranges, and
+      # the build tools run in the release job beside its signing keys. Nothing
+      # is ignored here, so this also fails if a zeroconf advisory ever covers
+      # the release Python 3.10 and newer get. Runs even when the step above
+      # fails, so one push shows both results.
+      - name: Audit the packages the Mac app bundles and builds with
+        if: ${{ !cancelled() }}
+        run: >-
+          uvx pip-audit --disable-pip --require-hashes
+          -r macos/TimeCapsuleSMB/tools/bundled-requirements.txt
+          -r macos/TimeCapsuleSMB/tools/build-requirements.txt
+
   test:
     name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -195,6 +236,7 @@ jobs:
     timeout-minutes: 90
     needs:
       - samba-regressions
+      - audit
       - test
       - swift-test
       - intel-check

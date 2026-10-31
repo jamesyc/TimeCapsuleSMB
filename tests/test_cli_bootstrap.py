@@ -848,6 +848,88 @@ class CliBootstrapTests(CliTestCase):
                 finished = self.telemetry_payload("bootstrap_finished")
                 self.assertEqual(finished.get("python_venv_package"), venv_package)
 
+    def test_venv_python_version_reads_pyvenv_cfg_from_venv_and_uv(self) -> None:
+        cases = (
+            ("home = /usr/bin\ninclude-system-site-packages = false\nversion = 3.9.6\n", "3.9.6"),
+            ("home = /opt/python/bin\nimplementation = CPython\nuv = 0.13.6\nversion_info = 3.15.1\n", "3.15.1"),
+            ("home = /usr/bin\n", None),
+            ("version =\n", None),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "pyvenv.cfg").write_text(text, encoding="utf-8")
+                self.assertEqual(bootstrap.venv_python_version(Path(tmp)), expected)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(bootstrap.venv_python_version(Path(tmp)))
+
+    def test_old_zeroconf_note_only_for_linux_without_dns_sd_below_python_3_10(self) -> None:
+        cases = (
+            ("Linux", "3.9.6", False, True),
+            ("Linux", "3.9.25+", False, True),
+            ("Linux", "3.10.0", False, False),
+            ("Linux", "3.15.1", False, False),
+            # Bonjour uses dns-sd when it is installed and never runs zeroconf.
+            ("Linux", "3.9.6", True, False),
+            ("macOS", "3.9.6", True, False),
+            ("macOS", "3.9.6", False, False),
+            ("Linux", "unknown", False, False),
+        )
+        for label, version, dns_sd, noted in cases:
+            with self.subTest(label=label, version=version, dns_sd=dns_sd):
+                note = bootstrap.old_zeroconf_note(label, version, dns_sd_installed=dns_sd)
+                self.assertEqual(note is not None, noted)
+                if noted:
+                    self.assertIn("Python 3.10 or newer", note)
+
+    def _bootstrap_finishing_with_venv(
+        self, label: str, selected: str, pyvenv_cfg: str | None, *, dns_sd: str | None = None,
+    ) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = Path(tmp) / ".venv"
+            (venv / "bin").mkdir(parents=True)
+            if pyvenv_cfg is not None:
+                (venv / "pyvenv.cfg").write_text(pyvenv_cfg, encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch("pathlib.Path.exists", return_value=True), \
+                 mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"), \
+                 mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value=label), \
+                 mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value=selected), \
+                 mock.patch("timecapsulesmb.cli.bootstrap.check_macos_host_tool_install_support", return_value={}), \
+                 mock.patch("timecapsulesmb.cli.bootstrap._python_venv_package", return_value=None), \
+                 mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=venv / "bin" / "python"), \
+                 mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"), \
+                 mock.patch("timecapsulesmb.cli.bootstrap.install_required_host_tools", return_value=[]), \
+                 mock.patch(
+                     "timecapsulesmb.cli.bootstrap.find_command",
+                     side_effect=lambda name: dns_sd if name == "dns-sd" else None,
+                 ), \
+                 redirect_stdout(output):
+                self.assertEqual(bootstrap.main([]), 0)
+            return output.getvalue()
+
+    def test_bootstrap_notes_old_zeroconf_from_the_python_venv_was_made_with(self) -> None:
+        cases = (
+            # An existing .venv keeps its Python, so pyvenv.cfg wins over --python.
+            ("Linux", "3.12.3", "version = 3.9.6\n", True, "3.9.6"),
+            ("Linux", "3.9.6", "version_info = 3.12.3\n", False, "3.12.3"),
+            # Without a readable pyvenv.cfg the selected Python is the best guess.
+            ("Linux", "3.9.6", None, True, "3.9.6"),
+            ("macOS", "3.9.6", "version = 3.9.6\n", False, "3.9.6"),
+        )
+        for label, selected, cfg, noted, recorded in cases:
+            with self.subTest(label=label, selected=selected, cfg=cfg):
+                text = self._bootstrap_finishing_with_venv(label, selected, cfg)
+                self.assertEqual(bootstrap.OLD_ZEROCONF_NOTE in text, noted)
+                if noted:
+                    # Printed before the closing summary, not after it.
+                    self.assertLess(text.index(bootstrap.OLD_ZEROCONF_NOTE), text.index("Host setup complete."))
+                self.assertEqual(self.telemetry_payload("bootstrap_finished")["venv_python_version"], recorded)
+
+    def test_bootstrap_skips_the_zeroconf_note_when_dns_sd_is_installed(self) -> None:
+        text = self._bootstrap_finishing_with_venv("Linux", "3.9.6", "version = 3.9.6\n", dns_sd="/usr/bin/dns-sd")
+        self.assertNotIn(bootstrap.OLD_ZEROCONF_NOTE, text)
+        self.assertIn("Host setup complete.", text)
+
     def test_bootstrap_a_failed_venv_package_install_stops_before_the_venv(self) -> None:
         stderr = io.StringIO()
         with mock.patch("pathlib.Path.exists", return_value=True), \
