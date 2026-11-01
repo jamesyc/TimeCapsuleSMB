@@ -8,23 +8,31 @@
 #
 # The patch files are generated: edit them through build/samba4x_replay.py
 # (init, amend, export, verify), never by hand.
+#
+# Sections, in order:
+#   1. Fixes to stock Samba
+#   2. Upstream proposals
+#   3. Build and toolchain
+#   4. NetBSD compat
+#   5. NetBSD bugs
+#   6. macOS workarounds
+#   7. Apple firmware coexistence
+#   8. Diagnostics
 
-# Upstream bug fixes.
-# Each fixes a bug in stock Samba and needs no later patch.
+# 1. Fixes to stock Samba.
+# Each applies to pristine Samba, builds on Linux without the overlay, needs
+# no later patch, and fixes a bug that a stock build with default options can
+# reach on a platform Samba supports.
 #
 # open_file_ntcreate() found no file under the name, but a directory appeared
 # before the open: the O_CREAT|O_EXCL open in fd_open_atomic() failed with
 # EEXIST and its retry without O_CREAT opened the directory for reading, which
 # open(2) allows. smbd then held a file handle on a directory (is_directory
-# false; a later QUERY_DIRECTORY failed, and patch 0004 used to flip the flag
-# there). Return NT_STATUS_FILE_IS_A_DIRECTORY instead, so the caller opens it
-# as a directory, as for one found at lookup time. A file replaced by a
-# directory was already refused by the dev/ino check before it.
+# false, so a later QUERY_DIRECTORY failed). Return
+# NT_STATUS_FILE_IS_A_DIRECTORY instead, so the caller opens it as a directory,
+# as for one found at lookup time. A file replaced by a directory was already
+# refused by the dev/ino check before it.
 0063-smbd-open-file-created-directory.patch|open a name that became a directory as a directory
-# Without pthread, talloc_stack's atexit handler read a NULL tracker when
-# talloc_stackframe_exists() had registered it before any frame existed, and
-# left the pointer to the freed tracker for exit handlers that run after it.
-0022-talloc-stack-atexit-null-tracker.patch|atexit handler without a tracker, and no freed tracker left behind
 # smbd_calculate_maximum_allowed_access_fsp() returned full access for root
 # (a share with "force user = root", as on the appliance) before taking write
 # access away for a read-only share or a read-only file, so opening a
@@ -79,205 +87,95 @@
 # seen its client leave). Skip the wait for a stale entry, as the code below
 # it does.
 0078-smbd-open-stale-breaking-lease.patch|no wait on a breaking lease whose open is stale
-
-# Upstream proposals.
-# Changes upstream would have to agree to; they need no appliance patch.
-#
-# Without pthread, the atexit handler reported every stackframe still open at
-# exit() at level 0 (and panicked in DEVELOPER builds): about three lines for
-# each exiting smbd connection child, plus smbd -V and -b. Those are the
-# frames of the code that called exit(), not leaks; builds with pthread never
-# check them, since key destructors do not run at exit(). Report them at
-# debug level, without the panic; a thread exiting with open frames still
-# reports at level 0.
-0064-talloc-stack-exit-report-debug.patch|report stackframes open at exit only at debug level
-
-# Build and toolchain.
-# Samba marks some generated tools as hostcc but still lets waf inherit
-# target compiler/linker settings. Keep those host tools on the VM compiler.
-0001-waf-hostcc-target-flags.patch|waf hostcc isolation from target flags
-# Apply static link flags only to the static binaries we build: the deployed
-# smbd (with its link map), the other shipped binary, the metadata migrator,
-# by name, and the opt-in tc_*_test regression drivers, which never ship.
-0049-waf-static-appliance-binaries.patch|static link flags for smbd, the migrator and regression drivers
-# Upstream repeats several typedefs across headers (SMB_STRUCT_STAT and
-# files_struct, Heimdal's heim_pcontext and krb5int32). C11 and GCC 4.6 and
-# later accept a repeated typedef; the NetBSD 4 SDK's GCC 4.1.2 rejects it, so
-# guard each one.
-0014-includes-typedef-guards.patch|duplicate typedef guards
-# NetBSD 7's <glob.h> (the NetBSD 6 lane's SDK) declares glob_pattern_p(),
-# which conflicts with bundled popt's static fallback of the same name ("static
-# follows non-static"); rename popt's copy. The NetBSD 4 headers lack the
-# declaration.
-0016-popt-glob-symbol-rename.patch|bundled popt glob symbol rename
-# Samba uses C11 generic selection for const-preserving charset helpers. The
-# existing NetBSD SDK GCC predates that syntax; retain the types with GNU builtins.
-0036-charset-legacy-gcc-generic.patch|const-preserving charset helpers on legacy GCC
-# waf writes each configure test program exactly as the check gives it, and
-# some end in indentation instead of a newline. GCC 4.1 reports "no newline at
-# end of file", an error under -Werror, so on the NetBSD 4 SDK such a check
-# failed whatever it tested. The one that mattered adds the stack protector
-# and _FORTIFY_SOURCE: NetBSD 4 binaries were built without both. End every
-# test program with a newline.
-0073-waf-config-test-final-newline.patch|configure test programs end with a newline
-
-# NetBSD 4 and old-kernel compatibility.
-# Neither Apple kernel has the *at system calls: NetBSD 4 and NetBSD 6 both
-# return ENOSYS for openat, fstatat, mkdirat, unlinkat, readlinkat, renameat,
-# linkat, symlinkat, mknodat and utimensat, although the NetBSD 7 SDK declares
-# them (probed on both devices 2026-09-28). libreplace emulates them for the
-# appliance (overlay lib/replace/tc_at_emulation.c): each call fchdir()s to
-# the directory descriptor, makes the path-based call and changes back, which
-# needs a process without threads. A rename or link between two directories
-# runs in one of them and names the other relative to it ("../" up to their
-# common ancestor, then down), so it works past PATH_MAX (1,024 bytes) as long
-# as getcwd() can name both (4,095 bytes). futimens is emulated with futimes on both:
-# NetBSD 4 has none, and NetBSD 6's ignores the call when atime is UTIME_OMIT
-# and sets the mtime to -1 when mtime is. NetBSD 4 also lacks fdopendir
-# (emulated there by opening "." from inside the directory and reading the
-# whole directory up front, because NetBSD 4's HFS loses a listing's place
-# whenever a descriptor on the directory is closed; rewinddir reads it
-# again). On NetBSD 6, whose HFS keeps a listing's place but repeats its last
-# entries when read again after the end, readdir keeps reporting the end
-# until rewinddir. NetBSD 4 also lacks arc4random_buf and getline (overlay
-# lib/replace/tc_netbsd4_compat.c), and the O_DIRECTORY and AT_* constants. system/filesys.h maps each name onto the emulation, and
-# build/_samba4x.sh refuses a binary that still links libc's *at stubs.
-0002-replace-appliance-at-emulation.patch|*at emulation for the appliance kernels and NetBSD 4 libc gaps
-# Samba's default streaminfo refreshes stat before appending ::$DATA. The
-# pathref fallback can fail that refresh even when the open path already
-# cached valid stat metadata; use the cached stat for macOS delete/share checks.
-0050-vfs-default-streaminfo-cached-stat.patch|keep the default stream when the pathref stat refresh fails
-# NetBSD 4 has no posix_spawn (no spawn.h), so its lanes (TC_SAMBA4X_NETBSD4_COMPAT)
-# fork and execve instead. Samba's configure never defines HAVE_POSIX_SPAWN, so
-# gate on the lane, not on that. Apple's NetBSD 6.0 kernel has posix_spawn(2)
-# (tested on the device 2026-09-27), and the NetBSD 6 lane uses it. local_np.c
-# is live: every pipe but srvsvc (served inside smbd, 0005) tries to start
-# samba-dcerpcd, which the appliance does not ship; posix_spawn fails with
-# ENOENT and no child, the fallback after a fork. queue_process.c only has to
-# compile, as printing is disabled.
-0015-spawn-fork-exec-fallback.patch|posix_spawn fallback on NetBSD 4
-# NetBSD 4 lacks O_CLOEXEC, which tdb_wrap passes to tdb_open; define it as 0
-# in tdb_wrap.c only (tdb_open_ex() sets FD_CLOEXEC itself). A global define
-# would make other code skip its fcntl(FD_CLOEXEC) fallback.
-0007-tdb-wrap-o-cloexec.patch|O_CLOEXEC for tdb_wrap on NetBSD 4
-# NetBSD distinguishes ENOATTR from ENODATA. Missing optional extents must not
-# fail stream reads, shrinking writes or cleanup after the primary xattr is gone.
-0035-streams-xattr-enoattr.patch|missing stream extents report ENOATTR
-# On every NetBSD lane, read the interfaces from sysctl(NET_RT_IFLIST), decoded
-# by each message's RTM_VERSION, as the native service does (overlay
-# lib/socket/tc_netbsd_iflist.c). libc getifaddrs() misparses Apple's NetBSD 4
-# if_msghdr (152 bytes against the SDK's 144), and Samba's SIOCGIFCONF
-# replacement assumes fixed-size ifreq rows, which that kernel does not return.
-# Only Heimdal's krb5 address lookup still calls getifaddrs(), for Kerberos
-# client logins a standalone smbd never makes, so _samba4x.sh leaves
-# configure's interface probe results as detected.
-0043-interfaces-netbsd-route-iflist.patch|parse Time Capsule interfaces from routing messages
-
-# No-pthread build.
-# Without HAVE_PTHREAD, pthreadpool_tevent still used pthread mutexes for its
-# per-event-context glue, and tevent_threads.c's context destructor still
-# locked a mutex.
-# Guard those on HAVE_PTHREAD. The poll_mt backend needs no pthread and stays
-# registered; nothing here selects it. Pthread builds are unchanged.
-0051-tevent-no-pthread-build.patch|build tevent and pthreadpool_tevent without pthread
-# Disable pthread before libreplace constructs the dependency graph and define
-# __thread away. --disable-pthread alone already selects the synchronous
-# pthreadpool backend; _samba4x.sh also passes --disable-pthreadpool so
-# source3/wscript does not add vfs_aio_pthread. Without threads,
-# thread-local storage is process storage, and in the static appliance binary
-# any real __thread access from Samba's -fPIC objects calls static libc's
-# __tls_get_addr, which only aborts. That abort was the startup crash in
-# tevent_req_create (tevent's call-depth state) and in the winbind SID lookup
-# (libwbclient's client name) that earlier patches avoided; the NetBSD 4
-# compilers never enabled __thread, only the NetBSD 6 lane did.
-0013-configure-disable-pthread.patch|configure --disable-pthread; __thread defined away
-
-# Appliance kernel and disk.
-# Apple's NetBSD 4 and NetBSD 6 kernels lose writes to a static binary's
-# initialized data: handling the first write to a .data page, UVM fault-ahead
-# maps the neighbouring pages (4 below, 3 above) from the executable again,
-# dropping this process's (or its parent's) changes to them. Globals silently
-# returned to their initial values; talloc_magic did, so talloc aborted with
-# "Bad talloc magic value" in forked children and elsewhere, depending only on
-# code layout. A first-priority constructor in talloc, linked into every Samba
-# binary, turns fault-ahead off for the writable segment with MADV_RANDOM, and
-# talloc_lib_init repeats it where NetBSD 4's GCC has no constructor priorities.
-0046-talloc-data-faultahead.patch|keep static-data writes: no UVM fault-ahead on the writable segment
-# Apple's NetBSD 6 kernel shows a child the writes its parent makes after
-# fork() to pages whose reference bit was cleared before it: its ARM
-# pmap_protect() skips the invalid PTEs that reference emulation leaves, so
-# their PVF_WRITE survives and the parent's next write makes the shared page
-# writable without a copy-on-write fault (proven on the device 2026-09-29; a
-# connection child spun forever on a half-updated copy of the parent's
-# context). NetBSD 4's pmap is not affected. On the NetBSD 6 lanes
-# (TC_FORK_REPAIR), libreplace includes overlay lib/replace/tc_fork_repair.c:
-# linker wrappers keep a registry of private mappings, and right before each
-# fork() every private mapping, the stack too, is protected PROT_NONE and back
-# (dropping the stale page state). Touching a page is not enough: one left
-# writable that way stays shared at every later fork(). The native service
-# and rsync link the same file. Appliance only; nothing here is for upstream.
-0070-replace-fork-repair.patch|fork() repair for Apple's NetBSD 6 kernel
-# Time Capsule HFS can report file and directory owner/group as 4294967295.
-# Normalize only that sentinel at Samba's stat_ex boundary so ACL, stream, and
-# security descriptor paths see the forced root/wheel appliance identity. The
-# core-file directory setup calls lstat() directly, bypassing that
-# normalization, so on appliance builds it uses the non-strict create, which
-# skips both the owner and the 0700 checks; panics then produce disk-backed
-# cores under logs/cores/smbd.
-0023-stat-hfs-unknown-owner.patch|HFS unknown owner in corepath setup and stat metadata
-# HFS has no sparse files, so growing a file allocates every block up to its
-# new end. smbtorture's smb2.rw.invalid writes one byte just below MAXFILESIZE
-# (16 TiB); on both devices that write never finished, and it hung or rebooted
-# them (2026-09-28). A write, SET_INFO end-of-file or server-side copy that
-# would grow a file on HFS by more than the volume's available space now fails
-# with DISK_FULL, as on Windows, before anything is allocated. Growth of up to
-# 64 MiB past the size smbd last saw needs no extra system call.
-0065-smbd-hfs-growth-disk-full.patch|refuse HFS file growth beyond the available space with DISK_FULL
-# Time Capsule lock databases live on a tiny RAM disk. Add an smb.conf
-# max-dead setting for every local dbwrap TDB (dbwrap_tdb_max_dead:*). Our 0
-# sends volatile lock-database deletes straight to the freelist instead of
-# retaining thousands of per-hash-chain dead records after Time Machine closes
-# files; persistent TDBs already use 0, so only a positive value changes them.
-0017-dbwrap-tdb-max-dead.patch|configurable dbwrap TDB max-dead records
-
-# smbd without helper processes.
-# Samba runs on the device as the smbd binary alone, about 10 MB of a 15 MB
-# RAM disk, on a device with little memory. Stock smbd forks resident helpers
-# (notifyd, cleanupd, the durable-handle scavenger) and a datagram-socket sweep
-# every 15 minutes, and serves RPC pipes from the separate samba-dcerpcd and
-# rpcd_* binaries. Here smbd is the parent, one child per client connection
-# and, when VFS_AIO_FORK_ENABLED is on, aio_fork's helpers.
-#
-# Finder and smbclient -L list shares through IPC$ \PIPE\srvsvc; serve that
-# one pipe inside smbd (overlay tc_embedded_srvsvc.c). Other pipes (lsarpc,
-# samr, wkssvc, winreg) fall through to local_np_connect, which fails to start
-# the absent samba-dcerpcd.
-0005-rpc-embedded-srvsvc.patch|embedded srvsvc named pipe support
-# On appliance builds (TC_SAMBA4X_APPLIANCE), run notifyd and cleanupd in the
-# parent, as interactive smbd does. Skip the datagram-socket sweep, which forks
-# each time it runs; cleanupd still removes each exited child's socket. This
-# saves two resident smbds (about 2.5 MB RSS each, some of it shared with the
-# parent). The scavenger is still forked, on the first disconnected durable
-# handle, as upstream does: expiring a handle waits for that file's share-mode,
-# byte-range and open-record locks, which a client smbd stuck in the kernel
-# can hold indefinitely, and in the parent that wait would stop it accepting
-# connections. Forked helpers work without pthread.
-0008-smbd-helpers-in-parent.patch|host smbd helper services in the parent event loop
+# A file with no xattr_tdb row has an empty attribute set: report ENOATTR for
+# it, not EINVAL, to every caller of the library. Stock vfs_xattr_tdb's
+# fgetxattr already maps its errors to ENOATTR; EINVAL escaped through
+# getxattrat (async dosmode) and to the library's other callers, such as the
+# metadata migrator. Since 0038, HFS shares do not use this library.
+0018-xattr-tdb-missing-row-empty.patch|xattr_tdb missing rows behave like empty xattrs
+# macOS/iOS Photos writes many assetsd metadata streams. Once xattr_tdb's
+# stream-name list exceeds Samba's initial 1024-byte listxattr buffer, return
+# the normal -1/ERANGE retry signal instead of a positive required length that
+# callers mistake for bytes written into the too-small buffer.
+0027-xattr-tdb-listxattr-erange.patch|xattr_tdb retries oversized xattr name lists
+# With xattr_tdb:ignore_user_xattr, user xattr reads pass to the next module
+# before xattr_tdb has built its local smb_fname copy, so upstream passes NULL.
+# Pass the caller's name instead.
+0047-xattr-tdb-getxattrat-bypass-name.patch|pass the caller's name when xattr_tdb bypasses a user xattr read
+# macOS Time Machine sends FSCTL_SRV_REQUEST_RESUME_KEY inside a compounded
+# request while probing backup-disk capabilities. The default VFS finishes that
+# read at once but delivers its callback from an immediate event, so fruit's
+# offload_read wrapper and smb2_ioctl_network_fs each keep their parent request
+# in progress, and the SMB2 compound guard rejects it with
+# NT_STATUS_INTERNAL_ERROR. Run the callback right away when the subrequest has
+# already finished.
+0028-ioctl-resume-key-sync-completion.patch|propagate synchronous resume-key IOCTL completion
+# aio_child_cleanup() retires a helper idle for 30 to 60 seconds through
+# aio_child_destructor(), which makes it exit by writing one byte with no
+# descriptor. The helper's read_fd() then declares a descriptor array of
+# length 0, which C does not allow for a variable-length array (UBSan reports
+# it in the helper). Size the array 1 when no descriptor arrived.
+0033-aio-fork-empty-control-message.patch|avoid zero-length arrays during aio_fork shutdown
+# A helper's failed pread returned -1, which the parent cast to an oversized
+# read and turned into EIO; return the helper's errno instead.
+0052-aio-fork-read-errno.patch|keep the helper's errno for a failed read
+# A shutdown close (a dropped connection, a bare SMB2 LOGOFF, a tree
+# disconnect) runs from whatever working directory the last request left, which
+# is "/" after any tree disconnect (close_cnum) or another share's root. Delete
+# on close then finds no parent directory and leaves the file (upstream's
+# wide-links check stops it resolving anywhere else), and 0029's by-name stat
+# refuses the durable cookie. Change into the file's own share root first. A
+# disk 0041 finds revoked stays safe even when Apple remounted it at the same
+# path: both steps fstat the old descriptor before any lookup by name, and that
+# fails on a revoked vnode.
+0062-smbd-shutdown-close-share-root.patch|shutdown closes resolve names from the file's share root
 # The parent waits for a new scavenger's hello with no time limit, and serves
 # nothing meanwhile (no new connections, no reaping): a child that never says
 # hello stopped the parent for good. Wait at most 30 seconds, then kill the
 # child; only the expiry that started it is lost, and later ones start another
 # scavenger.
 0075-smbd-scavenger-hello-timeout.patch|bound the parent's wait for a new scavenger's hello
+# streams_xattr's extent code takes ENODATA to mean that an optional extent is
+# missing, but VFS xattr calls report ENOATTR. Linux builds never see the
+# difference, since lib/replace/system/filesys.h defines ENOATTR as ENODATA
+# there. On BSD and macOS, which define ENODATA separately, a missing extent
+# failed a stream read, the cleanup after a shrinking write and a stream delete
+# after the primary xattr was gone. Check for ENOATTR.
+0035-streams-xattr-enoattr.patch|missing stream extents report ENOATTR
+# Upstream bugs that leave durable-open records and leases in the lock
+# directory for good; on the appliance its small RAM disk then fills, and a
+# full one makes client smbds fail opens and abort. A share entry dropped as
+# stale (a disconnected open, or one of a dead smbd, found by another open)
+# kept its lease: remove the lease with the entry, as a close does. Only the
+# entry's own smbd removed its open records, so an smbd that crashed or was
+# killed left them until smbd restarted: after an unclean exit cleanupd asks
+# the scavenger to walk the open records and release those of exited smbds.
+# Clean exits, ordinary reconnects included, trigger no walk. A durable open's
+# record now carries its file id: it was stored before a newly created file
+# had one, so nothing could find the open's share mode entry from it. A durable
+# reconnect that failed stored its open back with disconnect time 0 and no
+# expiry, and kept its lease and the byte-range locks it had taken over:
+# store it with its own time and schedule the scavenger, and remove the lease
+# and those locks. A reconnect that met another open's lock (or one a failed
+# reconnect left behind) freed the caller's br_lck in
+# brl_reconnect_disconnected(), which share_mode_do_locked_brl() freed again:
+# a "Bad talloc magic value" panic. Leave br_lck to its owner. The parent
+# logs a child that a signal ended or that exited with an error status.
+0077-smbd-release-orphaned-durable-opens.patch|release durable opens and leases left by dead smbds and failed reconnects
 
-# aio_fork.
-# Normal helper retirement sends a short message without SCM_RIGHTS data.
-# Keep that path valid under C's nonzero variable-length-array requirement.
-# This is an upstream bug; it applies to pristine Samba.
-0033-aio-fork-empty-control-message.patch|avoid zero-length arrays during aio_fork shutdown
-# A helper's failed pread returned -1, which the parent cast to an oversized
-# read and turned into EIO; return the helper's errno instead. Upstream bug.
-0052-aio-fork-read-errno.patch|keep the helper's errno for a failed read
+# 2. Upstream proposals.
+# Changes upstream would have to agree to; they need no appliance patch.
+#
+# Time Capsule lock databases live on a tiny RAM disk. Add an smb.conf
+# max-dead setting for every local dbwrap TDB (dbwrap_tdb_max_dead:*). Our 0
+# sends volatile lock-database deletes straight to the freelist instead of
+# retaining thousands of per-hash-chain dead records after Time Machine closes
+# files; persistent TDBs already use 0, so only a positive value changes them.
+0017-dbwrap-tdb-max-dead.patch|configurable dbwrap TDB max-dead records
+# Native HFS xattrs hold at most 3802 bytes, so smb.conf sets 35 xattrs per
+# stream to keep the previous ~128 KiB Windows alternate data stream limit.
+# Upstream accepts at most 16.
+0048-streams-xattr-max-64-per-stream.patch|allow up to 64 xattrs per stream
 # Refactor only: pread, pwrite and fsync had three copies of the same
 # send/done/recv code; use one path that takes the command.
 0053-aio-fork-single-request-path.patch|one request path for pread, pwrite and fsync
@@ -301,44 +199,244 @@
 # until the read returns, as a pool thread would.
 0031-aio-fork-max-children.patch|bounded aio_fork helpers with FIFO backpressure
 
-# Time Machine.
+# 3. Build and toolchain.
+# Samba marks some generated tools as hostcc but still lets waf inherit
+# target compiler/linker settings. Keep those host tools on the VM compiler.
+0001-waf-hostcc-target-flags.patch|waf hostcc isolation from target flags
+# Apply static link flags only to the static binaries we build: the deployed
+# smbd (with its link map), the other shipped binary, the metadata migrator,
+# by name, and the opt-in tc_*_test regression drivers, which never ship.
+0049-waf-static-appliance-binaries.patch|static link flags for smbd, the migrator and regression drivers
+# Upstream repeats several typedefs across headers (SMB_STRUCT_STAT and
+# files_struct, Heimdal's heim_pcontext and krb5int32). C11 and GCC 4.6 and
+# later accept a repeated typedef; the NetBSD 4 SDK's GCC 4.1.2 rejects it, so
+# guard each one.
+0014-includes-typedef-guards.patch|duplicate typedef guards
+# NetBSD 7's <glob.h> (the NetBSD 6 lane's SDK) declares glob_pattern_p(),
+# which conflicts with bundled popt's static fallback of the same name ("static
+# follows non-static"); rename popt's copy. The NetBSD 4 headers lack the
+# declaration.
+0016-popt-glob-symbol-rename.patch|bundled popt glob symbol rename
+# Samba uses C11 generic selection for const-preserving charset helpers. The
+# existing NetBSD SDK GCC predates that syntax; retain the types with GNU
+# builtins.
+0036-charset-legacy-gcc-generic.patch|const-preserving charset helpers on legacy GCC
+# waf writes each configure test program exactly as the check gives it, and
+# some end in indentation instead of a newline. GCC 4.1 reports "no newline at
+# end of file", an error under -Werror, so on the NetBSD 4 SDK such a check
+# failed whatever it tested. The one that mattered adds the stack protector
+# and _FORTIFY_SOURCE: NetBSD 4 binaries were built without both. End every
+# test program with a newline.
+0073-waf-config-test-final-newline.patch|configure test programs end with a newline
+
+# 4. NetBSD compat.
+# What Samba needs to build and run on Apple's NetBSD 4 and NetBSD 6 kernels,
+# their HFS disks and the device's small memory. None of these works around a
+# NetBSD bug; section 5 has those.
+#
+# 4a. Kernel, libc and SDK gaps.
+# Neither Apple kernel has the *at system calls: NetBSD 4 and NetBSD 6 both
+# return ENOSYS for openat, fstatat, mkdirat, unlinkat, readlinkat, renameat,
+# linkat, symlinkat, mknodat and utimensat, although the NetBSD 7 SDK declares
+# them. libreplace emulates them for the appliance (overlay
+# lib/replace/tc_at_emulation.c): each call fchdir()s to the directory
+# descriptor, makes the path-based call and changes back, which needs a process
+# without threads. A rename or link between two directories runs in one of them
+# and names the other relative to it ("../" up to their common ancestor, then
+# down), so it works past PATH_MAX (1,024 bytes) as long as getcwd() can name
+# both (4,095 bytes). futimens is emulated with futimes on both: NetBSD 4 has
+# none, and NetBSD 6's ignores the call when atime is UTIME_OMIT and sets the
+# mtime to -1 when mtime is. NetBSD 4 also lacks fdopendir (emulated there by
+# opening "." from inside the directory and reading the whole directory up
+# front, because NetBSD 4's HFS loses a listing's place whenever a descriptor
+# on the directory is closed; rewinddir reads it again). On NetBSD 6, whose HFS
+# keeps a listing's place but repeats its last entries when read again after
+# the end, readdir keeps reporting the end until rewinddir. NetBSD 4 also lacks
+# arc4random_buf and getline (overlay lib/replace/tc_netbsd4_compat.c), and the
+# O_DIRECTORY and AT_* constants. system/filesys.h maps each name onto the
+# emulation, and build/_samba4x.sh refuses a binary that still links libc's *at
+# stubs.
+0002-replace-appliance-at-emulation.patch|*at emulation for the appliance kernels and NetBSD 4 libc gaps
+# vfswrap_fstreaminfo() refreshes the file's stat before it lists the default
+# ::$DATA stream, and stock fails the whole listing when that refresh fails.
+# Under the *at emulation (0002; the code is built only with
+# TC_SAMBA4X_AT_EMULATION) the refresh of a pathref handle can fail although
+# the open or path walk left a valid stat on the file's name, and macOS's
+# delete and share checks then fail on a file the open found. Keep that cached
+# stat when it is valid.
+0050-vfs-default-streaminfo-cached-stat.patch|keep the default stream when the pathref stat refresh fails
+# NetBSD 4 has no posix_spawn (no spawn.h), so its lanes
+# (TC_SAMBA4X_NETBSD4_COMPAT) fork and execve instead. Samba's configure never
+# defines HAVE_POSIX_SPAWN, so gate on the lane, not on that. Apple's NetBSD
+# 6.0 kernel has posix_spawn(2), and the NetBSD 6 lane uses it. local_np.c is
+# live: every pipe but srvsvc (served inside smbd, 0005) tries to start
+# samba-dcerpcd, which the appliance does not ship; posix_spawn fails with
+# ENOENT and no child, the fallback after a fork. queue_process.c only has to
+# compile, as printing is disabled.
+0015-spawn-fork-exec-fallback.patch|posix_spawn fallback on NetBSD 4
+# NetBSD 4 lacks O_CLOEXEC, which tdb_wrap passes to tdb_open; define it as 0
+# in tdb_wrap.c only (tdb_open_ex() sets FD_CLOEXEC itself). A global define
+# would make other code skip its fcntl(FD_CLOEXEC) fallback.
+0007-tdb-wrap-o-cloexec.patch|O_CLOEXEC for tdb_wrap on NetBSD 4
+# On every NetBSD lane, read the interfaces from sysctl(NET_RT_IFLIST), decoded
+# by each message's RTM_VERSION, as the native service does (overlay
+# lib/socket/tc_netbsd_iflist.c). libc getifaddrs() misparses Apple's NetBSD 4
+# if_msghdr (152 bytes against the SDK's 144), and Samba's SIOCGIFCONF
+# replacement assumes fixed-size ifreq rows, which that kernel does not return.
+# Only Heimdal's krb5 address lookup still calls getifaddrs(), for Kerberos
+# client logins a standalone smbd never makes, so _samba4x.sh leaves
+# configure's interface probe results as detected.
+0043-interfaces-netbsd-route-iflist.patch|parse Time Capsule interfaces from routing messages
+# 4b. No-pthread build.
+# No Time Capsule kernel has pthreads. 0051 lets tevent and pthreadpool_tevent
+# build without them, 0013 adds --disable-pthread, and 0022 and 0064 fix
+# talloc_stack's exit handling in such a build.
+#
+# Without HAVE_PTHREAD, pthreadpool_tevent still used pthread mutexes for its
+# per-event-context glue, and tevent_threads.c's context destructor still
+# locked a mutex.
+# Guard those on HAVE_PTHREAD. The poll_mt backend needs no pthread and stays
+# registered; nothing here selects it. Pthread builds are unchanged.
+0051-tevent-no-pthread-build.patch|build tevent and pthreadpool_tevent without pthread
+# Disable pthread before libreplace constructs the dependency graph and define
+# __thread away. --disable-pthread alone already selects the synchronous
+# pthreadpool backend; _samba4x.sh also passes --disable-pthreadpool so
+# source3/wscript does not add vfs_aio_pthread. Without threads,
+# thread-local storage is process storage, and in the static appliance binary
+# any real __thread access from Samba's -fPIC objects calls static libc's
+# __tls_get_addr, which only aborts. tevent_req_create (tevent's call-depth
+# state) and the winbind SID lookup (libwbclient's client name) both reach
+# such a variable, so without this smbd aborts at startup. The NetBSD 4
+# compilers do not enable __thread; only the NetBSD 6 lane's compiler does.
+0013-configure-disable-pthread.patch|configure --disable-pthread; __thread defined away
+# Without pthread, talloc_stack's atexit handler read a NULL tracker when
+# talloc_stackframe_exists() had registered it before any frame existed, and
+# left the pointer to the freed tracker for exit handlers that run after it.
+0022-talloc-stack-atexit-null-tracker.patch|atexit handler without a tracker, and no freed tracker left behind
+# Without pthread, the atexit handler reported every stackframe still open at
+# exit() at level 0 (and panicked in DEVELOPER builds): about three lines for
+# each exiting smbd connection child, plus smbd -V and -b. Those are the
+# frames of the code that called exit(), not leaks; builds with pthread never
+# check them, since key destructors do not run at exit(). Report them at
+# debug level, without the panic; a thread exiting with open frames still
+# reports at level 0.
+0064-talloc-stack-exit-report-debug.patch|report stackframes open at exit only at debug level
+# 4c. HFS file growth.
+# HFS has no sparse files, so growing a file allocates every block up to its
+# new end. smbtorture's smb2.rw.invalid writes one byte just below MAXFILESIZE
+# (16 TiB); on both devices that write never finished, and it hung or rebooted
+# them. A write, SET_INFO end-of-file or server-side copy that would grow a
+# file on HFS by more than the volume's available space now fails with
+# DISK_FULL, as on Windows, before anything is allocated. Growth of up to 64
+# MiB past the size smbd last saw needs no extra system call.
+0065-smbd-hfs-growth-disk-full.patch|refuse HFS file growth beyond the available space with DISK_FULL
+# 4d. smbd without helper processes.
+# Samba runs on the device as the smbd binary alone, about 10 MB of a 15 MB
+# RAM disk, on a device with little memory. Stock smbd forks resident helpers
+# (notifyd, cleanupd, the durable-handle scavenger) and a datagram-socket sweep
+# every 15 minutes, and serves RPC pipes from the separate samba-dcerpcd and
+# rpcd_* binaries. Here smbd is the parent, one child per client connection
+# and, when VFS_AIO_FORK_ENABLED is on, aio_fork's helpers.
+#
+# Finder and smbclient -L list shares through IPC$ \PIPE\srvsvc; serve that
+# one pipe inside smbd (overlay tc_embedded_srvsvc.c). Other pipes (lsarpc,
+# samr, wkssvc, winreg) fall through to local_np_connect, which fails to start
+# the absent samba-dcerpcd.
+0005-rpc-embedded-srvsvc.patch|embedded srvsvc named pipe support
+# On appliance builds (TC_SAMBA4X_APPLIANCE), run notifyd and cleanupd in the
+# parent, as interactive smbd does. Skip the datagram-socket sweep, which forks
+# each time it runs; cleanupd still removes each exited child's socket. This
+# saves two resident smbds (about 2.5 MB RSS each, some of it shared with the
+# parent). The scavenger is still forked, on the first disconnected durable
+# handle, as upstream does: expiring a handle waits for that file's share-mode,
+# byte-range and open-record locks, which a client smbd stuck in the kernel
+# can hold indefinitely, and in the parent that wait would stop it accepting
+# connections. Forked helpers work without pthread.
+0008-smbd-helpers-in-parent.patch|host smbd helper services in the parent event loop
+
+# 5. NetBSD bugs.
+# Workarounds for bugs in Apple's NetBSD 4 and NetBSD 6 kernels and their HFS.
+# Both releases are long out of support, so none of these is for upstream.
+#
+# Apple's NetBSD 4 and NetBSD 6 kernels lose writes to a static binary's
+# initialized data: handling the first write to a .data page, UVM fault-ahead
+# maps the neighbouring pages (4 below, 3 above) from the executable again,
+# dropping this process's (or its parent's) changes to them. Globals silently
+# returned to their initial values; talloc_magic did, so talloc aborted with
+# "Bad talloc magic value" in forked children and elsewhere, depending only on
+# code layout. A first-priority constructor in talloc, linked into every Samba
+# binary, turns fault-ahead off for the writable segment with MADV_RANDOM, and
+# talloc_lib_init repeats it where NetBSD 4's GCC has no constructor priorities.
+0046-talloc-data-faultahead.patch|keep static-data writes: no UVM fault-ahead on the writable segment
+# Apple's NetBSD 6 kernel shows a child the writes its parent makes after
+# fork() to pages whose reference bit was cleared before it: its ARM
+# pmap_protect() skips the invalid PTEs that reference emulation leaves, so
+# their PVF_WRITE survives and the parent's next write makes the shared page
+# writable without a copy-on-write fault (a connection child can spin forever
+# on a half-updated copy of the parent's context). NetBSD 4's pmap is not
+# affected. On the NetBSD 6 lanes (TC_FORK_REPAIR), libreplace includes overlay
+# lib/replace/tc_fork_repair.c: linker wrappers keep a registry of private
+# mappings, and right before each fork() every private mapping, the stack too,
+# is protected PROT_NONE and back (dropping the stale page state). Touching a
+# page is not enough: one left writable that way stays shared at every later
+# fork(). The native service and rsync link the same file.
+0070-replace-fork-repair.patch|fork() repair for Apple's NetBSD 6 kernel
+# Time Capsule HFS can report file and directory owner/group as 4294967295.
+# Normalize only that sentinel at Samba's stat_ex boundary so ACL, stream, and
+# security descriptor paths see the forced root/wheel appliance identity. The
+# core-file directory setup calls lstat() directly, bypassing that
+# normalization, so on appliance builds it uses the non-strict create, which
+# skips both the owner and the 0700 checks; panics then produce disk-backed
+# cores under logs/cores/smbd.
+0023-stat-hfs-unknown-owner.patch|HFS unknown owner in corepath setup and stat metadata
 # Ignore st_blocks drift on every durable reconnect: Time Machine's sparsebundle
 # bands on HFS change their allocation-block count while the handle is
 # disconnected. The other identity checks stay strict.
 0019-durable-allow-block-count-drift.patch|allow durable reconnect across HFS allocation-block drift
+# Time Capsule HFS can update ctime when the last writable fd closes. Record
+# durable cookies after that close so reconnect keeps strict ctime validation
+# without comparing against Samba's own stale pre-close snapshot. The
+# post-close stat is by name, so it relies on 0062's share-root working
+# directory.
+0029-durable-post-close-cookie-stat.patch|record durable cookie stat after fd_close
+
+# 6. macOS workarounds.
+# Workarounds for how macOS clients, Time Machine above all, reconnect and
+# send requests.
+#
 # macOS reconnects SMB2 durable opens before the old smbd has finished tearing
 # down the lost connection and marked them disconnected; on these devices that
-# teardown can take over a minute on a slow disk. Check that live record like a disconnected one
-# and, for the same durable open only, defer the create and retry every 150 ms
-# until 90 seconds after it arrived (upstream's poll-open deferral, made
-# callable from smb2_create.c), instead of reporting the handle as missing.
-# Deferring rather than sleeping keeps this smbd reading its socket: a
-# sleeping smbd lets its TCP window close, and macOS answers that with short
-# WRITEs (0072). FILE_NOT_AVAILABLE is only the internal "still busy" signal:
-# once the 90 seconds run out the client gets OBJECT_NAME_NOT_FOUND, as
-# upstream and MS-SMB2 3.3.5.9.12 give for an open still attached to a session
-# (macOS revokes the file on any reconnect error). Keep durable-v2 handles
-# 300 seconds so early releases survive while later opens finish closing, but
-# grant the timeout the client asked for, as upstream does (at most 300
-# seconds, 60 for none): macOS fails Time Machine's reconnect timeout setting
-# unless the grant matches its request, and never uses the grant to decide a
-# reconnect.
+# teardown can take over a minute on a slow disk. Check that live record like a
+# disconnected one and, for the same durable open only, defer the create and
+# retry every 150 ms until 90 seconds after it arrived (upstream's poll-open
+# deferral, made callable from smb2_create.c), instead of reporting the handle
+# as missing. Deferring rather than sleeping keeps this smbd reading its
+# socket: a sleeping smbd lets its TCP window close, and macOS answers that
+# with short WRITEs (0072). FILE_NOT_AVAILABLE is only the internal "still
+# busy" signal: once the 90 seconds run out the client gets
+# OBJECT_NAME_NOT_FOUND, as upstream and MS-SMB2 3.3.5.9.12 give for an open
+# still attached to a session (macOS revokes the file on any reconnect error).
+# Keep durable-v2 handles 300 seconds so early releases survive while later
+# opens finish closing, but grant the timeout the client asked for, as upstream
+# does (at most 300 seconds, 60 for none): macOS fails Time Machine's reconnect
+# timeout setting unless the grant matches its request, and never uses the
+# grant to decide a reconnect.
 0024-durable-open-live-retry.patch|defer live durable-open reconnects for up to 90 seconds
-# Workaround for a macOS bug (issue 221): macOS sends each request through a
-# kernel call with a 5 s send timeout that reports success when the timeout
-# cuts the send short, so after the server's TCP window has stayed shut a WRITE
-# can arrive with its data short and the client's next requests inside the
-# data; smbd would write them into the file and answer success. Refuse such a
-# WRITE before dispatch, without writing or answering it: the client resends
-# it after a reconnect, an error reply to a WRITE fails Time Machine, and not
-# reading makes the client's next send time out. Parse on from where the next
-# request starts, answer everything sent after the WRITE, and once nothing else
-# is outstanding and nothing has been read or written for 500 ms (so a request
+# Workaround for a macOS bug: macOS sends each request through a kernel call
+# with a 5 s send timeout that reports success when the timeout cuts the send
+# short, so after the server's TCP window has stayed shut a WRITE can arrive
+# with its data short and the client's next requests inside the data; smbd
+# would write them into the file and answer success. Refuse such a WRITE before
+# dispatch, without writing or answering it: the client resends it after a
+# reconnect, an error reply to a WRITE fails Time Machine, and not reading
+# makes the client's next send time out. Parse on from where the next request
+# starts, answer everything sent after the WRITE, and once nothing else is
+# outstanding and nothing has been read or written for 500 ms (so a request
 # sent in answer to the last reply is read, not cut off by the FIN) end the
 # connection with a FIN, at most 60 s after the catch: macOS fails the WRITE
-# 120 s after it began sending it, which was before the stall that cut it.
-# A request the client sends unprompted in the last moment before the FIN
-# can still cross it unanswered.
+# 120 s after it began sending it, which was before the stall that cut it. A
+# request the client sends unprompted in the last moment before the FIN can
+# still cross it unanswered.
 # On a Time Machine mount macOS refuses to reconnect while a CREATE, CLOSE,
 # LOCK, or a delete, rename or security SET_INFO waits for its reply, so those
 # must not be discarded. A WRITE counts as short only when its data holds a
@@ -368,73 +466,12 @@
 # most 50 seconds, then answer; 0024 then defers the durable reconnects that
 # follow until the old smbd releases the opens.
 0074-smbd-session-close-previous-timeout.patch|answer session setup after 50 seconds while the previous session still closes
-# Not specific to Time Machine; an upstream bug that 0029 relies on. A shutdown
-# close (a dropped connection, a bare SMB2 LOGOFF, a tree disconnect) runs from
-# whatever working directory the last request left, which is "/" after any tree
-# disconnect (close_cnum) or another share's root. Delete on close then finds
-# no parent directory and leaves the file (upstream's wide-links check stops it
-# resolving anywhere else), and 0029's by-name stat refuses the durable cookie.
-# Change into the file's own share root first. A disk 0041 finds revoked stays
-# safe even when Apple remounted it at the same path: both steps fstat the old
-# descriptor before any lookup by name, and that fails on a revoked vnode.
-0062-smbd-shutdown-close-share-root.patch|shutdown closes resolve names from the file's share root
-# Time Capsule HFS can update ctime when the last writable fd closes. Record
-# durable cookies after that close so reconnect keeps strict ctime validation
-# without comparing against Samba's own stale pre-close snapshot (seen again
-# 2026-09-27 during durable_device's macOS stall case). The post-close stat is
-# by name, so it relies on 0062's share-root working directory.
-0029-durable-post-close-cookie-stat.patch|record durable cookie stat after fd_close
-# Upstream bugs that leave durable-open records and leases in the lock
-# directory for good; on the appliance its small RAM disk then fills, and a
-# full one makes client smbds fail opens and abort. A share entry dropped as
-# stale (a disconnected open, or one of a dead smbd, found by another open)
-# kept its lease: remove the lease with the entry, as a close does. Only the
-# entry's own smbd removed its open records, so an smbd that crashed or was
-# killed left them until smbd restarted: after an unclean exit cleanupd asks
-# the scavenger to walk the open records and release those of exited smbds.
-# Clean exits, ordinary reconnects included, trigger no walk. A durable open's
-# record now carries its file id: it was stored before a newly created file
-# had one, so nothing could find the open's share mode entry from it. A durable
-# reconnect that failed stored its open back with disconnect time 0 and no
-# expiry, and kept its lease and the byte-range locks it had taken over:
-# store it with its own time and schedule the scavenger, and remove the lease
-# and those locks. A reconnect that met another open's lock (or one a failed
-# reconnect left behind) freed the caller's br_lck in
-# brl_reconnect_disconnected(), which share_mode_do_locked_brl() freed again:
-# a "Bad talloc magic value" panic. Leave br_lck to its owner. The parent
-# logs a child that a signal ended or that exited with an error status.
-0077-smbd-release-orphaned-durable-opens.patch|release durable opens and leases left by dead smbds and failed reconnects
-# macOS Time Machine sends FSCTL_SRV_REQUEST_RESUME_KEY inside a compounded
-# request while probing backup-disk capabilities. The default VFS finishes that
-# read at once but delivers its callback from an immediate event, so fruit's
-# offload_read wrapper and smb2_ioctl_network_fs each keep their parent request
-# in progress, and the SMB2 compound guard rejects it with
-# NT_STATUS_INTERNAL_ERROR. Run the callback right away when the subrequest has
-# already finished.
-0028-ioctl-resume-key-sync-completion.patch|propagate synchronous resume-key IOCTL completion
 
-# xattr_tdb and streams_xattr fixes.
-# A file with no xattr_tdb row has an empty attribute set: report ENOATTR for
-# it, not EINVAL, to every caller of the library. Stock vfs_xattr_tdb's fgetxattr
-# already maps its errors to ENOATTR; EINVAL escaped through getxattrat (async
-# dosmode) and to the library's other callers, such as the metadata migrator.
-# Since 0038, HFS shares do not use this library.
-0018-xattr-tdb-missing-row-empty.patch|xattr_tdb missing rows behave like empty xattrs
-# macOS/iOS Photos writes many assetsd metadata streams. Once xattr_tdb's
-# stream-name list exceeds Samba's initial 1024-byte listxattr buffer, return
-# the normal -1/ERANGE retry signal instead of a positive required length that
-# callers mistake for bytes written into the too-small buffer.
-0027-xattr-tdb-listxattr-erange.patch|xattr_tdb retries oversized xattr name lists
-# With xattr_tdb:ignore_user_xattr, user xattr reads pass to the next module
-# before xattr_tdb has built its local smb_fname copy, so upstream passes NULL.
-# Pass the caller's name instead.
-0047-xattr-tdb-getxattrat-bypass-name.patch|pass the caller's name when xattr_tdb bypasses a user xattr read
-# Native HFS xattrs hold at most 3802 bytes, so smb.conf sets 35 xattrs per
-# stream to keep the previous ~128 KiB Windows alternate data stream limit.
-# Upstream accepts at most 16.
-0048-streams-xattr-max-64-per-stream.patch|allow up to 64 xattrs per stream
-
-# Native Mac metadata.
+# 7. Apple firmware coexistence.
+# Samba shares the disks with Apple's own servers and follows the firmware's
+# handling of them.
+#
+# 7a. Native Mac metadata.
 # Apple firmware stores AFP FinderInfo and ordinary Mac xattrs in native HFS
 # attributes that its SMB server reaches only through private xattr syscalls
 # (overlay airport_native_xattr.h), and resource forks in the file's resource
@@ -456,9 +493,8 @@
 # tc_fruit_native_finderinfo.c); an all-zero value counts as absent, as it does
 # for AFP. It also skips AppleDouble conversion there: fruit never reads ._
 # files on HFS. The deploy migrator converts them, but only on a volume that
-# still has a legacy xattr.tdb (every version that wrote ._ files, from commit
-# b18c5901 until native HFS in 2629eaec, also wrote one), which saves a
-# whole-disk walk on every deploy.
+# still has a legacy xattr.tdb (every TimeCapsuleSMB version that wrote ._
+# files also wrote one), which saves a whole-disk walk on every deploy.
 # Uninstall removes the payload with that database, so ._ files on a disk
 # uninstalled and reinstalled stay unconverted and hidden.
 0055-fruit-native-finderinfo.patch|native HFS FinderInfo in fruit
@@ -476,16 +512,14 @@
 # such values, keeps those values' ._ files, and deletes only fully migrated
 # databases.
 0057-xattr-hfs-migrate-build.patch|build the deploy-only metadata migrator
-
-# Apple disk rebinding.
+# 7b. Apple disk rebinding.
 # Apple can revoke a bumped USB disk's vnode and remount the same dkN. Record
 # each tree's volume identity at connect, forward the manager's reload signal
 # from the parent to every worker, and disconnect only trees whose disk binding
 # was revoked, replaced or removed; other shares on the session stay connected
 # (overlay source3/smbd/tc_disk_bindings.c).
 0041-smbd-stale-tree-reload.patch|forward parent reloads and disconnect only revoked Apple disk bindings
-
-# Native symlinks.
+# 7c. Native symlinks.
 # Apple's AFP server and SSH store real POSIX symlinks on these disks, while
 # macOS SMB clients create 1067-byte Minshall+French "XSym" files. Keep the
 # disk native (tc:native symlinks, set by the unified service's smb.conf).
@@ -516,8 +550,8 @@
 # replacing another object, and carry its metadata over except Finder info; a
 # file with a resource fork stays a file. The original is removed only after its
 # fd closes, and each conversion ends with sync(): without it the devices' HFS
-# journal panicked within a few test cycles ("jnl: start_tr: active_tr is NULL",
-# a kernel bug that then fires in whichever process ends the next transaction).
+# journal can panic ("jnl: start_tr: active_tr is NULL", a kernel bug that
+# then fires in whichever process ends the next transaction).
 # A Mac (AAPL) reading a native link's data gets the equivalent XSym bytes,
 # whoever made the link, and writes that leave them unchanged succeed, so a Mac
 # still caching the XSym file it wrote keeps working. Other reparse tags (FIFOs,
@@ -526,7 +560,7 @@
 # FILE_SUPPORTS_REPARSE_POINTS, so macOS keeps creating XSym.
 0060-smbd-native-links-convert-on-close.patch|new SMB links become native links when their creator closes them
 
-# Diagnostics.
+# 8. Diagnostics.
 # Log each step of a client's durable reconnect at level 3, prefixed
 # tc_reconnect: (SMBD_DEBUG_LOGGING shows it): negotiate with its client GUID,
 # the session setup and the previous session it names, why close_previous acted
