@@ -10,6 +10,7 @@ dependency), the way Windows and Linux clients create links; they are skipped wi
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import os
 from pathlib import Path
@@ -161,8 +162,27 @@ def mount(url_scheme: str, device: Device, mountpoint: Path, server: str | None 
         raise RuntimeError(f"{cmd[0]} failed with rc={proc.returncode}")
 
 
-def unmount(mountpoint: Path) -> None:
-    subprocess.run(["umount", str(mountpoint)], capture_output=True, timeout=120)
+def unmount(mountpoint: Path, tries: int = 5, wait: float = 2.0) -> bool:
+    """Unmount mountpoint and say whether it came off. macOS can hold a mount
+    busy just after its last use, so try again. A mount that stays is reported,
+    not raised: callers unmount in their cleanup, where an exception would
+    replace the result of what they tested."""
+    error = ""
+    for attempt in range(tries):
+        if attempt:
+            time.sleep(wait)
+        if not os.path.ismount(mountpoint):
+            return True
+        try:
+            proc = subprocess.run(["umount", str(mountpoint)], capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            error = "umount timed out"
+            continue
+        if proc.returncode == 0:
+            return True
+        error = proc.stderr.strip()
+    print(f"WARNING {mountpoint} is still mounted: {error}", flush=True)
+    return False
 
 
 def fixtures(device: Device) -> None:
@@ -542,10 +562,12 @@ def main() -> int:
                 windows_checks(results, device)
     finally:
         device.sh(f"rm -rf {shlex.quote(device.dir)}", check=False)
-        for path in (smb, afp):
-            if path.exists():
-                path.rmdir()
-        work.rmdir()
+        # A mount that stayed keeps its folder: unmount() said so.
+        with contextlib.suppress(OSError):
+            for path in (smb, afp):
+                if path.exists():
+                    path.rmdir()
+            work.rmdir()
     print(f"RESULT pass={results.passed} fail={len(results.failed)}")
     return 1 if results.failed else 0
 
