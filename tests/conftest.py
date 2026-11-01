@@ -21,6 +21,24 @@ def pytest_configure(config: pytest.Config) -> None:
     if soft == resource.RLIM_INFINITY or soft > OPEN_FILE_LIMIT:
         resource.setrlimit(resource.RLIMIT_NOFILE, (OPEN_FILE_LIMIT, hard))
 
+    # Native test objects for the whole run (tests/native/build.py). xdist
+    # workers inherit the variable, so they share one directory, which goes
+    # when the run ends.
+    if not hasattr(config, "workerinput") and "TC_NATIVE_OBJECT_DIR" not in os.environ:
+        import tempfile
+
+        config._tc_native_objects = os.environ["TC_NATIVE_OBJECT_DIR"] = tempfile.mkdtemp(prefix="tc-native-objects-")
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    objects = getattr(config, "_tc_native_objects", None)
+    if objects:
+        import os
+        import shutil
+
+        shutil.rmtree(objects, ignore_errors=True)
+        os.environ.pop("TC_NATIVE_OBJECT_DIR", None)
+
 
 @pytest.fixture(autouse=True)
 def block_unmocked_telemetry_posts(monkeypatch: pytest.MonkeyPatch):
