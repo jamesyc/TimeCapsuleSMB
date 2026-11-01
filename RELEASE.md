@@ -109,6 +109,8 @@ Nothing reaches users until the draft is published. Never push a `v*` tag to try
 
 The app checks `https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/appcast.xml`, which follows the newest published release that is not a prerelease. Publishing a release with "Set as the latest release" ticked is what offers it to the apps; drafts and prereleases are never offered.
 
+The update window shows the release's notes from its `release-notes.md`, which `appcast.xml` links to. Sparkle shows a `.md` file in its own text view, with headings, lists and links, where a link to the release page would show GitHub's whole page. `.github/workflows/release-notes.yml` writes that file from the notes in the release form when the release is published and again after every edit, so edit the notes only there. An update check in the seconds between publishing and the upload finds no notes.
+
 The Homebrew tap, `jamesyc/homebrew-tap`, updates itself. Its own workflow, `update.yml`, runs daily: when the latest release has a `TimeCapsuleSMB.dmg` the tap does not have yet, it writes the version and the SHA256 of the disk image and of the tag's source tarball into the cask and formula in this repo's `homebrew/`, taken from `main`, adds the formula's Python packages with `brew update-python-resources`, and commits both to the tap once `brew audit --strict --online`, a source install of the formula and `brew test` pass. It needs no secret. Run it by hand after publishing so the tap gets the release at once, and with a tag to write a release again after fixing `homebrew/` on `main`:
 
 ```bash
@@ -153,7 +155,7 @@ A universal build on Apple silicon runs the smoke test (the helper's requests, t
 - When the run has made the draft, download its `TimeCapsuleSMB.dmg`, open it, drag the app to Applications, open it from there, and check that Check for Updates... is enabled. An app run from the disk image itself is read-only, and Sparkle cannot update it.
 - Write the release notes in the draft, with compatibility or flash-safety warnings when applicable.
 - Publish with "Set as the latest release" ticked. A hidden build's draft is a prerelease: publish it as a prerelease, never as the latest release, so it never becomes the feed.
-- Confirm the asset SHA256 digests are visible on GitHub.
+- Confirm the asset SHA256 digests are visible on GitHub, and that the Release notes workflow added `release-notes.md`.
 - Run the tap's `update.yml` (above) and check that it committed the release to `jamesyc/homebrew-tap`.
 
 ## Updating And Pulling Releases

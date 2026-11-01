@@ -1,0 +1,36 @@
+name: Release notes
+
+# The app's updater shows a release's notes from its release-notes.md, which
+# appcast.xml links to: Sparkle shows a .md file in its own text view, but a
+# web page whole. This writes the file from the notes in the GitHub release
+# form when the release is published and again after each edit, so the notes
+# are written in one place.
+on:
+  release:
+    types: [published, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-notes-${{ github.event.release.tag_name }}
+
+jobs:
+  upload:
+    name: Upload release-notes.md
+    # A draft's notes reach no one; publishing it writes them.
+    if: ${{ !github.event.release.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Upload the release's notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          NOTES: ${{ github.event.release.body }}
+        run: |
+          # GitHub's release form saves CRLF line endings.
+          printf '%s\n' "$NOTES" | tr -d '\r' > "$RUNNER_TEMP/release-notes.md"
+          gh release upload "$TAG" "$RUNNER_TEMP/release-notes.md" --clobber -R "$GITHUB_REPOSITORY"

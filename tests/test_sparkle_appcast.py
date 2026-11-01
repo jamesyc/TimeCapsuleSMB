@@ -127,7 +127,7 @@ def test_appcast_names_the_release_its_signature_and_notes(tmp_path: Path) -> No
     assert item.findtext(f"{SPARKLE}minimumSystemVersion") == "14.0"
     # A universal app is offered to every Mac.
     assert item.find(f"{SPARKLE}hardwareRequirements") is None
-    assert item.findtext(f"{SPARKLE}releaseNotesLink") == "https://github.com/jamesyc/TimeCapsuleSMB/releases/tag/v3.8.0"
+    assert item.findtext(f"{SPARKLE}releaseNotesLink") == "https://github.com/jamesyc/TimeCapsuleSMB/releases/download/v3.8.0/release-notes.md"
     assert parsedate_to_datetime(item.findtext("pubDate") or "").tzinfo is not None
     enclosure = item.find("enclosure")
     assert enclosure is not None

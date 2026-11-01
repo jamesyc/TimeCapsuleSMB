@@ -8,7 +8,10 @@
 The feed has one item: the release being made. Its version, version code and
 minimum macOS come from the Info.plist inside the zip itself, so they always
 describe the bytes that are signed; its signature comes from Sparkle's
-sign_update, and its release notes are the GitHub release page.
+sign_update. Its release notes link is the release's release-notes.md, which
+the release-notes workflow uploads from the release's text once it is
+published: Sparkle shows a .md link in its own text view, but a web page such
+as the GitHub release page whole, header and tabs included.
 
 Before signing, the private key must belong to the public key packaged into
 the app. A release signed with any other key can never be installed by
@@ -45,6 +48,7 @@ from package_app import APP_NAME, DEFAULT_ARCHITECTURES, PRODUCT_NAME, swift_scr
 SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 REPOSITORY_URL = "https://github.com/jamesyc/TimeCapsuleSMB"
 ZIP_NAME = f"{APP_NAME}.app.zip"
+RELEASE_NOTES_NAME = "release-notes.md"
 # Where ditto -c -k --keepParent puts the app's Info.plist in the zip.
 ZIPPED_INFO_PLIST = f"{APP_NAME}.app/Contents/Info.plist"
 ZIPPED_EXECUTABLE = f"{APP_NAME}.app/Contents/MacOS/{PRODUCT_NAME}"
@@ -213,7 +217,7 @@ def appcast_xml(
     ElementTree.SubElement(item, sparkle("minimumSystemVersion")).text = info["LSMinimumSystemVersion"]
     if arm64_only:
         ElementTree.SubElement(item, sparkle("hardwareRequirements")).text = "arm64"
-    ElementTree.SubElement(item, sparkle("releaseNotesLink")).text = f"{REPOSITORY_URL}/releases/tag/{tag}"
+    ElementTree.SubElement(item, sparkle("releaseNotesLink")).text = f"{REPOSITORY_URL}/releases/download/{tag}/{RELEASE_NOTES_NAME}"
     ElementTree.SubElement(item, "enclosure", {
         "url": f"{REPOSITORY_URL}/releases/download/{tag}/{ZIP_NAME}",
         "length": str(length),
