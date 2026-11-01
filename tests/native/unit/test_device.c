@@ -78,8 +78,8 @@ int test_select(int count, fd_set *readable, fd_set *writable, fd_set *errors, s
     if (once("select_eintr")) { errno = EINTR; return -1; }
     if (virtual_clock() && !strcmp(scenario, "deadline_each")) {
         if (forks == 3) {
-            /* The third answer is due at 36 s. Keep it unread until the
-             * shared budget stops the child at 30 s. */
+            /* The third answer is due at 36 s. Neither select() nor read()
+             * sees it before the shared budget stops the child at 30 s. */
             virtual_ms += timeout->tv_sec * 1000LL + timeout->tv_usec / 1000;
             return 0;
         }
@@ -115,6 +115,9 @@ ssize_t test_read(int fd, void *buffer, size_t count) {
     if (once("read_error")) { errno = EIO; return -1; }
     if (once("read_eintr")) { errno = EINTR; return -1; }
     if (once("read_eagain")) { errno = EAGAIN; return -1; }
+    /* The collector reads on every pass, so a fixture that answers at once
+     * would otherwise be read before the virtual 36 s. */
+    if (virtual_clock() && !strcmp(scenario, "deadline_each") && forks == 3) { errno = EAGAIN; return -1; }
     if (!strcmp(scenario, "byte_reads")) count = 1;
     return read(fd, buffer, count);
 }
