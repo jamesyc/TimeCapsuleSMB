@@ -19,9 +19,46 @@ jobs:
       - name: Install Samba test build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config python3 git bison flex libparse-yapp-perl libgnutls28-dev zlib1g-dev libpopt-dev
+          sudo apt-get install -y build-essential pkg-config python3 git bison flex libparse-yapp-perl libgnutls28-dev zlib1g-dev libpopt-dev ccache
+          # waf finds gcc on PATH; ccache's links come first, as in
+          # tests/samba/check.py's Docker run.
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+
+      # ccache returns only the object the compiler made for the same input, so
+      # an older cache can only miss, never give a wrong object. Restored by
+      # prefix like the package cache; saved under a key that hashes what the
+      # build compiles whenever that changes.
+      - name: Restore ccache
+        id: samba-ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: samba-ccache-v1-${{ runner.os }}-${{ runner.arch }}-
+          restore-keys: |
+            samba-ccache-v1-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Build and run the no-pthread Samba tests with sanitizers
-        run: python3 -m tests.samba.run host --work "$RUNNER_TEMP/samba-regressions" --jobs "$(nproc)" --sanitizers
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+          CCACHE_MAXSIZE: 1G
+        run: |
+          ccache --zero-stats
+          # The work directory is the same path every run, which ccache's
+          # hashes of debug builds include.
+          python3 -m tests.samba.run host --work "$RUNNER_TEMP/samba-regressions" --jobs "$(nproc)" --sanitizers
+          ccache --show-stats
+
+      - name: Name the ccache
+        id: samba-ccache-key
+        run: echo "key=samba-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build/env.sh', 'build/_patch_helpers.sh', 'build/patches/samba4x/**', 'tests/samba/*.c', 'tests/samba/*.h', 'tests/samba/run.py', 'tests/samba/targets.py') }}" >> "$GITHUB_OUTPUT"
+
+      # A cache restored under this very key holds this build's objects already.
+      - name: Save ccache
+        if: steps.samba-ccache.outputs.cache-matched-key != steps.samba-ccache-key.outputs.key
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ steps.samba-ccache-key.outputs.key }}
 
   # Checks against known advisories what users install: pyproject.toml's
   # dependencies, resolved for every Python it allows. Dev tools are left out,
