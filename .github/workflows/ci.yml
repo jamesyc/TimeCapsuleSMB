@@ -114,6 +114,12 @@ jobs:
         python-version:
           - "3.9"
           - "3.15"
+        # macOS keeps 3.9, the oldest Python users run. 3.15 still runs
+        # there in the native, Swift and packaging jobs, and Ubuntu runs this
+        # suite on it; GitHub runs only 5 macOS jobs at once.
+        exclude:
+          - os: macos-latest
+            python-version: "3.15"
 
     steps:
       - name: Check out repository
@@ -192,11 +198,10 @@ jobs:
 
   package-app:
     # Universal, as releases are: the x86_64 half is checked on every push,
-    # not first on a release tag.
+    # not first on a release tag. It starts beside the Swift tests; a release
+    # waits for both.
     name: Package App (macOS universal)
     runs-on: macos-latest
-    needs:
-      - swift-test
 
     steps:
       - name: Check out repository
