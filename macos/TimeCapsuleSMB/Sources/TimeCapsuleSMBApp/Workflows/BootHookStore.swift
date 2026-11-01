@@ -1,12 +1,6 @@
 import Combine
 import Foundation
 
-enum FlashBuildPolicy: String, CaseIterable, Equatable {
-    case disabled
-    case readOnly
-    case writesEnabled
-}
-
 enum FlashPlanMode: String, Codable, CaseIterable, Equatable, Identifiable {
     case patch
     case restore
@@ -14,16 +8,9 @@ enum FlashPlanMode: String, Codable, CaseIterable, Equatable, Identifiable {
     case downloadOnly = "download_only"
 
     var id: String { rawValue }
-
-    var writesFirmware: Bool {
-        self == .patch || self == .restore
-    }
 }
 
-enum FlashWorkflowState: String, CaseIterable, Equatable {
-    case unavailable
-    case disabledInThisBuild
-    case eligibleForReadOnlyAnalysis
+enum BootHookState: String, CaseIterable, Equatable {
     case readingBanks
     case savingBackup
     case analyzingBanks
@@ -31,23 +18,17 @@ enum FlashWorkflowState: String, CaseIterable, Equatable {
     case appleCheckComplete
     case appleFirmwareMismatch
     case appleFirmwareReady
-    case writeLocked
+    case ready
     case awaitingStrongConfirmation
     case writing
     case readbackValidating
-    case writeValidated
+    case writeNotNeeded
     case writeValidatedSnapshotStale
     case restoreRebooting
     case failed
 
     var title: String {
         switch self {
-        case .unavailable:
-            return L10n.string("workflow.state.unavailable")
-        case .disabledInThisBuild:
-            return L10n.string("workflow.state.disabled_in_this_build")
-        case .eligibleForReadOnlyAnalysis:
-            return L10n.string("workflow.state.read_only_analysis_available")
         case .readingBanks:
             return L10n.string("workflow.state.reading_firmware_banks")
         case .savingBackup:
@@ -62,7 +43,7 @@ enum FlashWorkflowState: String, CaseIterable, Equatable {
             return L10n.string("workflow.state.apple_firmware_mismatch")
         case .appleFirmwareReady:
             return L10n.string("workflow.state.apple_firmware_ready")
-        case .writeLocked:
+        case .ready:
             return L10n.string("workflow.state.ready")
         case .awaitingStrongConfirmation:
             return L10n.string("workflow.state.awaiting_confirmation")
@@ -70,8 +51,8 @@ enum FlashWorkflowState: String, CaseIterable, Equatable {
             return L10n.string("workflow.state.writing_firmware")
         case .readbackValidating:
             return L10n.string("workflow.state.validating_write")
-        case .writeValidated:
-            return L10n.string("workflow.state.write_validated")
+        case .writeNotNeeded:
+            return L10n.string("workflow.state.write_not_needed")
         case .writeValidatedSnapshotStale:
             return L10n.string("workflow.state.snapshot_stale")
         case .restoreRebooting:
@@ -82,78 +63,20 @@ enum FlashWorkflowState: String, CaseIterable, Equatable {
     }
 }
 
-struct FlashEligibility: Equatable {
-    let state: FlashWorkflowState
-    let messageKey: String
-    let readOnlyAllowed: Bool
-    let writeAllowed: Bool
-
-    var message: String {
-        L10n.string(messageKey)
-    }
-}
-
-enum FlashEligibilityPolicy {
-    static func eligibility(for profile: DeviceProfile, buildPolicy: FlashBuildPolicy = .writesEnabled) -> FlashEligibility {
-        guard profile.traits.supportsFlashBootHook else {
-            return FlashEligibility(
-                state: .unavailable,
-                messageKey: "flash.eligibility.netbsd4_required",
-                readOnlyAllowed: false,
-                writeAllowed: false
-            )
-        }
-
-        switch buildPolicy {
-        case .disabled:
-            return FlashEligibility(
-                state: .disabledInThisBuild,
-                messageKey: "flash.eligibility.disabled",
-                readOnlyAllowed: false,
-                writeAllowed: false
-            )
-        case .readOnly:
-            return FlashEligibility(
-                state: .eligibleForReadOnlyAnalysis,
-                messageKey: "flash.eligibility.read_only",
-                readOnlyAllowed: true,
-                writeAllowed: false
-            )
-        case .writesEnabled:
-            return FlashEligibility(
-                state: .writeLocked,
-                messageKey: "flash.eligibility.write_ready",
-                readOnlyAllowed: true,
-                writeAllowed: true
-            )
-        }
-    }
-}
-
-enum FlashBootHookVisibilityPolicy {
-    static func isVisible(for profile: DeviceProfile) -> Bool {
-        profile.traits.supportsFlashBootHook
-    }
-}
-
-struct FlashManualPowerCycleNotice: Identifiable, Equatable {
-    let id = UUID()
-    let mode: FlashPlanMode
-}
-
-private struct FlashFirmwareSelection: Equatable {
+private struct BootHookFirmwareSelection: Equatable {
     let version: String
     let templatePath: String
 }
 
 @MainActor
-final class FlashWorkflowStore: ObservableObject {
-    @Published private(set) var state: FlashWorkflowState = .writeLocked
+final class BootHookStore: ObservableObject {
+    @Published private(set) var state: BootHookState = .ready
     @Published private(set) var backup: FlashBackupPayload?
     @Published private(set) var plan: FlashPlanPayload?
     @Published private(set) var writeResult: FlashWritePayload?
     @Published private(set) var backupSnapshotStale = false
-    @Published private(set) var manualPowerCycleNotice: FlashManualPowerCycleNotice?
+    /// The dashboard's alert asking the user to unplug the device.
+    @Published private(set) var showsManualPowerCycleNotice = false
     @Published private(set) var currentStage: OperationStageState?
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
@@ -168,76 +91,48 @@ final class FlashWorkflowStore: ObservableObject {
         }
     }
 
-    let buildPolicy: FlashBuildPolicy
-    let backend: BackendClient
-    private let coordinator: OperationCoordinator
-    private let laneKey: OperationLaneKey
-    private var eligibility = FlashEligibility(
-        state: .writeLocked,
-        messageKey: "flash.eligibility.write_ready",
-        readOnlyAllowed: true,
-        writeAllowed: true
-    )
-    private let operationObserver = BackendOperationObserver()
-    private var activeAction: FlashUserAction?
-    private var pendingFirmwareSelection: FlashFirmwareSelection?
-    private var plannedFirmwareSelection: FlashFirmwareSelection?
-    private var cancellables: Set<AnyCancellable> = []
-
-    convenience init(buildPolicy: FlashBuildPolicy = .writesEnabled) {
-        self.init(backend: BackendClient(), buildPolicy: buildPolicy)
+    /// The step a run performs, which says how to read its result.
+    private enum RunKind: Equatable {
+        case backup
+        case plan
+        case write
     }
 
-    convenience init(backend: BackendClient, buildPolicy: FlashBuildPolicy = .writesEnabled) {
-        self.init(coordinator: OperationCoordinator(backend: backend), laneKey: .app, buildPolicy: buildPolicy)
+    /// Whether the latest run connects to the device: a backup or a write. A
+    /// plan reads only the saved backup, so its failure says nothing about
+    /// the device.
+    private(set) var lastRunConnectsToDevice = false
+    private let operation: MaintenanceWorkflowOperation
+    private var runKind: RunKind?
+    private var pendingFirmwareSelection: BootHookFirmwareSelection?
+    private var plannedFirmwareSelection: BootHookFirmwareSelection?
+
+    init(
+        backend: BackendClient,
+        coordinator: OperationCoordinator? = nil,
+        laneKey: OperationLaneKey? = nil
+    ) {
+        self.operation = MaintenanceWorkflowOperation(
+            name: "flash",
+            backend: backend,
+            coordinator: coordinator,
+            laneKey: laneKey
+        )
+        self.operation.bind(onEvent: { [weak self] event, activeOperation in
+            self?.handle(event, activeOperation: activeOperation)
+        }, onRunningChanged: { [weak self] in
+            self?.objectWillChange.send()
+        })
     }
 
-    init(coordinator: OperationCoordinator, laneKey: OperationLaneKey, buildPolicy: FlashBuildPolicy = .writesEnabled) {
-        let lane = coordinator.lane(for: laneKey)
-        self.backend = lane.backend
-        self.coordinator = coordinator
-        self.laneKey = laneKey
-        self.buildPolicy = buildPolicy
-        observeBackend(lane.backend)
-    }
-
-    private func observeBackend(_ backend: BackendClient) {
-        backend.didUpdateEvents
-            .sink { [weak self] events in
-                // Consume terminal events before another run can clear this request's history.
-                self?.process(events)
-            }
-            .store(in: &cancellables)
-        backend.$isRunning
-            .dropFirst()
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
-    }
-
-    var events: [BackendEvent] {
-        backend.events
-    }
-
-    var isRunning: Bool {
-        backend.isRunning
-    }
-
-    var isBusy: Bool {
-        backend.isRunning || backend.pendingConfirmation != nil
-    }
-
-    var canBackup: Bool {
-        !isBusy && eligibility.readOnlyAllowed
-    }
+    var events: [BackendEvent] { operation.events }
+    var isRunning: Bool { operation.isRunning }
+    var isBusy: Bool { operation.isBusy }
+    var canCancel: Bool { operation.canCancel }
+    var pendingConfirmation: PendingConfirmation? { operation.pendingConfirmation }
 
     var canPlan: Bool {
-        !isBusy && eligibility.readOnlyAllowed && backup != nil && !backupSnapshotStale
-    }
-
-    var canPlanWrites: Bool {
-        canPlan && eligibility.writeAllowed
+        !isBusy && backup != nil && !backupSnapshotStale
     }
 
     var canWritePatch: Bool {
@@ -248,10 +143,6 @@ final class FlashWorkflowStore: ObservableObject {
         canWrite(mode: .restore)
     }
 
-    var eligibilityMessage: String {
-        eligibility.message
-    }
-
     var manualPowerCycleRequiredAfterWrite: Bool {
         guard let writeResult else {
             return false
@@ -259,20 +150,10 @@ final class FlashWorkflowStore: ObservableObject {
         return Self.requiresManualPowerCycleAfterWrite(writeResult)
     }
 
-    func refresh(profile: DeviceProfile) {
-        eligibility = FlashEligibilityPolicy.eligibility(for: profile, buildPolicy: buildPolicy)
-        if backup == nil, plan == nil, writeResult == nil, operationObserver.activeOperation == nil {
-            state = eligibility.state
-        }
-    }
-
     @discardableResult
-    func backupAndInspect(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard canBackup else {
-            return reject(.flashBackupUnavailable)
-        }
+    func backUpAndInspectFirmware(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         let start = startRun(
-            action: .backupAndInspect,
+            .backup,
             params: OperationParams.Flash.backup(),
             profile: profile,
             password: password
@@ -287,25 +168,20 @@ final class FlashWorkflowStore: ObservableObject {
         backupSnapshotStale = false
         pendingFirmwareSelection = nil
         plannedFirmwareSelection = nil
-        process(backend.events)
         return start
     }
 
     @discardableResult
-    func planFlash(mode: FlashPlanMode, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard canPlan else {
+    func planFirmware(mode: FlashPlanMode, profile: DeviceProfile? = nil) -> OperationStartResult {
+        guard !isBusy else {
+            return rejectAlreadyRunning()
+        }
+        guard let backupDir = backup?.backupDir, !backupSnapshotStale else {
             return reject(.flashBackupRequired)
         }
-        if mode.writesFirmware, !canPlanWrites {
-            return reject(.flashWritesDisabled)
-        }
-        guard let backupDir = backup?.backupDir else {
-            return reject(.flashBackupRequired)
-        }
-        let action = FlashUserAction.planAction(for: mode)
         let selection = currentFirmwareSelection
         let start = startRun(
-            action: action,
+            .plan,
             params: OperationParams.Flash.plan(
                 backupDir: backupDir,
                 mode: mode,
@@ -321,29 +197,25 @@ final class FlashWorkflowStore: ObservableObject {
         state = .analyzingBanks
         plan = nil
         writeResult = nil
-        process(backend.events)
         return start
     }
 
     @discardableResult
-    func write(mode: FlashPlanMode, password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard mode.writesFirmware else {
-            return reject(.flashModeReadOnly)
-        }
+    func writeFirmware(mode: FlashPlanMode, password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard !isBusy else {
-            return reject(.operationAlreadyRunning)
+            return rejectAlreadyRunning()
         }
         guard let plan, plan.mode == mode, plan.writeRequested, let backupDir = backup?.backupDir else {
-            state = .writeLocked
             return reject(.flashPlanRequired)
         }
         let selection = currentFirmwareSelection
+        // A field change drops the plan, so this cannot fail today; it keeps a
+        // firmware write from ever using values that were never planned.
         guard plannedFirmwareSelection == selection else {
             return reject(.flashPlanStale)
         }
-        let action = mode == .patch ? FlashUserAction.writePatch : .writeRestore
         let start = startRun(
-            action: action,
+            .write,
             params: OperationParams.Flash.write(
                 backupDir: backupDir,
                 mode: mode,
@@ -358,35 +230,49 @@ final class FlashWorkflowStore: ObservableObject {
         }
         state = .writing
         writeResult = nil
-        process(backend.events)
         return start
     }
 
+    @discardableResult
+    func rejectAlreadyRunning() -> OperationStartResult {
+        operation.refuseAlreadyRunning { _ = reject(.operationAlreadyRunning) }
+    }
+
+    func confirmPending() {
+        operation.confirmPending()
+    }
+
+    func cancelPendingConfirmation() {
+        operation.cancelPendingConfirmation()
+    }
+
+    func cancel() {
+        operation.cancel()
+    }
+
     func clear() {
-        backend.clear()
-        operationObserver.clear()
-        state = eligibility.state
+        operation.clear()
+        state = .ready
         backup = nil
         plan = nil
         writeResult = nil
         backupSnapshotStale = false
-        manualPowerCycleNotice = nil
+        showsManualPowerCycleNotice = false
         currentStage = nil
         error = nil
         passwordInvalidProfileID = nil
-        operationObserver.finish()
-        activeAction = nil
+        runKind = nil
+        lastRunConnectsToDevice = false
         pendingFirmwareSelection = nil
         plannedFirmwareSelection = nil
     }
 
     func dismissManualPowerCycleNotice() {
-        manualPowerCycleNotice = nil
+        showsManualPowerCycleNotice = false
     }
 
     private func canWrite(mode: FlashPlanMode) -> Bool {
         !isBusy
-            && eligibility.writeAllowed
             && plan?.mode == mode
             && plan?.writeRequested == true
             && backup != nil
@@ -395,14 +281,8 @@ final class FlashWorkflowStore: ObservableObject {
             && [.planAvailable, .failed].contains(state)
     }
 
-    private func process(_ events: [BackendEvent]) {
-        operationObserver.process(events) { event, operation in
-            handle(event, activeOperation: operation)
-        }
-    }
-
     private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
-        guard event.operation == "flash" else {
+        guard event.operation == operation.name else {
             return
         }
 
@@ -429,53 +309,60 @@ final class FlashWorkflowStore: ObservableObject {
 
     private func applyResult(_ event: BackendEvent) {
         do {
-            switch activeAction {
-            case .backupAndInspect:
+            switch runKind {
+            case .backup:
                 backup = try event.decodePayload(FlashBackupPayload.self)
                 backupSnapshotStale = false
                 plannedFirmwareSelection = nil
                 state = .planAvailable
-            case .planPatch, .planRestore, .checkApple, .downloadApple:
-                plan = try event.decodePayload(FlashPlanPayload.self)
-                if let plan {
-                    plannedFirmwareSelection = pendingFirmwareSelection ?? currentFirmwareSelection
-                    pendingFirmwareSelection = nil
-                    if plannedFirmwareSelection == currentFirmwareSelection {
-                        state = Self.stateAfterPlan(plan)
-                    } else {
-                        self.plan = nil
-                        state = backup == nil ? eligibility.state : .planAvailable
-                    }
+            case .plan:
+                let plan = try event.decodePayload(FlashPlanPayload.self)
+                plannedFirmwareSelection = pendingFirmwareSelection ?? currentFirmwareSelection
+                // A plan always works from a backup.
+                if plannedFirmwareSelection == currentFirmwareSelection {
+                    self.plan = plan
+                    state = Self.stateAfterPlan(plan)
+                } else {
+                    self.plan = nil
+                    state = .planAvailable
                 }
-            case .writePatch, .writeRestore:
+            case .write:
                 let result = try event.decodePayload(FlashWritePayload.self)
                 writeResult = result
                 if Self.writeMayHaveModifiedFirmware(result) {
                     markSnapshotStaleAfterWrite()
                     if Self.requiresManualPowerCycleAfterWrite(result) {
-                        manualPowerCycleNotice = FlashManualPowerCycleNotice(mode: result.mode)
+                        showsManualPowerCycleNotice = true
                     }
+                } else if result.writeStatus == "not_needed" {
+                    // The helper planned again and found the bank already as
+                    // asked, so it wrote nothing; the plan that said otherwise
+                    // is wrong.
+                    plan = nil
+                    plannedFirmwareSelection = nil
+                    state = .writeNotNeeded
                 } else {
-                    state = .writeValidated
+                    // Success that says neither: nothing to drop the plan for.
+                    state = .planAvailable
                 }
             case nil:
                 break
             }
             error = nil
             currentStage = nil
-            operationObserver.finish()
-            activeAction = nil
-            pendingFirmwareSelection = nil
         } catch {
-            self.error = BackendErrorViewModel(
-                operation: "flash",
-                code: "contract_decode_failed",
-                message: error.localizedDescription
-            )
+            markSnapshotStaleIfFailedWriteMayHaveModifiedFirmware()
+            self.error = operation.contractDecodeError(error)
             state = .failed
-            operationObserver.finish()
-            activeAction = nil
-            pendingFirmwareSelection = nil
+        }
+        finishRun()
+    }
+
+    /// However a write fails, once it may have started writing the backup
+    /// no longer describes the banks.
+    private func markSnapshotStaleIfFailedWriteMayHaveModifiedFirmware() {
+        if runKind == .write, currentStageMayHaveModifiedFirmware() {
+            markSnapshotStaleAfterWrite()
         }
     }
 
@@ -506,7 +393,7 @@ final class FlashWorkflowStore: ObservableObject {
         }
     }
 
-    private static func stateAfterPlan(_ plan: FlashPlanPayload) -> FlashWorkflowState {
+    private static func stateAfterPlan(_ plan: FlashPlanPayload) -> BootHookState {
         switch plan.mode {
         case .checkApple:
             return plan.appleFirmwareMatch?.matched == false ? .appleFirmwareMismatch : .appleCheckComplete
@@ -519,57 +406,61 @@ final class FlashWorkflowStore: ObservableObject {
 
     private func applyError(_ event: BackendEvent, activeOperation: ActiveOperation) {
         if event.code == "confirmation_required" {
+            // Without a confirmation the app can read there is nothing to
+            // confirm, and the helper has already exited: the write failed.
+            guard PendingConfirmation(confirmationEvent: event, originalParams: [:]) != nil else {
+                error = operation.contractDecodeError(BackendContractError.payloadDecodeFailed(
+                    operation: operation.name, payloadType: "PendingConfirmation", message: "no confirmation_id"
+                ))
+                state = .failed
+                finishRun()
+                return
+            }
             error = nil
             state = .awaitingStrongConfirmation
             return
         }
         if event.code == "confirmation_cancelled" {
+            // Only a write asks for confirmation, and it keeps its plan.
             error = nil
             currentStage = nil
-            operationObserver.finish()
-            activeAction = nil
-            pendingFirmwareSelection = nil
-            state = plan == nil ? (backup == nil ? eligibility.state : .writeLocked) : .planAvailable
+            state = .planAvailable
+            finishRun()
             return
         }
         if event.code == "auth_failed" {
             passwordInvalidProfileID = activeOperation.profileID
         }
-        if activeAction == .writePatch || activeAction == .writeRestore,
-           currentStageMayHaveModifiedFirmware() {
-            markSnapshotStaleAfterWrite()
-        }
+        markSnapshotStaleIfFailedWriteMayHaveModifiedFirmware()
         error = BackendErrorViewModel(event: event)
         state = .failed
-        operationObserver.finish()
-        activeAction = nil
-        pendingFirmwareSelection = nil
+        finishRun()
     }
 
-    private var currentFirmwareSelection: FlashFirmwareSelection {
-        FlashFirmwareSelection(
+    private var currentFirmwareSelection: BootHookFirmwareSelection {
+        BootHookFirmwareSelection(
             version: firmwareVersion.trimmingCharacters(in: .whitespacesAndNewlines),
             templatePath: firmwareTemplatePath.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
 
     private func invalidatePlanIfFirmwareSelectionChanged() {
-        guard !isBusy, plan != nil, plannedFirmwareSelection != currentFirmwareSelection else {
+        // A step that is still running, or waiting for its confirmation, keeps
+        // its plan; finishRun checks again when it ends. The lane can still be
+        // busy after that, while the helper exits.
+        guard runKind == nil, plan != nil, plannedFirmwareSelection != currentFirmwareSelection else {
             return
         }
         plan = nil
         writeResult = nil
         plannedFirmwareSelection = nil
-        if backup != nil, !backupSnapshotStale {
+        if backup != nil, !backupSnapshotStale, state != .failed {
             state = .planAvailable
         }
     }
 
     private func currentStageMayHaveModifiedFirmware() -> Bool {
-        guard currentStage?.operation == "flash" else {
-            return false
-        }
-        return currentStage?.stage == "write_primary_bank"
+        currentStage?.stage == "write_primary_bank"
             || currentStage?.stage == "write_active_bank"
             || currentStage?.stage == "write_secondary_bank"
             || currentStage?.stage == "post_write_validation"
@@ -579,17 +470,13 @@ final class FlashWorkflowStore: ObservableObject {
     }
 
     private func applyFalseResult(_ event: BackendEvent) {
-        error = BackendErrorViewModel(
-            operation: event.operation,
-            code: "operation_failed",
-            message: event.localizedPayloadSummaryText ?? event.localizedSummary
-        )
+        markSnapshotStaleIfFailedWriteMayHaveModifiedFirmware()
+        error = operation.falseResultError(from: event)
         state = .failed
-        operationObserver.finish()
-        activeAction = nil
+        finishRun()
     }
 
-    private func stateForStage(_ stage: String) -> FlashWorkflowState {
+    private func stateForStage(_ stage: String) -> BootHookState {
         switch stage {
         case "read_flash":
             return .readingBanks
@@ -610,55 +497,50 @@ final class FlashWorkflowStore: ObservableObject {
         }
     }
 
-    private func reject(_ message: String) -> OperationStartResult {
-        error = BackendErrorViewModel(operation: "flash", code: "operation_rejected", message: message)
-        state = .failed
-        return .rejected(message)
-    }
-
     private func reject(_ localError: WorkflowLocalError) -> OperationStartResult {
-        error = BackendErrorViewModel(operation: "flash", localError: localError)
+        error = operation.localError(localError)
         state = .failed
         return .rejected(localError.message)
     }
 
     private func startRun(
-        action: FlashUserAction,
+        _ kind: RunKind,
         params: [String: JSONValue],
         profile: DeviceProfile?,
         password: String? = nil
     ) -> OperationStartResult {
-        guard !isBusy else {
-            return reject(.operationAlreadyRunning)
-        }
-        resetRunState()
-        let start = coordinator.run(
-            operation: "flash",
+        let start = operation.start(
             params: params,
-            context: profile?.runtimeContext,
-            activeDeviceID: profile?.id,
+            profile: profile,
             password: password,
-            laneKey: laneKey
+            resetRunState: resetRunState,
+            rejectRun: { message in
+                error = operation.rejectedError(message: message)
+                state = .failed
+            }
         )
-        switch start {
-        case .started(let operation):
-            operationObserver.start(operation)
-            activeAction = action
-        case .rejected(let message):
-            return reject(message)
+        if case .started = start {
+            runKind = kind
+            lastRunConnectsToDevice = kind != .plan
         }
         return start
     }
 
     private func resetRunState() {
-        backend.clear()
-        operationObserver.clear()
+        operation.resetForRun()
         error = nil
-        manualPowerCycleNotice = nil
+        showsManualPowerCycleNotice = false
         currentStage = nil
         passwordInvalidProfileID = nil
-        operationObserver.finish()
-        activeAction = nil
+        runKind = nil
     }
 
+    private func finishRun() {
+        operation.finishObserver()
+        runKind = nil
+        pendingFirmwareSelection = nil
+        // The fields are locked while busy, but a template chosen in a panel
+        // opened before the run can still land during it.
+        invalidatePlanIfFirmwareSelectionChanged()
+    }
 }

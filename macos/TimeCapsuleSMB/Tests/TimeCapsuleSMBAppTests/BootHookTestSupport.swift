@@ -133,6 +133,12 @@ func testBootHookSatisfiedPatchPlanPayload() -> JSONValue {
     helperResultPayload("flash_plan_satisfied")
 }
 
+/// A restore plan that rewrites the secondary (backup) bank, which is not a
+/// valid backup, with Apple's newest firmware.
+func testBootHookSecondaryRestorePlanPayload() -> JSONValue {
+    helperResultPayload("flash_restore_secondary_write_plan")
+}
+
 /// Check Apple Firmware against 7.8.1: the active bank, or with `allBanks`
 /// both candidate banks, all matching or none.
 func testAppleCheckPayload(matched: Bool, allBanks: Bool = false) -> JSONValue {
@@ -150,6 +156,9 @@ func testAppleRestoreFirmwarePayload() -> JSONValue {
 
 /// How a validated write ended, named by the helper's payload for it.
 enum BootHookWriteOutcome: String {
+    case notNeeded = "flash_write_not_needed"
+    /// Ended after it began writing but before the write was validated.
+    case unvalidated = "flash_write_completed"
     case patchNeedsPowerCycle = "flash_patch_write_validated"
     case restoreRebooted = "flash_restore_write_rebooted"
     case restoreNeedsManualReboot = "flash_restore_write_manual_reboot"
@@ -162,8 +171,8 @@ enum BootHookWriteOutcome: String {
     }
 }
 
-func testBootHookWritePayload(_ outcome: BootHookWriteOutcome) -> JSONValue {
-    helperResultPayload(outcome.rawValue)
+func testBootHookWritePayload(_ outcome: BootHookWriteOutcome, _ overrides: [String: JSONValue] = [:]) -> JSONValue {
+    helperResultPayload(outcome.rawValue, overrides)
 }
 
 enum BootHookTestStep: Equatable {
@@ -174,61 +183,67 @@ enum BootHookTestStep: Equatable {
 
 /// Why a fixture step did not reach its result.
 enum BootHookFixtureFailure: Error, Equatable {
-    /// The store refused the step, or the helper failed it, with this message.
+    /// The store refused to start the step, with this message.
+    case refused(BootHookTestStep, String)
+    /// The helper failed the step, with this message.
     case failed(BootHookTestStep, String)
     /// The step ended without an error but left no payload.
     case endedWithoutPayload(BootHookTestStep)
 }
 
-/// A boot hook store for `profile` (a NetBSD 4 device unless given) whose
-/// helper is `runner`, refreshed for that device as the dashboard does.
-/// `onDeviceLane` puts it on the device's flash lane, so the coordinator's
-/// device lock and confirmations apply.
+/// A maintenance store for a NetBSD 4 device whose helper is `runner`. `onDeviceLane` puts it on the device's lanes, so the
+/// coordinator's device lock and confirmations apply.
 @MainActor
 struct BootHookTestFixture<Runner: HelperRunning> {
     let runner: Runner
     let coordinator: OperationCoordinator
-    let store: FlashWorkflowStore
+    let maintenanceStore: MaintenanceStore
     let profile: DeviceProfile
+
+    /// The boot hook's own store, where its steps keep their results.
+    var store: BootHookStore { maintenanceStore.bootHookStore }
+
+    var presentation: FlashPresentation { FlashPresentation(store: maintenanceStore) }
 
     init(
         runner: Runner,
-        profile: DeviceProfile? = nil,
-        onDeviceLane: Bool = false,
-        buildPolicy: FlashBuildPolicy = .writesEnabled
+        onDeviceLane: Bool = false
     ) throws {
         self.runner = runner
-        self.profile = try profile ?? testNetBSD4Profile()
+        self.profile = try testNetBSD4Profile()
         coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
-        store = FlashWorkflowStore(
+        maintenanceStore = MaintenanceStore(
             coordinator: coordinator,
-            laneKey: onDeviceLane ? .deviceWorkflow(self.profile.id, .flash) : .app,
-            buildPolicy: buildPolicy
+            laneKey: onDeviceLane ? .deviceWorkflow(self.profile.id, .maintenance) : .app
         )
-        store.refresh(profile: self.profile)
     }
 
     /// Presses each step's button with password "pw" and waits for its run to
     /// end. Throws when a step is refused, fails, or ends without its payload.
     func run(_ steps: BootHookTestStep...) async throws {
         for step in steps {
+            let start: OperationStartResult
             let hasPayload: () -> Bool
             switch step {
             case .backup:
-                store.backupAndInspect(password: "pw", profile: profile)
+                start = maintenanceStore.backUpAndInspectFirmware(password: "pw", profile: profile)
                 hasPayload = { store.backup != nil }
             case .plan(let mode):
-                store.planFlash(mode: mode, profile: profile)
+                start = maintenanceStore.planFirmware(mode: mode, profile: profile)
                 hasPayload = { store.plan != nil }
             case .write(let mode):
-                store.write(mode: mode, password: "pw", profile: profile)
+                start = maintenanceStore.writeFirmware(mode: mode, password: "pw", profile: profile)
                 hasPayload = { store.writeResult != nil }
             }
-            // A refused step sets the store's error without starting. A started
-            // one clears its error and payload first, and the store handles the
-            // run's last event before the backend stops running. So once the
-            // store is idle, both are this step's, and a failure throws at once
-            // rather than waiting out the timeout for a payload.
+            // A store refused while busy records nothing, so waiting would
+            // find the running step's state instead of this one's.
+            if case .rejected(let message) = start {
+                throw BootHookFixtureFailure.refused(step, message)
+            }
+            // A started step clears its error and payload first, and the store
+            // handles the run's last event before the backend stops running.
+            // So once the store is idle, both are this step's, and a failure
+            // throws at once rather than waiting out the timeout for a payload.
             try await waitUntilStoreState { !store.isBusy }
             if let error = store.error {
                 throw BootHookFixtureFailure.failed(step, error.diagnosticMessage ?? error.message)
@@ -243,23 +258,20 @@ struct BootHookTestFixture<Runner: HelperRunning> {
 extension BootHookTestFixture where Runner == StoreTestRunner {
     /// A helper that answers each run with the next of `responses`.
     init(
-        responses: [StoreTestRunner.Response] = [],
-        profile: DeviceProfile? = nil,
-        buildPolicy: FlashBuildPolicy = .writesEnabled
+        responses: [StoreTestRunner.Response] = []
     ) throws {
-        try self.init(runner: StoreTestRunner(responses: responses), profile: profile, buildPolicy: buildPolicy)
+        try self.init(runner: StoreTestRunner(responses: responses))
     }
 
-    static func afterBackup(_ backup: JSONValue = testBootHookBackupPayload()) async throws -> Self {
+    static func afterBackup(_ backup: JSONValue) async throws -> Self {
         let fixture = try Self(responses: testBootHookResponses(backup: backup))
         try await fixture.run(.backup)
         return fixture
     }
 
-    /// Backs up, then plans in the mode `plan` reports (patch when it names
-    /// none, as the app reads it).
+    /// Backs up, then plans in the mode `plan` reports.
     static func afterPlan(_ plan: JSONValue) async throws -> Self {
-        let mode = plan.stringValue(for: "mode").flatMap(FlashPlanMode.init(rawValue:)) ?? .patch
+        let mode = try XCTUnwrap(plan.stringValue(for: "mode").flatMap(FlashPlanMode.init(rawValue:)), "the plan names no mode")
         let fixture = try Self(responses: testBootHookResponses(plan: plan))
         try await fixture.run(.backup, .plan(mode))
         return fixture
@@ -267,9 +279,10 @@ extension BootHookTestFixture where Runner == StoreTestRunner {
 
     /// Backs up, plans a write of `mode` and writes it.
     static func afterWrite(_ mode: FlashPlanMode, _ outcome: BootHookWriteOutcome? = nil) async throws -> Self {
+        let outcome = outcome ?? .usual(for: mode)
         let fixture = try Self(responses: testBootHookResponses(
-            plan: testBootHookPlanPayload(mode: mode),
-            write: testBootHookWritePayload(outcome ?? .usual(for: mode))
+            plan: outcome == .restoredSecondaryBank ? testBootHookSecondaryRestorePlanPayload() : testBootHookPlanPayload(mode: mode),
+            write: testBootHookWritePayload(outcome)
         ))
         try await fixture.run(.backup, .plan(mode), .write(mode))
         return fixture

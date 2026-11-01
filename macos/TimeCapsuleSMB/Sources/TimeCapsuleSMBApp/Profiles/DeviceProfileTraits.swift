@@ -4,7 +4,7 @@ struct DeviceProfileTraits: Equatable {
     let isNetBSD4: Bool
     let isNetBSD6: Bool
     let isSupported: Bool
-    let supportsFlashBootHook: Bool
+    let supportsBootHook: Bool
 }
 
 extension DeviceProfile {
@@ -24,7 +24,7 @@ extension DeviceProfile {
             isNetBSD4: isNetBSD4,
             isNetBSD6: isNetBSD6,
             isSupported: isSupported,
-            supportsFlashBootHook: isNetBSD4
+            supportsBootHook: isNetBSD4
         )
     }
 }

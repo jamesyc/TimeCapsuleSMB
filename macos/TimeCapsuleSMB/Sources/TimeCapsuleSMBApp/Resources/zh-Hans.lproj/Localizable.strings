@@ -412,9 +412,6 @@
 "backend.summary.ssh.enable_requested" = "已请求启用 SSH；不等待 SSH 开放。";
 "backend.summary.ssh.reachable" = "SSH 可达。";
 "backend.summary.ssh.unreachable" = "AirPort ACP 和 SSH 均不可达。";
-"flash.eligibility.disabled" = "此构建已禁用固件启动钩子分析。";
-"flash.eligibility.netbsd4_required" = "持久化启动钩子工具仅适用于 NetBSD4 设备。如果你的设备应该受支持，请在 https://github.com/jamesyc/TimeCapsuleSMB/issues/160 补充详细信息。";
-"flash.eligibility.read_only" = "此 NetBSD4 设备可先进行备份和检查，之后才能提供写入操作。";
 "flash.eligibility.write_ready" = "修改 NetBSD 4 设备的固件，使其重启后自动运行已安装的 Samba 服务。\n规划修补或恢复写入前，请先备份并检查固件。";
 "field.firmware_template" = "固件模板路径，可选";
 "field.firmware_version" = "固件版本，可选";
@@ -562,11 +559,6 @@
 "maintenance.state.succeeded" = "维护已完成。";
 "maintenance.timeline.title" = "进度";
 "maintenance.warning.destructive_fsck" = "磁盘修复可能修改选定的卷。";
-"maintenance.workflow.activate" = "NetBSD4 启动";
-"maintenance.workflow.fsck" = "磁盘修复";
-"maintenance.workflow.ssh_access" = "SSH 访问";
-"maintenance.workflow.uninstall" = "卸载";
-"maintenance.workflow.wipe_disk" = "重新格式化内部磁盘";
 "overview.empty.message" = "添加 Apple AirPort Time Capsule 或 AirPort Extreme 设备，以配置 SMB、运行检查并管理维护任务。";
 "overview.empty.title" = "没有保存的设备";
 "overview.saved_devices.title" = "所有设备";
@@ -586,11 +578,8 @@
 "workflow.error.ata_standby_invalid" = "ATA 待机时间必须留空或为非负秒数。";
 "workflow.error.deploy_options_invalid" = "安装 / 更新选项无效。";
 "workflow.error.flash_backup_required" = "规划闪存工作前，请先备份并检查固件。";
-"workflow.error.flash_backup_unavailable" = "闪存备份不可用。";
-"workflow.error.flash_mode_read_only" = "此闪存模式不会写入固件。";
 "workflow.error.flash_plan_required" = "运行前请先规划所选闪存写入。";
 "workflow.error.flash_plan_stale" = "苹果固件选项变更后，请重新规划所选闪存写入。";
-"workflow.error.flash_writes_disabled" = "此构建已禁用固件写入。";
 "workflow.error.fsck_plan_not_ready" = "该 fsck 计划尚未就绪。";
 "workflow.error.fsck_plan_stale" = "运行前请检查并重新生成 fsck 计划。";
 "workflow.error.fsck_target_required" = "规划 fsck 前请选择已挂载的 HFS 卷。";
@@ -606,7 +595,6 @@
 "workflow.state.deployed" = "已安装 / 更新";
 "workflow.state.deploy_failed" = "安装 / 更新失败";
 "workflow.state.deploying" = "正在安装 / 更新";
-"workflow.state.disabled_in_this_build" = "此构建已禁用";
 "workflow.state.failed" = "失败";
 "workflow.state.idle" = "空闲";
 "workflow.state.list_ready" = "列表已就绪";
@@ -616,7 +604,6 @@
 "workflow.state.plan_ready" = "计划已就绪";
 "workflow.state.plan_stale" = "计划已过期";
 "workflow.state.planning" = "正在规划";
-"workflow.state.read_only_analysis_available" = "可进行只读分析";
 "workflow.state.reading_firmware_banks" = "正在读取固件区";
 "workflow.state.ready" = "就绪";
 "workflow.state.rebooting_after_restore" = "恢复后正在重启";
@@ -625,10 +612,9 @@
 "workflow.state.saving_backup" = "正在保存备份";
 "workflow.state.snapshot_stale" = "快照已过期";
 "workflow.state.succeeded" = "成功";
-"workflow.state.unavailable" = "不可用";
 "workflow.state.validating_write" = "正在验证写入";
 "workflow.state.warning" = "警告";
-"workflow.state.write_validated" = "写入已验证";
+"workflow.state.write_not_needed" = "无需写入";
 "workflow.state.writing_firmware" = "正在写入固件";
 "password_state.available" = "可用";
 "password_state.invalid" = "无效";

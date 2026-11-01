@@ -10,7 +10,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     var deployStore: DeployWorkflowStore
     var doctorStore: DoctorStore
     var maintenanceStore: MaintenanceStore
-    var flashStore: FlashWorkflowStore
     let profileEditorStore: DeviceProfileEditorStore
 
     private let urlOpener: URLOpening
@@ -53,17 +52,12 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             coordinator: appStore.operationCoordinator,
             laneKey: .deviceWorkflow(profile.id, .maintenance)
         )
-        self.flashStore = FlashWorkflowStore(
-            coordinator: appStore.operationCoordinator,
-            laneKey: .deviceWorkflow(profile.id, .flash)
-        )
         self.profileEditorStore = DeviceProfileEditorStore(profile: profile, appStore: appStore)
         self.stateSynchronizer = DeviceDashboardStateSynchronizer(
             appStore: appStore,
             doctorStore: doctorStore,
             deployStore: deployStore,
-            maintenanceStore: maintenanceStore,
-            flashStore: flashStore
+            maintenanceStore: maintenanceStore
         )
         applyProfileSettings(profile.settings)
         forwardChildChanges()
@@ -195,7 +189,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             showDiagnostics()
         case .openBootHook:
             selectedTab = .maintenance
-            maintenanceStore.select(.bootHook)
+            maintenanceStore.selectedWorkflow = .bootHook
         }
     }
 
@@ -263,38 +257,33 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             }
         case .viewDiagnostics:
             showDiagnostics()
-        }
-    }
-
-    func performFlashAction(_ action: FlashUserAction, profile: DeviceProfile) {
-        switch action {
-        case .backupAndInspect:
+        case .backUpAndInspectFirmware:
             if let password = maintenancePassword(for: profile) {
-                flashStore.backupAndInspect(password: password, profile: profile)
+                maintenanceStore.backUpAndInspectFirmware(password: password, profile: profile)
             }
         case .planPatch:
-            flashStore.planFlash(mode: .patch, profile: profile)
+            maintenanceStore.planFirmware(mode: .patch, profile: profile)
         case .planRestore:
-            flashStore.planFlash(mode: .restore, profile: profile)
-        case .checkApple:
-            flashStore.planFlash(mode: .checkApple, profile: profile)
-        case .downloadApple:
-            flashStore.planFlash(mode: .downloadOnly, profile: profile)
+            maintenanceStore.planFirmware(mode: .restore, profile: profile)
+        case .checkAppleFirmware:
+            maintenanceStore.planFirmware(mode: .checkApple, profile: profile)
+        case .validateAppleFirmware:
+            maintenanceStore.planFirmware(mode: .downloadOnly, profile: profile)
         case .writePatch:
             if let password = maintenancePassword(for: profile) {
-                let start = flashStore.write(mode: .patch, password: password, profile: profile)
+                let start = maintenanceStore.writeFirmware(mode: .patch, password: password, profile: profile)
                 stateSynchronizer.invalidateCheckupIfStarted(start)
             }
         case .writeRestore:
             if let password = maintenancePassword(for: profile) {
-                let start = flashStore.write(mode: .restore, password: password, profile: profile)
+                let start = maintenanceStore.writeFirmware(mode: .restore, password: password, profile: profile)
                 stateSynchronizer.invalidateCheckupIfStarted(start)
             }
         }
     }
 
-    func viewCheckupAfterFlashNotice() {
-        flashStore.dismissManualPowerCycleNotice()
+    func viewCheckupAfterPowerCycleNotice() {
+        maintenanceStore.bootHookStore.dismissManualPowerCycleNotice()
         selectedTab = .checkup
     }
 
@@ -479,6 +468,12 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 }
                 .store(in: &cancellables)
         }
+        maintenanceStore.bootHookStore.$error
+            .filter { [weak self] _ in self?.maintenanceStore.bootHookStore.lastRunConnectsToDevice == true }
+            .sink { [weak self] error in
+                self?.refreshSSHAccessAfterRemoteFailure(error)
+            }
+            .store(in: &cancellables)
     }
 
     private func observeSSHAccessMaintenanceResults() {
@@ -495,9 +490,10 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     }
 
     private func refreshSSHAccessAfterRemoteFailure(_ error: BackendErrorViewModel?) {
-        // A refusal the app made itself never reached the device.
+        // A refusal the app made itself never reached the device, and a
+        // reply the app could not read came from a helper that reached it.
         guard let error, error.localError == nil,
-              !["operation_rejected", "cancelled", "confirmation_cancelled"].contains(error.code),
+              !["operation_rejected", "cancelled", "confirmation_cancelled", "contract_decode_failed"].contains(error.code),
               let event = latestTerminalEvent(for: error.operation),
               let requestID = event.requestId,
               event.type == "error" || event.ok == false,
@@ -602,7 +598,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     /// What reruns the failed operation, or nil for one the dashboard cannot
     /// run again from its error box. Activate, Uninstall and Disk Repair ask
     /// for confirmation first, and their error box sits beside the button that
-    /// does that; a profile save and the flash steps have buttons of their own.
+    /// does that; a profile save and the boot hook steps have buttons of their own.
     func retryAction(for error: BackendErrorViewModel, profile: DeviceProfile) -> (() -> Void)? {
         switch error.operation {
         case "doctor":
@@ -626,7 +622,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             deployStore.objectWillChange,
             doctorStore.objectWillChange,
             maintenanceStore.objectWillChange,
-            flashStore.objectWillChange,
             profileEditorStore.objectWillChange,
             appStore.deviceDiscovery.objectWillChange
         )

@@ -416,9 +416,6 @@
 "field.firmware_version" = "Firmware version (optional)";
 "field.helper" = "Helper";
 "field.mount_wait" = "Mount wait time (seconds)";
-"flash.eligibility.disabled" = "Firmware boot hook analysis is disabled in this build.";
-"flash.eligibility.netbsd4_required" = "Persistent boot hook tools are only for NetBSD4 devices. If your device should be supported, please add details to https://github.com/jamesyc/TimeCapsuleSMB/issues/160.";
-"flash.eligibility.read_only" = "This NetBSD4 device can be backed up and inspected before any write is available.";
 "flash.eligibility.write_ready" = "Modify the firmware of NetBSD 4 devices to automatically run the installed Samba payload after a restart.\nBack up and inspect firmware before planning a patch or restore write.";
 "flash.action.backup_inspect" = "Back Up and Inspect";
 "flash.action.backup_inspect_again" = "Back Up and Inspect Again";
@@ -562,11 +559,6 @@
 "maintenance.state.succeeded" = "Maintenance completed.";
 "maintenance.timeline.title" = "Progress";
 "maintenance.warning.destructive_fsck" = "Disk repair can modify the selected volume.";
-"maintenance.workflow.activate" = "NetBSD4 Activation";
-"maintenance.workflow.fsck" = "Disk Repair";
-"maintenance.workflow.ssh_access" = "SSH Access";
-"maintenance.workflow.uninstall" = "Uninstall";
-"maintenance.workflow.wipe_disk" = "Wipe Internal Disk";
 "overview.empty.message" = "Add an Apple AirPort Time Capsule or AirPort Extreme device to configure SMB, run checkups, and manage maintenance tasks.";
 "overview.empty.title" = "No Devices Saved";
 "overview.saved_devices.title" = "All Devices";
@@ -586,11 +578,8 @@
 "workflow.error.ata_standby_invalid" = "ATA standby time must be blank or a non-negative number of seconds.";
 "workflow.error.deploy_options_invalid" = "Install / Update options are invalid.";
 "workflow.error.flash_backup_required" = "Back up and inspect firmware before planning flash work.";
-"workflow.error.flash_backup_unavailable" = "Flash backup is not available.";
-"workflow.error.flash_mode_read_only" = "This flash mode does not write firmware.";
 "workflow.error.flash_plan_required" = "Plan the selected flash write before running it.";
 "workflow.error.flash_plan_stale" = "Plan the selected flash write again after changing Apple firmware options.";
-"workflow.error.flash_writes_disabled" = "Firmware writes are disabled in this build.";
 "workflow.error.fsck_plan_not_ready" = "The fsck plan is not ready.";
 "workflow.error.fsck_plan_stale" = "Review and regenerate the fsck plan before running it.";
 "workflow.error.fsck_target_required" = "Select a mounted HFS volume before planning fsck.";
@@ -606,7 +595,6 @@
 "workflow.state.deployed" = "Installed / Updated";
 "workflow.state.deploy_failed" = "Install / Update Failed";
 "workflow.state.deploying" = "Installing / Updating";
-"workflow.state.disabled_in_this_build" = "Disabled in This Build";
 "workflow.state.failed" = "Failed";
 "workflow.state.idle" = "Idle";
 "workflow.state.list_ready" = "List Ready";
@@ -616,7 +604,6 @@
 "workflow.state.plan_ready" = "Plan Ready";
 "workflow.state.plan_stale" = "Plan Stale";
 "workflow.state.planning" = "Planning";
-"workflow.state.read_only_analysis_available" = "Read-Only Analysis Available";
 "workflow.state.reading_firmware_banks" = "Reading Firmware Banks";
 "workflow.state.ready" = "Ready";
 "workflow.state.rebooting_after_restore" = "Rebooting After Restore";
@@ -625,10 +612,9 @@
 "workflow.state.saving_backup" = "Saving Backup";
 "workflow.state.snapshot_stale" = "Snapshot Stale";
 "workflow.state.succeeded" = "Succeeded";
-"workflow.state.unavailable" = "Unavailable";
 "workflow.state.validating_write" = "Validating Write";
 "workflow.state.warning" = "Warning";
-"workflow.state.write_validated" = "Write Validated";
+"workflow.state.write_not_needed" = "No Write Needed";
 "workflow.state.writing_firmware" = "Writing Firmware";
 "password_state.available" = "Available";
 "password_state.invalid" = "Invalid";

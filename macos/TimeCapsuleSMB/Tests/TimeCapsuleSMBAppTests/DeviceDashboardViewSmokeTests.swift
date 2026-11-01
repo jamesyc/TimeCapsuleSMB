@@ -175,7 +175,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
         let idleProfile = try await idleFixture.saveProfile(id: "device-one")
         let idleSession = idleFixture.dashboardSession(for: idleProfile)
         idleSession.selectedTab = .maintenance
-        for workflow in MaintenanceWorkflow.allCases {
+        for workflow in MaintenanceWorkflowAvailability.workflows(for: idleProfile) {
             idleSession.maintenanceStore.selectedWorkflow = workflow
             try assertRendersNonBlank(dashboardView(fixture: idleFixture, profile: idleProfile, session: idleSession))
         }
@@ -184,8 +184,8 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
         let netbsd4Profile = try await netbsd4.saveProfile(id: "netbsd4-device", payloadFamily: "netbsd4_samba4")
         let netbsd4Session = netbsd4.dashboardSession(for: netbsd4Profile)
         netbsd4Session.selectedTab = .maintenance
-        for card in MaintenanceCardAvailability.cards(for: netbsd4Profile) {
-            netbsd4Session.maintenanceStore.select(card)
+        for workflow in MaintenanceWorkflowAvailability.workflows(for: netbsd4Profile) {
+            netbsd4Session.maintenanceStore.selectedWorkflow = workflow
             try assertRendersNonBlank(dashboardView(fixture: netbsd4, profile: netbsd4Profile, session: netbsd4Session))
         }
 

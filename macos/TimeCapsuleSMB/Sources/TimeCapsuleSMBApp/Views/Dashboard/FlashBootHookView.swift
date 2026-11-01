@@ -1,8 +1,9 @@
 import SwiftUI
 
 struct FlashBootHookSection: View {
-    @ObservedObject var store: FlashWorkflowStore
-    let performAction: (FlashUserAction) -> Void
+    @ObservedObject var store: MaintenanceStore
+    let timeline: MaintenanceTimelinePresentation?
+    let performAction: (MaintenanceUserAction) -> Void
     let chooseFirmwareTemplate: () -> Void
     let recoveryAction: (RecoveryActionKind, BackendErrorViewModel) -> (() -> Void)?
     let diagnosticsText: () -> String
@@ -14,7 +15,7 @@ struct FlashBootHookSection: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(presentation.title)
                         .font(.headline)
-                    AnimatedProgressText(message: presentation.message, isRunning: store.isRunning)
+                    AnimatedProgressText(message: presentation.message, isRunning: store.bootHookStore.isRunning)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -42,31 +43,22 @@ struct FlashBootHookSection: View {
             }
 
             DisclosureGroup {
-                FlashFirmwareOptionsView(store: store, chooseFirmwareTemplate: chooseFirmwareTemplate)
+                FlashFirmwareOptionsView(store: store.bootHookStore, chooseFirmwareTemplate: chooseFirmwareTemplate)
             } label: {
                 Label(L10n.string("flash.options.apple_firmware"), systemImage: "gearshape")
                     .font(.subheadline.weight(.medium))
             }
 
-            HStack {
-                ForEach(presentation.primaryActions) { action in
-                    Button {
-                        performAction(action)
-                    } label: {
-                        Label(presentation.title(for: action), systemImage: action.systemImage)
+            ForEach(presentation.actionRows, id: \.self) { row in
+                HStack {
+                    ForEach(row) { action in
+                        Button {
+                            performAction(action)
+                        } label: {
+                            Label(presentation.title(for: action), systemImage: action.systemImage)
+                        }
+                        .disabled(!presentation.isEnabled(action))
                     }
-                    .disabled(!presentation.isEnabled(action))
-                }
-            }
-
-            HStack {
-                ForEach(presentation.secondaryActions) { action in
-                    Button {
-                        performAction(action)
-                    } label: {
-                        Label(presentation.title(for: action), systemImage: action.systemImage)
-                    }
-                    .disabled(!presentation.isEnabled(action))
                 }
             }
 
@@ -86,12 +78,11 @@ struct FlashBootHookSection: View {
                 }
             }
 
-            if let timeline = FlashTimelinePresentation(events: store.events, currentStage: store.currentStage),
-               !timeline.items.isEmpty {
-                MaintenanceTimelineView(presentation: MaintenanceTimelinePresentation(items: timeline.items))
+            if let timeline, !timeline.items.isEmpty {
+                MaintenanceTimelineView(presentation: timeline)
             }
 
-            if let error = store.error {
+            if let error = store.error(for: .bootHook) {
                 // Each flash step has its own button above, so the box offers no Retry.
                 ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText) { recoveryAction($0, error) }
             }
@@ -103,7 +94,7 @@ struct FlashBootHookSection: View {
 }
 
 private struct FlashFirmwareOptionsView: View {
-    @ObservedObject var store: FlashWorkflowStore
+    @ObservedObject var store: BootHookStore
     let chooseFirmwareTemplate: () -> Void
 
     var body: some View {
@@ -119,23 +110,5 @@ private struct FlashFirmwareOptionsView: View {
             }
         }
         .textFieldStyle(.roundedBorder)
-    }
-}
-
-private struct FlashTimelinePresentation: Equatable {
-    let items: [OperationTimelineItem]
-
-    init?(events: [BackendEvent], currentStage: OperationStageState?) {
-        var items = OperationTimelineBuilder.timeline(from: events)
-            .filter { $0.operation == "flash" }
-        if items.isEmpty, let currentStage, currentStage.operation == "flash" {
-            items = [
-                OperationTimelineBuilder.currentStageItem(currentStage)
-            ]
-        }
-        guard !items.isEmpty else {
-            return nil
-        }
-        self.items = items
     }
 }

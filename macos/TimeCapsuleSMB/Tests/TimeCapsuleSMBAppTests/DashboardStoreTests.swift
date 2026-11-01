@@ -1155,7 +1155,7 @@ final class DashboardStoreTests: XCTestCase {
         )
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: profile)
-        session.maintenanceStore.select(.bootHook)
+        session.maintenanceStore.selectedWorkflow = .bootHook
 
         XCTAssertTrue(session.handleRecoveryAction(
             RecoveryAction(title: "Activate", kind: .startSMB),
@@ -1164,7 +1164,7 @@ final class DashboardStoreTests: XCTestCase {
         ))
 
         XCTAssertEqual(session.selectedTab, .maintenance)
-        XCTAssertEqual(session.maintenanceStore.selectedCard, .workflow(.activate))
+        XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .activate)
     }
 
     func testOpenBootHookInstallActionShowsTheBootHookCard() async throws {
@@ -1177,7 +1177,7 @@ final class DashboardStoreTests: XCTestCase {
         )
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
         session.selectedTab = .install
-        session.maintenanceStore.select(.workflow(.uninstall))
+        session.maintenanceStore.selectedWorkflow = .uninstall
         var diagnosticsShown = false
 
         session.performInstallAction(.openBootHook, profile: profile) {
@@ -1185,15 +1185,90 @@ final class DashboardStoreTests: XCTestCase {
         }
 
         XCTAssertEqual(session.selectedTab, .maintenance)
-        XCTAssertEqual(session.maintenanceStore.selectedCard, .bootHook)
-        let presentation = MaintenanceDashboardPresentation(
-            store: session.maintenanceStore,
-            flashStore: session.flashStore,
-            profile: profile
-        )
-        XCTAssertEqual(presentation.selectedCard, .bootHook)
+        XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .bootHook)
+        let presentation = MaintenanceDashboardPresentation(store: session.maintenanceStore, profile: profile)
+        XCTAssertEqual(presentation.detail.workflow, .bootHook)
         XCTAssertFalse(diagnosticsShown)
         XCTAssertTrue(fixture.runner.calls.isEmpty)
+    }
+
+    func testBootHookButtonsRunThroughTheSessionAndRaiseThePowerCycleNotice() async throws {
+        let (runner, session, profile) = try await makeBootHookSession(responses: testBootHookResponses(
+            plan: testBootHookPlanPayload(mode: .patch),
+            write: testBootHookWritePayload(.patchNeedsPowerCycle)
+        ))
+        let bootHook = session.maintenanceStore.bootHookStore
+
+        session.performMaintenanceAction(.backUpAndInspectFirmware, profile: profile) {}
+        try await waitUntilStoreState { bootHook.backup != nil && !bootHook.isBusy }
+        session.performMaintenanceAction(.planPatch, profile: profile) {}
+        try await waitUntilStoreState { bootHook.plan != nil && !bootHook.isBusy }
+        session.performMaintenanceAction(.writePatch, profile: profile) {}
+        try await waitUntilStoreState { bootHook.showsManualPowerCycleNotice && !bootHook.isBusy }
+
+        let calls = runner.calls
+        XCTAssertEqual(calls.map(\.operation), ["flash", "flash", "flash"])
+        XCTAssertEqual(calls.map { $0.params["action"] }, [.string("backup"), .string("plan"), .string("write")])
+        XCTAssertEqual(calls[0].params["credentials"], .object(["password": .string("pw")]))
+        XCTAssertEqual(calls[1].params["mode"], .string("patch"))
+        XCTAssertEqual(calls[2].params["mode"], .string("patch"))
+        XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .bootHook)
+
+        session.viewCheckupAfterPowerCycleNotice()
+
+        XCTAssertFalse(bootHook.showsManualPowerCycleNotice)
+        XCTAssertEqual(session.selectedTab, .checkup)
+    }
+
+    func testEachBootHookButtonAsksTheHelperForItsOwnStep() async throws {
+        let plans: [(MaintenanceUserAction, mode: String)] = [
+            (.planPatch, "patch"),
+            (.planRestore, "restore"),
+            (.checkAppleFirmware, "check_apple"),
+            (.validateAppleFirmware, "download_only")
+        ]
+        for (action, mode) in plans {
+            // Only the request is checked, so one plan reply serves every mode.
+            let (runner, session, profile) = try await makeBootHookSession(
+                responses: testBootHookResponses(plan: testBootHookPlanPayload(mode: .patch))
+            )
+            let bootHook = session.maintenanceStore.bootHookStore
+            session.performMaintenanceAction(.backUpAndInspectFirmware, profile: profile) {}
+            try await waitUntilStoreState { bootHook.backup != nil && !bootHook.isBusy }
+
+            session.performMaintenanceAction(action, profile: profile) {}
+            try await waitUntilStoreState { runner.calls.count == 2 && !bootHook.isBusy }
+
+            let call = try XCTUnwrap(runner.calls.last)
+            XCTAssertEqual(call.params["action"], .string("plan"), "\(action)")
+            XCTAssertEqual(call.params["mode"], .string(mode), "\(action)")
+            // Planning reads the saved backup: no password goes with it.
+            XCTAssertNil(call.params["credentials"], "\(action)")
+        }
+
+        let writes: [(plan: MaintenanceUserAction, write: MaintenanceUserAction, mode: FlashPlanMode)] = [
+            (.planPatch, .writePatch, .patch),
+            (.planRestore, .writeRestore, .restore)
+        ]
+        for (planAction, writeAction, mode) in writes {
+            let (runner, session, profile) = try await makeBootHookSession(responses: testBootHookResponses(
+                plan: testBootHookPlanPayload(mode: mode),
+                write: testBootHookWritePayload(.usual(for: mode))
+            ))
+            let bootHook = session.maintenanceStore.bootHookStore
+            session.performMaintenanceAction(.backUpAndInspectFirmware, profile: profile) {}
+            try await waitUntilStoreState { bootHook.backup != nil && !bootHook.isBusy }
+            session.performMaintenanceAction(planAction, profile: profile) {}
+            try await waitUntilStoreState { bootHook.plan != nil && !bootHook.isBusy }
+
+            session.performMaintenanceAction(writeAction, profile: profile) {}
+            try await waitUntilStoreState { bootHook.writeResult != nil && !bootHook.isBusy }
+
+            let call = try XCTUnwrap(runner.calls.last)
+            XCTAssertEqual(call.params["action"], .string("write"), "\(writeAction)")
+            XCTAssertEqual(call.params["mode"], .string(mode.rawValue), "\(writeAction)")
+            XCTAssertEqual(call.params["credentials"], .object(["password": .string("pw")]), "\(writeAction)")
+        }
     }
 
     func testRecoveryRunCheckupAndInstallActionsStartBackendOperations() async throws {
@@ -1400,6 +1475,21 @@ final class DashboardStoreTests: XCTestCase {
 
     private func deviceLaneIsRunning(_ profile: DeviceProfile, appStore: AppStore) -> Bool {
         appStore.operationCoordinator.isDeviceBusy(profile)
+    }
+
+    /// A dashboard for a NetBSD 4 device with a saved password.
+    private func makeBootHookSession(
+        responses: [StoreTestRunner.Response]
+    ) async throws -> (runner: PausingStoreTestRunner, session: DeviceDashboardSession, profile: DeviceProfile) {
+        let fixture = try await makeFixture(responses: responses)
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", payloadFamily: "netbsd4_samba4"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        return (fixture.runner, DeviceDashboardSession(profile: profile, appStore: fixture.appStore), profile)
     }
 
     private func makeFixture(

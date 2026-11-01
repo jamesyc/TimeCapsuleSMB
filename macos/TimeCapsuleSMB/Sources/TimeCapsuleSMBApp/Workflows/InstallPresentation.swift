@@ -192,7 +192,7 @@ struct InstallCompletionPresentation: Equatable {
             // button only goes where the boot hook card can show.
             warnings.append(InstallCompletionWarning(
                 text: L10n.string("install.completion.warning.netbsd4"),
-                action: FlashBootHookVisibilityPolicy.isVisible(for: profile) ? .openBootHook : nil
+                action: profile.traits.supportsBootHook ? .openBootHook : nil
             ))
         }
         self.warnings = warnings

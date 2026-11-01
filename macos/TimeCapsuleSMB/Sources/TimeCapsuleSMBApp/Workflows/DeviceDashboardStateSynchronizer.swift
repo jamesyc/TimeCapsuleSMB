@@ -18,8 +18,7 @@ final class DeviceDashboardStateSynchronizer {
         appStore: AppStore,
         doctorStore: DoctorStore,
         deployStore: DeployWorkflowStore,
-        maintenanceStore: MaintenanceStore,
-        flashStore: FlashWorkflowStore
+        maintenanceStore: MaintenanceStore
     ) {
         self.appStore = appStore
         self.doctorStore = doctorStore
@@ -33,7 +32,7 @@ final class DeviceDashboardStateSynchronizer {
         observeCredentialInvalidProfileIDs(maintenanceStore.fsckStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(maintenanceStore.wipeDiskStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(maintenanceStore.sshAccessStore.$passwordInvalidProfileID)
-        observeCredentialInvalidProfileIDs(flashStore.$passwordInvalidProfileID)
+        observeCredentialInvalidProfileIDs(maintenanceStore.bootHookStore.$passwordInvalidProfileID)
     }
 
     func trackCheckupStart(_ operation: ActiveOperation) {

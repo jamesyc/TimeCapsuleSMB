@@ -64,6 +64,21 @@ final class StoreTestSupportTests: XCTestCase {
         XCTAssertNil(fixture.store.plan)
     }
 
+    func testBootHookStepDriverThrowsForAStepTheStoreRefuses() async throws {
+        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(
+            responses: testBootHookResponses().map { .init(events: $0.events, result: $0.result, pauseBeforeEvents: true) }
+        ))
+        defer { fixture.runner.finishAll() }
+        fixture.maintenanceStore.backUpAndInspectFirmware(password: "pw", profile: fixture.profile)
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 }
+
+        // A second backup while the first runs never starts.
+        await assertBootHookFixtureFails(.refused(.backup, WorkflowLocalError.operationAlreadyRunning.message)) {
+            try await fixture.run(.backup)
+        }
+        XCTAssertEqual(fixture.runner.calls.count, 1)
+    }
+
     func testBootHookStepDriverThrowsWhenAStepEndsWithoutItsPayload() async throws {
         let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses() + [
             .init(
@@ -84,16 +99,6 @@ final class StoreTestSupportTests: XCTestCase {
             try await planRun.value
         }
         XCTAssertNil(fixture.store.error)
-    }
-
-    func testBootHookFixtureRefreshesForTheGivenProfile() throws {
-        let netbsd6 = try testDeviceProfile(payloadFamily: "netbsd6_samba4")
-
-        let fixture = try BootHookTestFixture(profile: netbsd6)
-
-        XCTAssertEqual(fixture.profile.id, netbsd6.id)
-        XCTAssertEqual(fixture.store.state, .unavailable)
-        XCTAssertFalse(fixture.store.canBackup)
     }
 
     func testBootHookPayloadsShowTheHelpersKeyNotItsEnglishSummary() async throws {

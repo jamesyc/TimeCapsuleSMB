@@ -2,6 +2,9 @@ import Foundation
 
 enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
     case sshAccess
+    // Right before Activation: with the boot hook installed, Samba starts on
+    // every boot without it.
+    case bootHook
     case activate
     case uninstall
     case fsck
@@ -9,25 +12,12 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
-        switch self {
-        case .sshAccess:
-            return L10n.string("maintenance.workflow.ssh_access")
-        case .activate:
-            return L10n.string("maintenance.workflow.activate")
-        case .uninstall:
-            return L10n.string("maintenance.workflow.uninstall")
-        case .fsck:
-            return L10n.string("maintenance.workflow.fsck")
-        case .wipeDisk:
-            return L10n.string("maintenance.workflow.wipe_disk")
-        }
-    }
-
     var deviceWorkflowLane: DeviceWorkflowLane {
         switch self {
         case .sshAccess:
             return .sshAccess
+        case .bootHook:
+            return .flash
         case .activate:
             return .activate
         case .uninstall:
@@ -40,18 +30,18 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
     }
 }
 
-/// A card on the Maintenance tab: one of the maintenance workflows, or the
-/// NetBSD 4 boot hook, which runs on its own flash store.
-enum MaintenanceCard: Hashable, Identifiable {
-    case workflow(MaintenanceWorkflow)
-    case bootHook
+/// A maintenance workflow's state: the boot hook has its own steps, the other
+/// workflows share one set.
+enum MaintenanceWorkflowState: Equatable {
+    case operation(MaintenanceOperationState)
+    case bootHook(BootHookState)
 
-    var id: String {
+    var title: String {
         switch self {
-        case .workflow(let workflow):
-            return workflow.id
-        case .bootHook:
-            return "bootHook"
+        case .operation(let state):
+            return state.title
+        case .bootHook(let state):
+            return state.title
         }
     }
 }

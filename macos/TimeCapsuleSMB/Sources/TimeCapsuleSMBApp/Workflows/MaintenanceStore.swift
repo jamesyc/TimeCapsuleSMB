@@ -3,15 +3,7 @@ import Foundation
 
 @MainActor
 final class MaintenanceStore: ObservableObject {
-    // Every jump to a workflow, a run's start included, leaves the boot hook card.
-    @Published var selectedWorkflow: MaintenanceWorkflow = .activate {
-        didSet {
-            if isBootHookSelected {
-                isBootHookSelected = false
-            }
-        }
-    }
-    @Published private var isBootHookSelected = false
+    @Published var selectedWorkflow: MaintenanceWorkflow = .activate
     @Published var mountWait = "30" {
         didSet { markPlansStaleForOptionChange() }
     }
@@ -36,19 +28,6 @@ final class MaintenanceStore: ObservableObject {
         set {
             guard newValue != fsckStore.selectedTargetID else { return }
             fsckStore.selectTarget(id: newValue, options: currentOptions)
-        }
-    }
-
-    var selectedCard: MaintenanceCard {
-        isBootHookSelected ? .bootHook : .workflow(selectedWorkflow)
-    }
-
-    func select(_ card: MaintenanceCard) {
-        switch card {
-        case .workflow(let workflow):
-            selectedWorkflow = workflow
-        case .bootHook:
-            isBootHookSelected = true
         }
     }
 
@@ -80,6 +59,7 @@ final class MaintenanceStore: ObservableObject {
     let fsckStore: FsckStore
     let wipeDiskStore: WipeDiskStore
     let sshAccessStore: SSHAccessMaintenanceStore
+    let bootHookStore: BootHookStore
 
     private let coordinator: OperationCoordinator
     private let laneKeysByWorkflow: [MaintenanceWorkflow: OperationLaneKey]
@@ -131,6 +111,11 @@ final class MaintenanceStore: ObservableObject {
             coordinator: coordinator,
             laneKey: laneKeysByWorkflow[.sshAccess]
         )
+        self.bootHookStore = BootHookStore(
+            backend: backendsByWorkflow[.bootHook] ?? coordinator.lane(for: laneKey).backend,
+            coordinator: coordinator,
+            laneKey: laneKeysByWorkflow[.bootHook]
+        )
         observeWorkflowStores()
     }
 
@@ -159,6 +144,7 @@ final class MaintenanceStore: ObservableObject {
         observe(uninstallStore)
         observe(fsckStore)
         observe(wipeDiskStore)
+        observe(bootHookStore)
     }
 
     private func observe<Store: ObservableObject>(_ store: Store) where Store.ObjectWillChangePublisher == ObservableObjectPublisher {
@@ -219,6 +205,8 @@ final class MaintenanceStore: ObservableObject {
             fsckStore.cancelPendingConfirmation(options: currentOptions)
         case .wipeDisk:
             wipeDiskStore.cancelPendingConfirmation()
+        case .bootHook:
+            bootHookStore.cancelPendingConfirmation()
         }
     }
 
@@ -261,6 +249,24 @@ final class MaintenanceStore: ObservableObject {
 
     var canEnableSSHAccess: Bool {
         !isBusy && sshAccessStore.canEnable
+    }
+
+    var canBackUpFirmware: Bool {
+        // isBusy covers the boot hook's own store and the device.
+        !isBusy
+    }
+
+    /// The two plans and the two Apple firmware checks.
+    var canPlanFirmware: Bool {
+        !isBusy && bootHookStore.canPlan
+    }
+
+    var canWritePatch: Bool {
+        !isBusy && bootHookStore.canWritePatch
+    }
+
+    var canWriteRestore: Bool {
+        !isBusy && bootHookStore.canWriteRestore
     }
 
     @discardableResult
@@ -335,12 +341,40 @@ final class MaintenanceStore: ObservableObject {
         )
     }
 
+    @discardableResult
+    func backUpAndInspectFirmware(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
+        startMaintenanceWorkflow(
+            .bootHook,
+            rejectAlreadyRunning: { bootHookStore.rejectAlreadyRunning() },
+            start: { bootHookStore.backUpAndInspectFirmware(password: password, profile: profile) }
+        )
+    }
+
+    @discardableResult
+    func planFirmware(mode: FlashPlanMode, profile: DeviceProfile? = nil) -> OperationStartResult {
+        startMaintenanceWorkflow(
+            .bootHook,
+            rejectAlreadyRunning: { bootHookStore.rejectAlreadyRunning() },
+            start: { bootHookStore.planFirmware(mode: mode, profile: profile) }
+        )
+    }
+
+    @discardableResult
+    func writeFirmware(mode: FlashPlanMode, password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
+        startMaintenanceWorkflow(
+            .bootHook,
+            rejectAlreadyRunning: { bootHookStore.rejectAlreadyRunning() },
+            start: { bootHookStore.writeFirmware(mode: mode, password: password, profile: profile) }
+        )
+    }
+
     func clear() {
         activationStore.clear()
         uninstallStore.clear()
         fsckStore.clear()
         wipeDiskStore.clear()
         sshAccessStore.clear()
+        bootHookStore.clear()
     }
 
     func cancel() {
@@ -361,7 +395,7 @@ final class MaintenanceStore: ObservableObject {
     }
 
     private var workflowStores: [any MaintenanceWorkflowStore] {
-        [sshAccessStore, activationStore, uninstallStore, fsckStore, wipeDiskStore]
+        [sshAccessStore, bootHookStore, activationStore, uninstallStore, fsckStore, wipeDiskStore]
     }
 
     private var activeWorkflowStore: (any MaintenanceWorkflowStore)? {
@@ -384,6 +418,8 @@ final class MaintenanceStore: ObservableObject {
             return fsckStore
         case .wipeDisk:
             return wipeDiskStore
+        case .bootHook:
+            return bootHookStore
         }
     }
 
@@ -425,3 +461,4 @@ extension UninstallStore: MaintenanceWorkflowStore {}
 extension FsckStore: MaintenanceWorkflowStore {}
 extension WipeDiskStore: MaintenanceWorkflowStore {}
 extension SSHAccessMaintenanceStore: MaintenanceWorkflowStore {}
+extension BootHookStore: MaintenanceWorkflowStore {}

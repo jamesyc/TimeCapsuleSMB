@@ -17,7 +17,7 @@ final class MaintenanceStoreTests: XCTestCase {
             .succeeded,
             .failed
         ])
-        XCTAssertEqual(MaintenanceWorkflow.allCases, [.sshAccess, .activate, .uninstall, .fsck, .wipeDisk])
+        XCTAssertEqual(MaintenanceWorkflow.allCases, [.sshAccess, .bootHook, .activate, .uninstall, .fsck, .wipeDisk])
     }
 
     func testNoRebootAndNoWaitAreMutuallyExclusiveAndRequestsAreNormalized() async throws {
@@ -131,17 +131,12 @@ final class MaintenanceStoreTests: XCTestCase {
             ], pauseBeforeEvents: true)
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
-        let profile = DeviceProfile.make(
-            id: "device-one",
-            configuredDevice: try testConfiguredDevice(payloadFamily: "netbsd4_samba4"),
-            discoveredDevice: nil,
-            applicationSupportURL: URL(fileURLWithPath: "/tmp/timecapsulesmb-tests", isDirectory: true)
-        )
+        let profile = try testNetBSD4Profile()
         let store = MaintenanceStore(
             coordinator: coordinator,
             laneKey: .deviceWorkflow(profile.id, .maintenance)
         )
-        store.select(.bootHook)
+        store.selectedWorkflow = .bootHook
 
         // A flash run holds the device while the user starts Activation elsewhere.
         _ = coordinator.run(operation: "flash", profile: profile)
@@ -149,7 +144,7 @@ final class MaintenanceStoreTests: XCTestCase {
         let result = store.runActivation(password: "pw", profile: profile)
 
         XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
-        XCTAssertEqual(store.selectedCard, .workflow(.activate))
+        XCTAssertEqual(store.selectedWorkflow, .activate)
         XCTAssertEqual(store.error(for: .activate)?.code, "operation_already_running")
         runner.finishAll()
         try await waitUntilStoreState { !coordinator.isDeviceBusy(profile) }
@@ -681,7 +676,7 @@ final class MaintenanceStoreTests: XCTestCase {
 
             // The store still follows its own job to the end.
             runner.finishAll()
-            try await waitUntilStoreState { store.state(for: workflow) == finalState && !store.isRunning }
+            try await waitUntilStoreState { store.state(for: workflow) == .operation(finalState) && !store.isRunning }
             XCTAssertNil(store.error(for: workflow), "\(workflow)")
             XCTAssertEqual(runner.calls.count, 1, "\(workflow)")
         }

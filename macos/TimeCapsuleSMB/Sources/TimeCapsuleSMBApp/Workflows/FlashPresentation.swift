@@ -1,132 +1,56 @@
 import Foundation
 
-enum FlashUserAction: String, Hashable, Identifiable {
-    case backupAndInspect
-    case planPatch
-    case planRestore
-    case checkApple
-    case downloadApple
-    case writePatch
-    case writeRestore
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .backupAndInspect:
-            return L10n.string("flash.action.backup_inspect")
-        case .planPatch:
-            return L10n.string("flash.action.plan_patch")
-        case .planRestore:
-            return L10n.string("flash.action.plan_restore")
-        case .checkApple:
-            return L10n.string("flash.action.check_apple")
-        case .downloadApple:
-            return L10n.string("flash.action.download_apple")
-        case .writePatch:
-            return L10n.string("flash.action.write_patch")
-        case .writeRestore:
-            return L10n.string("flash.action.write_restore")
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .backupAndInspect:
-            return "externaldrive.badge.questionmark"
-        case .planPatch, .planRestore:
-            return "doc.text.magnifyingglass"
-        case .checkApple:
-            return "checkmark.seal"
-        case .downloadApple:
-            return "checkmark.shield"
-        case .writePatch:
-            return "bolt.trianglebadge.exclamationmark"
-        case .writeRestore:
-            return "arrow.uturn.backward.circle"
-        }
-    }
-
-    static func planAction(for mode: FlashPlanMode) -> FlashUserAction {
-        switch mode {
-        case .patch:
-            return .planPatch
-        case .restore:
-            return .planRestore
-        case .checkApple:
-            return .checkApple
-        case .downloadOnly:
-            return .downloadApple
-        }
-    }
-}
-
 struct FlashPresentation: Equatable {
     let title: String
     let risk: String
     let message: String
     let stateTitle: String
-    let primaryActions: [FlashUserAction]
-    let secondaryActions: [FlashUserAction]
-    let enabledActions: Set<FlashUserAction>
+    let actionRows: [[MaintenanceUserAction]]
+    let enabledActions: Set<MaintenanceUserAction>
     let rows: [PresentationRow]
     let warnings: [String]
     private let backupActionTitle: String
 
     @MainActor
-    init(store: FlashWorkflowStore) {
-        self.title = L10n.string("flash.title")
-        self.risk = L10n.string("maintenance.presentation.risk.firmware_write")
-        // An error shows in its own box below, not in this line.
-        self.message = store.writeResult?.localizedSummary
-            // Only while Write Patch can be pressed: during the confirmation
-            // and the write, the plan's own summary is still true.
-            ?? (store.canWritePatch ? L10n.string("flash.message.patch_plan_ready") : nil)
-            ?? store.plan?.localizedSummary
-            ?? store.backup?.localizedSummary
-            ?? store.eligibilityMessage
-        self.stateTitle = store.state.title
-        self.primaryActions = [.backupAndInspect, .planPatch, .planRestore, .writePatch, .writeRestore]
-        self.secondaryActions = [.checkApple, .downloadApple]
-        self.enabledActions = Self.enabledActions(store: store)
-        self.rows = Self.rows(store: store)
-        self.warnings = Self.warnings(store: store)
-        self.backupActionTitle = store.backupSnapshotStale
+    init(store: MaintenanceStore) {
+        let bootHook = store.bootHookStore
+        self.title = MaintenanceWorkflow.bootHook.presentationTitle
+        self.risk = MaintenanceWorkflow.bootHook.presentationRisk
+        self.message = Self.message(store: store)
+        self.stateTitle = bootHook.state.title
+        self.actionRows = MaintenanceActionPolicy.bootHookActionRows
+        self.enabledActions = MaintenanceActionPolicy.enabledActions(workflow: .bootHook, store: store)
+        self.rows = Self.rows(store: bootHook)
+        self.warnings = Self.warnings(store: bootHook)
+        self.backupActionTitle = bootHook.backupSnapshotStale
             ? L10n.string("flash.action.backup_inspect_again")
             : L10n.string("flash.action.backup_inspect")
     }
 
-    func isEnabled(_ action: FlashUserAction) -> Bool {
+    /// The boot hook panel's status line.
+    @MainActor
+    static func message(store: MaintenanceStore) -> String {
+        let bootHook = store.bootHookStore
+        // An error shows in its own box below, not in this line.
+        return bootHook.writeResult?.localizedSummary
+            // Only while Write Patch can be pressed: during the confirmation
+            // and the write, the plan's own summary is still true.
+            ?? (store.canWritePatch ? L10n.string("flash.message.patch_plan_ready") : nil)
+            ?? bootHook.plan?.localizedSummary
+            ?? bootHook.backup?.localizedSummary
+            ?? L10n.string("flash.eligibility.write_ready")
+    }
+
+    func isEnabled(_ action: MaintenanceUserAction) -> Bool {
         enabledActions.contains(action)
     }
 
-    func title(for action: FlashUserAction) -> String {
-        action == .backupAndInspect ? backupActionTitle : action.title
+    func title(for action: MaintenanceUserAction) -> String {
+        action == .backUpAndInspectFirmware ? backupActionTitle : action.title
     }
 
     @MainActor
-    private static func enabledActions(store: FlashWorkflowStore) -> Set<FlashUserAction> {
-        var actions: Set<FlashUserAction> = []
-        if store.canBackup {
-            actions.insert(.backupAndInspect)
-        }
-        if store.canPlanWrites {
-            actions.formUnion([.planPatch, .planRestore])
-        }
-        if store.canPlan {
-            actions.formUnion([.checkApple, .downloadApple])
-        }
-        if store.canWritePatch {
-            actions.insert(.writePatch)
-        }
-        if store.canWriteRestore {
-            actions.insert(.writeRestore)
-        }
-        return actions
-    }
-
-    @MainActor
-    private static func rows(store: FlashWorkflowStore) -> [PresentationRow] {
+    private static func rows(store: BootHookStore) -> [PresentationRow] {
         var rows: [PresentationRow] = []
         if let backup = store.backup {
             rows.append(PresentationRow(label: L10n.string("flash.row.backup_dir"), value: backup.backupDir))
@@ -238,7 +162,7 @@ struct FlashPresentation: Equatable {
     }
 
     @MainActor
-    private static func warnings(store: FlashWorkflowStore) -> [String] {
+    private static func warnings(store: BootHookStore) -> [String] {
         var warnings: [String] = []
         if store.backupSnapshotStale {
             warnings.append(L10n.string("flash.warning.snapshot_stale"))
@@ -250,24 +174,6 @@ struct FlashPresentation: Equatable {
             warnings.append(contentsOf: plan.warnings)
         }
         return warnings
-    }
-}
-
-extension FlashManualPowerCycleNotice {
-    var title: String {
-        L10n.string("flash.manual_power_cycle.title")
-    }
-
-    var message: String {
-        L10n.string("flash.manual_power_cycle.message")
-    }
-
-    var actionTitle: String {
-        L10n.string("action.ok")
-    }
-
-    var viewCheckupActionTitle: String {
-        L10n.string("dashboard.action.view_checkup")
     }
 }
 

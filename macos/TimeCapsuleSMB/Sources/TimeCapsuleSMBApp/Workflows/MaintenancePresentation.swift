@@ -11,6 +11,13 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
     case runWipeDisk
     case installSMB
     case viewDiagnostics
+    case backUpAndInspectFirmware
+    case planPatch
+    case planRestore
+    case checkAppleFirmware
+    case validateAppleFirmware
+    case writePatch
+    case writeRestore
 
     var id: String { rawValue }
 
@@ -38,6 +45,20 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return L10n.string("dashboard.action.install_update_smb")
         case .viewDiagnostics:
             return L10n.string("recovery.action.open_diagnostics")
+        case .backUpAndInspectFirmware:
+            return L10n.string("flash.action.backup_inspect")
+        case .planPatch:
+            return L10n.string("flash.action.plan_patch")
+        case .planRestore:
+            return L10n.string("flash.action.plan_restore")
+        case .checkAppleFirmware:
+            return L10n.string("flash.action.check_apple")
+        case .validateAppleFirmware:
+            return L10n.string("flash.action.download_apple")
+        case .writePatch:
+            return L10n.string("flash.action.write_patch")
+        case .writeRestore:
+            return L10n.string("flash.action.write_restore")
         }
     }
 
@@ -63,27 +84,41 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return "square.and.arrow.down.on.square"
         case .viewDiagnostics:
             return "wrench.and.screwdriver"
+        case .backUpAndInspectFirmware:
+            return "externaldrive.badge.questionmark"
+        case .planPatch, .planRestore:
+            return "doc.text.magnifyingglass"
+        case .checkAppleFirmware:
+            return "checkmark.seal"
+        case .validateAppleFirmware:
+            return "checkmark.shield"
+        case .writePatch:
+            return "bolt.trianglebadge.exclamationmark"
+        case .writeRestore:
+            return "arrow.uturn.backward.circle"
         }
     }
 
     var isCommitAction: Bool {
         switch self {
-        case .enableSSHAccess, .runActivation, .runUninstall, .runFsck, .runWipeDisk, .installSMB:
+        case .enableSSHAccess, .runActivation, .runUninstall, .runFsck, .runWipeDisk, .installSMB,
+             .writePatch, .writeRestore:
             return true
-        case .checkSSHAccess, .findVolumes, .planFsck, .viewDiagnostics:
+        case .checkSSHAccess, .findVolumes, .planFsck, .viewDiagnostics,
+             .backUpAndInspectFirmware, .planPatch, .planRestore, .checkAppleFirmware, .validateAppleFirmware:
             return false
         }
     }
 }
 
 struct MaintenanceCardPresentation: Equatable, Identifiable {
-    let card: MaintenanceCard
+    let workflow: MaintenanceWorkflow
     let title: String
     let subtitle: String
     let stateTitle: String
     let isSelected: Bool
 
-    var id: MaintenanceCard.ID { card.id }
+    var id: MaintenanceWorkflow.ID { workflow.id }
 }
 
 extension MaintenanceWorkflow {
@@ -91,6 +126,8 @@ extension MaintenanceWorkflow {
         switch self {
         case .sshAccess:
             return L10n.string("maintenance.presentation.ssh_access.title")
+        case .bootHook:
+            return L10n.string("flash.title")
         case .activate:
             return L10n.string("maintenance.presentation.activate.title")
         case .uninstall:
@@ -106,6 +143,8 @@ extension MaintenanceWorkflow {
         switch self {
         case .sshAccess:
             return L10n.string("maintenance.presentation.ssh_access.subtitle")
+        case .bootHook:
+            return L10n.string("maintenance.presentation.boot_hook.subtitle")
         case .activate:
             return L10n.string("maintenance.presentation.activate.subtitle")
         case .uninstall:
@@ -121,6 +160,8 @@ extension MaintenanceWorkflow {
         switch self {
         case .sshAccess:
             return L10n.string("maintenance.presentation.risk.reboot")
+        case .bootHook:
+            return L10n.string("maintenance.presentation.risk.firmware_write")
         case .activate:
             return L10n.string("maintenance.presentation.risk.remote_write")
         case .uninstall, .fsck, .wipeDisk:
@@ -173,8 +214,17 @@ enum MaintenanceActionPolicy {
             return [.findVolumes, .planFsck, .runFsck]
         case .wipeDisk:
             return [.runWipeDisk]
+        case .bootHook:
+            return bootHookActionRows.flatMap { $0 }
         }
     }
+
+    /// The boot hook's buttons in their two rows: the steps of a patch or a
+    /// restore, then the Apple firmware checks.
+    static let bootHookActionRows: [[MaintenanceUserAction]] = [
+        [.backUpAndInspectFirmware, .planPatch, .planRestore, .writePatch, .writeRestore],
+        [.checkAppleFirmware, .validateAppleFirmware]
+    ]
 
     /// The workflow's actions now: Wipe Internal Disk adds Install / Update
     /// Samba once it wiped the disk that held the Samba files (or no disk held
@@ -214,6 +264,16 @@ enum MaintenanceActionPolicy {
             return enabled([
                 (.runWipeDisk, store.canRunWipeDisk),
                 (.installSMB, !store.isBusy)
+            ])
+        case .bootHook:
+            return enabled([
+                (.backUpAndInspectFirmware, store.canBackUpFirmware),
+                (.planPatch, store.canPlanFirmware),
+                (.planRestore, store.canPlanFirmware),
+                (.writePatch, store.canWritePatch),
+                (.writeRestore, store.canWriteRestore),
+                (.checkAppleFirmware, store.canPlanFirmware),
+                (.validateAppleFirmware, store.canPlanFirmware)
             ])
         }
     }
@@ -276,7 +336,12 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         self.subtitle = workflow.presentationSubtitle
         self.risk = workflow.presentationRisk
         self.stateTitle = state.title
-        self.statusMessage = state.maintenanceStatusMessage(for: workflow)
+        switch state {
+        case .operation(let state):
+            self.statusMessage = state.maintenanceStatusMessage(for: workflow)
+        case .bootHook:
+            self.statusMessage = FlashPresentation.message(store: store)
+        }
         self.actions = MaintenanceActionPolicy.actions(for: workflow, store: store)
         self.enabledActions = MaintenanceActionPolicy.enabledActions(workflow: workflow, store: store)
         self.plan = Self.plan(workflow: workflow, store: store)
@@ -294,7 +359,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         store: MaintenanceStore
     ) -> MaintenancePlanPresentation? {
         switch workflow {
-        case .sshAccess, .activate, .uninstall, .wipeDisk:
+        case .sshAccess, .bootHook, .activate, .uninstall, .wipeDisk:
             return nil
         case .fsck:
             guard let plan = store.fsckPlan else { return nil }
@@ -317,6 +382,8 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         store: MaintenanceStore
     ) -> MaintenanceCompletionPresentation? {
         switch workflow {
+        case .bootHook:
+            return nil
         case .sshAccess:
             guard let payload = store.sshAccessPayload else { return nil }
             return MaintenanceCompletionPresentation(
@@ -377,11 +444,14 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
     @MainActor
     private static func timeline(
         workflow: MaintenanceWorkflow,
-        state: MaintenanceOperationState,
+        state: MaintenanceWorkflowState,
         store: MaintenanceStore
     ) -> MaintenanceTimelinePresentation? {
         switch state {
-        case .loading, .planning, .awaitingConfirmation, .running, .succeeded, .failed:
+        // A boot hook step's timeline stays after it ends, whatever state it
+        // ended in.
+        case .bootHook, .operation(.loading), .operation(.planning), .operation(.awaitingConfirmation),
+             .operation(.running), .operation(.succeeded), .operation(.failed):
             return MaintenanceTimelinePresentation(
                 events: store.timelineEvents(for: workflow),
                 currentStage: store.currentStage(for: workflow),
@@ -396,60 +466,37 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
 enum MaintenanceWorkflowAvailability {
     static func workflows(for profile: DeviceProfile) -> [MaintenanceWorkflow] {
         MaintenanceWorkflow.allCases.filter { workflow in
-            workflow != .activate || profile.traits.isNetBSD4
+            switch workflow {
+            case .bootHook:
+                return profile.traits.supportsBootHook
+            case .activate:
+                return profile.traits.isNetBSD4
+            case .sshAccess, .uninstall, .fsck, .wipeDisk:
+                return true
+            }
         }
-    }
-}
-
-enum MaintenanceCardAvailability {
-    static func cards(for profile: DeviceProfile) -> [MaintenanceCard] {
-        var cards = MaintenanceWorkflowAvailability.workflows(for: profile).map(MaintenanceCard.workflow)
-        if FlashBootHookVisibilityPolicy.isVisible(for: profile) {
-            // Right before Activation: with the boot hook installed, Samba
-            // starts on every boot without it.
-            let index = cards.firstIndex(of: .workflow(.activate)) ?? cards.endIndex
-            cards.insert(.bootHook, at: index)
-        }
-        return cards
     }
 }
 
 struct MaintenanceDashboardPresentation: Equatable {
     let cards: [MaintenanceCardPresentation]
-    let selectedCard: MaintenanceCard
     let detail: MaintenanceWorkflowDetailPresentation
 
     @MainActor
-    init(store: MaintenanceStore, flashStore: FlashWorkflowStore, profile: DeviceProfile) {
+    init(store: MaintenanceStore, profile: DeviceProfile) {
         let workflows = MaintenanceWorkflowAvailability.workflows(for: profile)
         let selectedWorkflow = workflows.contains(store.selectedWorkflow)
             ? store.selectedWorkflow
             : workflows.first ?? store.selectedWorkflow
-        let cards = MaintenanceCardAvailability.cards(for: profile)
-        let selectedCard = cards.contains(store.selectedCard)
-            ? store.selectedCard
-            : .workflow(selectedWorkflow)
-        self.cards = cards.map { card in
-            switch card {
-            case .workflow(let workflow):
-                return MaintenanceCardPresentation(
-                    card: card,
-                    title: workflow.presentationTitle,
-                    subtitle: workflow.presentationSubtitle,
-                    stateTitle: store.state(for: workflow).title,
-                    isSelected: card == selectedCard
-                )
-            case .bootHook:
-                return MaintenanceCardPresentation(
-                    card: card,
-                    title: L10n.string("flash.title"),
-                    subtitle: L10n.string("maintenance.presentation.boot_hook.subtitle"),
-                    stateTitle: flashStore.state.title,
-                    isSelected: card == selectedCard
-                )
-            }
+        self.cards = workflows.map { workflow in
+            MaintenanceCardPresentation(
+                workflow: workflow,
+                title: workflow.presentationTitle,
+                subtitle: workflow.presentationSubtitle,
+                stateTitle: store.state(for: workflow).title,
+                isSelected: workflow == selectedWorkflow
+            )
         }
-        self.selectedCard = selectedCard
         self.detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: selectedWorkflow)
     }
 }
@@ -459,6 +506,8 @@ extension MaintenanceWorkflow {
         switch self {
         case .sshAccess:
             return "set-ssh"
+        case .bootHook:
+            return "flash"
         case .activate:
             return "activate"
         case .uninstall:
@@ -472,18 +521,20 @@ extension MaintenanceWorkflow {
 }
 
 extension MaintenanceStore {
-    func state(for workflow: MaintenanceWorkflow) -> MaintenanceOperationState {
+    func state(for workflow: MaintenanceWorkflow) -> MaintenanceWorkflowState {
         switch workflow {
         case .sshAccess:
-            return sshAccessState
+            return .operation(sshAccessState)
+        case .bootHook:
+            return .bootHook(bootHookStore.state)
         case .activate:
-            return activateState
+            return .operation(activateState)
         case .uninstall:
-            return uninstallState
+            return .operation(uninstallState)
         case .fsck:
-            return fsckState
+            return .operation(fsckState)
         case .wipeDisk:
-            return wipeDiskState
+            return .operation(wipeDiskState)
         }
     }
 }

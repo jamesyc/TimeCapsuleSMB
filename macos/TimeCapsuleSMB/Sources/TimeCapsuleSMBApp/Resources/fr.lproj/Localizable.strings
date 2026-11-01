@@ -416,9 +416,6 @@
 "field.firmware_version" = "Version du firmware, facultative";
 "field.helper" = "Programme auxiliaire";
 "field.mount_wait" = "Délai d’attente du montage (secondes)";
-"flash.eligibility.disabled" = "L’analyse du hook de démarrage du firmware est désactivée dans cette version.";
-"flash.eligibility.netbsd4_required" = "Les outils de hook de démarrage persistant sont réservés aux appareils NetBSD4. Si votre appareil devrait être pris en charge, ajoutez des détails sur https://github.com/jamesyc/TimeCapsuleSMB/issues/160.";
-"flash.eligibility.read_only" = "Ce périphérique NetBSD4 peut être sauvegardé et inspecté avant qu’une écriture ne soit disponible.";
 "flash.eligibility.write_ready" = "Modifiez le firmware des appareils NetBSD 4 pour démarrer automatiquement les services Samba installés après un redémarrage.\nSauvegardez et vérifiez le firmware avant de planifier un correctif ou une restauration.";
 "flash.action.backup_inspect" = "Sauvegarder et inspecter";
 "flash.action.backup_inspect_again" = "Sauvegarder et inspecter à nouveau";
@@ -562,11 +559,6 @@
 "maintenance.state.succeeded" = "Maintenance terminée.";
 "maintenance.timeline.title" = "Progression";
 "maintenance.warning.destructive_fsck" = "La réparation de disque peut modifier le volume sélectionné.";
-"maintenance.workflow.activate" = "Activation de NetBSD4";
-"maintenance.workflow.fsck" = "Réparation de disque";
-"maintenance.workflow.ssh_access" = "Accès SSH";
-"maintenance.workflow.uninstall" = "Désinstaller";
-"maintenance.workflow.wipe_disk" = "Reformater le disque interne";
 "overview.empty.message" = "Ajoutez un appareil Apple AirPort Time Capsule ou AirPort Extreme pour configurer SMB, lancer des vérifications et gérer les tâches de maintenance.";
 "overview.empty.title" = "Aucun appareil enregistré";
 "overview.saved_devices.title" = "Tous les appareils";
@@ -586,11 +578,8 @@
 "workflow.error.ata_standby_invalid" = "Le délai de veille ATA doit être vide ou un nombre de secondes positif ou nul.";
 "workflow.error.deploy_options_invalid" = "Les options d’installation / mise à jour ne sont pas valides.";
 "workflow.error.flash_backup_required" = "Sauvegardez et vérifiez le firmware avant de planifier des opérations flash.";
-"workflow.error.flash_backup_unavailable" = "La sauvegarde de la mémoire flash est indisponible.";
-"workflow.error.flash_mode_read_only" = "Ce mode flash n’écrit pas de firmware.";
 "workflow.error.flash_plan_required" = "Planifiez l’écriture flash sélectionnée avant de l’exécuter.";
 "workflow.error.flash_plan_stale" = "Planifiez à nouveau l’écriture flash sélectionnée après toute modification des options du firmware Apple.";
-"workflow.error.flash_writes_disabled" = "L’écriture du firmware est désactivée dans cette version.";
 "workflow.error.fsck_plan_not_ready" = "Le plan fsck n’est pas prêt.";
 "workflow.error.fsck_plan_stale" = "Examinez et régénérez le plan fsck avant de l’exécuter.";
 "workflow.error.fsck_target_required" = "Sélectionnez un volume HFS monté avant de planifier fsck.";
@@ -606,7 +595,6 @@
 "workflow.state.deployed" = "Installé / mis à jour";
 "workflow.state.deploy_failed" = "Échec de l’installation / mise à jour";
 "workflow.state.deploying" = "Installation / mise à jour";
-"workflow.state.disabled_in_this_build" = "Désactivé dans cette version";
 "workflow.state.failed" = "Échec";
 "workflow.state.idle" = "Inactif";
 "workflow.state.list_ready" = "Liste prête";
@@ -616,7 +604,6 @@
 "workflow.state.plan_ready" = "Plan prêt";
 "workflow.state.plan_stale" = "Plan périmé";
 "workflow.state.planning" = "Planification";
-"workflow.state.read_only_analysis_available" = "Analyse en lecture seule disponible";
 "workflow.state.reading_firmware_banks" = "Lecture des banques de firmware";
 "workflow.state.ready" = "Prêt";
 "workflow.state.rebooting_after_restore" = "Redémarrage après restauration";
@@ -625,10 +612,9 @@
 "workflow.state.saving_backup" = "Enregistrement de la sauvegarde";
 "workflow.state.snapshot_stale" = "Instantané périmé";
 "workflow.state.succeeded" = "Réussi";
-"workflow.state.unavailable" = "Indisponible";
 "workflow.state.validating_write" = "Validation de l’écriture";
 "workflow.state.warning" = "Avertissement";
-"workflow.state.write_validated" = "Écriture validée";
+"workflow.state.write_not_needed" = "Écriture non nécessaire";
 "workflow.state.writing_firmware" = "Écriture du firmware";
 "password_state.available" = "Disponible";
 "password_state.invalid" = "Invalide";

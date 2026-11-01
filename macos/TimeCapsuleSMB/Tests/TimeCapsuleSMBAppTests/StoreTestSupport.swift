@@ -281,6 +281,24 @@ final class TestRecordingURLOpener: URLOpening {
     }
 }
 
+extension PausingStoreTestRunner {
+    /// A helper that answers each run with the next of `responses`, results
+    /// kept. A run `before` picks waits before its events; one `after` picks
+    /// sends its events, then waits before it exits.
+    static func pausing(
+        _ responses: [StoreTestRunner.Response],
+        before: (Int) -> Bool = { _ in false },
+        after: (Int) -> Bool = { _ in false }
+    ) -> PausingStoreTestRunner {
+        PausingStoreTestRunner(responses: responses.enumerated().map { index, response in
+            .init(
+                events: response.events, result: response.result, delayNanoseconds: response.delayNanoseconds,
+                pauseBeforeEvents: before(index), pauseAfterEvents: after(index)
+            )
+        })
+    }
+}
+
 final class PausingStoreTestRunner: HelperRunning, @unchecked Sendable {
     typealias Call = StoreTestRunner.Call
     typealias Response = StoreTestRunner.Response
@@ -895,17 +913,13 @@ func testConfiguredDevice(
     ).decode(ConfigurePayload.self))
 }
 
-func testDeviceProfile(payloadFamily: String) throws -> DeviceProfile {
+func testNetBSD4Profile() throws -> DeviceProfile {
     DeviceProfile.make(
         id: "device-one",
-        configuredDevice: try testConfiguredDevice(payloadFamily: payloadFamily),
+        configuredDevice: try testConfiguredDevice(payloadFamily: "netbsd4_samba4"),
         discoveredDevice: nil,
         applicationSupportURL: URL(fileURLWithPath: "/tmp/timecapsulesmb-tests", isDirectory: true)
     )
-}
-
-func testNetBSD4Profile() throws -> DeviceProfile {
-    try testDeviceProfile(payloadFamily: "netbsd4_samba4")
 }
 
 /// A doctor result as the helper sends it, with the counts, each section's

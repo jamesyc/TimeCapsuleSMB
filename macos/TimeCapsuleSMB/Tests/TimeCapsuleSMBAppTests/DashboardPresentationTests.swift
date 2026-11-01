@@ -1826,6 +1826,18 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertTrue(MaintenanceUserAction.enableSSHAccess.isCommitAction)
         XCTAssertEqual(MaintenanceUserAction.runActivation.title, "Activate")
         XCTAssertTrue(MaintenanceUserAction.runActivation.isCommitAction)
+        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .bootHook), [
+            .backUpAndInspectFirmware, .planPatch, .planRestore, .writePatch, .writeRestore,
+            .checkAppleFirmware, .validateAppleFirmware
+        ])
+        // Only the two writes change the firmware.
+        for action: MaintenanceUserAction in [
+            .backUpAndInspectFirmware, .planPatch, .planRestore, .checkAppleFirmware, .validateAppleFirmware
+        ] {
+            XCTAssertFalse(action.isCommitAction, "\(action)")
+        }
+        XCTAssertTrue(MaintenanceUserAction.writePatch.isCommitAction)
+        XCTAssertTrue(MaintenanceUserAction.writeRestore.isCommitAction)
     }
 
     func testMaintenanceStatusMessagesCoverAllStates() {
@@ -1841,12 +1853,9 @@ final class DashboardPresentationTests: XCTestCase {
         let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
         let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
 
-        let presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-        XCTAssertEqual(
-            presentation.cards.map(\.card),
-            [MaintenanceCard.workflow(.sshAccess), .workflow(.uninstall), .workflow(.fsck), .workflow(.wipeDisk)]
-        )
+        XCTAssertEqual(presentation.cards.map(\.workflow), [.sshAccess, .uninstall, .fsck, .wipeDisk])
         XCTAssertEqual(presentation.cards.first?.isSelected, true)
         XCTAssertEqual(presentation.detail.workflow, .sshAccess)
         XCTAssertEqual(presentation.detail.title, "SSH Access")
@@ -1856,77 +1865,56 @@ final class DashboardPresentationTests: XCTestCase {
         let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
 
-        let presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-        XCTAssertEqual(
-            presentation.cards.map(\.card),
-            [
-                MaintenanceCard.workflow(.sshAccess), .bootHook, .workflow(.activate),
-                .workflow(.uninstall), .workflow(.fsck), .workflow(.wipeDisk)
-            ]
-        )
-        XCTAssertEqual(presentation.cards.filter(\.isSelected).map(\.card), [.workflow(.activate)])
-        XCTAssertEqual(presentation.selectedCard, .workflow(.activate))
+        // The boot hook comes right before Activation.
+        XCTAssertEqual(presentation.cards.map(\.workflow), [.sshAccess, .bootHook, .activate, .uninstall, .fsck, .wipeDisk])
+        XCTAssertEqual(presentation.cards.filter(\.isSelected).map(\.workflow), [.activate])
         XCTAssertEqual(presentation.detail.workflow, .activate)
     }
 
     func testMaintenancePresentationSelectsTheBootHookCard() throws {
         let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        let flashStore = try makeFlashStore(for: profile)
 
-        store.select(.bootHook)
-        let presentation = MaintenanceDashboardPresentation(store: store, flashStore: flashStore, profile: profile)
+        store.selectedWorkflow = .bootHook
+        let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-        XCTAssertEqual(presentation.selectedCard, .bootHook)
-        XCTAssertEqual(presentation.cards.filter(\.isSelected).map(\.card), [.bootHook])
-        let card = try XCTUnwrap(presentation.cards.first { $0.card == .bootHook })
+        XCTAssertEqual(presentation.detail.workflow, .bootHook)
+        XCTAssertEqual(presentation.cards.filter(\.isSelected).map(\.workflow), [.bootHook])
+        let card = try XCTUnwrap(presentation.cards.first { $0.workflow == .bootHook })
         XCTAssertEqual(card.title, "Persistent NetBSD4 Boot Hook")
         XCTAssertEqual(card.subtitle, "Patch the firmware so Samba starts after every reboot, or restore Apple firmware.")
-        XCTAssertEqual(card.stateTitle, FlashWorkflowState.writeLocked.title)
-        XCTAssertEqual(FlashPresentation(store: flashStore).risk, "Firmware write")
+        XCTAssertEqual(card.stateTitle, BootHookState.ready.title)
+        XCTAssertEqual(presentation.detail.risk, "Firmware write")
     }
 
-    func testBootHookCardShowsTheFlashStoresEligibility() throws {
-        let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
+    func testStartingAnotherWorkflowLeavesTheBootHookCard() async throws {
+        let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckListPayload(targets: [testFsckTargetPayload(name: "Data")]))
+            ])
+        ])))
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        let flashStore = try makeFlashStore(for: profile, buildPolicy: .disabled)
+        store.selectedWorkflow = .bootHook
 
-        let presentation = MaintenanceDashboardPresentation(store: store, flashStore: flashStore, profile: profile)
+        store.refreshFsckTargets(password: "pw")
+        try await waitUntilStoreState { store.fsckState == .listReady && !store.isRunning }
 
-        let card = try XCTUnwrap(presentation.cards.first { $0.card == .bootHook })
-        XCTAssertEqual(card.stateTitle, FlashWorkflowState.disabledInThisBuild.title)
-    }
-
-    func testSelectingAWorkflowLeavesTheBootHookCard() throws {
-        let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-
-        store.select(.bootHook)
-        store.select(.workflow(.fsck))
-        var presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
-        XCTAssertEqual(presentation.selectedCard, .workflow(.fsck))
+        let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .fsck)
-
-        // Recovery actions and runs set the workflow directly; that also
-        // leaves the boot hook, even when it names the same workflow again.
-        store.select(.bootHook)
-        store.selectedWorkflow = .fsck
-        presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
-        XCTAssertEqual(presentation.selectedCard, .workflow(.fsck))
-        XCTAssertEqual(presentation.cards.filter(\.isSelected).map(\.card), [.workflow(.fsck)])
+        XCTAssertEqual(presentation.cards.filter(\.isSelected).map(\.workflow), [.fsck])
     }
 
-    func testBootHookSelectionFallsBackToAWorkflowWhereTheCardIsHidden() throws {
+    func testBootHookSelectionFallsBackToTheFirstCardWhereItIsHidden() throws {
         let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
         let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
 
-        store.select(.bootHook)
-        let presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        store.selectedWorkflow = .bootHook
+        let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-        XCTAssertFalse(presentation.cards.contains { $0.card == .bootHook })
-        XCTAssertEqual(presentation.selectedCard, .workflow(.sshAccess))
-        XCTAssertEqual(presentation.cards.filter(\.isSelected).map(\.card), [.workflow(.sshAccess)])
+        XCTAssertFalse(presentation.cards.contains { $0.workflow == .bootHook })
+        XCTAssertEqual(presentation.cards.filter(\.isSelected).map(\.workflow), [.sshAccess])
         XCTAssertEqual(presentation.detail.workflow, .sshAccess)
     }
 
@@ -1934,18 +1922,18 @@ final class DashboardPresentationTests: XCTestCase {
         let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
 
-        var presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .activate)
         XCTAssertEqual(presentation.detail.actions, [.runActivation])
         XCTAssertTrue(presentation.detail.isEnabled(.runActivation))
 
         store.selectedWorkflow = .uninstall
-        presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.actions, [.runUninstall])
         XCTAssertTrue(presentation.detail.isEnabled(.runUninstall))
 
         store.selectedWorkflow = .fsck
-        presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.actions, [.findVolumes, .planFsck, .runFsck])
         XCTAssertTrue(presentation.detail.isEnabled(.findVolumes))
         XCTAssertFalse(presentation.detail.isEnabled(.planFsck))
@@ -1969,7 +1957,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         store.runActivation(password: "pw")
         try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
-        var presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .activate)
         XCTAssertEqual(presentation.detail.actions, [.runActivation])
         XCTAssertTrue(presentation.detail.isEnabled(.runActivation))
@@ -1979,7 +1967,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         // Uninstall runs directly: it offers only its run action and never shows a plan.
         store.selectedWorkflow = .uninstall
-        presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .uninstall)
         XCTAssertEqual(presentation.detail.actions, [.runUninstall])
         XCTAssertTrue(presentation.detail.isEnabled(.runUninstall))
@@ -1987,7 +1975,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         store.refreshFsckTargets(password: "pw")
         try await waitUntilStoreState { store.fsckState == .listReady && !store.isRunning }
-        presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .fsck)
         XCTAssertEqual(presentation.detail.actions, [.findVolumes, .planFsck, .runFsck])
         XCTAssertTrue(presentation.detail.isEnabled(.findVolumes))
@@ -1996,7 +1984,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         store.planFsck(password: "pw")
         try await waitUntilStoreState { store.fsckState == .planReady && !store.isRunning }
-        presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.plan?.title, "Disk Repair Plan")
         XCTAssertEqual(presentation.detail.plan?.warnings, ["Disk repair can modify the selected volume."])
     }
@@ -2018,7 +2006,7 @@ final class DashboardPresentationTests: XCTestCase {
         store.runActivation(password: "pw")
         try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
 
-        var presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.timeline?.items.map(\.title), [
             "Check Existing Runtime",
             "Starting SMB",
@@ -2029,7 +2017,7 @@ final class DashboardPresentationTests: XCTestCase {
         store.runUninstall(password: "pw")
         try await waitUntilStoreState { store.uninstallState == .succeeded && !store.isRunning }
         store.selectedWorkflow = .activate
-        presentation = MaintenanceDashboardPresentation(store: store, flashStore: try makeFlashStore(for: profile), profile: profile)
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
         XCTAssertEqual(presentation.detail.workflow, .activate)
         XCTAssertEqual(presentation.detail.timeline?.items.map(\.title), [
@@ -2055,11 +2043,6 @@ final class DashboardPresentationTests: XCTestCase {
             "message": .string(message),
             "details": .object([:])
         ])
-    }
-
-    /// An idle flash store refreshed for `profile`, as the dashboard does.
-    private func makeFlashStore(for profile: DeviceProfile, buildPolicy: FlashBuildPolicy = .writesEnabled) throws -> FlashWorkflowStore {
-        try BootHookTestFixture(profile: profile, buildPolicy: buildPolicy).store
     }
 
     private func makeProfile(

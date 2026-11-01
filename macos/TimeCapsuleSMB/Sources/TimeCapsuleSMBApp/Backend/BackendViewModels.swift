@@ -66,10 +66,7 @@ enum WorkflowLocalError: Equatable {
     case fsckTargetRequired
     case fsckPlanStale
     case fsckPlanNotReady
-    case flashBackupUnavailable
     case flashBackupRequired
-    case flashWritesDisabled
-    case flashModeReadOnly
     case flashPlanRequired
     case flashPlanStale
     case unsupportedDevice
@@ -94,14 +91,8 @@ enum WorkflowLocalError: Equatable {
             return "fsck_plan_stale"
         case .fsckPlanNotReady:
             return "fsck_plan_not_ready"
-        case .flashBackupUnavailable:
-            return "flash_backup_unavailable"
         case .flashBackupRequired:
             return "flash_backup_required"
-        case .flashWritesDisabled:
-            return "flash_writes_disabled"
-        case .flashModeReadOnly:
-            return "flash_mode_read_only"
         case .flashPlanRequired:
             return "flash_plan_required"
         case .flashPlanStale:

@@ -77,7 +77,7 @@ final class MaintenanceStateForwardingTests: XCTestCase {
     }
 
     func testEachRemoteChildInvalidatesCredentialsAndRefreshesSSHDespiteAnotherSelectedError() async throws {
-        for operation in ["activate", "uninstall", "fsck", "wipe-disk", "set-ssh"] {
+        for operation in ["activate", "uninstall", "fsck", "wipe-disk", "set-ssh", "flash"] {
             let fixture = try await makeFixture(responses: [
                 .init(events: [.error(operation: operation, code: "auth_failed", message: "Password rejected.")]),
                 .init(events: [BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())])
@@ -97,6 +97,8 @@ final class MaintenanceStateForwardingTests: XCTestCase {
                 store.fsckStore.refreshTargets(mountWaitValue: 30, password: "pw", profile: fixture.profile)
             case "wipe-disk":
                 store.wipeDiskStore.runWipe(password: "pw", profile: fixture.profile)
+            case "flash":
+                store.bootHookStore.backUpAndInspectFirmware(password: "pw", profile: fixture.profile)
             default:
                 store.sshAccessStore.enable(password: "pw", noWait: false, profile: fixture.profile)
             }
@@ -108,6 +110,103 @@ final class MaintenanceStateForwardingTests: XCTestCase {
             }
             XCTAssertEqual(fixture.runner.calls.map(\.operation), [operation, "set-ssh"])
             XCTAssertEqual(fixture.runner.calls.last?.params["action"], .string("status"))
+        }
+    }
+
+    func testBootHookChangesReachTheMaintenanceStoreAndTheDashboard() async throws {
+        let fixture = try await makeFixture(responses: testBootHookResponses(
+            plan: testBootHookPlanPayload(mode: .patch),
+            write: testBootHookWritePayload(.patchNeedsPowerCycle)
+        ))
+        let maintenance = fixture.session.maintenanceStore
+        let bootHook = maintenance.bootHookStore
+        var maintenanceChanges = 0
+        var sessionChanges = 0
+        let observations = [
+            maintenance.objectWillChange.sink { maintenanceChanges += 1 },
+            fixture.session.objectWillChange.sink { sessionChanges += 1 }
+        ]
+        defer { observations.forEach { $0.cancel() } }
+
+        // Straight to the boot hook's store: a start through the maintenance
+        // store would announce a change of its own when it sets the selection.
+        bootHook.backUpAndInspectFirmware(password: "pw", profile: fixture.profile)
+        try await waitUntilStoreState { bootHook.backup != nil && !bootHook.isBusy }
+        XCTAssertGreaterThan(maintenanceChanges, 0)
+        XCTAssertGreaterThan(sessionChanges, 0)
+
+        bootHook.planFirmware(mode: .patch, profile: fixture.profile)
+        try await waitUntilStoreState { bootHook.plan != nil && !bootHook.isBusy }
+        maintenanceChanges = 0
+        sessionChanges = 0
+        bootHook.writeFirmware(mode: .patch, password: "pw", profile: fixture.profile)
+        try await waitUntilStoreState { bootHook.showsManualPowerCycleNotice && !bootHook.isBusy }
+        XCTAssertGreaterThan(maintenanceChanges, 0)
+        XCTAssertGreaterThan(sessionChanges, 0)
+
+        // The dashboard's power-cycle alert closes when the notice goes.
+        sessionChanges = 0
+        bootHook.dismissManualPowerCycleNotice()
+        XCTAssertEqual(sessionChanges, 1)
+    }
+
+    func testOnlyABootHookFailureOnTheDeviceRechecksSSH() async throws {
+        let fixture = try await makeFixture(responses: testBootHookResponses(failure: [
+            testBootHookError("refusing to patch primary because the secondary (backup) firmware bank is not a valid backup")
+        ]) + [
+            .init(events: [.error(operation: "flash", code: "auth_failed", message: "Password rejected.")]),
+            .init(events: [BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())])
+        ])
+        let bootHook = fixture.session.maintenanceStore.bootHookStore
+
+        bootHook.backUpAndInspectFirmware(password: "pw", profile: fixture.profile)
+        try await waitUntilStoreState { bootHook.backup != nil && !bootHook.isBusy }
+        // A plan reads only the saved backup, so its refusal leaves SSH alone.
+        bootHook.planFirmware(mode: .patch, profile: fixture.profile)
+        try await waitUntilStoreState {
+            bootHook.error != nil && !fixture.app.operationCoordinator.isDeviceBusy(fixture.profile)
+        }
+
+        // A backup that fails on the device does recheck it. A wrong recheck
+        // after the plan shows here as a set-ssh call before this backup, when
+        // the session's queued task runs before the test goes on, as it does
+        // on the main actor; had the backup started first, this failure would
+        // replace the pending recheck and hide it.
+        bootHook.backUpAndInspectFirmware(password: "pw", profile: fixture.profile)
+        try await waitUntilStoreState {
+            fixture.app.sshAccessStore.snapshot(for: fixture.profile) != nil
+                && !fixture.app.operationCoordinator.isDeviceBusy(fixture.profile)
+        }
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["flash", "flash", "flash", "set-ssh"])
+    }
+
+    func testAWriteThatReachedTheDeviceButFailedLeavesSSHAlone() async throws {
+        // The helper reached the device over SSH.
+        let failures: [(name: String, event: BackendEvent)] = [
+            ("an unreadable confirmation", BackendEvent(type: "error", operation: "flash", code: "confirmation_required", message: "Confirm?")),
+        ]
+        for (name, failure) in failures {
+            let fixture = try await makeFixture(responses: testBootHookResponses(
+                plan: testBootHookPlanPayload(mode: .patch), failure: [failure]
+            ) + testBootHookResponses() + [
+                .init(events: [BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())])
+            ])
+            let bootHook = fixture.session.maintenanceStore.bootHookStore
+            let idle = { !fixture.app.operationCoordinator.isDeviceBusy(fixture.profile) }
+            bootHook.backUpAndInspectFirmware(password: "pw", profile: fixture.profile)
+            try await waitUntilStoreState { bootHook.backup != nil && idle() }
+            bootHook.planFirmware(mode: .patch, profile: fixture.profile)
+            try await waitUntilStoreState { bootHook.plan != nil && idle() }
+            bootHook.writeFirmware(mode: .patch, password: "pw", profile: fixture.profile)
+            try await waitUntilStoreState { bootHook.error != nil && idle() }
+
+            // A wrong recheck queued by the failure runs before the next
+            // backup, on the main actor, and shows as a set-ssh call.
+            await Task.yield()
+            bootHook.backUpAndInspectFirmware(password: "pw", profile: fixture.profile)
+            try await waitUntilStoreState { bootHook.backup != nil && idle() }
+            await Task.yield()
+            XCTAssertEqual(fixture.runner.calls.map(\.operation), ["flash", "flash", "flash", "flash"], name)
         }
     }
 

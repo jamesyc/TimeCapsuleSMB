@@ -120,28 +120,23 @@ struct DeviceDashboardView: View {
         .task(id: profile.id) {
             await session.refreshDeviceStatus(profile: profile)
         }
-        .alert(
-            session.flashStore.manualPowerCycleNotice?.title ?? "",
-            isPresented: manualPowerCycleNoticePresented,
-            presenting: session.flashStore.manualPowerCycleNotice
-        ) { notice in
-            Button(notice.viewCheckupActionTitle) {
-                session.viewCheckupAfterFlashNotice()
+        .alert(L10n.string("flash.manual_power_cycle.title"), isPresented: manualPowerCycleNoticePresented) {
+            Button(L10n.string("dashboard.action.view_checkup")) {
+                session.viewCheckupAfterPowerCycleNotice()
             }
-            Button(notice.actionTitle, role: .cancel) {
-                session.flashStore.dismissManualPowerCycleNotice()
-            }
-        } message: { notice in
-            Text(notice.message)
+            // Closing the alert dismisses the notice through the binding.
+            Button(L10n.string("action.ok"), role: .cancel) {}
+        } message: {
+            Text(L10n.string("flash.manual_power_cycle.message"))
         }
     }
 
     private var manualPowerCycleNoticePresented: Binding<Bool> {
         Binding(
-            get: { session.flashStore.manualPowerCycleNotice != nil },
+            get: { session.maintenanceStore.bootHookStore.showsManualPowerCycleNotice },
             set: { isPresented in
                 if !isPresented {
-                    session.flashStore.dismissManualPowerCycleNotice()
+                    session.maintenanceStore.bootHookStore.dismissManualPowerCycleNotice()
                 }
             }
         )
