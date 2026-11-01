@@ -129,6 +129,33 @@ final class BootHookStoreTests: XCTestCase {
         ])
     }
 
+    func testStatusLineWhileAStepRunsSaysWhatIsStillTrue() async throws {
+        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: [
+            .init(events: [testBootHookResult(testBootHookBackupPayload())], pauseBeforeEvents: true)
+        ]))
+        defer { fixture.runner.finishAll() }
+
+        // A backup has nothing earlier to show, so the line says it is running.
+        fixture.maintenanceStore.backUpAndInspectFirmware(password: "pw", profile: fixture.profile)
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 }
+        XCTAssertEqual(fixture.presentation.statusMessage, "Maintenance is running.")
+        XCTAssertTrue(fixture.presentation.isRunning)
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { !fixture.store.isBusy }
+        let backupSummary = try XCTUnwrap(fixture.store.backup?.localizedSummary)
+        XCTAssertEqual(fixture.presentation.statusMessage, backupSummary)
+
+        // A plan keeps the backup it reads, which stays true while it runs.
+        let planning = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses() + [
+            .init(events: [testBootHookResult(testBootHookPlanPayload(mode: .patch))], pauseBeforeEvents: true)
+        ]))
+        defer { planning.runner.finishAll() }
+        try await planning.run(.backup)
+        planning.maintenanceStore.planFirmware(mode: .patch, profile: planning.profile)
+        try await waitUntilStoreState { planning.runner.calls.count == 2 }
+        XCTAssertEqual(planning.presentation.statusMessage, try XCTUnwrap(planning.store.backup?.localizedSummary))
+    }
+
     func testButtonsComeInTwoRows() throws {
         XCTAssertEqual(try BootHookTestFixture().presentation.actionRows, [
             [.backUpAndInspectFirmware, .planPatch, .planRestore, .writePatch, .writeRestore],

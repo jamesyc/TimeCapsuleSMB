@@ -13,7 +13,9 @@ enum BootHookPresentation {
             ?? (store.canWritePatch ? L10n.string("flash.message.patch_plan_ready") : nil)
             ?? bootHook.plan?.localizedSummary
             ?? bootHook.backup?.localizedSummary
-            ?? L10n.string("flash.status.ready")
+            // A backup clears the earlier one when it starts, so while it runs
+            // nothing above is left to show; say so as the other panels do.
+            ?? (bootHook.isRunning ? L10n.string("maintenance.state.running") : L10n.string("flash.status.ready"))
     }
 
     @MainActor
