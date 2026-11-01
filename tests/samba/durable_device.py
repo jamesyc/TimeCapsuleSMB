@@ -83,7 +83,8 @@ replacement once always failed (NOT_SUPPORTED). settime:attributes uses a
 handle opened only for attributes, as macOS does, which smbd serves by name.
 
 The orphan cases check what /mnt/Locks keeps once a client's opens lose
-their owner (issue 384, patch 0077), reading its tdb files over SSH:
+their owner (issue 384, patches 0077 and 0081-0083), reading its tdb files
+over SSH:
 - orphan:killed: 20 durable and leased opens, then the serving smbd is
   killed (SIGKILL). The parent logs the signal, cleanupd asks the scavenger
   to walk the open records, and every open, replay and lease record of the
@@ -93,7 +94,7 @@ their owner (issue 384, patch 0077), reading its tdb files over SSH:
   then a new client GUID opens the same files, as a Mac that wakes and
   mounts afresh does. Those opens drop the disconnected entries as stale,
   and the old leases must go with them, long before the opens' 300 s
-  expiry (before patch 0077 they stayed for good); the new client's own
+  expiry (before patch 0081 they stayed for good); the new client's own
   leases must stay.
 - orphan:failed-reconnect: a dropped connection's durable open, holding a
   byte-range lock, then its file grows over SSH so that the reconnect fails

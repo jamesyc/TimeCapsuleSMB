@@ -139,7 +139,7 @@ def stage(source: Path) -> None:
     (modules / "tc_scavenger_rescan.inc").write_text(
         scavenger[message:scavenger.index("};", message) + 2] + "\n\n"
         + cut(scavenger, "struct scavenger_rescan_rec {", "static size_t scavenger_rescan(void)") + "\n")
-    # The durable reconnect's byte-range lock steps (patch 0077),
+    # The durable reconnect's byte-range lock steps (patches 0080 and 0082),
     # with the record parse and store and the locked-record wrapper that owns
     # their br_lck, for tc_durable_reconnect_test. Each piece is in the order
     # its callers need; brl_parse_data()'s definition, not its declaration.

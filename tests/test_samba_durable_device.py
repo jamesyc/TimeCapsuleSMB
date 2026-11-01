@@ -668,7 +668,7 @@ class OrphanCaseTest(unittest.TestCase):
         client.conns[0].disconnect.assert_called()
 
     def test_superseded_leases_that_stay_fail_after_the_release_wait(self) -> None:
-        # Before 0077 the dropped entries' leases stayed in leases.tdb for good.
+        # Before 0081 the dropped entries' leases stayed in leases.tdb for good.
         results, _, _, clock = self.superseded(released=False)
         self.assertEqual(results.failed, [SUPERSEDED_CHECKS[1]])
         self.assertGreaterEqual(clock.now - 1000, durable_device.ORPHAN_RELEASE_SECONDS)
@@ -713,12 +713,12 @@ class OrphanCaseTest(unittest.TestCase):
         self.assertEqual(results.failed, [FAILED_CHECKS[3]])
 
     def test_an_open_stored_with_disconnect_time_0_fails_its_check(self) -> None:
-        # Before 0077 the failed reconnect's TALLOC_FREE stored it with 0.
+        # Before 0082 the failed reconnect's TALLOC_FREE stored it with 0.
         results, _, _, _ = self.failed_reconnect(time_after=0)
         self.assertEqual(results.failed, [FAILED_CHECKS[4]])
 
     def test_a_lock_kept_by_the_failed_reconnect_fails_the_other_clients_check(self) -> None:
-        # Before 0077 the reconnecting smbd kept the lock it took over.
+        # Before 0082 the reconnecting smbd kept the lock it took over.
         results, _, _, _ = self.failed_reconnect(lock_kept=True)
         self.assertEqual(results.failed, [FAILED_CHECKS[5]])
 

@@ -595,7 +595,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  
  	state->_vector[0] = (struct iovec) {
  		.iov_base = (void *)state->pktbuf,
-@@ -5166,11 +5700,36 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
+@@ -5166,9 +5700,29 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
  
  got_full:
  
@@ -627,15 +627,8 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
 +		}
  
  		req = state->req;
-+		/*
-+		 * Samba bug: upstream keeps every ignored frame's buffer until
-+		 * the request is freed, which is when the connection ends.
-+		 */
-+		TALLOC_FREE(state->pktbuf);
- 		*state = (struct smbd_smb2_request_read_state) {
- 			.req = req,
- 			.min_recv_size = lp_min_receive_file_size(),
-@@ -5229,6 +5788,9 @@ got_full:
+ 		/*
+@@ -5234,6 +5788,9 @@ got_full:
  		return status;
  	}
  
@@ -645,7 +638,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  	status = smbd_smb2_request_dispatch(req);
  	if (!NT_STATUS_IS_OK(status)) {
  		return status;
-@@ -5307,6 +5869,22 @@ static NTSTATUS smbd_smb2_io_handler(struct smbXsrv_connection *xconn,
+@@ -5312,6 +5869,22 @@ static NTSTATUS smbd_smb2_io_handler(struct smbXsrv_connection *xconn,
  
  again:
  
@@ -668,7 +661,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  	state->msg = (struct msghdr) {
  		.msg_iov = state->vector,
  		.msg_iovlen = state->count,
-@@ -5321,6 +5899,15 @@ again:
+@@ -5326,6 +5899,15 @@ again:
  
  	ret = recvmsg(xconn->transport.sock, &state->msg, recvmsg_flags);
  	if (ret == 0) {
@@ -684,7 +677,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  		/* propagate end of file */
  		status = NT_STATUS_END_OF_FILE;
  		smbXsrv_connection_disconnect_transport(xconn,
-@@ -5339,7 +5926,11 @@ again:
+@@ -5344,7 +5926,11 @@ again:
  							status);
  		return status;
  	}

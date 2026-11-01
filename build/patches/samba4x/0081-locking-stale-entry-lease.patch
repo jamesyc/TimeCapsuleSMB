@@ -1,0 +1,163 @@
+diff --git a/source3/locking/share_mode_lock.c b/source3/locking/share_mode_lock.c
+--- a/source3/locking/share_mode_lock.c
++++ b/source3/locking/share_mode_lock.c
+@@ -58,6 +58,7 @@ struct share_mode_lock {
+ #include "../librpc/gen_ndr/ndr_open_files.h"
+ #include "../librpc/gen_ndr/ndr_smbXsrv.h"
+ #include "source3/lib/dbwrap/dbwrap_watch.h"
++#include "librpc/gen_ndr/leases_db.h"
+ #include "locking/leases_db.h"
+ #include "../lib/util/memcache.h"
+ #include "lib/util/tevent_ntstatus.h"
+@@ -2237,7 +2238,8 @@ static bool share_mode_for_one_entry(
+ 	size_t *i,
+ 	uint8_t *data,
+ 	size_t *num_share_modes,
+-	bool *writeback)
++	bool *writeback,
++	struct leases_db_key **dropped_leases)
+ {
+ 	DATA_BLOB blob = {
+ 		.data = data + (*i) * SHARE_MODE_ENTRY_SIZE,
+@@ -2280,6 +2282,25 @@ static bool share_mode_for_one_entry(
+ 			NDR_PRINT_DEBUG(share_mode_entry, &e);
+ 		}
+ 
++		if (e.op_type == LEASE_OPLOCK) {
++			size_t n = talloc_array_length(*dropped_leases);
++			struct leases_db_key *l = talloc_realloc(
++				talloc_tos(),
++				*dropped_leases,
++				struct leases_db_key,
++				n + 1);
++			if (l != NULL) {
++				l[n] = (struct leases_db_key) {
++					.client_guid = e.client_guid,
++					.lease_key = e.lease_key,
++				};
++				*dropped_leases = l;
++			} else {
++				DBG_WARNING("talloc_realloc failed, "
++					    "lease kept\n");
++			}
++		}
++
+ 		if (*i < *num_share_modes) {
+ 			memmove(blob.data,
+ 				blob.data + SHARE_MODE_ENTRY_SIZE,
+@@ -2347,6 +2368,7 @@ bool share_mode_forall_entries(
+ 	uint8_t *share_entries = NULL;
+ 	size_t num_share_entries;
+ 	bool writeback = false;
++	struct leases_db_key *dropped_leases = NULL;
+ 	NTSTATUS status;
+ 	bool stop = false;
+ 	size_t i;
+@@ -2382,7 +2404,8 @@ bool share_mode_forall_entries(
+ 			&i,
+ 			share_entries,
+ 			&num_share_entries,
+-			&writeback);
++			&writeback,
++			&dropped_leases);
+ 		if (stop) {
+ 			break;
+ 		}
+@@ -2413,9 +2436,26 @@ bool share_mode_forall_entries(
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		DBG_ERR("share_mode_data_ltdb_store failed: %s\n",
+ 			nt_errstr(status));
++		TALLOC_FREE(dropped_leases);
+ 		return false;
+ 	}
+ 
++	/*
++	 * A dropped entry takes its lease with it, unless another entry on
++	 * this file still holds the same lease: the rule a close follows
++	 * (remove_share_oplock()). The callers drop stale entries of a dead
++	 * smbd or of a disconnected durable open (share_entry_stale_pid())
++	 * and the scavenger's expired ones; the lease would otherwise stay
++	 * in leases.tdb for good. This runs after the store, so that
++	 * remove_lease_if_stale() no longer sees the dropped entries.
++	 */
++	for (i = 0; i < talloc_array_length(dropped_leases); i++) {
++		remove_lease_if_stale(lck,
++				      &dropped_leases[i].client_guid,
++				      &dropped_leases[i].lease_key);
++	}
++	TALLOC_FREE(dropped_leases);
++
+ 	return true;
+ }
+ 
+diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
+--- a/source3/smbd/scavenger.c
++++ b/source3/smbd/scavenger.c
+@@ -487,7 +487,6 @@ struct cleanup_disconnected_state {
+ 	uint32_t name_hash;
+ 	struct share_mode_lock *lck;
+ 	uint64_t open_persistent_id;
+-	struct share_mode_entry e;
+ };
+ 
+ static bool cleanup_disconnected_share_mode_entry_fn(
+@@ -530,7 +529,6 @@ static bool cleanup_disconnected_share_mode_entry_fn(
+ 	 * the indication to delete the entry.
+ 	 */
+ 	e->stale = true;
+-	state->e = *e;
+ 
+ 	return true;
+ }
+@@ -547,7 +545,6 @@ bool share_mode_cleanup_disconnected(
+ 	TALLOC_CTX *frame = talloc_stackframe();
+ 	char *name = NULL;
+ 	struct file_id_buf idbuf;
+-	NTSTATUS status;
+ 	bool ok;
+ 
+ 	state.lck = get_existing_share_mode_lock(frame, fid);
+@@ -593,39 +590,10 @@ bool share_mode_cleanup_disconnected(
+ 		goto done;
+ 	}
+ 
+-	if (state.e.stale && (state.e.op_type == LEASE_OPLOCK)) {
+-		status = remove_lease_if_stale(state.lck,
+-					       &state.e.client_guid,
+-					       &state.e.lease_key);
+-		if (!NT_STATUS_IS_OK(status)) {
+-			struct GUID_txt_buf gbuf;
+-			int dbg_level = DBGLVL_WARNING;
+-
+-			if ((state.e.flags & SHARE_ENTRY_FLAG_PERSISTENT_OPEN) &&
+-			    NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND))
+-			{
+-				dbg_level = DBGLVL_DEBUG;
+-				ret = true;
+-			}
+-
+-			DBG_PREFIX(dbg_level,
+-				   ("Failed to clean up lease associated "
+-				    "with file (file-id='%s', servicepath='%s', "
+-				    "name='%s', open_persistent_id=%" PRIu64 ", "
+-				    "client_guid=%s, "
+-				    "lease_key=%"PRIx64"/%"PRIx64"): %s\n",
+-				    file_id_str_buf(fid, &idbuf),
+-				    share_mode_servicepath(state.lck),
+-				    name,
+-				    open_persistent_id,
+-				    GUID_buf_string(&state.e.client_guid, &gbuf),
+-				    state.e.lease_key.data[0],
+-				    state.e.lease_key.data[1],
+-				    nt_errstr(status)));
+-			goto done;
+-		}
+-	}
+-
++	/*
++	 * share_mode_forall_entries() removed the entry's lease with it,
++	 * unless another open still holds that lease.
++	 */
+ 	ret = true;
+ done:
+ 	talloc_free(frame);

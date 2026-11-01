@@ -74,14 +74,17 @@ its send and posts it ahead of the requests past the queue limit, as happens
 at random on a loaded host. They must count the queue's turns the same way.
 `cancel_active+fast_reply` also frees `requests[0]` after its reply was read
 but before its callback ran, where the plain case frees it while its helper
-still works. Only those cases take the suffix. Durable tests cover live-to-disconnected transition, bounded retry
-exhaustion, unlocked waiting and identity/ownership rejection. They do not assert
-the literal retry limit of 34. The `scavenger_hello_*` cases run the smbd
+still works. Only those cases take the suffix. The durable recreate cases run
+`smb2srv_open_recreate()` itself: a disconnected open is taken over, a live one
+of another smbd answers FILE_NOT_AVAILABLE at once (0024's deferral in
+smb2_create.c does the waiting), one of this smbd answers OBJECT_NAME_NOT_FOUND
+(`live_self`), and client, create GUID, owner and durability mismatches are
+refused. The `scavenger_hello_*` cases run the smbd
 parent's wait for a new scavenger's hello (patch 0075) against a forked child
 that says hello, exits without one, or stays silent: only the silent child is
 waited out and killed, with the limit set to 3 s for that case alone. The
 `brlock_reconnect*` cases run a durable reconnect's byte-range lock steps
-(patch 0077) inside the real `share_mode_do_locked_brl_fn()`, which reads,
+(patches 0080 and 0082) inside the real `share_mode_do_locked_brl_fn()`, which reads,
 stores and frees the lock record, with brlock.c's own record format: the
 handle's disconnected lock is taken over; taken over and given up again when a
 later step fails (`brl_drop_reconnected()`); or, with another open's lock before
@@ -414,8 +417,9 @@ file within 15 s (a stale lease's break would take
 35 s; the margin covers a data disk that spun down during the wait). The
 `orphan:` cases read `/mnt/Locks` over SSH (`tdb_records.py`, the devices
 have no tdbdump) to check what stays once opens lose their owner (issue 384,
-patch 0077); a copy that does not parse as a tdb counts as not yet, never as
-an empty one. `orphan:killed` kills the smbd that the client's 20 durable,
+patches 0077 and 0081-0083). `orphan:superseded` and `orphan:failed-reconnect`
+are the only tests of smbd's side of 0081 and 0082. A copy that does not parse
+as a tdb counts as not yet, never as an empty one. `orphan:killed` kills the smbd that the client's 20 durable,
 leased open records name, and only when they all name the same one, which
 started serving a client with the test's connection;
 within 60 s every open, replay and lease record of it must be gone, and the
@@ -564,8 +568,8 @@ Its open matrix tries every create disposition with and without
 FILE_DIRECTORY_FILE and FILE_NON_DIRECTORY_FILE, for listing, attribute and
 read/write access, on an existing directory: whatever opens must be a directory
 handle (SMB2 READ is INVALID_DEVICE_REQUEST), must list, and must leave nothing
-behind. A file handle on a directory, the state patch 0063 now prevents and
-patch 0004 used to paper over, fails that READ. The other cases list a
+behind. The matrix reaches a directory through the lookup; patch 0063's race
+(a directory appearing between lookup and open) has no test. The other cases list a
 600-entry directory in small responses with RESTART_SCANS, REOPEN and
 RETURN_SINGLE_ENTRY; open directories with catia-mapped names; keep listing a
 directory handle's own directory after the directory is renamed on disk; nest
