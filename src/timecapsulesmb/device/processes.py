@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import re
 import shlex
 from dataclasses import dataclass
@@ -138,6 +139,9 @@ class Process:
     @property
     def unreadable(self) -> bool:
         return self.argv == (UNREADABLE_COMMAND,)
+
+    def describe(self) -> str:
+        return f"{self.ucomm} (pid {self.pid})"
 
 
 def parse_ps_rows(output: str) -> list[Process]:
@@ -358,6 +362,23 @@ def disk_io_stalls(ps_output: str) -> list[StuckProcess]:
     diskd, which waits on the disk, so ACPd then stops answering MaSt and the
     network too: the disk is the cause, not ACPd."""
     return [p for p in stuck_processes(ps_output) if p.wchan in DISK_IO_WCHANS or p.name in DISK_PROGRAMS]
+
+
+# Apple's disk checkers: fsck_hfs, and fsck_msdos or fsck_exfat for a USB disk
+# in another format. Disk Repair's fsck_hfs goes on after the SSH session that
+# started it ends, and diskd checks a volume before it mounts it; while one
+# runs, its volume is unmounted or not mounted yet.
+DISK_CHECK_UCOMM = "fsck*"
+
+
+def is_disk_check(ucomm: str) -> bool:
+    """Whether a process name is a disk checker's (DISK_CHECK_UCOMM)."""
+    return fnmatch.fnmatchcase(ucomm, DISK_CHECK_UCOMM)
+
+
+def disk_checks_running(ps_output: str) -> list[Process]:
+    """The live disk checkers in a listing."""
+    return [p for p in parse_ps_rows(ps_output) if not p.zombie and is_disk_check(p.ucomm)]
 
 
 # ps's wait channel for a process waiting for a lock another holds: an

@@ -928,7 +928,7 @@
 "backend.recovery.fsck.validation_failed.action.1" = "Wählen Sie ein bestimmtes HFS-Volume aus.";
 "backend.recovery.fsck.validation_failed.action.2" = "Aktualisieren Sie die Volume-Liste und versuchen Sie es dann erneut.";
 "backend.recovery.fsck.fsck_already_running.title" = "Festplattenreparatur läuft bereits";
-"backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs aus einer früheren Festplattenreparatur läuft noch auf dem Gerät. Ein Neustart oder das Trennen vom Strom würde sie jetzt unterbrechen.";
+"backend.recovery.fsck.fsck_already_running.message" = "Auf dem Gerät läuft noch eine Festplattenprüfung, etwa eine frühere Festplattenreparatur. Ein Neustart oder das Trennen vom Strom würde sie jetzt unterbrechen.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Trennen Sie die Time Capsule nicht vom Strom und warten Sie; auf einer großen Festplatte kann die Reparatur eine Stunde oder länger dauern.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Führen Sie dann die „Festplattenreparatur“ erneut aus. Sie startet das Gerät neu, wenn sie abgeschlossen ist.";
 "backend.recovery.fsck.fsck_volume_not_unmounted.title" = "Die Festplatte konnte nicht ausgehängt werden";
@@ -1029,6 +1029,18 @@
 "backend.recovery.disk_not_responding.action.3" = "Wenn die Festplatte erneut nicht mehr reagiert, fällt sie wahrscheinlich aus: Kopieren Sie die Dateien, die Sie brauchen. Schließen Sie eine USB-Festplatte an einen Mac an; wenn die Dateifreigabe aus ist, bauen Sie eine interne Festplatte aus und schließen Sie sie mit einem SATA-USB-Adapter an einen Mac an.";
 "backend.recovery.disk_not_responding.action.4" = "Ersetzen Sie die Festplatte.";
 "backend.recovery.disk_not_responding.action.5" = "Löschen Sie die neue Festplatte im AirPort-Dienstprogramm und führen Sie dann „Samba installieren / aktualisieren“ aus. Time Machine beginnt darauf ein neues, vollständiges Backup.";
+"backend.recovery.disk_check_not_responding.title" = "Eine Festplattenprüfung reagiert nicht";
+"backend.recovery.disk_check_not_responding.message" = "Eine Festplattenprüfung auf dem Gerät, etwa eine Festplattenreparatur, wartet seit Minuten auf die Festplatte, ohne fertig zu werden. Der AirPort-Dienst von Apple wartet ebenfalls auf die Festplatte, daher kann das Gerät nicht über das Netzwerk aktualisiert oder neu gestartet werden. Auf einer ausfallenden Festplatte kann eine Reparatur so lange auf einen einzigen Lesevorgang warten und trotzdem abgeschlossen werden.";
+"backend.recovery.disk_check_not_responding.action.1" = "Wenn eine Festplattenreparatur läuft, warten Sie zuerst noch ein paar Minuten: Das Trennen vom Strom bricht sie ab.";
+"backend.recovery.disk_check_not_responding.action.2" = "Trennen Sie das Gerät, warten Sie 10 Sekunden und schließen Sie es dann wieder an.";
+"backend.recovery.disk_check_not_responding.action.3" = "Warten Sie 2 Minuten, bis das Gerät gestartet ist, und versuchen Sie es dann erneut.";
+"backend.recovery.disk_check_not_responding.action.4" = "Wenn die Festplatte erneut nicht mehr reagiert, fällt sie wahrscheinlich aus: Kopieren Sie die Dateien, die Sie brauchen. Schließen Sie eine USB-Festplatte an einen Mac an; wenn die Dateifreigabe aus ist, bauen Sie eine interne Festplatte aus und schließen Sie sie mit einem SATA-USB-Adapter an einen Mac an.";
+"backend.recovery.disk_check_not_responding.action.5" = "Ersetzen Sie die Festplatte.";
+"backend.recovery.disk_check_not_responding.action.6" = "Löschen Sie die neue Festplatte im AirPort-Dienstprogramm und führen Sie dann „Samba installieren / aktualisieren“ aus. Time Machine beginnt darauf ein neues, vollständiges Backup.";
+"backend.recovery.fsck_already_running.title" = "Festplattenprüfung läuft noch";
+"backend.recovery.fsck_already_running.message" = "Auf dem Gerät läuft noch eine Festplattenprüfung, etwa eine Festplattenreparatur, die weiterlief, nachdem die Verbindung dieses Mac zum Gerät getrennt wurde. Bis sie abgeschlossen ist, kann die Festplatte nicht verwendet werden, und ein Neustart oder das Trennen vom Strom würde sie jetzt unterbrechen.";
+"backend.recovery.fsck_already_running.action.1" = "Trennen Sie das Gerät nicht vom Strom und warten Sie. Auf einer großen Festplatte kann die Prüfung eine Stunde oder länger dauern.";
+"backend.recovery.fsck_already_running.action.2" = "Versuchen Sie es dann erneut.";
 "backend.recovery.deploy_disk_size_misreported.title" = "Die Festplatte meldet eine falsche Größe";
 "backend.recovery.deploy_disk_size_misreported.message" = "Das Gerät meldet die interne Festplatte als viel kleiner, als sie ist. Ein Neustart behebt das manchmal; wenn es immer wieder vorkommt, fällt die Festplatte wahrscheinlich aus.";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "Starten Sie das Gerät neu und führen Sie „Samba installieren / aktualisieren“ erneut aus, sobald die Festplatte angelaufen ist.";

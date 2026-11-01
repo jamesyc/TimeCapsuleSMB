@@ -44,6 +44,7 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.services.activation import activate_runtime
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.runtime import DiskCheckRunningError
 from timecapsulesmb.services.runtime_verification import runtime_failure_error, verify_managed_runtime_ready
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshNetworkError
 from timecapsulesmb.transport.ssh import SshConnection
@@ -447,6 +448,37 @@ class RuntimeFailureTests(unittest.TestCase):
         self.marker.assert_not_called()
         syut.assert_not_called()
         listing.assert_called_once()
+
+    def test_activate_refuses_a_stuck_disk_check_with_its_own_code(self) -> None:
+        # A repair on a failing disk can wait that long and still finish: its
+        # way out gives it time before the unplug.
+        stuck = "107 1 15 S 0 select 0:00.32 sshd\n4211 4200 4200 D 127 biowait 1:12.04 fsck_hfs\ntcapsule-ps: end\n"
+        error, _debug, syut, listing = self.activate([stuck])
+        self.assertIsInstance(error, DiskNotRespondingError)
+        self.assertEqual(error.code, ErrorCode.DISK_CHECK_NOT_RESPONDING)
+        self.assertEqual(error.message, f"NetBSD 4 activation failed. {DISK_NOT_RESPONDING_MESSAGE} Nothing was started.")
+        syut.assert_not_called()
+        listing.assert_called_once()
+
+    def test_activate_refuses_while_a_disk_check_keeps_running(self) -> None:
+        # Disk Repair stopped the managed processes: a manager started now
+        # would ask diskd for the volume under repair.
+        repair = "107 1 15 S 0 select 0:00.32 sshd\n4211 4200 4200 R 0 - 1:12.04 fsck_hfs\ntcapsule-ps: end\n"
+        with mock.patch("timecapsulesmb.device.acpd.pause") as pause:
+            error, debug, syut, listing = self.activate([repair, repair], answers=True)
+        self.assertIsInstance(error, DiskCheckRunningError)
+        self.assertEqual(error.code, ErrorCode.FSCK_ALREADY_RUNNING)
+        self.assertEqual(
+            error.message,
+            "NetBSD 4 activation failed. A disk check (fsck_hfs) is still running on the device. Restarting or "
+            "unplugging the device now would interrupt it. Nothing was started.",
+        )
+        self.assertEqual(error.detail, "Running: fsck_hfs (pid 4211).")
+        self.assertEqual(debug["disk_checks_running"], ["fsck_hfs (pid 4211)"])
+        pause.assert_called_once()
+        self.marker.assert_not_called()
+        syut.assert_not_called()
+        self.assertEqual(listing.call_count, 2)
 
     def test_activate_reads_the_list_again_before_it_blames_a_silent_acpd(self) -> None:
         # mount_hfs passed the stall threshold during ACPd's slow reads.

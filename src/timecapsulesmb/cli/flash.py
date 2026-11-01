@@ -307,6 +307,7 @@ def _resolve_flash_target(
     *,
     args: argparse.Namespace,
     log: ProgressLogger,
+    restarts: bool,
 ) -> FlashTarget:
     command_context.set_stage("resolve_connection")
     emit_progress(log, "Resolving SSH target...")
@@ -327,8 +328,10 @@ def _resolve_flash_target(
         update_fields=command_context.update_fields,
     )
     # Every flash read and write goes through ACPd, and a restore ends in an
-    # ACP reboot: refuse a stuck ACPd before the first read.
-    require_acpd_ready(connection, command_context.to_operation_callbacks(), reading=command_context.reading_at(connection))
+    # ACP reboot: refuse a stuck ACPd before the first read. Only the reboot
+    # could interrupt a disk check (`restarts`).
+    require_acpd_ready(connection, command_context.to_operation_callbacks(),
+                       reading=command_context.reading_at(connection), restarts=restarts)
     emit_progress(log, f"Using ACP host {flash_target.acp_host}.")
     return flash_target
 
@@ -619,7 +622,8 @@ def _run_flash(
     log: ProgressLogger,
 ) -> int:
     command_context.update_fields(read_only=operation not in WRITE_OPERATIONS, write_requested=operation in WRITE_OPERATIONS, operation=operation)
-    target = _resolve_flash_target(command_context, args=args, log=log)
+    target = _resolve_flash_target(command_context, args=args, log=log,
+                                   restarts=operation == "restore" and args.reboot)
     inputs = _read_flash(command_context, target, log=log)
     if inputs is None:
         return 1

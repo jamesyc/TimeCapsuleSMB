@@ -3,7 +3,13 @@ from __future__ import annotations
 import unittest
 
 from tests.device_ps import ps_row
-from timecapsulesmb.device.processes import StuckProcess, disk_io_stalls, manager_unnamed_stuck_count, stuck_processes
+from timecapsulesmb.device.processes import (
+    StuckProcess,
+    disk_checks_running,
+    disk_io_stalls,
+    manager_unnamed_stuck_count,
+    stuck_processes,
+)
 
 # PROCESS_SNAPSHOT_COMMAND rows: only service and diskd rows carry a command
 # line.
@@ -179,6 +185,38 @@ class DiskIoStallTests(unittest.TestCase):
         ):
             with self.subTest(listing=listing):
                 self.assertEqual(disk_io_stalls(listing), [])
+
+
+class DiskChecksRunningTests(unittest.TestCase):
+    """Apple's disk checkers, matched by name alone: the listing reads no
+    command line for them."""
+
+    def test_every_fsck_program_is_a_disk_check_whatever_its_state(self) -> None:
+        # A repair is busy on the disk: in D for moments, running, or asleep between reads.
+        for name, stat in (("fsck_hfs", "D"), ("fsck_hfs", "R"), ("fsck_msdos", "S"), ("fsck_exfat", "S"), ("fsck", "I")):
+            with self.subTest(name=name, stat=stat):
+                listing = ps_row(4211, name, ppid=4200, stat=stat, sl=2, wchan="biowait" if stat == "D" else "-")
+                self.assertEqual([(p.pid, p.ucomm) for p in disk_checks_running(listing)], [(4211, name)])
+
+    def test_only_the_checkers_in_a_listing_are_returned(self) -> None:
+        listing = "\n".join([
+            SMBD_PARENT,
+            ps_row(4200, "sh", stat="S"),
+            ps_row(4211, "fsck_hfs", ppid=4200, stat="R"),
+            ps_row(379, "diskd", "/usr/libexec/diskd -i lo0 -d local.", stat="S"),
+        ])
+        self.assertEqual([p.describe() for p in disk_checks_running(listing)], ["fsck_hfs (pid 4211)"])
+
+    def test_a_reaped_checker_or_another_program_is_not_a_disk_check(self) -> None:
+        for listing in (
+            ps_row(4211, "fsck_hfs", ppid=379, stat="Z"),
+            ps_row(4212, "newfs_hfs", ppid=379, stat="D", wchan="biowait"),
+            ps_row(4213, "mount_hfs", ppid=379, stat="S"),
+            ps_row(4214, "xfsck", stat="S"),
+            "",
+        ):
+            with self.subTest(listing=listing):
+                self.assertEqual(disk_checks_running(listing), [])
 
 
 class ListedWithoutCommandLinesTests(unittest.TestCase):

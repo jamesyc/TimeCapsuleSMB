@@ -12,6 +12,7 @@ from timecapsulesmb.services.runtime import (
     load_optional_env_config,
     resolve_env_connection,
     require_acpd_ready,
+    require_no_disk_check,
     resolve_validated_managed_target,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -74,9 +75,22 @@ def resolve_request_target(
     return target
 
 
-def require_request_acpd_ready(context: AppOperationContext, connection: SshConnection) -> None:
+def require_request_acpd_ready(
+    context: AppOperationContext, connection: SshConnection, *, restarts: bool = True,
+) -> None:
     """services.runtime.require_acpd_ready, raising its code as an AppOperationError."""
     try:
-        require_acpd_ready(connection, context.to_operation_callbacks(), reading=context.reading_at(connection))
+        require_acpd_ready(
+            connection, context.to_operation_callbacks(), reading=context.reading_at(connection), restarts=restarts,
+        )
+    except DeviceAccessError as exc:
+        raise AppOperationError(str(exc), code=exc.code) from exc
+
+
+def require_request_no_disk_check(context: AppOperationContext, connection: SshConnection) -> None:
+    """services.runtime.require_no_disk_check, for work that writes the disk
+    without a restart, raising its code as an AppOperationError."""
+    try:
+        require_no_disk_check(connection, context.to_operation_callbacks())
     except DeviceAccessError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc

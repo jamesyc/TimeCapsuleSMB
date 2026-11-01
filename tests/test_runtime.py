@@ -915,6 +915,261 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         self.assertIsNone(error)
 
 
+class RequireAcpdReadyDiskCheckTests(unittest.TestCase):
+    """A disk checker that keeps running refuses every command that restarts
+    the device or writes it: Disk Repair's fsck_hfs goes on after its
+    connection ends, with its volume unmounted, and a restart or an unplug
+    would cut it off. Apple's few-second checks before a mount, one volume
+    after another, are waited out."""
+
+    CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+    REPAIR_ROW = "  4211 4200 4200 R 0 - 1:12.04 fsck_hfs"
+    STUCK_REPAIR_ROW = "  4211 4200 4200 D 127 biowait 1:12.04 fsck_hfs"
+
+    @staticmethod
+    def listing(*rows: str) -> str:
+        """A PROCESS_SNAPSHOT_COMMAND listing that finished, as a device prints it."""
+        from timecapsulesmb.device.processes import PS_LISTING_END
+
+        return "\n".join((*rows, PS_LISTING_END))
+
+    @classmethod
+    def quick_check(cls, pid: int) -> str:
+        """diskd's own check of the next volume before it mounts it."""
+        return cls.listing(f"  {pid} 379 39 R 0 - 0:00.40 fsck_hfs")
+
+    @property
+    def repair(self) -> str:
+        return self.listing(self.REPAIR_ROW)
+
+    def gate(self, *listings: str, answers: bool = True):
+        debug: dict[str, object] = {}
+        self.messages: list[str] = []
+        self.measurements: list[tuple[str, dict[str, object]]] = []
+        callbacks = OperationCallbacks(
+            add_debug_fields=debug.update,
+            log=self.messages.append,
+            record_execution_measurement=lambda kind, **fields: self.measurements.append((kind, fields)),
+        )
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as answer, \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", side_effect=list(listings)) as processes, \
+                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=True), \
+                mock.patch("timecapsulesmb.device.acpd.pause") as pause:
+            try:
+                service_runtime.require_acpd_ready(self.CONNECTION, callbacks, reading=acp_reading(True))
+                error = None
+            except service_runtime.DeviceAccessError as exc:
+                error = exc
+        return error, debug, answer, processes, pause
+
+    def wait_measurement(self) -> dict[str, object]:
+        """The one disk_check_wait measurement, which reaches telemetry on
+        success and failure alike (debug fields only go with a failure)."""
+        waits = [fields for kind, fields in self.measurements if kind == "disk_check_wait"]
+        self.assertEqual(len(waits), 1)
+        return waits[0]
+
+    def test_the_same_check_still_running_at_the_recheck_refuses_the_command_before_acpd_is_read(self) -> None:
+        # ACPd broken as well: its way out is an unplug, which would cut the repair off.
+        error, debug, answer, processes, pause = self.gate(self.repair, self.repair, answers=False)
+        self.assertIsInstance(error, service_runtime.DiskCheckRunningError)
+        self.assertEqual(error.code, "fsck_already_running")
+        self.assertEqual(
+            error.message,
+            "A disk check (fsck_hfs) is still running on the device. Restarting or unplugging the device now would "
+            "interrupt it. Nothing was changed.",
+        )
+        self.assertEqual(error.detail, "Running: fsck_hfs (pid 4211).")
+        self.assertEqual(debug["disk_checks_running"], ["fsck_hfs (pid 4211)"])
+        wait = self.wait_measurement()
+        self.assertEqual(wait["result"], "refused")
+        self.assertEqual(wait["looks"], [["fsck_hfs (pid 4211)"], ["fsck_hfs (pid 4211)"]])
+        self.assertIn("duration_sec", wait)
+        self.assertNotIn("acpd_problems", debug)
+        pause.assert_called_once_with(service_runtime.DISK_CHECK_RECHECK_SECONDS)
+        self.assertEqual(processes.call_count, 2)
+        answer.assert_not_called()
+        # The wait says why it waits.
+        self.assertEqual(
+            self.messages, ["A disk check (fsck_hfs) is running on the device. Checking again in 10 seconds..."],
+        )
+        # Every command but Disk Repair gets the generic way out; Disk Repair keeps its own.
+        self.assertEqual(
+            cli_steps("deploy", error.code),
+            ("Keep the device plugged in and wait. On a large disk the check can take an hour or more.",
+             "Then try again."),
+        )
+        self.assertTrue(cli_steps("fsck", error.code)[0].startswith("Keep the Time Capsule plugged in and wait"))
+
+    def test_every_checker_that_kept_running_is_named(self) -> None:
+        listing = self.listing(self.REPAIR_ROW, "  4300 379 39 S 1 select 0:00.20 fsck_msdos")
+        error, debug, _answer, _processes, _pause = self.gate(listing, listing)
+        self.assertTrue(error.message.startswith("A disk check (fsck_hfs, fsck_msdos) is still running on the device."))
+        self.assertEqual(error.detail, "Running: fsck_hfs (pid 4211); fsck_msdos (pid 4300).")
+        self.assertEqual(debug["disk_checks_running"], ["fsck_hfs (pid 4211)", "fsck_msdos (pid 4300)"])
+
+    def test_only_the_checker_that_kept_running_is_refused(self) -> None:
+        # diskd's quick check ended; the repair beside it did not.
+        both = self.listing(self.REPAIR_ROW, "  4300 379 39 R 0 - 0:00.40 fsck_hfs")
+        error, debug, _answer, _processes, pause = self.gate(both, self.repair)
+        self.assertEqual(error.code, "fsck_already_running")
+        self.assertEqual(debug["disk_checks_running"], ["fsck_hfs (pid 4211)"])
+        pause.assert_called_once()
+
+    def test_a_check_that_ends_before_the_recheck_lets_the_command_go_on_with_the_new_listing(self) -> None:
+        error, debug, answer, processes, pause = self.gate(self.repair, self.listing())
+        self.assertIsNone(error)
+        pause.assert_called_once_with(service_runtime.DISK_CHECK_RECHECK_SECONDS)
+        # ACPd's checks use the second listing; nothing reads a third.
+        self.assertEqual(processes.call_count, 2)
+        answer.assert_called_once_with(self.CONNECTION)
+        self.assertNotIn("disk_checks_running", debug)
+        # A wait that let the command go on still reaches telemetry.
+        self.assertEqual(self.wait_measurement()["result"], "ended")
+        self.assertEqual(self.wait_measurement()["looks"], [["fsck_hfs (pid 4211)"], []])
+
+    def test_diskds_checks_of_one_volume_after_another_are_waited_out(self) -> None:
+        # Another checker at each look is the next short check, not a long one.
+        error, _debug, _answer, processes, pause = self.gate(
+            self.quick_check(4211), self.quick_check(4220), self.listing(),
+        )
+        self.assertIsNone(error)
+        self.assertEqual(pause.call_count, 2)
+        self.assertEqual(processes.call_count, 3)
+        self.assertEqual(self.wait_measurement()["looks"], [["fsck_hfs (pid 4211)"], ["fsck_hfs (pid 4220)"], []])
+
+    def test_a_new_checker_at_every_look_refuses_once_the_rechecks_run_out(self) -> None:
+        pids = [4211 + 10 * look for look in range(service_runtime.DISK_CHECK_RECHECKS + 1)]
+        error, debug, _answer, processes, pause = self.gate(*(self.quick_check(pid) for pid in pids))
+        self.assertEqual(error.code, "fsck_already_running")
+        self.assertEqual(debug["disk_checks_running"], [f"fsck_hfs (pid {pids[-1]})"])
+        self.assertEqual(pause.call_count, service_runtime.DISK_CHECK_RECHECKS)
+        self.assertEqual(processes.call_count, service_runtime.DISK_CHECK_RECHECKS + 1)
+        self.assertEqual(len(self.wait_measurement()["looks"]), service_runtime.DISK_CHECK_RECHECKS + 1)
+
+    def test_a_recheck_that_cannot_be_read_never_shows_the_repair_gone(self) -> None:
+        # SSH or ps that does not answer, as on a disk a repair keeps busy, reads
+        # as an empty or cut-short listing: the repair may still be running.
+        for unreadable in ("", self.REPAIR_ROW, "  107 1 15 S 0 select 0:00.32 sshd"):
+            with self.subTest(unreadable=unreadable):
+                listings = [self.repair] + [unreadable] * service_runtime.DISK_CHECK_RECHECKS
+                error, debug, answer, processes, pause = self.gate(*listings)
+                self.assertEqual(error.code, "fsck_already_running")
+                # Only that it was running when the device stopped answering.
+                self.assertEqual(
+                    error.message,
+                    "A disk check (fsck_hfs) was running on the device, and the device stopped answering while "
+                    "TimeCapsuleSMB waited for it. Restarting or unplugging the device now could interrupt it. "
+                    "Nothing was changed.",
+                )
+                self.assertTrue(error.unanswered)
+                self.assertEqual(debug["disk_checks_running"], ["fsck_hfs (pid 4211)"])
+                self.assertEqual(pause.call_count, service_runtime.DISK_CHECK_RECHECKS)
+                self.assertEqual(
+                    self.wait_measurement()["looks"],
+                    [["fsck_hfs (pid 4211)"]] + ["unreadable"] * service_runtime.DISK_CHECK_RECHECKS,
+                )
+                answer.assert_not_called()
+
+    def test_a_listing_read_after_an_unreadable_one_decides(self) -> None:
+        error, _debug, _answer, processes, pause = self.gate(self.repair, "", self.listing())
+        self.assertIsNone(error)
+        self.assertEqual(pause.call_count, 2)
+        self.assertEqual(self.wait_measurement()["looks"], [["fsck_hfs (pid 4211)"], "unreadable", []])
+        error, debug, _answer, _processes, _pause = self.gate(self.repair, "", self.repair)
+        self.assertEqual(error.code, "fsck_already_running")
+        self.assertEqual(debug["disk_checks_running"], ["fsck_hfs (pid 4211)"])
+        # Seen again after the gap: still running.
+        self.assertFalse(error.unanswered)
+        self.assertTrue(error.message.startswith("A disk check (fsck_hfs) is still running on the device."))
+
+    def test_another_process_stuck_on_the_disk_does_not_hide_a_running_repair(self) -> None:
+        # The disk's way out is an unplug, which would cut the repair off.
+        listing = self.listing(self.REPAIR_ROW, "  379 1 39 D 127 tstile 0:00.40 diskd")
+        error, debug, answer, _processes, _pause = self.gate(listing, listing)
+        self.assertEqual(error.code, "fsck_already_running")
+        self.assertEqual(debug["disk_checks_running"], ["fsck_hfs (pid 4211)"])
+        self.assertNotIn("disk_io_stalls", debug)
+        answer.assert_not_called()
+
+    def test_a_listing_without_a_live_checker_is_never_rechecked(self) -> None:
+        # A first listing that cannot be read shows no checker, as before this check.
+        for listing in ("", self.listing("  4211 379 39 Z 0 - 0:00.00 fsck_hfs"),
+                        self.listing("  4212 379 39 D 3 biowait 0:01.00 newfs_hfs")):
+            with self.subTest(listing=listing):
+                error, _debug, _answer, processes, pause = self.gate(listing)
+                self.assertIsNone(error)
+                pause.assert_not_called()
+                processes.assert_called_once_with(self.CONNECTION)
+                self.assertEqual(self.measurements, [])
+                self.assertEqual(self.messages, [])
+
+    def test_a_checker_stuck_on_the_disk_is_the_disk_not_a_running_check(self) -> None:
+        error, debug, _answer, processes, pause = self.gate(self.listing(self.STUCK_REPAIR_ROW))
+        # Its own code: a repair on a failing disk can wait that long and still
+        # finish, and its way out gives it time before the unplug.
+        self.assertEqual(error.code, "disk_check_not_responding")
+        self.assertTrue(error.message.startswith("A disk on the device has stopped responding"))
+        self.assertEqual(debug["disk_io_stalls"], ["fsck_hfs (pid 4211) waiting on biowait for 127+ s"])
+        self.assertNotIn("disk_checks_running", debug)
+        pause.assert_not_called()
+        processes.assert_called_once_with(self.CONNECTION)
+        # A repair on a failing disk can wait that long and still finish: the
+        # way out gives it time before the unplug.
+        for operation in ("fsck", "deploy", "activate"):
+            steps = cli_steps(operation, error.code)
+            self.assertTrue(steps[0].startswith("If a disk repair is running, give it a few more minutes first"))
+            self.assertEqual(steps[1:], cli_steps(operation, "disk_not_responding"))
+
+    def test_a_checker_stuck_by_the_recheck_is_reported_as_the_disk(self) -> None:
+        error, debug, _answer, processes, pause = self.gate(self.repair, self.listing(self.STUCK_REPAIR_ROW))
+        self.assertEqual(error.code, "disk_check_not_responding")
+        self.assertNotIn("disk_checks_running", debug)
+        self.assertEqual(self.wait_measurement()["looks"], [["fsck_hfs (pid 4211)"], []])
+        pause.assert_called_once_with(service_runtime.DISK_CHECK_RECHECK_SECONDS)
+        self.assertEqual(processes.call_count, 2)
+
+    def gate_without_restart(self, *listings: str):
+        """require_acpd_ready for work that neither restarts the device nor uses its disk."""
+        debug: dict[str, object] = {}
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True), \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", side_effect=list(listings)) as processes, \
+                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=True), \
+                mock.patch("timecapsulesmb.device.acpd.pause") as pause:
+            try:
+                service_runtime.require_acpd_ready(
+                    self.CONNECTION, OperationCallbacks(add_debug_fields=debug.update), reading=acp_reading(True),
+                    restarts=False,
+                )
+                error = None
+            except service_runtime.DeviceAccessError as exc:
+                error = exc
+        return error, debug, processes, pause
+
+    def test_work_that_does_not_restart_the_device_never_waits_for_a_check(self) -> None:
+        # A flash backup, plan or patch cannot interrupt a repair.
+        error, debug, processes, pause = self.gate_without_restart(self.repair)
+        self.assertIsNone(error)
+        pause.assert_not_called()
+        processes.assert_called_once_with(self.CONNECTION)
+        self.assertNotIn("disk_checks_running", debug)
+
+    def test_work_that_does_not_restart_the_device_still_refuses_a_stuck_disk(self) -> None:
+        # ACPd waits behind the disk, so the work would hang on it anyway.
+        error, _debug, _processes, pause = self.gate_without_restart(self.listing(self.STUCK_REPAIR_ROW))
+        self.assertEqual(error.code, "disk_check_not_responding")
+        pause.assert_not_called()
+
+    def test_a_rejected_password_is_refused_before_the_disk_is_looked_at(self) -> None:
+        with mock.patch("timecapsulesmb.device.acpd.read_processes") as processes:
+            with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+                service_runtime.require_acpd_ready(self.CONNECTION, OperationCallbacks(), reading=acp_reading(False))
+        self.assertEqual(raised.exception.code, "auth_failed")
+        processes.assert_not_called()
+
+
 class ConfirmDeviceAddressTests(unittest.TestCase):
     """The saved address checked against the AirPort MAC the app saved."""
 

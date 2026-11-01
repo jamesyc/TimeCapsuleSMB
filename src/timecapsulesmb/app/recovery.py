@@ -48,6 +48,16 @@ _DISK_FAILING_STEPS = (
     "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, "
     "full backup on it.",
 )
+# A process stuck on the disk: a restart clears a passing stall; one that
+# comes back is a failing disk, whose way out follows.
+_DISK_NOT_RESPONDING_STEPS = (
+    "Unplug the device, wait 10 seconds and plug it back in.",
+    "Wait 2 minutes for the device to start up, then try again.",
+    "If the disk stops responding again, it is probably failing: copy off the files you need. Connect a USB "
+    "disk to a Mac; if file sharing is off, take an internal disk out and connect it to a Mac with a "
+    "SATA-to-USB adapter.",
+    *_DISK_FAILING_STEPS[1:],
+)
 
 # The app and its helper from different releases send requests the other does not know.
 _MISMATCH_TITLE = "TimeCapsuleSMB components do not match"
@@ -420,21 +430,47 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     # A process has waited minutes for the disk (device.processes.disk_io_stalls),
     # and Apple's ACPd waits behind it: the preflight of every command that
     # restarts the device or writes it, and a MaSt read that hangs or fails
-    # (device.storage.raise_if_acpd_silent). A restart clears a passing stall;
-    # one that comes back is a failing disk, whose way out follows.
+    # (device.storage.raise_if_acpd_silent).
     ErrorCode.DISK_NOT_RESPONDING: RecoveryInfo(
         "The disk is not responding",
         (
             "A disk operation on the device has waited for minutes without finishing. Apple's AirPort service "
             "waits for the disk too, so the device cannot be updated or restarted over the network."
         ),
+        _DISK_NOT_RESPONDING_STEPS,
+        retryable=True,
+    ),
+    # The stuck process is a disk checker, at the preflight of a command that
+    # restarts the device or of Activate (device.disk_errors.disk_stall_code). A
+    # repair on a failing disk can wait that long on one read and still finish,
+    # and the unplug would stop it, so the first step gives it time.
+    ErrorCode.DISK_CHECK_NOT_RESPONDING: RecoveryInfo(
+        "A disk check is not responding",
         (
-            "Unplug the device, wait 10 seconds and plug it back in.",
-            "Wait 2 minutes for the device to start up, then try again.",
-            "If the disk stops responding again, it is probably failing: copy off the files you need. Connect a USB "
-            "disk to a Mac; if file sharing is off, take an internal disk out and connect it to a Mac with a "
-            "SATA-to-USB adapter.",
-            *_DISK_FAILING_STEPS[1:],
+            "A disk check on the device, such as a disk repair, has waited for minutes on the disk without "
+            "finishing. Apple's AirPort service waits for the disk too, so the device cannot be updated or restarted "
+            "over the network. On a failing disk, a repair can wait that long on one read and still finish."
+        ),
+        (
+            "If a disk repair is running, give it a few more minutes first: unplugging the device stops it.",
+            *_DISK_NOT_RESPONDING_STEPS,
+        ),
+        retryable=True,
+    ),
+    # A disk checker still runs at the preflight of every command that restarts
+    # the device or writes it, and of Activate (services.runtime.
+    # require_no_disk_check): most often a Disk Repair that went on after its
+    # connection ended.
+    ErrorCode.FSCK_ALREADY_RUNNING: RecoveryInfo(
+        "Disk check still running",
+        (
+            "A disk check is still running on the device, such as a disk repair that kept running after this "
+            "Mac's connection to the device ended. The disk cannot be used until it finishes, and restarting or "
+            "unplugging the device now would interrupt it."
+        ),
+        (
+            "Keep the device plugged in and wait. On a large disk the check can take an hour or more.",
+            "Then try again.",
         ),
         retryable=True,
     ),
@@ -1007,11 +1043,14 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         action_ids=("disk_repair",),
     ),
-    # A repair whose session dropped keeps running on the device
-    # (services.maintenance): a second one must wait for it.
+    # A repair whose session dropped keeps running on the device, and diskd
+    # can run a long check of its own: a repair must wait for either, refused
+    # by the preflight (services.runtime.require_no_disk_check) or, without a
+    # restart, by the repair's own script (services.maintenance).
     ("fsck", ErrorCode.FSCK_ALREADY_RUNNING): RecoveryInfo(
         "Disk repair already running",
-        "fsck_hfs from an earlier disk repair is still running on the device. Restarting or unplugging the device now would interrupt it.",
+        "A disk check, such as an earlier disk repair, is still running on the device. Restarting or unplugging "
+        "the device now would interrupt it.",
         (
             "Keep the Time Capsule plugged in and wait; on a large disk the repair can take an hour or more.",
             "Then run “Disk Repair” again. It restarts the device when it finishes.",

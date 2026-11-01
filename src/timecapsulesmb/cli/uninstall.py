@@ -20,7 +20,7 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.maintenance import prepare_uninstall, reboot_after_uninstall
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready
+from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready, require_no_disk_check
 from timecapsulesmb.telemetry import TelemetryClient
 
 
@@ -72,6 +72,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             # The reboot goes through ACP: check ACPd and the password before anything is removed.
             require_acpd_ready(connection, command_context.to_operation_callbacks(),
                                reading=command_context.reading_at(connection))
+        elif not args.dry_run:
+            # A repair's volume is unmounted: the uninstall would report success with its files still there.
+            require_no_disk_check(connection, command_context.to_operation_callbacks())
 
         if not args.dry_run:
             proceed = confirm_despite_failing_disk(

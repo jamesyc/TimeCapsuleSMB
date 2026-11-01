@@ -97,7 +97,7 @@ def _write_reboot_policy(params: dict[str, object], plan_operation: str) -> tupl
     return reboot_after_write, wait_after_reboot
 
 
-def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> FlashTarget:
+def _resolve_flash_target(config: AppConfig, context: AppOperationContext, *, restarts: bool) -> FlashTarget:
     target = resolve_request_target(config, context, profile="flash", include_probe=False)
     context.stage("check_compatibility")
     try:
@@ -116,14 +116,15 @@ def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> Fl
     except DeviceError as exc:
         raise AppOperationError(str(exc), code=ErrorCode.UNSUPPORTED_DEVICE) from exc
     # Every flash read and write goes through ACPd, and a restore ends in an
-    # ACP reboot: refuse a stuck ACPd before the first read.
-    require_request_acpd_ready(context, target.connection)
+    # ACP reboot: refuse a stuck ACPd before the first read. Only the reboot
+    # could interrupt a disk check (`restarts`).
+    require_request_acpd_ready(context, target.connection, restarts=restarts)
     return flash_target
 
 
 def _backup_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     config = load_request_config(params, context)
-    target = _resolve_flash_target(config, context)
+    target = _resolve_flash_target(config, context, restarts=False)
     backup_dir = _optional_path_param(params, "backup_dir")
     context.update_fields(backup_dir=str(backup_dir) if backup_dir is not None else None)
     try:
@@ -252,7 +253,7 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
         wait_after_reboot = False
         context.update_fields(reboot_after_write=False, wait_after_reboot=False)
     config = load_request_config(params, context)
-    target = _resolve_flash_target(config, context)
+    target = _resolve_flash_target(config, context, restarts=reboot_after_write)
     bank = plan.target_name
     context.update_fields(target_bank=bank)
     presentation_id = "flash.restore_secondary_write" if secondary_refresh else f"flash.{plan_operation}_write"

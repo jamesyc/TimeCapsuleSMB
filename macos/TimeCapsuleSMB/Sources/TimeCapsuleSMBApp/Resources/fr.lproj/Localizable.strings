@@ -928,7 +928,7 @@
 "backend.recovery.fsck.validation_failed.action.1" = "Sélectionnez un volume HFS précis.";
 "backend.recovery.fsck.validation_failed.action.2" = "Actualisez la liste des volumes, puis réessayez.";
 "backend.recovery.fsck.fsck_already_running.title" = "Réparation de disque déjà en cours";
-"backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs, lancé par une réparation de disque précédente, est toujours en cours sur l’appareil. Redémarrer ou débrancher l’appareil maintenant l’interromprait.";
+"backend.recovery.fsck.fsck_already_running.message" = "Un contrôle du disque, par exemple une réparation de disque précédente, est toujours en cours sur l’appareil. Redémarrer ou débrancher l’appareil maintenant l’interromprait.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Laissez la Time Capsule branchée et patientez ; sur un grand disque, la réparation peut prendre une heure ou plus.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Relancez ensuite « Réparation de disque ». Elle redémarre l’appareil une fois terminée.";
 "backend.recovery.fsck.fsck_volume_not_unmounted.title" = "Le disque n’a pas pu être démonté";
@@ -1029,6 +1029,18 @@
 "backend.recovery.disk_not_responding.action.3" = "Si le disque cesse de nouveau de répondre, il est probablement défaillant : copiez les fichiers dont vous avez besoin. Connectez un disque USB à un Mac ; si le partage de fichiers est arrêté, retirez un disque interne et connectez-le à un Mac avec un adaptateur SATA vers USB.";
 "backend.recovery.disk_not_responding.action.4" = "Remplacez le disque.";
 "backend.recovery.disk_not_responding.action.5" = "Effacez le nouveau disque dans Utilitaire AirPort, puis lancez « Installer / mettre à jour Samba ». Time Machine y commence une nouvelle sauvegarde complète.";
+"backend.recovery.disk_check_not_responding.title" = "Un contrôle du disque ne répond pas";
+"backend.recovery.disk_check_not_responding.message" = "Un contrôle du disque sur l’appareil, par exemple une réparation de disque, attend le disque depuis plusieurs minutes sans se terminer. Le service AirPort d’Apple attend aussi le disque : l’appareil ne peut donc pas être mis à jour ni redémarré par le réseau. Sur un disque défaillant, une réparation peut attendre aussi longtemps une seule lecture et quand même se terminer.";
+"backend.recovery.disk_check_not_responding.action.1" = "Si une réparation de disque est en cours, attendez d’abord encore quelques minutes : débrancher l’appareil l’arrête.";
+"backend.recovery.disk_check_not_responding.action.2" = "Débranchez l’appareil, attendez 10 secondes, puis rebranchez-le.";
+"backend.recovery.disk_check_not_responding.action.3" = "Attendez 2 minutes que l’appareil démarre, puis réessayez.";
+"backend.recovery.disk_check_not_responding.action.4" = "Si le disque cesse de nouveau de répondre, il est probablement défaillant : copiez les fichiers dont vous avez besoin. Connectez un disque USB à un Mac ; si le partage de fichiers est arrêté, retirez un disque interne et connectez-le à un Mac avec un adaptateur SATA vers USB.";
+"backend.recovery.disk_check_not_responding.action.5" = "Remplacez le disque.";
+"backend.recovery.disk_check_not_responding.action.6" = "Effacez le nouveau disque dans Utilitaire AirPort, puis lancez « Installer / mettre à jour Samba ». Time Machine y commence une nouvelle sauvegarde complète.";
+"backend.recovery.fsck_already_running.title" = "Contrôle du disque toujours en cours";
+"backend.recovery.fsck_already_running.message" = "Un contrôle du disque est toujours en cours sur l’appareil, par exemple une réparation de disque qui s’est poursuivie après la fin de la connexion de ce Mac à l’appareil. Le disque ne peut pas être utilisé avant la fin du contrôle, et redémarrer ou débrancher l’appareil maintenant l’interromprait.";
+"backend.recovery.fsck_already_running.action.1" = "Laissez l’appareil branché et patientez. Sur un grand disque, le contrôle peut prendre une heure ou plus.";
+"backend.recovery.fsck_already_running.action.2" = "Réessayez ensuite.";
 "backend.recovery.deploy_disk_size_misreported.title" = "Le disque signale une taille erronée";
 "backend.recovery.deploy_disk_size_misreported.message" = "L’appareil signale le disque interne comme beaucoup plus petit qu’il n’est. Un redémarrage corrige parfois ce problème ; si cela se reproduit, le disque est probablement défaillant.";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "Redémarrez l’appareil, puis relancez « Installer / mettre à jour Samba » une fois que le disque tourne.";

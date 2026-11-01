@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 import time
@@ -23,8 +23,14 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.device import probe as device_probe
 from timecapsulesmb.device import acpd
-from timecapsulesmb.device.disk_errors import DISK_NOT_RESPONDING_MESSAGE, disk_stall_facts
-from timecapsulesmb.device.processes import StuckProcess, disk_io_stalls
+from timecapsulesmb.device.disk_errors import (
+    DISK_NOT_RESPONDING_MESSAGE,
+    disk_check_facts,
+    disk_check_running_message,
+    disk_stall_code,
+    disk_stall_facts,
+)
+from timecapsulesmb.device.processes import Process, StuckProcess, disk_checks_running, disk_io_stalls, listing_complete
 from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
@@ -52,7 +58,9 @@ CLOSED_SSH_RECHECK_INTERVAL_SECONDS = 1.0
 
 
 class DeviceAccessError(DeviceError):
-    """The SSH probe did not reach a login session; `code` says why."""
+    """The device cannot take the work: the SSH probe did not reach a login
+    session, or a preflight refused it before anything changed
+    (require_acpd_ready). `code` says why."""
 
     code: ErrorCode
 
@@ -105,6 +113,7 @@ def acpd_problems_and_disk_stalls(
     callbacks: OperationCallbacks,
     *,
     network_reading: device_probe.AirportAcpReading | None = None,
+    disk_check: bool = True,
 ) -> tuple[list[acpd.AcpdProblem], list[StuckProcess]]:
     """acpd.acpd_problems, with the processes stuck on the disk
     (processes.disk_io_stalls), which callers report instead of the problems:
@@ -112,15 +121,19 @@ def acpd_problems_and_disk_stalls(
     hang on that disk anyway. A stall in the first listing returns before
     ACPd is read; the list is read again when a problem is one a stuck disk
     causes (acpd.disk_stall_could_explain), as ACPd's slow reads can let a
-    disk process pass the stall threshold."""
+    disk process pass the stall threshold. With `disk_check`, a disk checker
+    that keeps running raises DiskCheckRunningError first
+    (require_no_disk_check): the unplug that a stall or ACPd's problems ask
+    for would interrupt it. Work that neither restarts the device nor uses
+    the disk leaves it out."""
 
-    def stalls_in(listing: str) -> list[StuckProcess]:
-        stalls = disk_io_stalls(listing)
+    def stalls_in(ps_output: str) -> list[StuckProcess]:
+        stalls = disk_io_stalls(ps_output)
         if stalls:
             callbacks.debug(disk_io_stalls=[stall.describe() for stall in stalls])
         return stalls
 
-    listing = acpd.read_processes(connection)
+    listing = require_no_disk_check(connection, callbacks) if disk_check else acpd.read_processes(connection)
     stalls = stalls_in(listing)
     if stalls:
         return [], stalls
@@ -134,11 +147,113 @@ def acpd_problems_and_disk_stalls(
     return problems, stalls
 
 
+class DiskCheckRunningError(DeviceAccessError):
+    """A disk checker kept running (require_no_disk_check). `prefix` and
+    `suffix` frame the message for the command that stopped, as
+    disk_errors.DiskNotRespondingError's do. It is a DeviceAccessError, not
+    that error's sibling in device.disk_errors, because the app and CLI
+    preflights catch DeviceAccessError for every refusal."""
+
+    code = ErrorCode.FSCK_ALREADY_RUNNING
+
+    def __init__(
+        self,
+        checks: Iterable[Process],
+        *,
+        unanswered: bool = False,
+        prefix: str = "",
+        suffix: str = "Nothing was changed.",
+    ) -> None:
+        self.checks = tuple(checks)
+        self.unanswered = unanswered
+        running = disk_check_running_message(self.checks, unanswered=unanswered)
+        message = " ".join(part for part in (prefix, running, suffix) if part)
+        super().__init__(message, detail=disk_check_facts(self.checks))
+
+
+# Apple's diskd checks a volume with fsck_hfs for a few seconds before it
+# mounts it, one volume after another. The same checker still listed this much
+# later is a longer check, such as a Disk Repair, which the work would have to
+# wait for. Another checker each time is diskd's next short one, so the list
+# is read again, this many times at most; a read that cannot be used counts
+# as one of them.
+DISK_CHECK_RECHECK_SECONDS = 10.0
+DISK_CHECK_RECHECKS = 3
+
+
+def require_no_disk_check(connection: SshConnection, callbacks: OperationCallbacks) -> str:
+    """The process listing (acpd.read_processes), once no disk checker
+    (processes.disk_checks_running) runs in it; raises DiskCheckRunningError
+    for one that keeps running: its volume is unmounted until it ends, and a
+    restart or an unplug would interrupt it.
+
+    A checker stuck on the disk itself does not count: the caller reports it
+    as the disk (processes.disk_io_stalls). Another process stuck on the disk
+    beside a live checker does not hide the checker, as that report's unplug
+    would cut it off. Once a checker is seen, only a complete listing
+    (processes.listing_complete) can show it gone: SSH or ps that does not
+    answer, as on a disk kept busy, uses up a look. A first listing that
+    cannot be read shows nothing, and the work goes on as it would without
+    this check; a refusal after a last look that could not be read says the
+    checker was running when the device stopped answering. Every wait is a
+    measurement (disk_check_wait), so it reaches telemetry whether the work
+    then goes on or not. The app runs its preflight in the confirmation pass
+    and again in the run pass, so one operation can record two waits."""
+
+    def live_checks(ps_output: str) -> list[Process]:
+        stuck = {stall.pid for stall in disk_io_stalls(ps_output)}
+        return [check for check in disk_checks_running(ps_output) if check.pid not in stuck]
+
+    listing = acpd.read_processes(connection)
+    checks = live_checks(listing)
+    if not checks:
+        return listing
+    started = time.monotonic()
+    # Each look's checkers, or "unreadable" for a listing that did not finish.
+    looks: list[list[str] | str] = [[check.describe() for check in checks]]
+    lasting: list[Process] = []
+    ended = False
+    for _recheck in range(DISK_CHECK_RECHECKS):
+        programs = ", ".join(sorted({check.ucomm for check in checks}))
+        callbacks.message(
+            f"A disk check ({programs}) is running on the device. "
+            f"Checking again in {DISK_CHECK_RECHECK_SECONDS:.0f} seconds..."
+        )
+        acpd.pause(DISK_CHECK_RECHECK_SECONDS)
+        later_listing = acpd.read_processes(connection)
+        if not listing_complete(later_listing):
+            looks.append("unreadable")
+            continue
+        listing = later_listing
+        earlier = {check.pid for check in checks}
+        later = live_checks(listing)
+        looks.append([check.describe() for check in later])
+        if not later:
+            ended = True
+            break
+        checks = later
+        lasting = [check for check in later if check.pid in earlier]
+        if lasting:
+            break
+    callbacks.measurement(
+        "disk_check_wait",
+        result="ended" if ended else "refused",
+        looks=looks,
+        duration_sec=round(time.monotonic() - started, 3),
+    )
+    if ended:
+        return listing
+    refused = lasting or checks
+    callbacks.debug(disk_checks_running=[check.describe() for check in refused])
+    raise DiskCheckRunningError(refused, unanswered=not lasting and looks[-1] == "unreadable")
+
+
 def require_acpd_ready(
     connection: SshConnection,
     callbacks: OperationCallbacks,
     *,
     reading: device_probe.AirportAcpReading | None = None,
+    restarts: bool = True,
 ) -> None:
     """Refuse, before anything changes, a device whose ACPd cannot take the work.
 
@@ -148,7 +263,12 @@ def require_acpd_ready(
     stuck fork of ACPd may be waiting to hang the next reboot. A process stuck
     on the disk (processes.disk_io_stalls) refuses the work too, before ACPd is
     read: ACPd waits behind it, so the disk is what to report, and the work
-    would hang on that disk anyway. `reading` is
+    would hang on that disk anyway. A stuck disk checker gets its own code
+    (disk_errors.disk_stall_code). A disk checker that keeps running, such
+    as a Disk Repair whose connection ended, refuses it before either
+    (require_no_disk_check), unless `restarts` is False: a flash backup,
+    plan or patch neither restarts the device nor uses its disk, so it
+    cannot interrupt the check. `reading` is
     this command's earlier network read of the device at this address
     (confirm_device_address); an unanswered one is not read again from here,
     as the second read would only repeat the same retry, but ACPd's listener
@@ -160,11 +280,13 @@ def require_acpd_ready(
     if reading.password_matches is False:
         raise DeviceAccessError(AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, code=ErrorCode.AUTH_FAILED)
     report_airport_identity(callbacks, reading)
-    problems, stalls = acpd_problems_and_disk_stalls(connection, callbacks, network_reading=reading)
+    problems, stalls = acpd_problems_and_disk_stalls(
+        connection, callbacks, network_reading=reading, disk_check=restarts,
+    )
     if stalls:
         raise DeviceAccessError(
             f"{DISK_NOT_RESPONDING_MESSAGE} Nothing was changed.",
-            code=ErrorCode.DISK_NOT_RESPONDING,
+            code=disk_stall_code(stalls),
             detail=disk_stall_facts(stalls),
         )
     if problems:

@@ -928,7 +928,7 @@
 "backend.recovery.fsck.validation_failed.action.1" = "Selecteer een specifiek HFS-volume.";
 "backend.recovery.fsck.validation_failed.action.2" = "Vernieuw de lijst met volumes en probeer het opnieuw.";
 "backend.recovery.fsck.fsck_already_running.title" = "Schijfreparatie al bezig";
-"backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs van een eerdere schijfreparatie is nog bezig op het apparaat. Als u het apparaat nu opnieuw opstart of loskoppelt, wordt deze onderbroken.";
+"backend.recovery.fsck.fsck_already_running.message" = "Het apparaat controleert de schijf nog, bijvoorbeeld met een eerdere schijfreparatie. Als u het apparaat nu opnieuw opstart of de stekker eruit haalt, wordt dit onderbroken.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Laat de Time Capsule aangesloten op het stopcontact en wacht; op een grote schijf kan de reparatie een uur of langer duren.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Voer daarna ‘Schijfreparatie’ opnieuw uit. Die start het apparaat opnieuw op wanneer deze klaar is.";
 "backend.recovery.fsck.fsck_volume_not_unmounted.title" = "De schijf kon niet worden ontkoppeld";
@@ -1029,6 +1029,18 @@
 "backend.recovery.disk_not_responding.action.3" = "Als de schijf opnieuw niet meer reageert, is die waarschijnlijk defect: kopieer de bestanden die u nodig hebt. Sluit een USB-schijf aan op een Mac; als bestandsdeling uit staat, haal een interne schijf eruit en sluit die met een SATA-naar-USB-adapter aan op een Mac.";
 "backend.recovery.disk_not_responding.action.4" = "Vervang de schijf.";
 "backend.recovery.disk_not_responding.action.5" = "Wis de nieuwe schijf in het AirPort-configuratieprogramma en voer daarna ‘Samba installeren / bijwerken’ uit. Time Machine begint er een nieuwe, volledige reservekopie op.";
+"backend.recovery.disk_check_not_responding.title" = "De schijf wordt gecontroleerd, maar reageert niet";
+"backend.recovery.disk_check_not_responding.message" = "Een controle van de schijf op het apparaat, zoals een schijfreparatie, wacht al minuten op de schijf zonder klaar te zijn. De AirPort-dienst van Apple wacht ook op de schijf, dus het apparaat kan niet via het netwerk worden bijgewerkt of opnieuw worden opgestart. Op een defecte schijf kan een reparatie zo lang op één leesbewerking wachten en toch klaar komen.";
+"backend.recovery.disk_check_not_responding.action.1" = "Als er een schijfreparatie bezig is, wacht dan eerst nog een paar minuten: als u de stekker eruit haalt, stopt deze.";
+"backend.recovery.disk_check_not_responding.action.2" = "Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
+"backend.recovery.disk_check_not_responding.action.3" = "Wacht 2 minuten tot het apparaat is opgestart en probeer het opnieuw.";
+"backend.recovery.disk_check_not_responding.action.4" = "Als de schijf opnieuw niet meer reageert, is die waarschijnlijk defect: kopieer de bestanden die u nodig hebt. Sluit een USB-schijf aan op een Mac; als bestandsdeling uit staat, haal een interne schijf eruit en sluit die met een SATA-naar-USB-adapter aan op een Mac.";
+"backend.recovery.disk_check_not_responding.action.5" = "Vervang de schijf.";
+"backend.recovery.disk_check_not_responding.action.6" = "Wis de nieuwe schijf in het AirPort-configuratieprogramma en voer daarna ‘Samba installeren / bijwerken’ uit. Time Machine begint er een nieuwe, volledige reservekopie op.";
+"backend.recovery.fsck_already_running.title" = "Schijf wordt nog gecontroleerd";
+"backend.recovery.fsck_already_running.message" = "Het apparaat controleert de schijf nog, bijvoorbeeld met een schijfreparatie die doorliep nadat de verbinding van deze Mac met het apparaat was verbroken. De schijf kan pas worden gebruikt als dit klaar is. Als u het apparaat nu opnieuw opstart of de stekker eruit haalt, wordt het onderbroken.";
+"backend.recovery.fsck_already_running.action.1" = "Laat de stekker van het apparaat erin en wacht. Op een grote schijf kan dit een uur of langer duren.";
+"backend.recovery.fsck_already_running.action.2" = "Probeer het daarna opnieuw.";
 "backend.recovery.deploy_disk_size_misreported.title" = "De schijf meldt een verkeerde grootte";
 "backend.recovery.deploy_disk_size_misreported.message" = "Het apparaat meldt de interne schijf als veel kleiner dan hij is. Een herstart verhelpt dit soms; als het blijft gebeuren, is de schijf waarschijnlijk defect.";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "Herstart het apparaat en voer ‘Samba installeren / bijwerken’ daarna opnieuw uit zodra de schijf draait.";

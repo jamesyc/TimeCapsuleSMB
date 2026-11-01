@@ -488,6 +488,29 @@ class CliMaintenanceTests(CliTestCase):
                 self.assertEqual(rc, 0)
                 compare.assert_not_called()
 
+    def test_uninstall_without_a_reboot_waits_for_a_running_disk_check_before_removing_anything(self) -> None:
+        # A repair's volume is unmounted: the uninstall would report success
+        # with its files still on the disk. No password is needed to see it.
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
+        compare = acp_password_answer(True)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            flow = self._patch_mast_volume_flow(stack, "uninstall")
+            remove = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            stack.enter_context(mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare))
+            stack.enter_context(mock.patch("timecapsulesmb.device.acpd.read_processes",
+                                           return_value="  4211 4200 4200 R 0 - 1:12.04 fsck_hfs\ntcapsule-ps: end\n"))
+            pause = stack.enter_context(mock.patch("timecapsulesmb.device.acpd.pause"))
+            with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                uninstall.main(["--yes", "--no-reboot"])
+
+        self.assertTrue(str(raised.exception.code).startswith("A disk check (fsck_hfs) is still running on the device."))
+        self.assertIn("Keep the device plugged in and wait.", str(raised.exception.code))
+        pause.assert_called_once()
+        compare.assert_not_called()
+        flow.mounted_mast_volumes_conn.assert_not_called()
+        remove.assert_not_called()
+
     def test_uninstall_ignores_unsafe_legacy_payload_dir(self) -> None:
         output = io.StringIO()
         values = {

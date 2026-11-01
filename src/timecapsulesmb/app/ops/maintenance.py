@@ -15,6 +15,7 @@ from timecapsulesmb.app.confirmations import build_confirmation, disk_failing_co
 from timecapsulesmb.app.ops.common import (
     load_request_config,
     require_request_acpd_ready,
+    require_request_no_disk_check,
     resolve_request_connection,
     resolve_request_target,
 )
@@ -133,6 +134,10 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     connection = resolve_request_connection(config, context, allow_empty_password=no_reboot or dry_run)
     if not dry_run and not no_reboot:
         require_request_acpd_ready(context, connection)
+    elif not dry_run:
+        # No restart, so ACPd is not asked; but a repair's volume is unmounted,
+        # and the uninstall would report success with its files still there.
+        require_request_no_disk_check(context, connection)
     if not dry_run:
         disk_failing = read_disk_failing_evidence_conn(connection)
         presentation = {

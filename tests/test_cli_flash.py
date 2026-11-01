@@ -275,6 +275,34 @@ class CliFlashTests(CliTestCase):
                 self.assertEqual(raised.exception.code, "acpd_broken")
                 read_inputs.assert_not_called()
 
+    def test_flash_waits_for_a_running_disk_check_only_before_a_restart(self) -> None:
+        # Only a restore's reboot could interrupt a repair: the other modes
+        # read or write flash, not the disk, and restart nothing.
+        from timecapsulesmb.services.runtime import DiskCheckRunningError
+
+        repair = "  4211 4200 4200 R 0 - 1:12.04 fsck_hfs\ntcapsule-ps: end\n"
+        for mode, refused in (
+            (["--read-only"], False),
+            (["--check-apple"], False),
+            (["--patch", "--yes"], False),
+            (["--restore", "--yes"], False),
+            (["--restore", "--yes", "--reboot"], True),
+        ):
+            with self.subTest(mode=mode):
+                command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+                with tempfile.TemporaryDirectory() as tmp, zopfli_available(), self.flash_cli(command_context), \
+                        mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=repair), \
+                        mock.patch("timecapsulesmb.device.acpd.pause") as pause, \
+                        mock.patch("timecapsulesmb.services.flash.read_flash_inputs",
+                                   side_effect=RuntimeError("banks read")) as read_inputs, \
+                        redirect_stdout(io.StringIO()):
+                    expected = DiskCheckRunningError if refused else RuntimeError
+                    with self.assertRaises(expected):
+                        cli_flash.main([*mode, "--backup-dir", str(Path(tmp) / "backup")])
+
+                self.assertEqual(read_inputs.called, not refused)
+                self.assertEqual(pause.called, refused)
+
     def test_flash_read_only_leaves_inactive_secondary_unmodified_when_it_fits(self) -> None:
         output = io.StringIO()
         primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")

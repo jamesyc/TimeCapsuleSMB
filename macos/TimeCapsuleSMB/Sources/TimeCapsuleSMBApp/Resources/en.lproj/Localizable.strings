@@ -928,7 +928,7 @@
 "backend.recovery.fsck.validation_failed.action.1" = "Select a specific HFS volume.";
 "backend.recovery.fsck.validation_failed.action.2" = "Refresh the volume list, then try again.";
 "backend.recovery.fsck.fsck_already_running.title" = "Disk repair already running";
-"backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs from an earlier disk repair is still running on the device. Restarting or unplugging the device now would interrupt it.";
+"backend.recovery.fsck.fsck_already_running.message" = "A disk check, such as an earlier disk repair, is still running on the device. Restarting or unplugging the device now would interrupt it.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Keep the Time Capsule plugged in and wait; on a large disk the repair can take an hour or more.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Then run “Disk Repair” again. It restarts the device when it finishes.";
 "backend.recovery.fsck.fsck_volume_not_unmounted.title" = "The disk could not be unmounted";
@@ -1029,6 +1029,18 @@
 "backend.recovery.disk_not_responding.action.3" = "If the disk stops responding again, it is probably failing: copy off the files you need. Connect a USB disk to a Mac; if file sharing is off, take an internal disk out and connect it to a Mac with a SATA-to-USB adapter.";
 "backend.recovery.disk_not_responding.action.4" = "Replace the disk.";
 "backend.recovery.disk_not_responding.action.5" = "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, full backup on it.";
+"backend.recovery.disk_check_not_responding.title" = "A disk check is not responding";
+"backend.recovery.disk_check_not_responding.message" = "A disk check on the device, such as a disk repair, has waited for minutes on the disk without finishing. Apple's AirPort service waits for the disk too, so the device cannot be updated or restarted over the network. On a failing disk, a repair can wait that long on one read and still finish.";
+"backend.recovery.disk_check_not_responding.action.1" = "If a disk repair is running, give it a few more minutes first: unplugging the device stops it.";
+"backend.recovery.disk_check_not_responding.action.2" = "Unplug the device, wait 10 seconds and plug it back in.";
+"backend.recovery.disk_check_not_responding.action.3" = "Wait 2 minutes for the device to start up, then try again.";
+"backend.recovery.disk_check_not_responding.action.4" = "If the disk stops responding again, it is probably failing: copy off the files you need. Connect a USB disk to a Mac; if file sharing is off, take an internal disk out and connect it to a Mac with a SATA-to-USB adapter.";
+"backend.recovery.disk_check_not_responding.action.5" = "Replace the disk.";
+"backend.recovery.disk_check_not_responding.action.6" = "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, full backup on it.";
+"backend.recovery.fsck_already_running.title" = "Disk check still running";
+"backend.recovery.fsck_already_running.message" = "A disk check is still running on the device, such as a disk repair that kept running after this Mac's connection to the device ended. The disk cannot be used until it finishes, and restarting or unplugging the device now would interrupt it.";
+"backend.recovery.fsck_already_running.action.1" = "Keep the device plugged in and wait. On a large disk the check can take an hour or more.";
+"backend.recovery.fsck_already_running.action.2" = "Then try again.";
 "backend.recovery.deploy_disk_size_misreported.title" = "The disk is reporting the wrong size";
 "backend.recovery.deploy_disk_size_misreported.message" = "The device reports the internal disk as much smaller than it is. A restart sometimes clears this; if it keeps happening, the disk is probably failing.";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "Restart the device, then run “Install / Update Samba” again after the disk spins up.";

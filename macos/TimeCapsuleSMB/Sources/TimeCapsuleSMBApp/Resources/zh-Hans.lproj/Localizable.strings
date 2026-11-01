@@ -928,7 +928,7 @@
 "backend.recovery.fsck.validation_failed.action.1" = "选择一个特定的 HFS 卷。";
 "backend.recovery.fsck.validation_failed.action.2" = "刷新卷列表，然后重试。";
 "backend.recovery.fsck.fsck_already_running.title" = "磁盘修复已在运行";
-"backend.recovery.fsck.fsck_already_running.message" = "之前磁盘修复的 fsck_hfs 仍在设备上运行。现在重启设备或断开电源会中断它。";
+"backend.recovery.fsck.fsck_already_running.message" = "设备上仍在运行磁盘检测，例如之前的磁盘修复。现在重启设备或拔掉电源会中断它。";
 "backend.recovery.fsck.fsck_already_running.action.1" = "请保持 Time Capsule 接通电源并等待；大容量磁盘的修复可能需要一小时或更长时间。";
 "backend.recovery.fsck.fsck_already_running.action.2" = "然后再次运行“磁盘修复”。完成后它会重启设备。";
 "backend.recovery.fsck.fsck_volume_not_unmounted.title" = "无法卸载磁盘";
@@ -1029,6 +1029,18 @@
 "backend.recovery.disk_not_responding.action.3" = "如果磁盘再次停止响应，它很可能出现故障：请复制出你需要的文件。将 USB 磁盘连接到 Mac；如果文件共享已停止，请取出内部磁盘，并用 SATA 转 USB 转接器将其连接到 Mac。";
 "backend.recovery.disk_not_responding.action.4" = "请更换磁盘。";
 "backend.recovery.disk_not_responding.action.5" = "请在 AirPort 实用工具中抹掉新磁盘，然后运行“安装 / 更新 Samba”。时间机器会在新磁盘上开始新的完整备份。";
+"backend.recovery.disk_check_not_responding.title" = "磁盘检测没有响应";
+"backend.recovery.disk_check_not_responding.message" = "设备上的磁盘检测（例如磁盘修复）已等待该磁盘数分钟仍未完成。苹果 AirPort 服务也在等待该磁盘，因此无法通过网络更新或重启设备。在出现故障的磁盘上，修复可能会在一次读取上等待这么久，但仍能完成。";
+"backend.recovery.disk_check_not_responding.action.1" = "如果磁盘修复正在运行，请先再等几分钟：拔掉电源会中断修复。";
+"backend.recovery.disk_check_not_responding.action.2" = "拔掉设备电源，等待 10 秒，然后重新插上。";
+"backend.recovery.disk_check_not_responding.action.3" = "等待 2 分钟让设备完成启动，然后重试。";
+"backend.recovery.disk_check_not_responding.action.4" = "如果磁盘再次停止响应，它很可能出现故障：请复制出你需要的文件。将 USB 磁盘连接到 Mac；如果文件共享已停止，请取出内部磁盘，并用 SATA 转 USB 转接器将其连接到 Mac。";
+"backend.recovery.disk_check_not_responding.action.5" = "请更换磁盘。";
+"backend.recovery.disk_check_not_responding.action.6" = "请在 AirPort 实用工具中抹掉新磁盘，然后运行“安装 / 更新 Samba”。时间机器会在新磁盘上开始新的完整备份。";
+"backend.recovery.fsck_already_running.title" = "设备仍在检测磁盘";
+"backend.recovery.fsck_already_running.message" = "设备上仍在运行磁盘检测，例如此 Mac 与设备的连接断开后仍在继续的磁盘修复。检测完成前无法使用该磁盘，现在重启设备或拔掉电源会中断它。";
+"backend.recovery.fsck_already_running.action.1" = "请保持设备接通电源并等待。大容量磁盘的检测可能需要一小时或更长时间。";
+"backend.recovery.fsck_already_running.action.2" = "然后再试一次。";
 "backend.recovery.deploy_disk_size_misreported.title" = "磁盘报告的容量不正确";
 "backend.recovery.deploy_disk_size_misreported.message" = "设备报告的内部磁盘容量远小于实际容量。重启有时可以解决这个问题；如果反复出现，磁盘很可能出现故障。";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "重启设备，等磁盘转动起来后重新运行“安装 / 更新 Samba”。";

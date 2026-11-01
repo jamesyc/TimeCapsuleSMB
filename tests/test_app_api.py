@@ -7074,6 +7074,88 @@ MaSt = (
         resolve_connection.assert_called_once()
         uninstall.assert_not_called()
 
+    def test_uninstall_waits_for_a_running_disk_check_before_asking_or_removing_anything(self) -> None:
+        # A repair's volume is unmounted: with or without the restart, the
+        # uninstall would report success and leave its files on the disk.
+        repair = "  4211 4200 4200 R 0 - 1:12.04 fsck_hfs\ntcapsule-ps: end\n"
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        for params in ({}, {"no_reboot": True}):
+            with self.subTest(params=params):
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                        mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection), \
+                        mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=repair), \
+                        mock.patch("timecapsulesmb.device.acpd.pause") as pause, \
+                        mock.patch("timecapsulesmb.app.ops.maintenance.read_disk_failing_evidence_conn") as disk, \
+                        mock.patch("timecapsulesmb.app.ops.maintenance.prepare_uninstall") as prepare, \
+                        mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
+                    rc = service.run_api_request({"operation": "uninstall", "params": params}, collector.sink)
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "fsck_already_running")
+                self.assertTrue(error["message"].startswith("A disk check (fsck_hfs) is still running on the device."))
+                pause.assert_called_once()
+                disk.assert_not_called()
+                prepare.assert_not_called()
+                uninstall.assert_not_called()
+
+    def test_a_disk_check_wait_that_lets_the_command_go_on_reaches_telemetry(self) -> None:
+        # Debug fields only go with a failure; the wait is a measurement, so the
+        # finished event of a command that went on still carries it.
+        quick_check = "  4211 379 39 R 0 - 0:00.40 fsck_hfs\ntcapsule-ps: end\n"
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        collector = CollectingSink()
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection), \
+                mock.patch("timecapsulesmb.device.acpd.read_processes",
+                           side_effect=[quick_check, "tcapsule-ps: end\n"]), \
+                mock.patch("timecapsulesmb.device.acpd.pause"), \
+                mock.patch("timecapsulesmb.app.ops.maintenance.read_disk_failing_evidence_conn", return_value=None), \
+                mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
+            rc = service.run_api_request({"operation": "uninstall", "params": {"no_reboot": True}}, collector.sink)
+        self.assertEqual(rc, 1)
+        self.assert_confirmation(collector, "uninstall.no_reboot")
+        uninstall.assert_not_called()
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        wait = finished["execution"]["measurements"]["disk_check_wait"]
+        self.assertEqual(len(wait), 1)
+        self.assertEqual(wait[0]["result"], "ended")
+        self.assertEqual(wait[0]["looks"], [["fsck_hfs (pid 4211)"], []])
+
+    def test_flash_waits_for_a_disk_check_only_before_a_restart(self) -> None:
+        # Only a restore's reboot could interrupt a repair: a backup and a patch
+        # read or write flash, not the disk, and restart nothing.
+        bundle = SimpleNamespace(manifest={"backup_dir": "/tmp/flash-backup", "banks": []})
+        with mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()), \
+                mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=object()) as resolve, \
+                mock.patch("timecapsulesmb.app.ops.flash.backup_flash", return_value=bundle):
+            rc = service.run_api_request({"operation": "flash", "params": {"action": "backup"}}, CollectingSink().sink)
+        self.assertEqual(rc, 0)
+        self.assertIs(resolve.call_args.kwargs["restarts"], False)
+
+        target = SimpleNamespace(acp_host="10.0.0.2", connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
+        bank = SimpleNamespace(name="primary", sha256="bank-sha")
+        for mode, params, restarts in (
+            ("restore", {}, True),
+            ("restore", {"reboot_after_write": False}, False),
+            ("patch", {}, False),
+        ):
+            with self.subTest(mode=mode, params=params), tempfile.TemporaryDirectory() as tmp:
+                plan = SimpleNamespace(
+                    already_satisfied=False, target_bank=bank, target_name="primary", secondary_refresh=None, mode=mode,
+                )
+                bundle = SimpleNamespace(manifest={"backup_dir": tmp}, backup_dir=Path(tmp))
+                with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)), \
+                        mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()), \
+                        mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target) as resolve:
+                    service.run_api_request(
+                        {"operation": "flash", "params": {"action": "write", "backup_dir": tmp, "mode": mode, **params}},
+                        CollectingSink().sink,
+                    )
+                self.assertIs(resolve.call_args.kwargs["restarts"], restarts)
+
     DISK_ERRORS = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
 
     def run_uninstall_with_disk_errors(self, errors, params: dict[str, object], verdicts=()):

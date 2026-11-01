@@ -928,7 +928,7 @@
 "backend.recovery.fsck.validation_failed.action.1" = "Pasirinkite konkretų HFS tomą.";
 "backend.recovery.fsck.validation_failed.action.2" = "Atnaujinkite tomų sąrašą, tada bandykite dar kartą.";
 "backend.recovery.fsck.fsck_already_running.title" = "Disko taisymas jau vykdomas";
-"backend.recovery.fsck.fsck_already_running.message" = "Ankstesnio disko taisymo fsck_hfs vis dar vykdomas įrenginyje. Paleidus įrenginį iš naujo ar atjungus nuo maitinimo dabar, jis būtų nutrauktas.";
+"backend.recovery.fsck.fsck_already_running.message" = "Įrenginyje vis dar vykdomas disko tikrinimas, pavyzdžiui, ankstesnis disko taisymas. Paleidus įrenginį iš naujo ar atjungus nuo maitinimo dabar, jis būtų nutrauktas.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Neatjunkite Time Capsule nuo maitinimo ir palaukite; dideliame diske taisymas gali užtrukti valandą ar ilgiau.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Tada vėl paleiskite operaciją „Disko taisymas“. Baigusi ji paleis įrenginį iš naujo.";
 "backend.recovery.fsck.fsck_volume_not_unmounted.title" = "Nepavyko atjungti disko";
@@ -1029,6 +1029,18 @@
 "backend.recovery.disk_not_responding.action.3" = "Jei diskas vėl nustos atsakyti, jis greičiausiai genda: nukopijuokite reikalingus failus. USB diską įkiškite į Mac; jei failų bendrinimas sustabdytas, išimkite vidinį diską ir prijunkite jį prie Mac per SATA–USB adapterį.";
 "backend.recovery.disk_not_responding.action.4" = "Pakeiskite diską.";
 "backend.recovery.disk_not_responding.action.5" = "AirPort Utility ištrinkite naująjį diską, tada paleiskite „Įdiegti / atnaujinti Samba“. Time Machine jame pradės naują visą atsarginę kopiją.";
+"backend.recovery.disk_check_not_responding.title" = "Disko tikrinimas neatsako";
+"backend.recovery.disk_check_not_responding.message" = "Disko tikrinimas įrenginyje, pavyzdžiui, disko taisymas, jau kelias minutes laukia disko ir nesibaigia. Apple AirPort tarnyba taip pat laukia disko, todėl įrenginio negalima atnaujinti ar paleisti iš naujo per tinklą. Gendančiame diske taisymas gali tiek laukti vieno skaitymo ir vis tiek baigtis.";
+"backend.recovery.disk_check_not_responding.action.1" = "Jei vykdomas disko taisymas, pirma palaukite dar kelias minutes: atjungus įrenginį nuo maitinimo, jis bus nutrauktas.";
+"backend.recovery.disk_check_not_responding.action.2" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
+"backend.recovery.disk_check_not_responding.action.3" = "Palaukite 2 minutes, kol įrenginys pasileis, tada bandykite dar kartą.";
+"backend.recovery.disk_check_not_responding.action.4" = "Jei diskas vėl nustos atsakyti, jis greičiausiai genda: nukopijuokite reikalingus failus. USB diską įkiškite į Mac; jei failų bendrinimas sustabdytas, išimkite vidinį diską ir prijunkite jį prie Mac per SATA–USB adapterį.";
+"backend.recovery.disk_check_not_responding.action.5" = "Pakeiskite diską.";
+"backend.recovery.disk_check_not_responding.action.6" = "AirPort Utility ištrinkite naująjį diską, tada paleiskite „Įdiegti / atnaujinti Samba“. Time Machine jame pradės naują visą atsarginę kopiją.";
+"backend.recovery.fsck_already_running.title" = "Diskas vis dar tikrinamas";
+"backend.recovery.fsck_already_running.message" = "Įrenginyje vis dar vykdomas disko tikrinimas, pavyzdžiui, disko taisymas, kuris tęsėsi nutrūkus šio Mac ryšiui su įrenginiu. Kol jis nesibaigs, diskas negali būti naudojamas, o paleidus įrenginį iš naujo ar atjungus nuo maitinimo dabar, jis būtų nutrauktas.";
+"backend.recovery.fsck_already_running.action.1" = "Neatjunkite įrenginio nuo maitinimo ir palaukite. Dideliame diske tikrinimas gali užtrukti valandą ar ilgiau.";
+"backend.recovery.fsck_already_running.action.2" = "Tada bandykite dar kartą.";
 "backend.recovery.deploy_disk_size_misreported.title" = "Diskas praneša neteisingą dydį";
 "backend.recovery.deploy_disk_size_misreported.message" = "Įrenginys praneša, kad vidinis diskas daug mažesnis, nei yra iš tikrųjų. Kartais tai išsprendžia paleidimas iš naujo; jei tai kartojasi, diskas greičiausiai genda.";
 "backend.recovery.deploy_disk_size_misreported.action.1" = "Paleiskite įrenginį iš naujo ir, kai diskas įsisuks, vėl paleiskite „Įdiegti / atnaujinti Samba“.";

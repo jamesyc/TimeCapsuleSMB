@@ -24,7 +24,7 @@ from typing import Literal
 
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
-from timecapsulesmb.device.processes import StuckProcess
+from timecapsulesmb.device.processes import Process, StuckProcess, is_disk_check
 from timecapsulesmb.device.probe import (
     DISK_EVIDENCE_COMMANDS,
     DISK_REPLACE,
@@ -116,6 +116,39 @@ def disk_stall_facts(stalls: Iterable[StuckProcess]) -> str:
     return f"Waiting for the disk: {'; '.join(stall.describe() for stall in stalls)}."
 
 
+def disk_stall_code(stalls: Iterable[StuckProcess]) -> ErrorCode:
+    """The code for stuck disk processes: disk_check_not_responding when a
+    disk checker (processes.is_disk_check) is among them, as a repair on a
+    failing disk can wait that long on one read and still finish, and its way
+    out gives it time before the unplug; disk_not_responding otherwise."""
+    if any(is_disk_check(stall.name) for stall in stalls):
+        return ErrorCode.DISK_CHECK_NOT_RESPONDING
+    return ErrorCode.DISK_NOT_RESPONDING
+
+
+def disk_check_running_message(checks: Iterable[Process], *, unanswered: bool = False) -> str:
+    """The error for a disk checker still running (processes.disk_checks_running).
+    A Disk Repair's fsck_hfs goes on after the connection that started it ends,
+    and its volume stays unmounted until it finishes. `unanswered`: the device
+    stopped answering after the checker was seen, so it was running then and
+    may be still."""
+    programs = ", ".join(sorted({check.ucomm for check in checks}))
+    if unanswered:
+        return (
+            f"A disk check ({programs}) was running on the device, and the device stopped answering while "
+            "TimeCapsuleSMB waited for it. Restarting or unplugging the device now could interrupt it."
+        )
+    return (
+        f"A disk check ({programs}) is still running on the device. Restarting or unplugging the device now "
+        "would interrupt it."
+    )
+
+
+def disk_check_facts(checks: Iterable[Process]) -> str:
+    """The running disk checkers, as an error's detail."""
+    return f"Running: {'; '.join(check.describe() for check in checks)}."
+
+
 _PREFLIGHT_EFFECTS = {
     "install": "Installing will not fix that.",
     "uninstall": "Uninstalling will not fix that.",
@@ -197,15 +230,19 @@ def disk_failing_warning(evidence: DiskFailingEvidence, operation: str) -> str:
 class DiskNotRespondingError(DeviceError):
     """Samba is off, and a process stuck on the disk says why
     (processes.disk_io_stalls). `prefix` and `suffix` frame the message for
-    the command that stopped: what failed, and what it left as it was."""
+    the command that stopped: what failed, and what it left as it was. A
+    preflight passes disk_stall_code's `code`, so a stuck disk checker gets
+    its own way out."""
 
     code = ErrorCode.DISK_NOT_RESPONDING
     samba_off = True
 
-    def __init__(self, stalls: Iterable[StuckProcess], *, prefix: str = "", suffix: str = "") -> None:
+    def __init__(
+        self, stalls: Iterable[StuckProcess], *, prefix: str = "", suffix: str = "", code: ErrorCode | None = None,
+    ) -> None:
         self.stalls = tuple(stalls)
         message = " ".join(part for part in (prefix, DISK_NOT_RESPONDING_MESSAGE, suffix) if part)
-        super().__init__(message, detail=disk_stall_facts(self.stalls))
+        super().__init__(message, code=code, detail=disk_stall_facts(self.stalls))
 
 
 class DiskFailingError(DeviceError):
