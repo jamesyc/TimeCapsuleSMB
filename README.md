@@ -30,12 +30,15 @@ If TimeCapsuleSMB has been useful to you, you can [buy me a coffee](https://buym
 ## Requirements
 
 You will need:  
-- A Mac or Linux computer on the same local network as the Time Capsule. The app needs macOS 14 or later, and Homebrew needs an Apple silicon Mac; the Python CLI from a clone of this repository runs on macOS 12 or later, Intel or Apple silicon, and on Linux with OpenSSH 8.4 or newer.
+- A Mac or Linux computer on the same local network as the Time Capsule
+  - The macOS app requires macOS 14 or later
+  - The python CLI (from Homebrew or a clone of this repository) runs on macOS 12 or later, and on Linux
 - The password for the Time Capsule
 
 For the python setup, you need:  
 - Python 3.9+
-- On Linux, `smbclient` for `doctor`. On a Mac, `doctor` uses macOS's own SMB client, so the CLI needs no Homebrew.
+- OpenSSH 8.4+
+- On Linux, `smbclient` for `doctor` (on macOS, `doctor` uses macOS's own SMB client)
 
 If you have a Linux computer, then you must use the python CLI version.
 
@@ -71,7 +74,7 @@ Please [read the FAQ](FAQ.md) for more information. If you have an issue that co
 
 ## Quick Start (with python)
 
-On an Apple silicon Mac, Homebrew can install the `tcapsule` command:
+If using Homebrew, then you can use Homebrew to install the `tcapsule` command:
 
 ```bash
 brew install jamesyc/tap/tcapsule
@@ -80,9 +83,9 @@ tcapsule deploy
 tcapsule doctor
 ```
 
-It takes the same commands as the steps below, typed as `tcapsule` in place of `.venv/bin/tcapsule`, and needs no `bootstrap`. On macOS 14 and older, Homebrew has no prebuilt Python 3.15, so it compiles Python first. Its settings are in `~/Library/Application Support/TimeCapsuleSMB/CLI/.env`. `brew update && brew upgrade tcapsule` updates it and `brew uninstall tcapsule` removes it.
+It takes the same commands as the steps below, typed as `tcapsule` in place of `.venv/bin/tcapsule`, and needs no `bootstrap`. Its settings are in `~/Library/Application Support/TimeCapsuleSMB/CLI/`, or `~/.local/share/timecapsulesmb/CLI/` on Linux. On Linux it also installs Homebrew's `samba` for `doctor`. `brew update && brew upgrade tcapsule` updates it and `brew uninstall tcapsule` removes it.
 
-On any Mac with macOS 12 or later, or on Linux, you can instead download (or run `git clone`) this repository to a folder.
+Alternatively, on any Mac with macOS 12 or later, or on Linux, you can download (or run `git clone`) this repository to a folder.
 
 From the root of this repository, the normal quick start commands to run are:
 
