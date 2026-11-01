@@ -84,11 +84,11 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
         build_confirmation(
             operation=operation,
             params=params,
-            title="Confirm NetBSD4 activation",
-            message="Activate the deployed NetBSD4 payload and restart managed services?",
+            title="Confirm NetBSD 4 activation",
+            message="Activate the deployed NetBSD 4 payload and restart managed services?",
             action_title="Activate",
             risk="destructive",
-            summary="NetBSD4 service activation",
+            summary="NetBSD 4 service activation",
             context={
                 "host": confirmation_connection.host,
                 "netbsd4": True,
@@ -107,7 +107,7 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
         raise device_operation_error(context, exc) from exc
     if not is_netbsd4_payload_family(compatibility.payload_family):
         raise AppOperationError(
-            "activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.",
+            "activate is only supported for NetBSD 4 AirPort storage devices; use deploy for persistent NetBSD 6 installs.",
             code=ErrorCode.UNSUPPORTED_DEVICE,
         )
     try:

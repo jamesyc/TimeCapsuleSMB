@@ -1127,13 +1127,13 @@ class ActivateRuntimeTests(unittest.TestCase):
         self.assertTrue(decision.run_actions)
         self.assertEqual(recorder.stages, ["probe_runtime", "run_activation"])
         self.assertEqual(recorder.debug["activation_decision"], "runtime_not_ready")
-        self.assertIn("Activating NetBSD4 payload without file transfer.", recorder.messages)
+        self.assertIn("Activating NetBSD 4 payload without file transfer.", recorder.messages)
         run_actions.assert_called_once_with(CONNECTION, self.ACTIONS)
         # Verification starts right away and polls; nothing sleeps a fixed time.
         settle.assert_not_called()
         self.assertEqual(verify.call_args.kwargs["stage"], "verify_runtime_activation")
         self.assertEqual(verify.call_args.kwargs["timeout_seconds"], 200)
-        self.assertEqual(verify.call_args.kwargs["failure_message"], "NetBSD4 activation failed.")
+        self.assertEqual(verify.call_args.kwargs["failure_message"], "NetBSD 4 activation failed.")
 
     def test_serving_samba_without_rsync_is_verified_not_restarted(self) -> None:
         # Starting the runtime again would stop file sharing that works, and
@@ -1147,7 +1147,7 @@ class ActivateRuntimeTests(unittest.TestCase):
         verify.assert_called_once()
         self.assertEqual(verify.call_args.kwargs["stage"], "verify_runtime_activation")
         self.assertEqual(verify.call_args.kwargs["timeout_seconds"], 200)
-        self.assertEqual(verify.call_args.kwargs["failure_message"], "NetBSD4 activation failed.")
+        self.assertEqual(verify.call_args.kwargs["failure_message"], "NetBSD 4 activation failed.")
         self.assertNotIn("run_activation", recorder.stages)
 
     def test_serving_samba_whose_rsync_never_starts_reports_rsync_alone(self) -> None:
@@ -1160,7 +1160,7 @@ class ActivateRuntimeTests(unittest.TestCase):
         run_actions.assert_not_called()
 
     def test_runtime_that_never_becomes_ready_fails_the_activation(self) -> None:
-        error = DeviceError("NetBSD4 activation failed. managed runtime is not ready")
+        error = DeviceError("NetBSD 4 activation failed. managed runtime is not ready")
         result, _recorder, run_actions, _settle, _verify = self.activate(ready=False, verify_error=error)
 
         self.assertIs(result, error)

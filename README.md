@@ -65,7 +65,7 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
     - If deploying to the device fails, try removing the saved device from the app, then go back to step 4 above to "Add Device" again. It sometimes takes more than one deploy to copy all the files over.
     - **There are reports the device may reset during a deploy, see [this issue](https://github.com/jamesyc/TimeCapsuleSMB/issues/177) for more information.**
     - **Do not be worried if the device resets! YOUR DATA ON THE HARD DRIVE IS SAFE.** Only the Apple configuration settings (WiFi name, password, etc) will be reset. You just need to set it up again and it will work fine.
-9. (For gen 1-4 devices only) After installing, click "Open Boot Hook", or select the "Persistent NetBSD4 Boot Hook" card on the Maintenance tab. Install the firmware patch to allow the device to automatically start Samba after reboots. Click "Back Up and Inspect" and "Plan Patch" to check if it can be installed; then run "Write Patch" to flash it to your device.    
+9. (For gen 1-4 devices only) After installing, click "Open Boot Hook", or select the "Persistent NetBSD 4 Boot Hook" card on the Maintenance tab. Install the firmware patch to allow the device to automatically start Samba after reboots. Click "Back Up and Inspect" and "Plan Patch" to check if it can be installed; then run "Write Patch" to flash it to your device.    
    <img width="800" height="474" alt="image" src="docs/assets/boot-hook.png" />
 10. (Optional) Wait 5-10 minutes for Samba to fully start up, then go to the Checkup tab and run a Checkup.
 11. Delete the old AFP servers listed in macOS Time Machine settings. Then add the new Samba server destination. *This step will not delete your old backups from the disk.*

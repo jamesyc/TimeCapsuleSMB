@@ -213,7 +213,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(OperationTimelineBuilder.operationTitle("deploy"), "Install / Update")
         XCTAssertEqual(OperationTimelineBuilder.operationTitle("doctor"), "Checkup")
         XCTAssertEqual(OperationTimelineBuilder.operationTitle("capabilities"), "App Readiness")
-        XCTAssertEqual(OperationTimelineBuilder.operationTitle("flash"), "Persistent NetBSD4 Boot Hook")
+        XCTAssertEqual(OperationTimelineBuilder.operationTitle("flash"), "Persistent NetBSD 4 Boot Hook")
     }
 
     func testDeployStartupStagesAreUserFacing() {

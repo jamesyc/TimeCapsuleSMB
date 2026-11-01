@@ -235,15 +235,15 @@ def activation_plan_payload(raw: object) -> dict[str, object]:
     return _with_schema({
         **payload,
         "counts": {"actions": action_count},
-        "summary": "NetBSD4 activation dry-run plan generated.",
+        "summary": "NetBSD 4 activation dry-run plan generated.",
     })
 
 
 def activation_result_payload(*, already_active: bool, summary: Summary | None = None) -> dict[str, object]:
     if already_active:
-        summary = Summary("activation_already_active", "NetBSD4 payload was already active.")
+        summary = Summary("activation_already_active", "NetBSD 4 payload was already active.")
     elif summary is None:
-        summary = Summary("activation_completed", "NetBSD4 activation completed.")
+        summary = Summary("activation_completed", "NetBSD 4 activation completed.")
     payload: dict[str, object] = {
         "already_active": already_active,
         **summary.fields(),

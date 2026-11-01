@@ -6578,7 +6578,7 @@ MaSt = (
         result = self.assert_single_terminal_event(collector, "result")
         self.assertEqual(result["payload"]["already_active"], True)
         self.assertEqual(result["payload"]["schema_version"], 1)
-        self.assertEqual(result["payload"]["summary"], "NetBSD4 payload was already active.")
+        self.assertEqual(result["payload"]["summary"], "NetBSD 4 payload was already active.")
         remote_actions.assert_not_called()
 
     def test_activate_that_runs_actions_reports_the_netbsd4_followup(self) -> None:
@@ -6644,7 +6644,7 @@ MaSt = (
         remote_actions.assert_not_called()
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "unsupported_device")
-        self.assertIn("only supported for NetBSD4", error["message"])
+        self.assertIn("only supported for NetBSD 4", error["message"])
         self.assert_neutral_unsupported_device_recovery(error)
 
     def run_deploy_dry_run_against(
@@ -6949,7 +6949,7 @@ MaSt = (
         self.assertEqual(verify_probe.call_args.kwargs, {"timeout_seconds": 200})
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "remote_error")
-        self.assertTrue(error["message"].startswith("NetBSD4 activation failed.\nruntime verification timed out after 200s"))
+        self.assertTrue(error["message"].startswith("NetBSD 4 activation failed.\nruntime verification timed out after 200s"))
         self.assertEqual(error["debug"]["stage"], "verify_runtime_activation")
         self.assertEqual(
             error["debug"]["remote_manager_log_tail"],

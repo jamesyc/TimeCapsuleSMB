@@ -2029,7 +2029,7 @@ class CliFlashTests(CliTestCase):
                         cli_flash.main(["--read-only"])
 
         message = str(raised.exception)
-        self.assertIn("flash is only supported for NetBSD4", message)
+        self.assertIn("flash is only supported for NetBSD 4", message)
         self.assertIn("https://github.com/jamesyc/TimeCapsuleSMB/issues/160", message)
         read_mock.assert_not_called()
 

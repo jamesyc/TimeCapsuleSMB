@@ -204,7 +204,7 @@ def start_netbsd4_runtime_after_reboot(
 RUNTIME_RESTART_FAILURE_MESSAGE = "File sharing did not restart after the reboot."
 RESTART_AFTER_REBOOT_MESSAGES = Netbsd4StartMessages(
     activation_message="Starting the installed runtime after reboot.",
-    autostart_message="NetBSD4 firmware autostart is enabled; waiting for managed runtime.",
+    autostart_message="NetBSD 4 firmware autostart is enabled; waiting for managed runtime.",
     heading="Waiting for managed runtime to finish starting...",
     failure_message=RUNTIME_RESTART_FAILURE_MESSAGE,
 )
@@ -279,7 +279,7 @@ def run_activation_actions_and_verify(
 # disks and the admin password from the device's own ACPd. A stuck fork of it
 # only hangs the next restart, and its network listener is not used here.
 ACPD_START_BLOCKERS = frozenset({"restart_never_happened", "quit", "syut_silent"})
-ACPD_QUIT_START_MESSAGE = f"NetBSD4 activation failed. {acpd.ACPD_QUIT_MESSAGE} Nothing was started."
+ACPD_QUIT_START_MESSAGE = f"NetBSD 4 activation failed. {acpd.ACPD_QUIT_MESSAGE} Nothing was started."
 
 
 def require_acpd_for_start(
@@ -302,7 +302,7 @@ def require_acpd_for_start(
         raise AcpdQuitError(ACPD_QUIT_START_MESSAGE)
     problems, stalls = acpd_problems_and_disk_stalls(connection, callbacks)
     if stalls:
-        raise DiskNotRespondingError(stalls, prefix="NetBSD4 activation failed.", suffix="Nothing was started.")
+        raise DiskNotRespondingError(stalls, prefix="NetBSD 4 activation failed.", suffix="Nothing was started.")
     problems = [problem for problem in problems if problem.code in ACPD_START_BLOCKERS]
     if not problems:
         return
@@ -311,7 +311,7 @@ def require_acpd_for_start(
     if problem.code == "quit":
         raise AcpdQuitError(ACPD_QUIT_START_MESSAGE)
     raise DeviceError(
-        f"NetBSD4 activation failed. {acpd.acpd_broken_message(problem.what, note=f'{problem.note}Nothing was started. ')}",
+        f"NetBSD 4 activation failed. {acpd.acpd_broken_message(problem.what, note=f'{problem.note}Nothing was started. ')}",
         code=ErrorCode.ACPD_BROKEN,
     )
 
@@ -354,7 +354,7 @@ def activate_runtime(
         # fixes the first two, a new disk the last; the manager keeps
         # checking the disk itself and clears a verdict the disk outgrew.
         raise runtime_failure_error(
-            runtime, "NetBSD4 activation failed.", disk_errors=read_disk_errors_conn(connection),
+            runtime, "NetBSD 4 activation failed.", disk_errors=read_disk_errors_conn(connection),
         )
     callbacks.message(decision.detail)
     if decision.verify_runtime and not decision.run_actions:
@@ -364,18 +364,18 @@ def activate_runtime(
             stage="verify_runtime_activation",
             timeout_seconds=200,
             heading="Waiting for rsync to start on the NetBSD 4 device...",
-            failure_message="NetBSD4 activation failed.",
+            failure_message="NetBSD 4 activation failed.",
         )
     elif decision.run_actions:
         run_activation_actions_and_verify(
             connection,
             activation_actions,
             callbacks=callbacks,
-            activation_message="Activating NetBSD4 payload without file transfer.",
+            activation_message="Activating NetBSD 4 payload without file transfer.",
             activation_stage="run_activation",
             verification_stage="verify_runtime_activation",
             verification_timeout_seconds=200,
             verification_heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
-            failure_message="NetBSD4 activation failed.",
+            failure_message="NetBSD 4 activation failed.",
         )
     return decision

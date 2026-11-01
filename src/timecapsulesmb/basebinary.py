@@ -102,7 +102,7 @@ DEFAULT_BASEBINARY_KEYS: tuple[BasebinaryKey, ...] = (
     BasebinaryKey.from_hex(
         "observed-acpd-78100",
         "513c1ca5bf035127335f7c2596aa20aa",
-        provenance="extracted from a NetBSD4 ACPd binary and validated by checksum against Apple product 106 firmware",
+        provenance="extracted from a NetBSD 4 ACPd binary and validated by checksum against Apple product 106 firmware",
     ),
     BasebinaryKey.from_hex(
         "observed-airport5-104-78100",

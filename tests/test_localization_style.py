@@ -4,9 +4,11 @@ sentence tells the user to use."""
 
 from __future__ import annotations
 
+import ast
 import plistlib
 import re
 import unittest
+from pathlib import Path
 
 from tests.test_summaries import LANGUAGES, RESOURCES, STRING_LINE
 
@@ -78,6 +80,53 @@ class LocalizationStyleTests(unittest.TestCase):
                         single = line.replace("……", "")
                         if "…" in single:
                             self.assertTrue(single.endswith("…") and single.count("…") == 1 and not single.endswith("。…"), text)
+
+    def test_netbsd_releases_have_a_space_before_their_number(self) -> None:
+        # As netbsd.org writes them: NetBSD 4, never NetBSD4.
+        for language in LANGUAGES:
+            for key, text in catalog_texts(language):
+                with self.subTest(language=language, key=key):
+                    self.assertIsNone(re.search(r"NetBSD\d", text), text)
+
+    def test_german_hyphenates_netbsd_compounds(self) -> None:
+        # NetBSD-4-Gerät, as Duden hyphenates Windows-10-Gerät: never
+        # NetBSD 4-Gerät, NetBSD 4 Gerät or NetBSD-4 Gerät. A name that
+        # follows is no compound (auf NetBSD 4 Samba starten).
+        for key, text in catalog_texts("de"):
+            with self.subTest(key=key):
+                self.assertNotRegex(text, r"NetBSD \d-|NetBSD \d (?!Samba|Bonjour|Netatalk|AirPort)[A-ZÄÖÜ][a-zäöüß]|NetBSD-\d(?!-)")
+
+    def test_dutch_joins_netbsd_compounds_with_a_hyphen(self) -> None:
+        # NetBSD 4-apparaten, never NetBSD 4 apparaten. Dutch nouns are
+        # lowercase like the words around them, so the nouns are listed.
+        nouns = r"apparaat|apparaten|activering|herstart|opstart|opstart-hook|services|software"
+        for key, text in catalog_texts("nl"):
+            with self.subTest(key=key):
+                self.assertNotRegex(text, rf"NetBSD \d ({nouns})\b")
+
+    def test_only_german_hyphenates_netbsd(self) -> None:
+        for language in LANGUAGES:
+            if language == "de":
+                continue
+            for key, text in catalog_texts(language):
+                with self.subTest(language=language, key=key):
+                    self.assertNotRegex(text, r"NetBSD-\d")
+
+    def test_helper_strings_have_a_space_before_the_netbsd_release(self) -> None:
+        # The helper's English reaches the CLI and, untranslated, the app. Its
+        # shell scripts embedded in Python strings count too; Python comments and
+        # docstrings do not, nor the files under assets/.
+        for path in sorted((Path(__file__).resolve().parents[1] / "src" / "timecapsulesmb").rglob("*.py")):
+            tree = ast.parse(path.read_text())
+            docstrings = {
+                id(node.body[0].value) for node in ast.walk(tree)
+                if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant)
+            }
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+                    with self.subTest(path=path.name, line=node.lineno):
+                        self.assertNotRegex(node.value, r"NetBSD\d")
 
     def test_chinese_uses_full_width_punctuation(self) -> None:
         half_width = re.compile(r"[()]|[一-鿿][,;:!?]")

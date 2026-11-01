@@ -97,22 +97,22 @@ def confirmation_presentation_for_startup_mode(
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
         if no_wait:
             return DeployConfirmationPresentation(
-                title="Confirm NetBSD4 deployment and reboot request",
+                title="Confirm NetBSD 4 deployment and reboot request",
                 message=(
                     f"Deploy TimeCapsuleSMB to this {device_name}, request reboot, and return immediately "
                     "without running Samba activation after SSH returns?"
                 ),
                 action_title="Deploy and request reboot",
                 risk="reboot",
-                summary="NetBSD4 deployment with reboot request and no post-reboot activation wait",
+                summary="NetBSD 4 deployment with reboot request and no post-reboot activation wait",
                 presentation_id="deploy.netbsd4_no_wait",
             )
         return DeployConfirmationPresentation(
-            title="Confirm NetBSD4 deployment",
+            title="Confirm NetBSD 4 deployment",
             message=f"Deploy TimeCapsuleSMB to this {device_name}, reboot it, then activate Samba after SSH returns?",
             action_title="Deploy, reboot, and activate",
             risk="reboot",
-            summary="NetBSD4 deployment with reboot and service activation",
+            summary="NetBSD 4 deployment with reboot and service activation",
             presentation_id="deploy.netbsd4",
         )
     if no_wait:

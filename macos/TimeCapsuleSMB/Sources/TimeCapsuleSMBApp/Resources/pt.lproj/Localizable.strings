@@ -115,8 +115,8 @@
 "close_guard.message" = "TimeCapsuleSMB tem uma operação em andamento. Fechar agora pode interromper o trabalho no dispositivo.";
 "close_guard.title" = "Fechar TimeCapsuleSMB?";
 "confirm.activate.netbsd4.action" = "Ativar";
-"confirm.activate.netbsd4.message" = "Ativar o software NetBSD4 instalado e reiniciar os serviços gerenciados?";
-"confirm.activate.netbsd4.title" = "Ativar os serviços NetBSD4?";
+"confirm.activate.netbsd4.message" = "Ativar o software NetBSD 4 instalado e reiniciar os serviços gerenciados?";
+"confirm.activate.netbsd4.title" = "Ativar os serviços NetBSD 4?";
 "confirm.backend.message" = "Continuar com esta operação?";
 "confirm.backend.title" = "Confirmar operação?";
 "confirm.configure.enable_ssh_reboot.action" = "Ativar SSH e reiniciar";
@@ -130,7 +130,7 @@
 "confirm.deploy.netbsd4.title" = "Instalar/atualizar Samba, reiniciar e ativar?";
 "confirm.deploy.netbsd4_no_wait.action" = "Instalar/atualizar Samba e solicitar reinicialização";
 "confirm.deploy.netbsd4_no_wait.message" = "Instalar ou atualizar Samba neste %@, solicitar reinicialização e retornar imediatamente sem iniciar Samba quando SSH estiver disponível novamente?";
-"confirm.deploy.netbsd4_no_wait.title" = "Instalar/atualizar Samba e solicitar reinicialização do NetBSD4?";
+"confirm.deploy.netbsd4_no_wait.title" = "Instalar/atualizar Samba e solicitar reinicialização do NetBSD 4?";
 "confirm.deploy.reboot.action" = "Instalar/atualizar Samba e reiniciar";
 "confirm.deploy.reboot.message" = "Instalar ou atualizar Samba e reiniciar este %@?";
 "confirm.deploy.reboot.title" = "Instalar/atualizar Samba e reiniciar?";
@@ -264,7 +264,7 @@
 "install.advanced_options" = "Opções avançadas";
 "install.completion.title.finished" = "Instalação/atualização concluída";
 "install.completion.title.verified" = "Instalação / atualização verificada";
-"install.completion.warning.netbsd4" = "Os dispositivos NetBSD4 podem precisar da ação “Ativar” após uma reinicialização posterior, a menos que o hook de inicialização tenha sido modificado.";
+"install.completion.warning.netbsd4" = "Os dispositivos NetBSD 4 podem precisar da ação “Ativar” após uma reinicialização posterior, a menos que o hook de inicialização tenha sido modificado.";
 "install.advanced_options.no_wait_note" = "“Não aguardar” é uma opção para usuários avançados: solicita a reinicialização e retorna imediatamente, sem ativação nem verificação posteriores.";
 "install.progress.deploying.message" = "Enviando e instalando os serviços Samba gerenciados. Isso pode levar alguns minutos...";
 "install.progress.deploying.title" = "Instalação/Atualização";
@@ -343,8 +343,8 @@
 "event.summary.result.failed" = "Falha";
 "event.summary.result.finished" = "Concluído";
 "event.summary.stage" = "%@: %@";
-"backend.summary.activation_already_active" = "O software NetBSD4 já estava ativo.";
-"backend.summary.activation_completed" = "Ativação do NetBSD4 concluída.";
+"backend.summary.activation_already_active" = "O software NetBSD 4 já estava ativo.";
+"backend.summary.activation_completed" = "Ativação do NetBSD 4 concluída.";
 "backend.summary.configuration_saved" = "Configuração salva e autenticação SSH verificada.";
 "backend.summary.deploy_completed" = "Instalação ou atualização do Samba concluída.";
 "backend.summary.doctor_checks_passed" = "Verificações de diagnóstico aprovadas.";
@@ -378,7 +378,7 @@
 "backend.summary.update_required" = "Atualização necessária.";
 "backend.summary.version_metadata_unavailable" = "Os metadados de versão não estão disponíveis.";
 "backend.summary.version_supported" = "Esta versão do TimeCapsuleSMB é suportada.";
-"backend.summary.activation_completed_followup" = "Ativação do NetBSD4 concluída. Execute `activate` após uma reinicialização se o dispositivo não tiver iniciado automaticamente Samba.";
+"backend.summary.activation_completed_followup" = "Ativação do NetBSD 4 concluída. Execute `activate` após uma reinicialização se o dispositivo não tiver iniciado automaticamente Samba.";
 "backend.summary.flash.apple_all_match" = "Todos os bancos de firmware candidatos correspondem ao firmware original da Apple.";
 "backend.summary.flash.apple_all_match_version" = "Todos os bancos de firmware candidatos correspondem ao firmware original da Apple %@.";
 "backend.summary.flash.apple_none_match" = "Nenhum banco de firmware candidato corresponde ao firmware original da Apple.";
@@ -464,7 +464,7 @@
 "flash.row.write_requested" = "Gravação solicitada";
 "flash.row.write_status" = "Status da gravação";
 "flash.row.write_validated" = "Gravação validada";
-"flash.title" = "Hook de inicialização persistente do NetBSD4";
+"flash.title" = "Hook de inicialização persistente do NetBSD 4";
 "flash.warning.manual_power_cycle" = "Desconecte o dispositivo, aguarde 10 segundos e conecte-o novamente.";
 "flash.warning.snapshot_stale" = "O firmware foi gravado após este backup. Faça um novo backup e verifique-o antes de planejar outra operação flash.";
 "helper.error.cancelled" = "Operação cancelada.";
@@ -510,7 +510,7 @@
 "maintenance.action.wipe_disk" = "Reformatar disco interno";
 "maintenance.advanced_options" = "Opções avançadas";
 "maintenance.presentation.activate.subtitle" = "Iniciar os serviços Samba instalados em um dispositivo NetBSD 4.";
-"maintenance.presentation.activate.title" = "Ativação do NetBSD4";
+"maintenance.presentation.activate.title" = "Ativação do NetBSD 4";
 "maintenance.presentation.boot_hook.subtitle" = "Aplicar um patch ao firmware para que o Samba inicie após cada reinicialização, ou restaurar o firmware da Apple.";
 "maintenance.presentation.fsck.subtitle" = "Desmontar o volume HFS selecionado e executar fsck_hfs no dispositivo.";
 "maintenance.presentation.fsck.title" = "Reparo de disco";
@@ -788,7 +788,7 @@
 "backend.recovery.configure.ssh_compatibility_failed.action.1" = "Atualize o TimeCapsuleSMB e tente novamente.";
 "backend.recovery.configure.ssh_compatibility_failed.action.2" = "Se continuar falhando, clique em “Copiar diagnóstico” e relate o problema em https://github.com/jamesyc/TimeCapsuleSMB/issues.";
 "backend.recovery.deploy.confirmation_required.title" = "Confirmação necessária para instalar/atualizar";
-"backend.recovery.deploy.confirmation_required.message" = "“Instalar/atualizar Samba” precisa de confirmação antes de enviar os arquivos de instalação, reiniciar o dispositivo ou ativar os serviços NetBSD4.";
+"backend.recovery.deploy.confirmation_required.message" = "“Instalar/atualizar Samba” precisa de confirmação antes de enviar os arquivos de instalação, reiniciar o dispositivo ou ativar os serviços NetBSD 4.";
 "backend.recovery.deploy.confirmation_required.action.1" = "Revise o plano de instalação.";
 "backend.recovery.deploy.confirmation_required.action.2" = "Confirme a instalação e qualquer solicitação de reinicialização ou ativação exigida.";
 "backend.recovery.deploy.validation_failed.title" = "Não foi possível iniciar a instalação";
@@ -909,8 +909,8 @@
 "backend.recovery.activate.client_outdated.message" = "O TimeCapsuleSMB instalado é de uma versão principal mais recente, que este app não consegue iniciar nem verificar.";
 "backend.recovery.activate.client_outdated.action.1" = "Atualize o TimeCapsuleSMB e tente iniciá-lo novamente.";
 "backend.recovery.activate.confirmation_required.title" = "Confirmação da ativação necessária";
-"backend.recovery.activate.confirmation_required.message" = "A ativação do NetBSD4 inicia os serviços Samba instalados e precisa ser confirmada.";
-"backend.recovery.activate.confirmation_required.action.1" = "Revise as orientações de ativação do NetBSD4.";
+"backend.recovery.activate.confirmation_required.message" = "A ativação do NetBSD 4 inicia os serviços Samba instalados e precisa ser confirmada.";
+"backend.recovery.activate.confirmation_required.action.1" = "Revise as orientações de ativação do NetBSD 4.";
 "backend.recovery.activate.confirmation_required.action.2" = "Confirme a ativação antes de tentar novamente.";
 "backend.recovery.uninstall.confirmation_required.title" = "Confirmação da desinstalação necessária";
 "backend.recovery.uninstall.confirmation_required.message" = "A desinstalação remove os arquivos gerenciados e pode reiniciar o dispositivo.";
@@ -1283,7 +1283,7 @@
 "timeline.operation.deploy" = "Instalar/atualizar";
 "timeline.operation.discovery" = "Descoberta";
 "timeline.operation.doctor" = "Verificação";
-"timeline.operation.flash" = "Hook de inicialização persistente do NetBSD4";
+"timeline.operation.flash" = "Hook de inicialização persistente do NetBSD 4";
 "timeline.operation.fsck" = "Reparo de disco";
 "timeline.operation.wipe_disk" = "Reformatar disco interno";
 "timeline.operation.reachability" = "Acessibilidade";

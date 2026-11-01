@@ -354,6 +354,6 @@ def require_netbsd4_device_compatibility(
         netbsd4_payload=netbsd4_payload,
     )
     if not netbsd4_payload:
-        message = unsupported_message or f"{command_name} is only supported for NetBSD4 AirPort storage devices."
+        message = unsupported_message or f"{command_name} is only supported for NetBSD 4 AirPort storage devices."
         raise SystemExit(message)
     return compatibility, compatibility_message

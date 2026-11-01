@@ -242,7 +242,7 @@ final class MaintenanceStoreTests: XCTestCase {
                     type: "error",
                     operation: "activate",
                     code: "unsupported_device",
-                    message: "NetBSD4 activation is not available.",
+                    message: "NetBSD 4 activation is not available.",
                     recovery: recoveryValue(title: "Activation unavailable", actions: ["Use deploy instead."], suggestedOperation: "deploy")
                 )
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),

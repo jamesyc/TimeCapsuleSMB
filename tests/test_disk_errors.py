@@ -228,7 +228,7 @@ class RuntimeFailureTests(unittest.TestCase):
     def test_disk_errors_are_the_error_for_a_samba_that_did_not_start(self) -> None:
         for problem in (None, DAMAGED):
             with self.subTest(problem=problem and problem.token):
-                error = runtime_failure_error(runtime(problem=problem), "NetBSD4 activation failed.",
+                error = runtime_failure_error(runtime(problem=problem), "NetBSD 4 activation failed.",
                                               disk_errors=self.ERRORS)
                 self.assertIsInstance(error, DiskFailingError)
                 # The error says why; its detail is the kernel's last disk error,
@@ -242,7 +242,7 @@ class RuntimeFailureTests(unittest.TestCase):
     def test_without_them_the_error_is_what_it_was(self) -> None:
         for errors in (None, ()):
             with self.subTest(errors=errors):
-                error = runtime_failure_error(runtime(), "NetBSD4 activation failed.", disk_errors=errors)
+                error = runtime_failure_error(runtime(), "NetBSD 4 activation failed.", disk_errors=errors)
                 self.assertIs(type(error), DeviceError)
         self.assertIsInstance(runtime_failure_error(runtime(problem=MISSING), "x", disk_errors=self.ERRORS),
                               DiskPayloadMissingError)
@@ -257,7 +257,7 @@ class RuntimeFailureTests(unittest.TestCase):
         for errors in (None, ()):
             with self.subTest(errors=errors):
                 error = runtime_failure_error(runtime(problem=probe.DISK_PAYLOAD_UNREADABLE),
-                                              "NetBSD4 activation failed.", disk_errors=errors)
+                                              "NetBSD 4 activation failed.", disk_errors=errors)
                 self.assertIsInstance(error, DiskPayloadUnreadableError)
                 self.assertEqual(error.code, ErrorCode.PAYLOAD_UNREADABLE_ON_DISK)
                 self.assertTrue(error.samba_off)
@@ -277,7 +277,7 @@ class RuntimeFailureTests(unittest.TestCase):
         callbacks = OperationCallbacks(add_debug_fields=lambda **fields: debug.update(fields))
         verify_managed_runtime_ready(
             SshConnection("host", "pw", ""), callbacks=callbacks, stage="verify_runtime_activation",
-            timeout_seconds=200, heading="Runtime verification:", failure_message="NetBSD4 activation failed.",
+            timeout_seconds=200, heading="Runtime verification:", failure_message="NetBSD 4 activation failed.",
             probe_runtime=mock.Mock(return_value=verification), read_runtime_logs=mock.Mock(return_value={}),
             read_disk_errors=read, read_processes=mock.Mock(return_value=listing),
         )
@@ -439,7 +439,7 @@ class RuntimeFailureTests(unittest.TestCase):
         error, debug, syut, listing = self.activate([self.STALLED_ACPD_LISTING])
         self.assertIsInstance(error, DiskNotRespondingError)
         self.assertEqual(error.code, ErrorCode.DISK_NOT_RESPONDING)
-        self.assertEqual(error.message, f"NetBSD4 activation failed. {DISK_NOT_RESPONDING_MESSAGE} Nothing was started.")
+        self.assertEqual(error.message, f"NetBSD 4 activation failed. {DISK_NOT_RESPONDING_MESSAGE} Nothing was started.")
         self.assertNotIn("Apple ACPd is broken", str(error))
         self.assertEqual(error.detail, "Waiting for the disk: mount_hfs (pid 421) waiting on biolock for 127+ s.")
         self.assertEqual(debug["disk_io_stalls"], ["mount_hfs (pid 421) waiting on biolock for 127+ s"])

@@ -115,8 +115,8 @@
 "close_guard.message" = "TimeCapsuleSMB 有操作正在进行。现在关闭可能会中断设备上的工作。";
 "close_guard.title" = "关闭 TimeCapsuleSMB？";
 "confirm.activate.netbsd4.action" = "启动 SMB";
-"confirm.activate.netbsd4.message" = "启动已安装的 NetBSD4 软件并重启受管理服务？";
-"confirm.activate.netbsd4.title" = "启动 NetBSD4 服务？";
+"confirm.activate.netbsd4.message" = "启动已安装的 NetBSD 4 软件并重启受管理服务？";
+"confirm.activate.netbsd4.title" = "启动 NetBSD 4 服务？";
 "confirm.backend.message" = "继续此操作？";
 "confirm.backend.title" = "确认操作？";
 "confirm.configure.enable_ssh_reboot.action" = "启用 SSH 并重启";
@@ -130,7 +130,7 @@
 "confirm.deploy.netbsd4.title" = "安装 / 更新 Samba、重启并启动？";
 "confirm.deploy.netbsd4_no_wait.action" = "安装 / 更新 Samba 并请求重启";
 "confirm.deploy.netbsd4_no_wait.message" = "在此 %@ 上安装或更新 Samba，请求重启后立即返回，且不在 SSH 恢复后启动 Samba？";
-"confirm.deploy.netbsd4_no_wait.title" = "安装 / 更新 Samba 并请求重启 NetBSD4？";
+"confirm.deploy.netbsd4_no_wait.title" = "安装 / 更新 Samba 并请求重启 NetBSD 4？";
 "confirm.deploy.reboot.action" = "安装 / 更新 Samba 并重启";
 "confirm.deploy.reboot.message" = "安装或更新 Samba 并重启此 %@？";
 "confirm.deploy.reboot.title" = "安装 / 更新 Samba 并重启？";
@@ -264,7 +264,7 @@
 "install.advanced_options" = "高级选项";
 "install.completion.title.finished" = "安装 / 更新已完成";
 "install.completion.title.verified" = "安装 / 更新已验证";
-"install.completion.warning.netbsd4" = "如果未修补启动钩子，NetBSD4 设备之后重启时可能需要执行“启动 SMB”。";
+"install.completion.warning.netbsd4" = "如果未修补启动钩子，NetBSD 4 设备之后重启时可能需要执行“启动 SMB”。";
 "install.advanced_options.no_wait_note" = "“不等待”是高级用户选项：请求重启后立即返回，不执行重启后的启动或验证。";
 "install.progress.deploying.message" = "正在上传并安装受管理的 Samba 服务。这可能需要几分钟…";
 "install.progress.deploying.title" = "正在安装 / 更新";
@@ -343,8 +343,8 @@
 "event.summary.result.failed" = "失败";
 "event.summary.result.finished" = "完成";
 "event.summary.stage" = "%@：%@";
-"backend.summary.activation_already_active" = "NetBSD4 上的软件已在运行。";
-"backend.summary.activation_completed" = "NetBSD4 服务启动已完成。";
+"backend.summary.activation_already_active" = "NetBSD 4 上的软件已在运行。";
+"backend.summary.activation_completed" = "NetBSD 4 服务启动已完成。";
 "backend.summary.configuration_saved" = "配置已保存，SSH 身份验证已通过。";
 "backend.summary.deploy_completed" = "Samba 安装或更新已完成。";
 "backend.summary.doctor_checks_passed" = "诊断检查通过。";
@@ -378,7 +378,7 @@
 "backend.summary.update_required" = "需要更新。";
 "backend.summary.version_metadata_unavailable" = "版本元数据不可用。";
 "backend.summary.version_supported" = "此版本的 TimeCapsuleSMB 受支持。";
-"backend.summary.activation_completed_followup" = "NetBSD4 服务启动已完成。如果设备重启后没有自动启动 Samba，请运行 `activate`。";
+"backend.summary.activation_completed_followup" = "NetBSD 4 服务启动已完成。如果设备重启后没有自动启动 Samba，请运行 `activate`。";
 "backend.summary.flash.apple_all_match" = "所有候选固件区都与苹果原厂固件匹配。";
 "backend.summary.flash.apple_all_match_version" = "所有候选固件区都与苹果原厂固件 %@ 匹配。";
 "backend.summary.flash.apple_none_match" = "没有候选固件区与苹果原厂固件匹配。";
@@ -464,7 +464,7 @@
 "flash.row.write_requested" = "请求写入";
 "flash.row.write_status" = "写入状态";
 "flash.row.write_validated" = "写入已验证";
-"flash.title" = "NetBSD4 持久化启动钩子";
+"flash.title" = "NetBSD 4 持久化启动钩子";
 "flash.warning.manual_power_cycle" = "拔掉设备电源，等待 10 秒，然后重新插上。";
 "flash.warning.snapshot_stale" = "此备份之后已写入固件。规划另一个闪存操作前，请再次备份并检查。";
 "helper.error.cancelled" = "操作已取消。";
@@ -510,7 +510,7 @@
 "maintenance.action.wipe_disk" = "重新格式化内部磁盘";
 "maintenance.advanced_options" = "高级选项";
 "maintenance.presentation.activate.subtitle" = "在 NetBSD 4 设备上启动已安装的 Samba 服务。";
-"maintenance.presentation.activate.title" = "NetBSD4 启动";
+"maintenance.presentation.activate.title" = "NetBSD 4 启动";
 "maintenance.presentation.boot_hook.subtitle" = "修补固件，使 Samba 在每次重启后自动启动，或恢复苹果固件。";
 "maintenance.presentation.fsck.subtitle" = "卸载选定的 HFS 卷，并在设备上运行 fsck_hfs。";
 "maintenance.presentation.fsck.title" = "磁盘修复";
@@ -788,7 +788,7 @@
 "backend.recovery.configure.ssh_compatibility_failed.action.1" = "请更新 TimeCapsuleSMB，然后重试。";
 "backend.recovery.configure.ssh_compatibility_failed.action.2" = "如果仍然失败，请点击“复制诊断信息”，然后在 https://github.com/jamesyc/TimeCapsuleSMB/issues 报告此问题。";
 "backend.recovery.deploy.confirmation_required.title" = "安装 / 更新需要确认";
-"backend.recovery.deploy.confirmation_required.message" = "“安装 / 更新 Samba”在上传安装文件、重启设备或启动 NetBSD4 服务之前需要确认。";
+"backend.recovery.deploy.confirmation_required.message" = "“安装 / 更新 Samba”在上传安装文件、重启设备或启动 NetBSD 4 服务之前需要确认。";
 "backend.recovery.deploy.confirmation_required.action.1" = "查看安装计划。";
 "backend.recovery.deploy.confirmation_required.action.2" = "确认安装 / 更新，以及所需的重启或启动提示。";
 "backend.recovery.deploy.validation_failed.title" = "无法开始安装";
@@ -909,8 +909,8 @@
 "backend.recovery.activate.client_outdated.message" = "已安装的 TimeCapsuleSMB 属于更新的主版本，此应用无法启动或检查它。";
 "backend.recovery.activate.client_outdated.action.1" = "更新 TimeCapsuleSMB，然后再次启动服务。";
 "backend.recovery.activate.confirmation_required.title" = "启动服务需要确认";
-"backend.recovery.activate.confirmation_required.message" = "NetBSD4 服务启动会启动已安装的 Samba 服务，必须先确认。";
-"backend.recovery.activate.confirmation_required.action.1" = "查看 NetBSD4 服务启动说明。";
+"backend.recovery.activate.confirmation_required.message" = "NetBSD 4 服务启动会启动已安装的 Samba 服务，必须先确认。";
+"backend.recovery.activate.confirmation_required.action.1" = "查看 NetBSD 4 服务启动说明。";
 "backend.recovery.activate.confirmation_required.action.2" = "重试前，先确认启动服务。";
 "backend.recovery.uninstall.confirmation_required.title" = "卸载需要确认";
 "backend.recovery.uninstall.confirmation_required.message" = "“卸载”会移除受管理的文件，并可能重启设备。";
@@ -1283,7 +1283,7 @@
 "timeline.operation.deploy" = "安装 / 更新";
 "timeline.operation.discovery" = "发现";
 "timeline.operation.doctor" = "检查";
-"timeline.operation.flash" = "NetBSD4 持久化启动钩子";
+"timeline.operation.flash" = "NetBSD 4 持久化启动钩子";
 "timeline.operation.fsck" = "磁盘修复";
 "timeline.operation.wipe_disk" = "重新格式化内部磁盘";
 "timeline.operation.reachability" = "可达性";

@@ -242,7 +242,7 @@ def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan) 
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Analyze, patch, or restore the NetBSD4 firmware boot hook.")
+    parser = argparse.ArgumentParser(description="Analyze, patch, or restore the NetBSD 4 firmware boot hook.")
     add_config_argument(parser)
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--read-only", action="store_true", help="Dump and back up firmware banks without patch planning")
@@ -314,7 +314,7 @@ def _resolve_flash_target(
     connection = target.connection
 
     command_context.set_stage("check_compatibility")
-    emit_progress(log, "Checking NetBSD4 device compatibility...")
+    emit_progress(log, "Checking NetBSD 4 device compatibility...")
     compatibility, _compatibility_message = require_netbsd4_device_compatibility(
         command_context,
         command_name="flash",
@@ -677,7 +677,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     log = prefixed_logger("flash", enabled=not args.json)
     if not args.json:
-        print("Analyzing NetBSD4 flash firmware...", flush=True)
+        print("Analyzing NetBSD 4 flash firmware...", flush=True)
 
     emit_progress(log, "Loading configuration and install identity...")
     ensure_install_id()

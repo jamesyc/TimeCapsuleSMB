@@ -617,13 +617,13 @@
       "ok": true,
       "operation": "deploy",
       "payload": {
-        "message": "NetBSD4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "message": "NetBSD 4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
         "netbsd4": true,
         "payload_dir": "/Volumes/dk2/.samba4",
         "payload_family": null,
         "requires_reboot": false,
         "schema_version": 1,
-        "summary": "NetBSD4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "summary": "NetBSD 4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
         "summary_args": [],
         "summary_key": "activation_completed_followup"
       },
@@ -640,7 +640,7 @@
       "payload": {
         "already_active": true,
         "schema_version": 1,
-        "summary": "NetBSD4 payload was already active.",
+        "summary": "NetBSD 4 payload was already active.",
         "summary_args": [],
         "summary_key": "activation_already_active"
       },
@@ -657,7 +657,7 @@
       "payload": {
         "already_active": false,
         "schema_version": 1,
-        "summary": "NetBSD4 activation completed.",
+        "summary": "NetBSD 4 activation completed.",
         "summary_args": [],
         "summary_key": "activation_completed"
       },
@@ -673,9 +673,9 @@
       "operation": "activate",
       "payload": {
         "already_active": false,
-        "message": "NetBSD4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "message": "NetBSD 4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
         "schema_version": 1,
-        "summary": "NetBSD4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "summary": "NetBSD 4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
         "summary_args": [],
         "summary_key": "activation_completed_followup"
       },

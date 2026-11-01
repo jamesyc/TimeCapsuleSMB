@@ -824,7 +824,7 @@ capture_fstat_for_ucomm() {
         case "$4" in
             Z*) continue ;;
         esac
-        # NetBSD4 has fstat but not netstat/sockstat/lsof. Scope fstat to
+        # NetBSD 4 has fstat but not netstat/sockstat/lsof. Scope fstat to
         # candidate PIDs so activation checks do not scan every open file on a
         # busy Time Capsule.
         /usr/bin/fstat -p "$1" 2>/dev/null || true

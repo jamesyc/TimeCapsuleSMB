@@ -782,7 +782,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     ("deploy", ErrorCode.CONFIRMATION_REQUIRED): RecoveryInfo(
         "Install confirmation required",
-        "“Install / Update Samba” needs confirmation before uploading the installation files, rebooting, or activating NetBSD4.",
+        "“Install / Update Samba” needs confirmation before uploading the installation files, rebooting, or activating NetBSD 4.",
         ("Review the install plan.", "Confirm the install and any required reboot or activation prompt."),
         retryable=True,
     ),
@@ -970,8 +970,8 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     ("activate", ErrorCode.CONFIRMATION_REQUIRED): RecoveryInfo(
         "Activation confirmation required",
-        "NetBSD4 activation starts the deployed runtime and must be confirmed.",
-        ("Review the NetBSD4 activation guidance.", "Confirm activation before retrying."),
+        "NetBSD 4 activation starts the deployed runtime and must be confirmed.",
+        ("Review the NetBSD 4 activation guidance.", "Confirm activation before retrying."),
         retryable=True,
         action_ids=("start_smb",),
     ),

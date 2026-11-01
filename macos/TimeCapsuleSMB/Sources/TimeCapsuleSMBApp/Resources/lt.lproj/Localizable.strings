@@ -115,8 +115,8 @@
 "close_guard.message" = "TimeCapsuleSMB vykdo operaciją. Uždarius dabar galima pertraukti darbą su įrenginiu.";
 "close_guard.title" = "Uždaryti TimeCapsuleSMB?";
 "confirm.activate.netbsd4.action" = "Aktyvuoti";
-"confirm.activate.netbsd4.message" = "Aktyvuoti įdiegtus NetBSD4 diegimo failus ir paleisti iš naujo valdomąsias paslaugas?";
-"confirm.activate.netbsd4.title" = "Aktyvuoti NetBSD4 aplinką?";
+"confirm.activate.netbsd4.message" = "Aktyvuoti įdiegtus NetBSD 4 diegimo failus ir paleisti iš naujo valdomąsias paslaugas?";
+"confirm.activate.netbsd4.title" = "Aktyvuoti NetBSD 4 aplinką?";
 "confirm.backend.message" = "Tęsti šią operaciją?";
 "confirm.backend.title" = "Patvirtinti operaciją?";
 "confirm.configure.enable_ssh_reboot.action" = "Įjungti SSH ir paleisti iš naujo";
@@ -127,10 +127,10 @@
 "confirm.ssh_access.enable_reboot.title" = "Įjungti SSH ir paleisti iš naujo?";
 "confirm.deploy.netbsd4.action" = "Diegti, paleisti iš naujo ir aktyvuoti";
 "confirm.deploy.netbsd4.message" = "Įdiegti TimeCapsuleSMB į šį %@, paleisti iš naujo, tada aktyvuoti Samba po SSH prisijungimo?";
-"confirm.deploy.netbsd4.title" = "Diegti, paleisti iš naujo ir aktyvuoti NetBSD4?";
+"confirm.deploy.netbsd4.title" = "Diegti, paleisti iš naujo ir aktyvuoti NetBSD 4?";
 "confirm.deploy.netbsd4_no_wait.action" = "Diegti ir prašyti paleisti iš naujo";
 "confirm.deploy.netbsd4_no_wait.message" = "Įdiegti TimeCapsuleSMB į šį %@, prašyti paleisti iš naujo ir grįžti iš karto nepaleidžiant Samba aktyvavimo po SSH prisijungimo?";
-"confirm.deploy.netbsd4_no_wait.title" = "Diegti ir prašyti NetBSD4 paleisti iš naujo?";
+"confirm.deploy.netbsd4_no_wait.title" = "Diegti ir prašyti NetBSD 4 paleisti iš naujo?";
 "confirm.deploy.reboot.action" = "Diegti ir paleisti iš naujo";
 "confirm.deploy.reboot.message" = "Įdiegti TimeCapsuleSMB ir paleisti šį %@ iš naujo?";
 "confirm.deploy.reboot.title" = "Diegti ir paleisti iš naujo?";
@@ -264,7 +264,7 @@
 "install.advanced_options" = "Išplėstinės parinktys";
 "install.completion.title.finished" = "Diegimas / atnaujinimas baigtas";
 "install.completion.title.verified" = "Diegimas / atnaujinimas patvirtintas";
-"install.completion.warning.netbsd4" = "NetBSD4 įrenginiams gali reikėti aktyvavimo po vėlesnio paleidimo iš naujo, jei įkrovos įskiepis nepataisytas.";
+"install.completion.warning.netbsd4" = "NetBSD 4 įrenginiams gali reikėti aktyvavimo po vėlesnio paleidimo iš naujo, jei įkrovos įskiepis nepataisytas.";
 "install.advanced_options.no_wait_note" = "„Be laukimo“ yra patyrusių vartotojų parinktis: ji prašo paleisti iš naujo ir iš karto grįžta be aktyvavimo ar tikrinimo po paleidimo.";
 "install.progress.deploying.message" = "Įkeliama ir taikoma valdoma Samba aplinka. Tai gali užtrukti kelias minutes...";
 "install.progress.deploying.title" = "Diegiama / atnaujinama";
@@ -343,8 +343,8 @@
 "event.summary.result.failed" = "Nepavyko";
 "event.summary.result.finished" = "Baigta";
 "event.summary.stage" = "%@: %@";
-"backend.summary.activation_already_active" = "NetBSD4 diegimo failai jau buvo aktyvūs.";
-"backend.summary.activation_completed" = "NetBSD4 aktyvavimas baigtas.";
+"backend.summary.activation_already_active" = "NetBSD 4 diegimo failai jau buvo aktyvūs.";
+"backend.summary.activation_completed" = "NetBSD 4 aktyvavimas baigtas.";
 "backend.summary.configuration_saved" = "Konfigūracija išsaugota ir SSH autentifikacija patvirtinta.";
 "backend.summary.deploy_completed" = "Diegimas baigtas.";
 "backend.summary.doctor_checks_passed" = "Diagnostikos patikrinimai pavyko.";
@@ -378,7 +378,7 @@
 "backend.summary.update_required" = "Reikalingas naujinimas.";
 "backend.summary.version_metadata_unavailable" = "Versijos metaduomenys nepasiekiami.";
 "backend.summary.version_supported" = "Ši TimeCapsuleSMB versija palaikoma.";
-"backend.summary.activation_completed_followup" = "NetBSD4 aktyvavimas baigtas. Paleiskite `activate` po paleidimo iš naujo, jei įrenginys nepaleido Samba automatiškai.";
+"backend.summary.activation_completed_followup" = "NetBSD 4 aktyvavimas baigtas. Paleiskite `activate` po paleidimo iš naujo, jei įrenginys nepaleido Samba automatiškai.";
 "backend.summary.flash.apple_all_match" = "Visi tikrinami programinės įrangos bankai atitinka Apple originalią programinę įrangą.";
 "backend.summary.flash.apple_all_match_version" = "Visi tikrinami programinės įrangos bankai atitinka Apple originalią programinę įrangą %@.";
 "backend.summary.flash.apple_none_match" = "Nė vienas tikrinamas programinės įrangos bankas neatitinka Apple originalios programinės įrangos.";
@@ -416,7 +416,7 @@
 "field.firmware_version" = "Programinės įrangos versija, neprivaloma";
 "field.helper" = "Pagalbinė programa";
 "field.mount_wait" = "Prijungimo laukimo sekundės";
-"flash.description" = "Pakeiskite NetBSD4 įrenginių programinę įrangą, kad po paleidimo iš naujo ji automatiškai paleistų įdiegtas Samba paslaugas.";
+"flash.description" = "Pakeiskite NetBSD 4 įrenginių programinę įrangą, kad po paleidimo iš naujo ji automatiškai paleistų įdiegtas Samba paslaugas.";
 "flash.status.ready" = "Prieš planuodami pataisymą arba atkūrimą, sukurkite atsarginę kopiją ir patikrinkite programinę įrangą.";
 "flash.action.backup_inspect" = "Sukurti atsarginę kopiją ir patikrinti";
 "flash.action.backup_inspect_again" = "Sukurti atsarginę kopiją ir patikrinti dar kartą";
@@ -464,7 +464,7 @@
 "flash.row.write_requested" = "Įrašymas užklaustas";
 "flash.row.write_status" = "Įrašymo būsena";
 "flash.row.write_validated" = "Įrašymas patvirtintas";
-"flash.title" = "Nuolatinis NetBSD4 įkrovos įskiepis";
+"flash.title" = "Nuolatinis NetBSD 4 įkrovos įskiepis";
 "flash.warning.manual_power_cycle" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
 "flash.warning.snapshot_stale" = "Programinė įranga buvo įrašyta po šios atsarginės kopijos. Prieš planuodami kitą flash veiksmą sukurkite atsarginę kopiją ir patikrinkite dar kartą.";
 "helper.error.cancelled" = "Operacija atšaukta.";
@@ -510,7 +510,7 @@
 "maintenance.action.wipe_disk" = "Performatuoti vidinį diską";
 "maintenance.advanced_options" = "Išplėstinės parinktys";
 "maintenance.presentation.activate.subtitle" = "Paleisti įdiegtą Samba aplinką NetBSD 4 įrenginyje.";
-"maintenance.presentation.activate.title" = "NetBSD4 aktyvavimas";
+"maintenance.presentation.activate.title" = "NetBSD 4 aktyvavimas";
 "maintenance.presentation.boot_hook.subtitle" = "Pataisyti programinę įrangą, kad Samba pasileistų po kiekvieno paleidimo iš naujo, arba atkurti Apple programinę įrangą.";
 "maintenance.presentation.fsck.subtitle" = "Atjungti pasirinktą HFS tomą ir paleisti fsck_hfs įrenginyje.";
 "maintenance.presentation.fsck.title" = "Disko taisymas";
@@ -788,7 +788,7 @@
 "backend.recovery.configure.ssh_compatibility_failed.action.1" = "Atnaujinkite TimeCapsuleSMB, tada bandykite dar kartą.";
 "backend.recovery.configure.ssh_compatibility_failed.action.2" = "Jei vis tiek nepavyksta, spustelėkite „Kopijuoti diagnostiką“ ir praneškite apie problemą adresu https://github.com/jamesyc/TimeCapsuleSMB/issues.";
 "backend.recovery.deploy.confirmation_required.title" = "Reikalingas diegimo patvirtinimas";
-"backend.recovery.deploy.confirmation_required.message" = "Prieš įkeliant diegimo failus, paleidžiant įrenginį iš naujo ar aktyvuojant NetBSD4, diegimą reikia patvirtinti.";
+"backend.recovery.deploy.confirmation_required.message" = "Prieš įkeliant diegimo failus, paleidžiant įrenginį iš naujo ar aktyvuojant NetBSD 4, diegimą reikia patvirtinti.";
 "backend.recovery.deploy.confirmation_required.action.1" = "Peržiūrėkite diegimo planą.";
 "backend.recovery.deploy.confirmation_required.action.2" = "Patvirtinkite diegimą ir, jei prašoma, paleidimą iš naujo ar aktyvavimą.";
 "backend.recovery.deploy.validation_failed.title" = "Nepavyko pradėti diegimo";
@@ -909,8 +909,8 @@
 "backend.recovery.activate.client_outdated.message" = "Įdiegta TimeCapsuleSMB yra naujesnės pagrindinės versijos, kurios ši programa negali paleisti ar patikrinti.";
 "backend.recovery.activate.client_outdated.action.1" = "Atnaujinkite TimeCapsuleSMB, tada bandykite paleisti dar kartą.";
 "backend.recovery.activate.confirmation_required.title" = "Reikalingas aktyvavimo patvirtinimas";
-"backend.recovery.activate.confirmation_required.message" = "NetBSD4 aktyvavimas paleidžia įdiegtas Samba paslaugas, todėl jį reikia patvirtinti.";
-"backend.recovery.activate.confirmation_required.action.1" = "Peržiūrėkite NetBSD4 aktyvavimo nurodymus.";
+"backend.recovery.activate.confirmation_required.message" = "NetBSD 4 aktyvavimas paleidžia įdiegtas Samba paslaugas, todėl jį reikia patvirtinti.";
+"backend.recovery.activate.confirmation_required.action.1" = "Peržiūrėkite NetBSD 4 aktyvavimo nurodymus.";
 "backend.recovery.activate.confirmation_required.action.2" = "Prieš bandydami dar kartą, patvirtinkite aktyvavimą.";
 "backend.recovery.uninstall.confirmation_required.title" = "Reikalingas pašalinimo patvirtinimas";
 "backend.recovery.uninstall.confirmation_required.message" = "Pašalinimas ištrina valdomus failus ir gali paleisti įrenginį iš naujo.";
@@ -1283,7 +1283,7 @@
 "timeline.operation.deploy" = "Diegti / atnaujinti";
 "timeline.operation.discovery" = "Paieška";
 "timeline.operation.doctor" = "Patikrinimas";
-"timeline.operation.flash" = "Nuolatinis NetBSD4 įkrovos įskiepis";
+"timeline.operation.flash" = "Nuolatinis NetBSD 4 įkrovos įskiepis";
 "timeline.operation.fsck" = "Disko taisymas";
 "timeline.operation.wipe_disk" = "Vidinio disko performatavimas";
 "timeline.operation.reachability" = "Pasiekiamumas";

@@ -209,14 +209,14 @@ def format_activation_plan(
     rc_local_autostart: bool = False,
 ) -> str:
     lines: list[str] = []
-    lines.append("Dry run: NetBSD4 activation plan")
+    lines.append("Dry run: NetBSD 4 activation plan")
     lines.append("")
     lines.append("Remote actions:")
     for command in render_remote_actions(plan.actions):
         lines.append(f"  {command}")
     lines.append("")
     lines.append("Pre-activation shortcut:")
-    lines.append("  probe managed runtime readiness; skip rc.local if the NetBSD4 payload is already healthy")
+    lines.append("  probe managed runtime readiness; skip rc.local if the NetBSD 4 payload is already healthy")
     lines.append("")
     lines.append("Post-activation checks:")
     for check in plan.post_activation_checks:

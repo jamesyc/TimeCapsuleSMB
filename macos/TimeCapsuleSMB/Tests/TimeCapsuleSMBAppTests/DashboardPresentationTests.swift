@@ -1671,7 +1671,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Verified", value: "yes")))
         XCTAssertEqual(presentation.warnings, [
             InstallCompletionWarning(
-                text: "NetBSD4 devices may need Activate after a later reboot unless the boot hook is patched.",
+                text: "NetBSD 4 devices may need Activate after a later reboot unless the boot hook is patched.",
                 action: .openBootHook
             )
         ])
@@ -1696,7 +1696,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.warnings, [
             InstallCompletionWarning(
-                text: "NetBSD4 devices may need Activate after a later reboot unless the boot hook is patched.",
+                text: "NetBSD 4 devices may need Activate after a later reboot unless the boot hook is patched.",
                 action: nil
             )
         ])
@@ -1705,7 +1705,7 @@ final class DashboardPresentationTests: XCTestCase {
     func testRestoredInstallCompletionOffersTheBootHookOnNetBSD4() throws {
         let netbsd4 = try makeProfile(payloadFamily: "netbsd4_samba4")
         let netbsd6 = try makeProfile(payloadFamily: "netbsd6_samba4")
-        let warningText = "NetBSD4 devices may need Activate after a later reboot unless the boot hook is patched."
+        let warningText = "NetBSD 4 devices may need Activate after a later reboot unless the boot hook is patched."
 
         // Either the saved deploy's payload family or the profile marks NetBSD 4,
         // but only a NetBSD 4 profile has a boot hook card to open.
@@ -1883,7 +1883,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.detail.workflow, .bootHook)
         XCTAssertEqual(presentation.cards.filter(\.isSelected).map(\.workflow), [.bootHook])
         let card = try XCTUnwrap(presentation.cards.first { $0.workflow == .bootHook })
-        XCTAssertEqual(card.title, "Persistent NetBSD4 Boot Hook")
+        XCTAssertEqual(card.title, "Persistent NetBSD 4 Boot Hook")
         XCTAssertEqual(card.subtitle, "Patch the firmware so Samba starts after every reboot, or restore Apple firmware.")
         XCTAssertEqual(card.stateTitle, BootHookState.ready.title)
         XCTAssertEqual(presentation.detail.risk, "Firmware write")

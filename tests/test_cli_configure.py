@@ -1479,9 +1479,9 @@ class CliConfigureTests(CliTestCase):
 
         def fake_prompt(label, default, _secret):
             if label == "Airport Utility syAP code":
-                raise AssertionError("NetBSD6 little-endian should autofill syAP")
+                raise AssertionError("NetBSD 6 little-endian should autofill syAP")
             if label == "mDNS device model hint":
-                raise AssertionError("NetBSD6 little-endian should autofill mDNS model")
+                raise AssertionError("NetBSD 6 little-endian should autofill mDNS model")
             return next(prompt_values)
 
         result = self.run_configure_cli(

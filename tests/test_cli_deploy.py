@@ -973,7 +973,7 @@ class CliDeployTests(CliTestCase):
         result.mocks.verify_managed_runtime.assert_not_called()
         self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
         self.assertNotIn("Activating deployed runtime after reboot.", result.text)
-        self.assertNotIn("NetBSD4 activation completed.", result.text)
+        self.assertNotIn("NetBSD 4 activation completed.", result.text)
         self.assertIn("Post-reboot runtime verification skipped.", result.text)
 
     def test_deploy_payload_verification_failure_aborts_before_reboot(self) -> None:
@@ -1360,7 +1360,7 @@ class CliDeployTests(CliTestCase):
             [RunScriptAction("/mnt/Flash/rc.local")],
         )
         self.assertIn("Activating deployed runtime after reboot.", result.text)
-        self.assertIn("NetBSD4 activation completed.", result.text)
+        self.assertIn("NetBSD 4 activation completed.", result.text)
 
     def test_deploy_netbsd4_uses_transport_neutral_connection(self) -> None:
         result = self.run_deploy_cli(
@@ -1405,10 +1405,10 @@ class CliDeployTests(CliTestCase):
         self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
         self.assertEqual(result.mocks.device.calls.count("request"), 1)
         result.mocks.verify_managed_runtime.assert_called_once()
-        self.assertIn("NetBSD4 firmware autostart is enabled; waiting for managed runtime.", result.text)
-        self.assertIn("NetBSD4 firmware autostart is enabled", result.text)
+        self.assertIn("NetBSD 4 firmware autostart is enabled; waiting for managed runtime.", result.text)
+        self.assertIn("NetBSD 4 firmware autostart is enabled", result.text)
         self.assertNotIn("Activating deployed runtime after reboot.", result.text)
-        self.assertIn("NetBSD4 activation completed.", result.text)
+        self.assertIn("NetBSD 4 activation completed.", result.text)
 
     def test_deploy_rejects_unsupported_device(self) -> None:
         unsupported = DeviceCompatibility(

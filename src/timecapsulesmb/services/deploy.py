@@ -427,9 +427,9 @@ class DeployRuntimeConfig:
 @dataclass(frozen=True)
 class DeployCompletionMessages:
     post_reboot_activation_message: str = "Activating deployed runtime after reboot."
-    netbsd4_autostart_message: str = "NetBSD4 firmware autostart is enabled; waiting for managed runtime."
+    netbsd4_autostart_message: str = "NetBSD 4 firmware autostart is enabled; waiting for managed runtime."
     netbsd4_heading: str = "Waiting for managed runtime to finish starting..."
-    netbsd4_failure: str = "NetBSD4 activation failed."
+    netbsd4_failure: str = "NetBSD 4 activation failed."
     reboot_request_message: str | None = None
     reboot_runtime_wait_message: str | None = None
     reboot_heading: str = "Waiting for managed runtime to finish starting..."

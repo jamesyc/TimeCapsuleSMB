@@ -36,7 +36,7 @@ def _target_device_display_name(target) -> str:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Manually activate an already-deployed NetBSD4 AirPort storage device payload.")
+    parser = argparse.ArgumentParser(description="Manually activate an already-deployed NetBSD 4 AirPort storage device payload.")
     add_config_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before restarting the deployed Samba services")
     add_no_input_argument(parser)
@@ -68,7 +68,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context,
             command_name="activate",
             json_output=args.json,
-            unsupported_message="activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.",
+            unsupported_message="activate is only supported for NetBSD 4 AirPort storage devices; use deploy for persistent NetBSD 6 installs.",
         )
 
         command_context.set_stage("build_activation_plan")
@@ -90,13 +90,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             if not rc_local_autostart:
                 print(color_red(NETBSD4_REBOOT_GUIDANCE))
             proceed = confirm(
-                "Continue with NetBSD4 activation?",
+                "Continue with NetBSD 4 activation?",
                 default=False,
                 noninteractive_message="No answer was read for the activation confirmation. Use `activate --yes` to skip the prompt.",
             )
             if not proceed:
                 print("Activation cancelled.")
-                command_context.cancel_with_error("Cancelled by user at NetBSD4 activation confirmation prompt.")
+                command_context.cancel_with_error("Cancelled by user at NetBSD 4 activation confirmation prompt.")
                 return 0
 
         try:
@@ -106,7 +106,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.fail_with_error(str(exc))
             return 1
         if not decision.run_actions:
-            print("NetBSD4 payload already active; skipping rc.local.")
+            print("NetBSD 4 payload already active; skipping rc.local.")
             command_context.update_fields(runtime_already_ready=True)
         print(NETBSD4_ACTIVATION_COMPLETED)
         command_context.succeed()

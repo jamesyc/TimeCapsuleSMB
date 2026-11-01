@@ -115,8 +115,8 @@
 "close_guard.message" = "TimeCapsuleSMB heeft een bewerking in uitvoering. Als u nu sluit, kunnen de werkzaamheden aan het apparaat worden onderbroken.";
 "close_guard.title" = "TimeCapsuleSMB sluiten?";
 "confirm.activate.netbsd4.action" = "Activeren";
-"confirm.activate.netbsd4.message" = "De geïnstalleerde NetBSD4-software activeren en de beheerde services herstarten?";
-"confirm.activate.netbsd4.title" = "NetBSD4-services activeren?";
+"confirm.activate.netbsd4.message" = "De geïnstalleerde NetBSD 4-software activeren en de beheerde services herstarten?";
+"confirm.activate.netbsd4.title" = "NetBSD 4-services activeren?";
 "confirm.backend.message" = "Doorgaan met deze bewerking?";
 "confirm.backend.title" = "Bewerking bevestigen?";
 "confirm.configure.enable_ssh_reboot.action" = "SSH inschakelen en opnieuw opstarten";
@@ -130,7 +130,7 @@
 "confirm.deploy.netbsd4.title" = "Samba installeren / bijwerken, opnieuw opstarten en activeren?";
 "confirm.deploy.netbsd4_no_wait.action" = "Samba installeren / bijwerken en herstart aanvragen";
 "confirm.deploy.netbsd4_no_wait.message" = "Samba installeren of bijwerken op deze %@, een herstart aanvragen en direct terugkeren zonder Samba te starten zodra SSH weer bereikbaar is?";
-"confirm.deploy.netbsd4_no_wait.title" = "Samba installeren / bijwerken en NetBSD4-herstart aanvragen?";
+"confirm.deploy.netbsd4_no_wait.title" = "Samba installeren / bijwerken en NetBSD 4-herstart aanvragen?";
 "confirm.deploy.reboot.action" = "Samba installeren / bijwerken en opnieuw opstarten";
 "confirm.deploy.reboot.message" = "Samba installeren of bijwerken en deze %@ herstarten?";
 "confirm.deploy.reboot.title" = "Samba installeren / bijwerken en opnieuw opstarten?";
@@ -264,7 +264,7 @@
 "install.advanced_options" = "Geavanceerde opties";
 "install.completion.title.finished" = "Installatie/update voltooid";
 "install.completion.title.verified" = "Installatie / update geverifieerd";
-"install.completion.warning.netbsd4" = "Op NetBSD4-apparaten kan na een latere herstart ‘Activeren’ nodig zijn, tenzij de opstart-hook is gepatcht.";
+"install.completion.warning.netbsd4" = "Op NetBSD 4-apparaten kan na een latere herstart ‘Activeren’ nodig zijn, tenzij de opstart-hook is gepatcht.";
 "install.advanced_options.no_wait_note" = "‘Niet wachten’ is bedoeld voor ervaren gebruikers: de app keert direct terug na het herstartverzoek, zonder activering of controle na de herstart.";
 "install.progress.deploying.message" = "De beheerde Samba-services uploaden en installeren. Dit kan enkele minuten duren...";
 "install.progress.deploying.title" = "Installeren / bijwerken";
@@ -343,8 +343,8 @@
 "event.summary.result.failed" = "Mislukt";
 "event.summary.result.finished" = "Klaar";
 "event.summary.stage" = "%@: %@";
-"backend.summary.activation_already_active" = "De NetBSD4-software was al actief.";
-"backend.summary.activation_completed" = "NetBSD4-activering voltooid.";
+"backend.summary.activation_already_active" = "De NetBSD 4-software was al actief.";
+"backend.summary.activation_completed" = "NetBSD 4-activering voltooid.";
 "backend.summary.configuration_saved" = "Configuratie opgeslagen en SSH-authenticatie gecontroleerd.";
 "backend.summary.deploy_completed" = "Samba-installatie of -update voltooid.";
 "backend.summary.doctor_checks_passed" = "Diagnostische controles geslaagd.";
@@ -378,7 +378,7 @@
 "backend.summary.update_required" = "Update vereist.";
 "backend.summary.version_metadata_unavailable" = "Versiemetadata zijn niet beschikbaar.";
 "backend.summary.version_supported" = "Deze versie van TimeCapsuleSMB wordt ondersteund.";
-"backend.summary.activation_completed_followup" = "NetBSD4-activering voltooid. Voer `activate` uit na een herstart als het apparaat Samba niet automatisch heeft gestart.";
+"backend.summary.activation_completed_followup" = "NetBSD 4-activering voltooid. Voer `activate` uit na een herstart als het apparaat Samba niet automatisch heeft gestart.";
 "backend.summary.flash.apple_all_match" = "Alle kandidaat-firmwarebanken komen overeen met de originele Apple-firmware.";
 "backend.summary.flash.apple_all_match_version" = "Alle kandidaat-firmwarebanken komen overeen met de originele Apple-firmware %@.";
 "backend.summary.flash.apple_none_match" = "Geen kandidaat-firmwarebank komt overeen met de originele Apple-firmware.";
@@ -464,7 +464,7 @@
 "flash.row.write_requested" = "Schrijfverzoek";
 "flash.row.write_status" = "Schrijfstatus";
 "flash.row.write_validated" = "Schrijven gevalideerd";
-"flash.title" = "Permanente NetBSD4-opstart-hook";
+"flash.title" = "Permanente NetBSD 4-opstart-hook";
 "flash.warning.manual_power_cycle" = "Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
 "flash.warning.snapshot_stale" = "Na deze back-up is firmware geschreven. Maak opnieuw een back-up en controleer deze voordat u een nieuwe flashbewerking plant.";
 "helper.error.cancelled" = "Bewerking geannuleerd.";
@@ -510,7 +510,7 @@
 "maintenance.action.wipe_disk" = "Interne schijf opnieuw formatteren";
 "maintenance.advanced_options" = "Geavanceerde opties";
 "maintenance.presentation.activate.subtitle" = "Start de geïnstalleerde Samba-services op een NetBSD 4-apparaat.";
-"maintenance.presentation.activate.title" = "NetBSD4-activering";
+"maintenance.presentation.activate.title" = "NetBSD 4-activering";
 "maintenance.presentation.boot_hook.subtitle" = "De firmware patchen zodat Samba na elke herstart start, of de Apple-firmware herstellen.";
 "maintenance.presentation.fsck.subtitle" = "Een geselecteerd HFS-volume ontkoppelen en fsck_hfs op het apparaat uitvoeren.";
 "maintenance.presentation.fsck.title" = "Schijfreparatie";
@@ -788,7 +788,7 @@
 "backend.recovery.configure.ssh_compatibility_failed.action.1" = "Werk TimeCapsuleSMB bij en probeer het opnieuw.";
 "backend.recovery.configure.ssh_compatibility_failed.action.2" = "Mislukt het nog steeds, klik dan op ‘Diagnostische gegevens kopiëren’ en meld het probleem op https://github.com/jamesyc/TimeCapsuleSMB/issues.";
 "backend.recovery.deploy.confirmation_required.title" = "Bevestiging vereist voor installeren / bijwerken";
-"backend.recovery.deploy.confirmation_required.message" = "‘Samba installeren / bijwerken’ vereist bevestiging voordat installatiebestanden worden geüpload, het apparaat wordt herstart of de NetBSD4-services worden geactiveerd.";
+"backend.recovery.deploy.confirmation_required.message" = "‘Samba installeren / bijwerken’ vereist bevestiging voordat installatiebestanden worden geüpload, het apparaat wordt herstart of de NetBSD 4-services worden geactiveerd.";
 "backend.recovery.deploy.confirmation_required.action.1" = "Bekijk het installatieplan.";
 "backend.recovery.deploy.confirmation_required.action.2" = "Bevestig de installatie of update en eventuele vragen om te herstarten of te activeren.";
 "backend.recovery.deploy.validation_failed.title" = "De installatie kon niet starten";
@@ -909,8 +909,8 @@
 "backend.recovery.activate.client_outdated.message" = "De geïnstalleerde TimeCapsuleSMB is van een nieuwere hoofdversie, die deze app niet kan starten of controleren.";
 "backend.recovery.activate.client_outdated.action.1" = "Werk TimeCapsuleSMB bij en start het daarna opnieuw.";
 "backend.recovery.activate.confirmation_required.title" = "Bevestiging voor activering vereist";
-"backend.recovery.activate.confirmation_required.message" = "NetBSD4-activering start de geïnstalleerde Samba-services en moet worden bevestigd.";
-"backend.recovery.activate.confirmation_required.action.1" = "Lees de aanwijzingen voor NetBSD4-activering.";
+"backend.recovery.activate.confirmation_required.message" = "NetBSD 4-activering start de geïnstalleerde Samba-services en moet worden bevestigd.";
+"backend.recovery.activate.confirmation_required.action.1" = "Lees de aanwijzingen voor NetBSD 4-activering.";
 "backend.recovery.activate.confirmation_required.action.2" = "Bevestig de activering voordat u het opnieuw probeert.";
 "backend.recovery.uninstall.confirmation_required.title" = "Bevestiging voor verwijderen vereist";
 "backend.recovery.uninstall.confirmation_required.message" = "‘Verwijderen’ verwijdert de beheerde bestanden en kan het apparaat herstarten.";
@@ -1283,7 +1283,7 @@
 "timeline.operation.deploy" = "Installeren / bijwerken";
 "timeline.operation.discovery" = "Apparaatdetectie";
 "timeline.operation.doctor" = "Controle";
-"timeline.operation.flash" = "Permanente NetBSD4-opstart-hook";
+"timeline.operation.flash" = "Permanente NetBSD 4-opstart-hook";
 "timeline.operation.fsck" = "Schijfreparatie";
 "timeline.operation.wipe_disk" = "Interne schijf opnieuw formatteren";
 "timeline.operation.reachability" = "Bereikbaarheid";

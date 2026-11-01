@@ -353,7 +353,7 @@ final class PendingConfirmationTests: XCTestCase {
 
         let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
 
-        XCTAssertEqual(confirmation.title, "Install / Update Samba and Request NetBSD4 Reboot?")
+        XCTAssertEqual(confirmation.title, "Install / Update Samba and Request NetBSD 4 Reboot?")
         XCTAssertEqual(
             confirmation.message,
             "Install or update Samba on this Time Capsule, request reboot, and return immediately without starting Samba after SSH returns?"

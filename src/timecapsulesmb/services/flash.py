@@ -56,7 +56,7 @@ FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE = (
     "Firmware restore write validated, but the device did not restart after the reboot request."
 )
 FLASH_UNSUPPORTED_DEVICE_MESSAGE = (
-    "flash is only supported for NetBSD4 AirPort storage devices. "
+    "flash is only supported for NetBSD 4 AirPort storage devices. "
     "If your device should be supported, please add details to "
     "https://github.com/jamesyc/TimeCapsuleSMB/issues/160."
 )

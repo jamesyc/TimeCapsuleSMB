@@ -119,13 +119,13 @@ class CliFlowTests(unittest.TestCase):
                            return_value=logs) as read_logs:
             with redirect_stdout(output):
                 with self.assertRaises(DeviceError) as raised:
-                    self.verify_runtime(command_context, timeout_seconds=200, failure_message="NetBSD4 activation failed.")
+                    self.verify_runtime(command_context, timeout_seconds=200, failure_message="NetBSD 4 activation failed.")
 
         read_logs.assert_called_once()
 
         self.assertEqual(
             str(raised.exception),
-            "NetBSD4 activation failed.\nruntime verification timed out after 200s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
+            "NetBSD 4 activation failed.\nruntime verification timed out after 200s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
         )
         self.assertIn("failed: runtime verification timed out after 200s", output.getvalue())
 

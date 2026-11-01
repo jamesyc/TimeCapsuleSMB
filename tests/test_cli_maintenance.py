@@ -103,13 +103,13 @@ class CliMaintenanceTests(CliTestCase):
         self.assertEqual(rc, 0)
         actions_mock.assert_not_called()
         text = output.getvalue()
-        self.assertIn("Dry run: NetBSD4 activation plan", text)
+        self.assertIn("Dry run: NetBSD 4 activation plan", text)
         for action in managed_stop_actions(stop_afpserver=False):
             self.assertIn(render_remote_action(action), text)
         # Activation does not reboot, and ACPd never respawns afpserver.
         self.assertNotIn(render_remote_action(StopProcessAction("afpserver")), text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
-        self.assertIn("skip rc.local if the NetBSD4 payload is already healthy", text)
+        self.assertIn("skip rc.local if the NetBSD 4 payload is already healthy", text)
         self.assertIn("managed runtime smb.conf is present", text)
         self.assertIn("managed smbd parent process is running", text)
         self.assertIn("smbd owns IPv4 and IPv6 wildcard TCP 445 listeners", text)
@@ -151,7 +151,7 @@ class CliMaintenanceTests(CliTestCase):
             with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=self.make_logged_in_probe_state(self.make_supported_compatibility())):
                 with self.assertRaises(SystemExit) as cm:
                     activate.main(["--dry-run"])
-        self.assertIn("only supported for NetBSD4", str(cm.exception))
+        self.assertIn("only supported for NetBSD 4", str(cm.exception))
 
     def test_activate_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
@@ -171,7 +171,7 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("Activation cancelled.", text)
         command_context.finish.assert_called_once()
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
-        self.assertIn("Cancelled by user at NetBSD4 activation confirmation prompt.", command_context.finish.call_args.kwargs["error"])
+        self.assertIn("Cancelled by user at NetBSD 4 activation confirmation prompt.", command_context.finish.call_args.kwargs["error"])
 
     def test_activate_prompt_eof_reports_non_interactive_error(self) -> None:
         output = io.StringIO()
@@ -271,7 +271,7 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("TimeCapsuleSMB is not installed on this device.", output.getvalue())
         # The next step for runtime_not_installed, in the CLI's words.
         self.assertIn("Next steps:\n  1. Run `tcapsule deploy`.", output.getvalue())
-        self.assertNotIn("Activating NetBSD4 payload", output.getvalue())
+        self.assertNotIn("Activating NetBSD 4 payload", output.getvalue())
         runtime_probe.assert_not_called()
         actions_mock.assert_not_called()
 
@@ -308,7 +308,7 @@ class CliMaintenanceTests(CliTestCase):
         read_logs.assert_called_once()
         # Only the verification's own polling sleeps; nothing waits a fixed time first.
         self.assertTrue(all(call.args[0] < 20 for call in sleep_mock.call_args_list))
-        self.assertIn("NetBSD4 activation failed.", output.getvalue())
+        self.assertIn("NetBSD 4 activation failed.", output.getvalue())
 
     def test_activate_dry_run_json_outputs_activation_plan(self) -> None:
         output = io.StringIO()

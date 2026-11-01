@@ -1903,9 +1903,9 @@ class DeployModuleTests(unittest.TestCase):
 
         self.assertTrue(verification.ready)
         self.assertEqual(
-            render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
+            render_managed_runtime_verification(verification, heading="NetBSD 4 activation verification:"),
             [
-                "NetBSD4 activation verification:",
+                "NetBSD 4 activation verification:",
                 "  ok: managed smbd ready",
                 "  ok: managed mDNS registrant active",
             ],
@@ -2045,9 +2045,9 @@ class DeployModuleTests(unittest.TestCase):
 
         self.assertFalse(verification.ready)
         self.assertEqual(
-            render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
+            render_managed_runtime_verification(verification, heading="NetBSD 4 activation verification:"),
             [
-                "NetBSD4 activation verification:",
+                "NetBSD 4 activation verification:",
                 "  failed: managed smbd is not ready",
                 "  ok: managed mDNS registrant active",
             ],
@@ -3251,7 +3251,7 @@ describe_managed_smbd_status "" ""
         self.assertEqual(stages, [])
         self.assertEqual(debug_fields["activation_decision"], "firmware_autostart_enabled")
         self.assertFalse(debug_fields["manual_activation_required"])
-        self.assertIn("NetBSD4 firmware autostart is enabled; waiting for managed runtime.", logs)
+        self.assertIn("NetBSD 4 firmware autostart is enabled; waiting for managed runtime.", logs)
         self.assertTrue(result.verified)
 
     def test_complete_deployment_netbsd6_reboot_waits_for_runtime(self) -> None:
@@ -3728,7 +3728,7 @@ describe_managed_smbd_status "" ""
                 stage="verify_runtime_activation",
                 timeout_seconds=200,
                 heading="Runtime verification:",
-                failure_message="NetBSD4 activation failed.",
+                failure_message="NetBSD 4 activation failed.",
                 probe_runtime=mock.Mock(return_value=verification),
                 read_runtime_logs=mock.Mock(return_value={}),
                 read_disk_errors=mock.Mock(return_value=()),
@@ -3885,7 +3885,7 @@ describe_managed_smbd_status "" ""
                     stage="verify_runtime_activation",
                     timeout_seconds=200,
                     heading="Runtime verification:",
-                    failure_message="NetBSD4 activation failed.",
+                    failure_message="NetBSD 4 activation failed.",
                     read_runtime_logs=mock.Mock(return_value={}),
                     read_disk_errors=mock.Mock(return_value=()),
                 )
@@ -3894,7 +3894,7 @@ describe_managed_smbd_status "" ""
         self.assertTrue(raised.exception.samba_off)
         self.assertEqual(
             raised.exception.message,
-            "NetBSD4 activation failed. Apple ACPd is broken: the AirPort service on this device has quit, "
+            "NetBSD 4 activation failed. Apple ACPd is broken: the AirPort service on this device has quit, "
             "a bug in Apple's firmware. File sharing stays off until the device restarts.",
         )
         self.assertIn("managed smbd not ready", raised.exception.detail)
@@ -3915,7 +3915,7 @@ describe_managed_smbd_status "" ""
                 stage="verify_runtime_activation",
                 timeout_seconds=200,
                 heading="Runtime verification:",
-                failure_message="NetBSD4 activation failed.",
+                failure_message="NetBSD 4 activation failed.",
                 probe_runtime=mock.Mock(return_value=verification),
                 read_runtime_logs=mock.Mock(return_value={}),
                 read_disk_errors=mock.Mock(return_value=()),
@@ -3940,7 +3940,7 @@ describe_managed_smbd_status "" ""
                         stage="verify_runtime_activation",
                         timeout_seconds=200,
                         heading="Runtime verification:",
-                        failure_message="NetBSD4 activation failed.",
+                        failure_message="NetBSD 4 activation failed.",
                         probe_runtime=mock.Mock(return_value=verification),
                         read_runtime_logs=mock.Mock(return_value={}),
                         read_disk_errors=mock.Mock(return_value=disk_errors),
@@ -3954,7 +3954,7 @@ describe_managed_smbd_status "" ""
                 stage="verify_runtime_activation",
                 timeout_seconds=200,
                 heading="Runtime verification:",
-                failure_message="NetBSD4 activation failed.",
+                failure_message="NetBSD 4 activation failed.",
                 probe_runtime=mock.Mock(return_value=verification),
                 read_runtime_logs=mock.Mock(return_value={}),
             )
@@ -3969,7 +3969,7 @@ describe_managed_smbd_status "" ""
                 self.assertEqual(raised.exception.code, problem.code)
                 # The caller's failure line says Samba did not start, which a
                 # verdict that leaves Samba on would contradict.
-                expected = f"NetBSD4 activation failed. {problem.error}" if problem.samba_off else problem.error
+                expected = f"NetBSD 4 activation failed. {problem.error}" if problem.samba_off else problem.error
                 self.assertEqual(str(raised.exception), expected)
                 self.assertEqual(raised.exception.samba_off, problem.samba_off)
 
@@ -4074,7 +4074,7 @@ describe_managed_smbd_status "" ""
                 self.assertEqual(raised.exception.code, problem.code)
                 # One sentence, said once: the progress line is not repeated
                 # by the error.
-                self.assertEqual(str(raised.exception), problem.error_after("NetBSD4 activation failed."))
+                self.assertEqual(str(raised.exception), problem.error_after("NetBSD 4 activation failed."))
                 self.assertNotIn(problem.message, messages)
 
     def test_activate_runs_when_the_runtime_is_only_not_ready(self) -> None:
@@ -4111,7 +4111,7 @@ describe_managed_smbd_status "" ""
         self.assertEqual(error.code, "acpd_quit")
         self.assertEqual(
             str(error),
-            "NetBSD4 activation failed. Apple ACPd is broken: the AirPort service on this device has quit, a bug "
+            "NetBSD 4 activation failed. Apple ACPd is broken: the AirPort service on this device has quit, a bug "
             "in Apple's firmware. File sharing stays off until the device restarts. Nothing was started.",
         )
 
@@ -4124,7 +4124,7 @@ describe_managed_smbd_status "" ""
                 error, run_actions = self._activate_with_acpd(**readings)
                 run_actions.assert_not_called()
                 self.assertEqual(error.code, "acpd_broken")
-                self.assertTrue(str(error).startswith("NetBSD4 activation failed. Apple ACPd is broken: "))
+                self.assertTrue(str(error).startswith("NetBSD 4 activation failed. Apple ACPd is broken: "))
                 self.assertIn(said, str(error))
                 self.assertTrue(str(error).endswith("Nothing was started."))
 
@@ -4156,7 +4156,7 @@ describe_managed_smbd_status "" ""
         problems.assert_not_called()
         run_actions.assert_not_called()
         self.assertEqual(str(raised.exception), (
-            "NetBSD4 activation failed. Apple ACPd is broken: the AirPort service on this device has quit, a bug "
+            "NetBSD 4 activation failed. Apple ACPd is broken: the AirPort service on this device has quit, a bug "
             "in Apple's firmware. File sharing stays off until the device restarts. Nothing was started."))
         self.assertEqual(debug["acpd_problems"], ["quit"])
 

@@ -1140,7 +1140,7 @@ func testActivationResultPayload(alreadyActive: Bool) -> JSONValue {
     .object([
         "schema_version": .number(1),
         "already_active": .bool(alreadyActive),
-        "summary": .string(alreadyActive ? "NetBSD4 payload was already active." : "NetBSD4 activation completed."),
+        "summary": .string(alreadyActive ? "NetBSD 4 payload was already active." : "NetBSD 4 activation completed."),
         "summary_key": .string(alreadyActive ? "activation_already_active" : "activation_completed"),
         "summary_args": .array([])
     ])
