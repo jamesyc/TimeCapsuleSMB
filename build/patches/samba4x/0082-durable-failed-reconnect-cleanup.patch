@@ -1,0 +1,137 @@
+diff --git a/source3/locking/brlock.c b/source3/locking/brlock.c
+--- a/source3/locking/brlock.c
++++ b/source3/locking/brlock.c
+@@ -1508,6 +1508,37 @@ bool brl_reconnect_disconnected(struct files_struct *fsp,
+ 	return true;
+ }
+ 
++/*
++ * Undo brl_reconnect_disconnected() for a durable reconnect that failed
++ * after it. The open has lost its share mode entry, so nothing can
++ * reconnect it again, and its locks now belong to this live smbd, which
++ * brl_cleanup_disconnected() never touches: they would block every other
++ * client for as long as this connection lasts. Drop them the way
++ * brl_cleanup_disconnected() does. The reconnect took no POSIX locks, so
++ * only the records go.
++ */
++void brl_drop_reconnected(struct files_struct *fsp,
++			  struct byte_range_lock *br_lck)
++{
++	uint32_t tid = fsp->conn->cnum;
++	uint64_t fnum = fsp->fnum;
++	struct server_id self = messaging_server_id(fsp->conn->sconn->msg_ctx);
++	unsigned int i;
++
++	for (i = 0; i < br_lck->num_locks; i++) {
++		struct lock_struct *lock = &br_lck->lock_data[i];
++
++		if (lock->context.tid != tid || lock->fnum != fnum ||
++		    !server_id_equal(&lock->context.pid, &self)) {
++			continue;
++		}
++		/* Deleted in byte_range_lock_flush(). */
++		lock->context.pid.pid = 0;
++		br_lck->modified = true;
++	}
++	fsp->current_lock_count = 0;
++}
++
+ struct brl_forall_cb {
+ 	void (*fn)(struct file_id id, struct server_id pid,
+ 		   enum brl_type lock_type,
+diff --git a/source3/locking/proto.h b/source3/locking/proto.h
+--- a/source3/locking/proto.h
++++ b/source3/locking/proto.h
+@@ -86,6 +86,8 @@ bool brl_mark_disconnected(struct files_struct *fsp,
+ 			   struct byte_range_lock *br_lck);
+ bool brl_reconnect_disconnected(struct files_struct *fsp,
+ 				struct byte_range_lock *br_lck);
++void brl_drop_reconnected(struct files_struct *fsp,
++			  struct byte_range_lock *br_lck);
+ void brl_close_fnum(struct byte_range_lock *br_lck);
+ int brl_forall(void (*fn)(struct file_id id, struct server_id pid,
+ 			  enum brl_type lock_type,
+diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
+--- a/source3/smbd/durable.c
++++ b/source3/smbd/durable.c
+@@ -781,6 +781,7 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
+ 	struct file_id file_id;
+ 	struct server_id old_pid;
+ 	bool have_share_mode_entry = false;
++	bool have_reconnected_locks = false;
+ 	uint32_t dosmode;
+ 	int ret;
+ 	bool ok;
+@@ -877,6 +878,7 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
+ 				nt_errstr(state->status));
+ 			goto fail;
+ 		}
++		have_reconnected_locks = true;
+ 	}
+ 
+ 	/*
+@@ -965,11 +967,27 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
+ 	return;
+ 
+ fail:
++	if (have_reconnected_locks) {
++		/*
++		 * The checks after brl_reconnect_disconnected() failed:
++		 * give up the locks it took over with the share mode
++		 * entry below.
++		 */
++		brl_drop_reconnected(fsp, br_lck);
++	}
+ 	if (have_share_mode_entry) {
+ 		/*
+ 		 * Something is screwed up, delete the sharemode entry.
+ 		 */
+ 		del_share_mode(lck, fsp);
++		/*
++		 * And its lease, unless another open still holds it: a
++		 * close removes it the same way (remove_share_oplock()).
++		 * Nothing else would ever delete this lease record.
++		 */
++		if (e.op_type == LEASE_OPLOCK) {
++			remove_lease_if_stale(lck, &e.client_guid, &e.lease_key);
++		}
+ 	}
+ 	if (fsp_get_pathref_fd(fsp) != -1) {
+ 		NTSTATUS close_status;
+diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
+--- a/source3/smbd/smb2_create.c
++++ b/source3/smbd/smb2_create.c
+@@ -24,6 +24,7 @@
+ #include "smbd/smbd.h"
+ #include "smbd/globals.h"
+ #include "smbd/smbXsrv_open.h"
++#include "smbd/scavenger.h"
+ #include "../libcli/smb/smb_common.h"
+ #include "../librpc/gen_ndr/ndr_security.h"
+ #include "../librpc/gen_ndr/ndr_smb2_lease_struct.h"
+@@ -1184,6 +1185,25 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+ 				   nt_errstr(status),
+ 				   nt_errstr(return_status));
+ 
++			/*
++			 * smb2srv_open_recreate() stored the open as ours.
++			 * Store it disconnected again with its own disconnect
++			 * time and tell the scavenger, as close_durable() does.
++			 * Freeing the op alone stores it with disconnect time
++			 * 0, and the scavenger may have run its timer while
++			 * this reconnect held the open, or found it ours when
++			 * its disconnect message arrived: nothing would expire
++			 * it.
++			 */
++			status = smbXsrv_open_close(
++				state->op, state->op->global->disconnect_time);
++			if (NT_STATUS_IS_OK(status)) {
++				scavenger_schedule_disconnected(
++					smb1req->sconn->msg_ctx,
++					state->op->global->open_persistent_id,
++					&state->op->global->file_id,
++					state->op->global->name_hash);
++			}
+ 			TALLOC_FREE(state->op);
+ 			tevent_req_nterror(req, return_status);
+ 			return tevent_req_post(req, state->ev);

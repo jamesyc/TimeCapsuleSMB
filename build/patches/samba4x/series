@@ -142,26 +142,51 @@
 # failed a stream read, the cleanup after a shrinking write and a stream delete
 # after the primary xattr was gone. Check for ENOATTR.
 0035-streams-xattr-enoattr.patch|missing stream extents report ENOATTR
-# Upstream bugs that leave durable-open records and leases in the lock
-# directory for good; on the appliance its small RAM disk then fills, and a
-# full one makes client smbds fail opens and abort. A share entry dropped as
-# stale (a disconnected open, or one of a dead smbd, found by another open)
-# kept its lease: remove the lease with the entry, as a close does. Only the
-# entry's own smbd removed its open records, so an smbd that crashed or was
-# killed left them until smbd restarted: after an unclean exit cleanupd asks
-# the scavenger to walk the open records and release those of exited smbds.
-# Clean exits, ordinary reconnects included, trigger no walk. A durable open's
-# record now carries its file id: it was stored before a newly created file
-# had one, so nothing could find the open's share mode entry from it. A durable
-# reconnect that failed stored its open back with disconnect time 0 and no
-# expiry, and kept its lease and the byte-range locks it had taken over:
-# store it with its own time and schedule the scavenger, and remove the lease
-# and those locks. A reconnect that met another open's lock (or one a failed
-# reconnect left behind) freed the caller's br_lck in
-# brl_reconnect_disconnected(), which share_mode_do_locked_brl() freed again:
-# a "Bad talloc magic value" panic. Leave br_lck to its owner. The parent
-# logs a child that a signal ended or that exited with an error status.
-0077-smbd-release-orphaned-durable-opens.patch|release durable opens and leases left by dead smbds and failed reconnects
+# smbd_smb2_advance_incoming() reads a frame whose NBT type is not 0x00 in full
+# into a buffer allocated on the request, ignores it, and reuses the request
+# for the next read. The request is freed only after the next SMB2 request
+# completes, so every ignored frame's buffer stays allocated until then. Free
+# each one when its frame is ignored. The patch's comment says the buffers
+# stayed until the connection ended; they stay until the next SMB2 request
+# completes.
+0079-smbd-ignored-frame-free-buffer.patch|free each ignored frame's buffer
+# brl_reconnect_disconnected() freed br_lck on each of its four failure
+# returns, but its caller, share_mode_do_locked_brl_fn(), owns br_lck: after a
+# failed reconnect it read br_lck->modified from the freed memory, then freed
+# br_lck again, and talloc aborted with "Bad talloc magic value". Leave br_lck
+# to its owner.
+0080-locking-reconnect-br-lck-double-free.patch|leave br_lck to its owner after a failed reconnect
+# A share entry that share_mode_forall_entries() drops as stale (a disconnected
+# open, or one of a dead smbd, found by another open, and the scavenger's
+# expired ones) kept its lease in leases.tdb for good. On the appliance the
+# lock directory is a small RAM disk, and a full one makes client smbds fail
+# opens and abort. Collect the dropped entries' leases and, after the store,
+# remove each one no remaining entry holds, as a close does
+# (remove_share_oplock()). share_mode_cleanup_disconnected() removed an expired
+# open's lease itself; drop that, or it would find the lease already gone and,
+# for a durable open, warn and report failure.
+0081-locking-stale-entry-lease.patch|a share entry dropped as stale takes its lease with it
+# A durable reconnect that failed after smb2srv_open_recreate() stored its open
+# back with disconnect time 0 and no expiry, and kept the lease and the
+# byte-range locks it had taken over, so nothing expired or released them.
+# Store the open disconnected with its own disconnect time and schedule the
+# scavenger, as close_durable() does; give up the locks it took over
+# (brl_drop_reconnected()) and remove its lease unless another open holds it.
+0082-durable-failed-reconnect-cleanup.patch|a failed durable reconnect stores its open disconnected and gives back its locks and lease
+# Only an entry's own smbd removed its open records, so an smbd that crashed or
+# was killed left them until smbd restarted, and a reconnect refused such a
+# record. After an unclean exit cleanupd asks the scavenger (an empty
+# MSG_SMB_SCAVENGER) to walk the open records and release those of exited
+# smbds; brl_cleanup_disconnected() and
+# cleanup_disconnected_share_mode_entry_fn() accept an owner that no longer
+# exists. Clean exits, ordinary reconnects included, trigger no walk. A durable
+# open's record now carries its file id: stock stored the record in
+# fsp_bind_smb() before a new file had an id, so nothing could find the open's
+# share mode entry from it, and cleanup_ph() and net serverid read a zero file
+# id. scavenger_cleanup() logs NT_STATUS_CANNOT_DELETE (an open still in use,
+# such as one reconnected before its timer fired) at debug level, where stock
+# logs a warning, and the scavenger ignores a message of the wrong size.
+0077-smbd-release-orphaned-durable-opens.patch|release durable opens left by dead smbds
 
 # 2. Upstream proposals.
 # Changes upstream would have to agree to; they need no appliance patch.
@@ -455,9 +480,7 @@
 # only WRITEs sent alone), compounds such as the CREATE/WRITE/CLOSE macOS uses
 # for extended attributes, WRITEs read by receivefile (logged at startup if
 # min receivefile size is set), and every WRITE when multichannel is on
-# (0072's state is one per smbd; logged at startup). Also fixes a Samba bug:
-# the path that ignores frames kept each frame's buffer until the connection
-# ended.
+# (0072's state is one per smbd; logged at startup).
 0072-smbd-short-write-desync.patch|refuse a short macOS WRITE, answer what follows, then end the connection
 # A Mac reconnecting names its lost session in the new session setup and
 # gives that request 60 seconds. Upstream answers only once the old session's
@@ -567,3 +590,7 @@
 # or left that session alone, the old smbd closing it, each durable open it
 # disconnects, the reconnect request and its result, and why connections end.
 0061-smbd-reconnect-diagnostics.patch|durable reconnect diagnostics at log level 3
+# The parent logs a child smbd that exited with an error status or that a
+# signal ended; stock logs neither. A child that dies leaves its opens to the
+# scavenger's rescan (0077), and this line says which one died and why.
+0083-smbd-child-exit-logging.patch|log a child that exited with an error status or a signal
