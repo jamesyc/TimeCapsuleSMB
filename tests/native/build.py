@@ -5,6 +5,7 @@ and runs that build the same binary share one file, and macOS checks it on
 its first exec only once.
 """
 from pathlib import Path
+import fcntl
 import hashlib
 import subprocess
 import sys
@@ -26,6 +27,11 @@ def build_root(kind):
         path = Path(coverage) / kind
         path.mkdir(parents=True, exist_ok=True)
         return path
+    # One directory for the whole pytest run (tests/conftest.py), so xdist
+    # workers compile each object once between them.
+    shared = os.environ.get('TC_NATIVE_OBJECT_DIR')
+    if kind == 'objects' and shared:
+        return Path(shared)
     return Path(_BUILD.name)
 
 def sources() -> list[Path]:
@@ -104,19 +110,45 @@ def _vendor_flags(source):
     return tuple(flags)
 
 
+def _code_flags(arguments):
+    """The arguments that change the object beyond what preprocessing shows."""
+    kept, operand = [], False
+    for argument in arguments:
+        if operand:
+            operand = False
+        elif argument in ('-I', '-include'):
+            operand = True
+        elif not argument.startswith(('-D', '-U', '-I')):
+            kept.append(argument)
+    return kept
+
+
 @lru_cache(maxsize=None)
 def _compile_object(source, flags, instrumentation):
-    vendor_flags = _vendor_flags(source)
-    key = hashlib.sha256((str(source) + repr(flags) + repr(instrumentation) +
-                          repr(vendor_flags)).encode()).hexdigest()[:20]
+    arguments = [*_compiler_flags(flags, instrumentation), *_vendor_flags(source)]
+    # Keyed by the preprocessed source, not the -D flags: fixtures define
+    # paths under each worker's own directory, which most sources never use,
+    # and those sources are then one object for every worker.
+    result = subprocess.run([*arguments, '-E', str(source)], capture_output=True, timeout=60)
+    if result.returncode:
+        raise AssertionError(result.stderr.decode(errors='replace'))
+    key = hashlib.sha256(result.stdout + repr(_code_flags(arguments)).encode()).hexdigest()[:20]
     directory = build_root('objects')
     directory.mkdir(parents=True, exist_ok=True)
     obj = directory / f'{key}.o'
-    result = subprocess.run([*_compiler_flags(flags, instrumentation), *vendor_flags,
-                             '-c', str(source), '-o', str(obj)],
-                            capture_output=True, text=True, timeout=60)
-    if result.returncode:
-        raise AssertionError(result.stderr)
+    # Workers starting the same fixture wait for the one compiling it instead
+    # of all compiling it at once. A finished object appears only by rename.
+    with open(directory / f'{key}.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if obj.exists():
+            return obj
+        partial = directory / f'{key}.{os.getpid()}.partial.o'
+        result = subprocess.run([*arguments, '-c', str(source), '-o', str(partial)],
+                                capture_output=True, text=True, timeout=60)
+        if result.returncode:
+            partial.unlink(missing_ok=True)
+            raise AssertionError(result.stderr)
+        os.replace(partial, obj)
     return obj
 
 
