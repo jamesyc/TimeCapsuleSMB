@@ -116,7 +116,7 @@ gh workflow run update.yml -R jamesyc/homebrew-tap
 gh workflow run update.yml -R jamesyc/homebrew-tap -f tag=v<version>
 ```
 
-GitHub turns the daily run off after 60 days without a commit to the tap; turn it back on in the tap's Actions tab.
+GitHub turns a public repository's schedule off after 60 days without a commit. Each run of `update.yml` enables the workflow again through GitHub's API, which restarts that count, so the daily run keeps itself on. If it is ever off, turn it back on in the tap's Actions tab.
 
 ### One-time setup
 

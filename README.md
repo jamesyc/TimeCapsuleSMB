@@ -30,7 +30,7 @@ If TimeCapsuleSMB has been useful to you, you can [buy me a coffee](https://buym
 ## Requirements
 
 You will need:  
-- A Mac or Linux computer on the same local network as the Time Capsule. The app and Homebrew need macOS 14 or later; the Python CLI from a clone of this repository runs on macOS 12 or later, Intel or Apple silicon, and on Linux with OpenSSH 8.4 or newer.
+- A Mac or Linux computer on the same local network as the Time Capsule. The app needs macOS 14 or later, and Homebrew needs an Apple silicon Mac; the Python CLI from a clone of this repository runs on macOS 12 or later, Intel or Apple silicon, and on Linux with OpenSSH 8.4 or newer.
 - The password for the Time Capsule
 
 For the python setup, you need:  
@@ -71,7 +71,7 @@ Please [read the FAQ](FAQ.md) for more information. If you have an issue that co
 
 ## Quick Start (with python)
 
-On an Apple silicon Mac with macOS 14 or later, Homebrew can install the `tcapsule` command:
+On an Apple silicon Mac, Homebrew can install the `tcapsule` command:
 
 ```bash
 brew install jamesyc/tap/tcapsule
@@ -80,7 +80,7 @@ tcapsule deploy
 tcapsule doctor
 ```
 
-It takes the same commands as the steps below, typed as `tcapsule` in place of `.venv/bin/tcapsule`, and needs no `bootstrap`. Homebrew has no prebuilt Python 3.15 for macOS 14 and 15, so there it compiles Python first. Its settings are in `~/Library/Application Support/TimeCapsuleSMB/CLI/.env`. `brew update && brew upgrade tcapsule` updates it and `brew uninstall tcapsule` removes it.
+It takes the same commands as the steps below, typed as `tcapsule` in place of `.venv/bin/tcapsule`, and needs no `bootstrap`. On macOS 14 and older, Homebrew has no prebuilt Python 3.15, so it compiles Python first. Its settings are in `~/Library/Application Support/TimeCapsuleSMB/CLI/.env`. `brew update && brew upgrade tcapsule` updates it and `brew uninstall tcapsule` removes it.
 
 On any Mac with macOS 12 or later, or on Linux, you can instead download (or run `git clone`) this repository to a folder.
 

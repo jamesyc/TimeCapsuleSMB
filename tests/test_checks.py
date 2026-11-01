@@ -63,6 +63,7 @@ from timecapsulesmb.checks.doctor_steps import (
     NATIVE_NBNS_STILL_STARTING,
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
+from timecapsulesmb.install_validation import validate_ssh_askpass
 from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE, DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK
 from tests.test_client_network import router_plan
 from tests.reboot_support import acp_password_answer, acp_reading
@@ -2459,11 +2460,14 @@ class CheckTests(unittest.TestCase):
             not_executable.chmod(0o644)
             for helper in (not_executable, Path(tmp) / "missing"):
                 with self.subTest(helper=helper.name):
-                    with mock.patch("timecapsulesmb.checks.local_tools.SSH_ASKPASS_PATH", helper), \
+                    with mock.patch("timecapsulesmb.install_validation.SSH_ASKPASS_PATH", helper), \
                          mock.patch("timecapsulesmb.checks.local_tools.require_local_ssh", return_value="/tested/ssh"):
                         results = check_required_local_tools()
+                        validate_install_message = validate_ssh_askpass().message
                     self.assertEqual([r.status for r in results], ["PASS", "PASS", "FAIL"])
                     self.assertIn(f"is missing or not executable at {helper}; reinstall TimeCapsuleSMB", results[2].message)
+                    # validate-install reports the same check in the same words.
+                    self.assertEqual(results[2].message, validate_install_message)
 
     def test_check_required_local_tools_checks_the_openssl_config_only_where_openssl_refuses_sha1(self) -> None:
         # ssh needs openssl-sha1.cnf only where OpenSSL refuses the Time

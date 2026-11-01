@@ -33,9 +33,7 @@ class Tcapsule < Formula
 
   test do
     assert_equal "tcapsule #{version}", shell_output("#{bin}/tcapsule --version").strip
-    # The Python packages import, and every payload deploy copies is where the
-    # wrapper points with the hash the release lists. An empty token keeps the
-    # test out of telemetry.
+    # An empty token keeps the test out of telemetry.
     ENV["TCAPSULE_TELEMETRY_TOKEN"] = ""
     # The wrapper's TCAPSULE_CLIENT reaches Python: Homebrew needs no bootstrap.
     assert_match "nothing to bootstrap", shell_output("#{bin}/tcapsule bootstrap")

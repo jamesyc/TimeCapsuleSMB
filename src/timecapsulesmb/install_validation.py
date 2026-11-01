@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 from dataclasses import dataclass, field
 
 from timecapsulesmb.core.paths import (
@@ -14,6 +15,7 @@ from timecapsulesmb.deploy.boot_assets import (
     load_boot_asset_text,
     require_no_unresolved_asset_tokens,
 )
+from timecapsulesmb.transport.ssh import SSH_ASKPASS_PATH
 
 
 REQUIRED_PYTHON_MODULES = ("zeroconf", "ifaddr")
@@ -105,6 +107,22 @@ def validate_boot_assets() -> InstallCheckResult:
     return InstallCheckResult("boot_assets", True, "boot assets are readable")
 
 
+def validate_ssh_askpass() -> InstallCheckResult:
+    # ssh runs this helper for the device password on every login, so an
+    # install that lost its executable bit cannot reach any device. Doctor
+    # reports this same check.
+    if os.access(SSH_ASKPASS_PATH, os.X_OK):
+        return InstallCheckResult(
+            "ssh_askpass", True, "local tool ssh-askpass, the SSH password helper, is installed"
+        )
+    return InstallCheckResult(
+        "ssh_askpass",
+        False,
+        f"local tool ssh-askpass, the SSH password helper, is missing or not executable at {SSH_ASKPASS_PATH}; "
+        "reinstall TimeCapsuleSMB",
+    )
+
+
 def validate_distribution(app_paths: AppPaths) -> InstallCheckResult:
     validation = validate_distribution_root(app_paths.distribution_root)
     if validation.ok:
@@ -142,6 +160,7 @@ def validate_install(app_paths: AppPaths | None = None) -> list[InstallCheckResu
     return [
         validate_python_modules(),
         validate_boot_assets(),
+        validate_ssh_askpass(),
         validate_distribution(resolved_paths),
         validate_artifact_hashes(resolved_paths),
         validate_boot_script_tokens(resolved_paths),
