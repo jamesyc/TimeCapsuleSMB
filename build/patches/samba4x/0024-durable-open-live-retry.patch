@@ -25,7 +25,7 @@ diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
 --- a/source3/smbd/smb2_create.c
 +++ b/source3/smbd/smb2_create.c
-@@ -701,6 +701,7 @@ struct smbd_smb2_create_state {
+@@ -702,6 +702,7 @@ struct smbd_smb2_create_state {
  	bool update_open;
  	bool durable_requested;
  	uint32_t durable_timeout_msec;
@@ -33,7 +33,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  	bool do_durable_reconnect;
  	uint64_t persistent_id;
  	bool persistent_requested;
-@@ -1129,6 +1130,32 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+@@ -1130,6 +1131,32 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
  					       lease_key,
  					       now,
  					       &state->op);
@@ -66,7 +66,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  		if (tevent_req_nterror(req, status)) {
  			DBG_NOTICE("smb2srv_open_recreate failed: %s\n",
  				   nt_errstr(status));
-@@ -1488,6 +1515,16 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
+@@ -1508,6 +1535,16 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
  		 */
  		state->durable_timeout_msec = (60*1000);
  	}
@@ -83,7 +83,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  
  	if ((durable_v2_flags & SMB2_DHANDLE_FLAG_PERSISTENT) &&
  	    (server_caps & SMB2_CAP_PERSISTENT_HANDLES) &&
-@@ -1989,7 +2026,7 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
+@@ -2021,7 +2058,7 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
  			durable_v2_response_flags = SMB2_DHANDLE_FLAG_PERSISTENT;
  		}
  

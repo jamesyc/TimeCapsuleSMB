@@ -208,7 +208,7 @@ diff --git a/source3/locking/share_mode_lock.c b/source3/locking/share_mode_lock
 diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
 --- a/source3/smbd/durable.c
 +++ b/source3/smbd/durable.c
-@@ -850,6 +850,7 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
+@@ -781,6 +781,7 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
  	struct file_id file_id;
  	struct server_id old_pid;
  	bool have_share_mode_entry = false;
@@ -216,7 +216,7 @@ diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
  	uint32_t dosmode;
  	int ret;
  	bool ok;
-@@ -946,6 +947,7 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
+@@ -877,6 +878,7 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
  				nt_errstr(state->status));
  			goto fail;
  		}
@@ -224,7 +224,7 @@ diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
  	}
  
  	/*
-@@ -1034,11 +1036,27 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
+@@ -965,11 +967,27 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
  	return;
  
  fail:
@@ -576,7 +576,7 @@ diff --git a/source3/smbd/scavenger.h b/source3/smbd/scavenger.h
 diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -1250,12 +1250,23 @@ static void smbd_sig_chld_handler(struct tevent_context *ev,
+@@ -1217,12 +1217,23 @@ static void smbd_sig_chld_handler(struct tevent_context *ev,
  			ignore = (exitcode ==
  				  SMB_SUICIDE_EXIT_STATUS_BYPASS_CLEANUP);
  #endif
@@ -611,7 +611,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  #include "../libcli/smb/smb_common.h"
  #include "../librpc/gen_ndr/ndr_security.h"
  #include "../librpc/gen_ndr/ndr_smb2_lease_struct.h"
-@@ -1211,6 +1212,25 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+@@ -1184,6 +1185,25 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
  				   nt_errstr(status),
  				   nt_errstr(return_status));
  
@@ -637,7 +637,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  			TALLOC_FREE(state->op);
  			tevent_req_nterror(req, return_status);
  			return tevent_req_post(req, state->ev);
-@@ -1973,6 +1993,18 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
+@@ -1936,6 +1956,18 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
  
  	if (state->update_open) {
  		state->op->global->create_guid = state->_create_guid;

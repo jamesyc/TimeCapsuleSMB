@@ -48,7 +48,7 @@ diff --git a/source3/smbd/server.c b/source3/smbd/server.c
  	if (interactive) {
  		req = smbd_cleanupd_send(msg, ev, msg, parent_id.pid);
  		*ppid = messaging_server_id(msg);
-@@ -2654,9 +2687,18 @@ quic_disabled:
+@@ -2665,9 +2698,18 @@ quic_disabled:
  		exit_daemon("Samba cannot init notification", EACCES);
  	}
  
