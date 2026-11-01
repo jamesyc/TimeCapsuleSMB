@@ -721,9 +721,12 @@ def test_losing_ipv4_cancels_pending_inspection_without_restarting(rig, dnssd):
         lines = event_lines(discovery.events)
         hang = next(i for i, line in enumerate(lines) if line.startswith("HANG "))
         helper = int(lines[hang].split()[1])
-        # The child under inspection. On a loaded host an earlier child can
-        # fail at startup and be replaced first; that one is not under test.
-        inspected = children_in(lines[:hang])[-1]
+        # The child under inspection, as the fstat helper names it. On a
+        # loaded host an earlier child can fail at startup and be replaced
+        # first, and the child can log START after the helper has run.
+        inspected = int([line for line in lines[:hang] if line.startswith("FSTAT ")][-1].split()[1])
+        # Once it has logged START, its TERM handler logs the STOP below.
+        assert wait_for(lambda: f"START {inspected}" in event_lines(discovery.events))
         discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
         assert wait_for(lambda: "STOP" in event_lines(discovery.events))
         assert wait_for(lambda: not process_exists(helper), timeout=3)
