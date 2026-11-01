@@ -56,11 +56,12 @@ MANAGED_SETTING_PARAMS = frozenset({
     "ata_idle_seconds",
     "ata_standby",
     "debug_logging",
-    "force_disable_smb_signing_and_encryption",
+    "disable_smb_encryption",
     "fruit_metadata_netatalk",
     "internal_share_use_disk_root",
     "mdns_advertise_afp",
     "require_smb_encryption",
+    "require_smb_signing",
     "smb_browse_compatibility",
     "vfs_aio_fork_enabled",
 })

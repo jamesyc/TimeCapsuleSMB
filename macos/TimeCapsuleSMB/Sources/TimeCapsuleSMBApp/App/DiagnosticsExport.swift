@@ -228,12 +228,9 @@ struct DiagnosticsExportBuilder {
         append("\(prefix) SMB Browse Compatibility", value: settings.smbBrowseCompatibility, to: &lines)
         append("\(prefix) mDNS Advertise AFP", value: settings.mdnsAdvertiseAFP, to: &lines)
         append("\(prefix) Allow Any SMB Protocol", value: settings.anyProtocol, to: &lines)
+        append("\(prefix) Require SMB Signing", value: settings.requireSMBSigning, to: &lines)
         append("\(prefix) Require SMB Encryption", value: settings.requireSMBEncryption, to: &lines)
-        append(
-            "\(prefix) Force Disable SMB Signing and Encryption",
-            value: settings.forceDisableSMBSigningAndEncryption,
-            to: &lines
-        )
+        append("\(prefix) Turn Off SMB Encryption", value: settings.disableSMBEncryption, to: &lines)
         append("\(prefix) Netatalk Metadata", value: settings.fruitMetadataNetatalk, to: &lines)
         append("\(prefix) vfs_aio_fork", value: settings.vfsAIOForkEnabled, to: &lines)
         append("\(prefix) Debug Logging", value: settings.debugLogging, to: &lines)

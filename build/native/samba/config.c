@@ -24,7 +24,7 @@ int tc_runtime_config_load(struct tc_runtime_config *config) {
                                   {"SMB_BROWSE_COMPATIBILITY", "", 0},
                                   {"ANY_PROTOCOL", "", 0},
                                   {"REQUIRE_SMB_ENCRYPTION", "", 0},
-                                  {"FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION", "", 0},
+                                  {"DISABLE_SMB_ENCRYPTION", "", 0},
                                   {"FRUIT_METADATA_NETATALK", "", 0},
                                   {"VFS_AIO_FORK_ENABLED", "", 0},
                                   {"SMBD_DEBUG_LOGGING", "", 0},
@@ -34,7 +34,8 @@ int tc_runtime_config_load(struct tc_runtime_config *config) {
                                   {"DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS", "", 0},
                                   {"DISKD_USE_VOLUME_MOUNT_POLL_SECONDS", "", 0},
                                   {"ATA_IDLE_SECONDS", "", 0},
-                                  {"ATA_STANDBY", "", 0}};
+                                  {"ATA_STANDBY", "", 0},
+                                  {"REQUIRE_SMB_SIGNING", "", 0}};
     struct utsname system;
     memset(config, 0, sizeof(*config));
     if (config_read_snapshot(TC_FLASH_CONFIG_PATH, items, sizeof(items) / sizeof(items[0])))
@@ -52,7 +53,7 @@ int tc_runtime_config_load(struct tc_runtime_config *config) {
     config->browse_compatibility = boolean(&items[3], 0);
     config->any_protocol = boolean(&items[4], 0);
     config->require_encryption = boolean(&items[5], 0);
-    config->disable_security = boolean(&items[6], 0);
+    config->disable_encryption = boolean(&items[6], 0);
     config->netatalk = boolean(&items[7], 1);
     config->aio_fork = boolean(&items[8], 1);
     config->debug = boolean(&items[9], 0);
@@ -62,6 +63,7 @@ int tc_runtime_config_load(struct tc_runtime_config *config) {
     config->mount_timeout = number(&items[13], 31, 0, 3600);
     config->mount_poll = number(&items[14], 3, 1, 60);
     config->ata_idle = number(&items[15], 300, 0, 86400);
+    config->require_signing = boolean(&items[17], 0);
     if (items[16].present) {
         if (strlen(items[16].value) >= sizeof(config->ata_standby) ||
             strspn(items[16].value, "0123456789") != strlen(items[16].value))
@@ -69,10 +71,10 @@ int tc_runtime_config_load(struct tc_runtime_config *config) {
         strcpy(config->ata_standby, items[16].value);
     }
     if (config->telemetry < 0 || config->rsync < 0 || config->internal_root < 0 ||
-        config->browse_compatibility < 0 || config->any_protocol < 0 || config->require_encryption < 0 ||
-        config->disable_security < 0 || config->netatalk < 0 || config->aio_fork < 0 || config->debug < 0 ||
-        config->discovery_debug < 0 || config->advertise_afp < 0 ||
-        (config->require_encryption && config->disable_security))
+        config->browse_compatibility < 0 || config->any_protocol < 0 || config->require_signing < 0 ||
+        config->require_encryption < 0 || config->disable_encryption < 0 || config->netatalk < 0 ||
+        config->aio_fork < 0 || config->debug < 0 || config->discovery_debug < 0 || config->advertise_afp < 0 ||
+        (config->require_encryption && config->disable_encryption))
         return -1;
     return 0;
 }
@@ -107,8 +109,16 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
               file);
     else
         fputs("    min protocol = SMB2\n    max protocol = SMB3\n", file);
-    if (config->disable_security)
-        fputs("    server signing = disabled\n    server smb encrypt = off\n", file);
+    /* Samba signs an SMB2/3 session whenever the client asks, and its
+     * standalone default already leaves signing up to the client;
+     * "disabled" changes nothing for SMB2/3. Only "mandatory" has an effect:
+     * it makes every client sign, SMB1 ones included. */
+    if (config->require_signing)
+        fputs("    server signing = mandatory\n", file);
+    /* The default (if_required) offers encryption and lets the client choose
+     * it; "off" stops offering it, so a client that insists cannot connect. */
+    if (config->disable_encryption)
+        fputs("    server smb encrypt = off\n", file);
     fprintf(file,
             "    server multi channel support = no\n    load printers = no\n    disable spoolss = yes\n"
             "    dfree command = /mnt/Flash/dfree.sh\n    pid directory = " TC_RAM_ROOT "/var\n"
@@ -134,7 +144,9 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
      * NetBSD 6 AES-128-CCM 20.9, AES-256-CCM 25.4, AES-128-GCM 45.6,
      * AES-256-GCM 46.7; NetBSD 4 with C AES 37.2, 47.5, 62.8, 68.1, and with
      * ARMv5 AES 23.1 and 28.6 for the two CCMs. Samba picks its first
-     * algorithm that the client offers. */
+     * algorithm that the client offers. A Mac offers only AES-128-CMAC and
+     * AES-128-GMAC for SMB 3.1.1 signing, so it signs with AES-128-CMAC;
+     * HMAC-SHA256 serves clients that offer it. */
     fputs("    server smb3 signing algorithms = HMAC-SHA256 AES-128-CMAC AES-128-GMAC\n"
           "    server smb3 encryption algorithms = AES-128-CCM AES-256-CCM AES-128-GCM AES-256-GCM\n",
           file);

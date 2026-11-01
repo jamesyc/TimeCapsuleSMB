@@ -1202,8 +1202,9 @@ MaSt = (
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
         self.assertIn("MDNS_ADVERTISE_AFP=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
+        self.assertIn("REQUIRE_SMB_SIGNING=0\n", rendered)
         self.assertIn("REQUIRE_SMB_ENCRYPTION=0\n", rendered)
-        self.assertIn("FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=0\n", rendered)
+        self.assertIn("DISABLE_SMB_ENCRYPTION=0\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", rendered)
         self.assertIn("VFS_AIO_FORK_ENABLED=1\n", rendered)
         self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
@@ -1371,9 +1372,34 @@ MaSt = (
         self.assertIn("ANY_PROTOCOL=0\n", rendered)
         self.assertIn("REQUIRE_SMB_ENCRYPTION=1\n", rendered)
 
-    def test_flash_runtime_config_forces_smb_signing_and_encryption_off(self) -> None:
+    def test_flash_runtime_config_smb_signing_override_beats_saved_value(self) -> None:
+        for saved, override, expected in (("true", False, "0"), ("false", True, "1"), ("true", None, "1")):
+            with self.subTest(saved=saved, override=override):
+                rendered = render_flash_runtime_config(
+                    AppConfig.from_values({"TC_REQUIRE_SMB_SIGNING": saved}),
+                    PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+                    require_smb_signing=override,
+                )
+                self.assertIn(f"REQUIRE_SMB_SIGNING={expected}\n", rendered)
+
+    def test_flash_runtime_config_combines_required_signing_with_any_encryption_setting(self) -> None:
+        # Signing conflicts with nothing: signed with encryption off, required
+        # or left to the client, and with SMB1 allowed.
+        for extra in (
+            {"TC_DISABLE_SMB_ENCRYPTION": "true"},
+            {"TC_REQUIRE_SMB_ENCRYPTION": "true"},
+            {"TC_ANY_PROTOCOL": "true"},
+        ):
+            with self.subTest(extra=extra):
+                rendered = render_flash_runtime_config(
+                    AppConfig.from_values({"TC_REQUIRE_SMB_SIGNING": "true", **extra}),
+                    PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+                )
+                self.assertIn("REQUIRE_SMB_SIGNING=1\n", rendered)
+
+    def test_flash_runtime_config_turns_smb_encryption_off(self) -> None:
         config = AppConfig.from_values(
-            {"TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": "true"}
+            {"TC_DISABLE_SMB_ENCRYPTION": "true"}
         )
 
         rendered = render_flash_runtime_config(
@@ -1382,17 +1408,17 @@ MaSt = (
         )
 
         self.assertIn("REQUIRE_SMB_ENCRYPTION=0\n", rendered)
-        self.assertIn("FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=1\n", rendered)
+        self.assertIn("DISABLE_SMB_ENCRYPTION=1\n", rendered)
 
     def test_flash_runtime_config_rejects_required_and_disabled_smb_encryption(self) -> None:
         config = AppConfig.from_values(
             {
                 "TC_REQUIRE_SMB_ENCRYPTION": "true",
-                "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": "true",
+                "TC_DISABLE_SMB_ENCRYPTION": "true",
             }
         )
 
-        with self.assertRaisesRegex(ValueError, "cannot be used with Force Disable"):
+        with self.assertRaisesRegex(ValueError, "cannot be used with Turn Off SMB Encryption"):
             render_flash_runtime_config(
                 config,
                 PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),

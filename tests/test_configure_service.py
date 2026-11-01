@@ -137,9 +137,9 @@ class ConfigureServiceTests(unittest.TestCase):
                 require_smb_encryption=True,
             )
 
-    def test_build_configure_env_values_preserves_and_enables_forced_smb_security_disable(self) -> None:
+    def test_build_configure_env_values_preserves_and_enables_disabled_smb_encryption(self) -> None:
         preserved = build_configure_env_values(
-            {"TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": "true"},
+            {"TC_DISABLE_SMB_ENCRYPTION": "true"},
             host="root@10.0.0.2",
             password="pw",
             ssh_opts="-o foo",
@@ -151,14 +151,41 @@ class ConfigureServiceTests(unittest.TestCase):
             password="pw",
             ssh_opts="-o foo",
             configure_id="config-id",
-            force_disable_smb_signing_and_encryption=True,
+            disable_smb_encryption=True,
         )
 
-        self.assertEqual(preserved["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
-        self.assertEqual(enabled["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
+        self.assertEqual(preserved["TC_DISABLE_SMB_ENCRYPTION"], "true")
+        self.assertEqual(enabled["TC_DISABLE_SMB_ENCRYPTION"], "true")
+
+    def test_build_configure_env_values_preserves_enables_and_clears_required_smb_signing(self) -> None:
+        common = dict(host="root@10.0.0.2", password="pw", ssh_opts="-o foo", configure_id="config-id")
+        preserved = build_configure_env_values({"TC_REQUIRE_SMB_SIGNING": "true"}, **common)
+        enabled = build_configure_env_values({}, require_smb_signing=True, **common)
+        cleared = build_configure_env_values({"TC_REQUIRE_SMB_SIGNING": "true"}, require_smb_signing=False, **common)
+        default = build_configure_env_values({}, **common)
+
+        self.assertEqual(preserved["TC_REQUIRE_SMB_SIGNING"], "true")
+        self.assertEqual(enabled["TC_REQUIRE_SMB_SIGNING"], "true")
+        self.assertEqual(cleared["TC_REQUIRE_SMB_SIGNING"], "false")
+        self.assertEqual(default["TC_REQUIRE_SMB_SIGNING"], "false")
+
+    def test_build_configure_env_values_requires_signing_with_encryption_off(self) -> None:
+        values = build_configure_env_values(
+            {},
+            host="root@10.0.0.2",
+            password="pw",
+            ssh_opts="-o foo",
+            configure_id="config-id",
+            require_smb_signing=True,
+            disable_smb_encryption=True,
+        )
+
+        self.assertEqual(values["TC_REQUIRE_SMB_SIGNING"], "true")
+        self.assertEqual(values["TC_REQUIRE_SMB_ENCRYPTION"], "false")
+        self.assertEqual(values["TC_DISABLE_SMB_ENCRYPTION"], "true")
 
     def test_build_configure_env_values_rejects_required_and_disabled_smb_encryption(self) -> None:
-        with self.assertRaisesRegex(ValueError, "cannot be used with Force Disable"):
+        with self.assertRaisesRegex(ValueError, "cannot be used with Turn Off SMB Encryption"):
             build_configure_env_values(
                 {},
                 host="root@10.0.0.2",
@@ -166,7 +193,7 @@ class ConfigureServiceTests(unittest.TestCase):
                 ssh_opts="-o foo",
                 configure_id="config-id",
                 require_smb_encryption=True,
-                force_disable_smb_signing_and_encryption=True,
+                disable_smb_encryption=True,
             )
 
     def make_connection(self) -> SshConnection:
@@ -1087,8 +1114,9 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertNotIn("TC_SMB_BIND_LAN_ONLY", written)
         self.assertEqual(written["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(written["TC_MDNS_ADVERTISE_AFP"], "false")
+        self.assertEqual(written["TC_REQUIRE_SMB_SIGNING"], "false")
         self.assertEqual(written["TC_REQUIRE_SMB_ENCRYPTION"], "false")
-        self.assertEqual(written["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "false")
+        self.assertEqual(written["TC_DISABLE_SMB_ENCRYPTION"], "false")
         self.assertEqual(written["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertEqual(written["TC_VFS_AIO_FORK_DISABLED"], "false")
         self.assertNotIn("TC_PASSWORD", written)

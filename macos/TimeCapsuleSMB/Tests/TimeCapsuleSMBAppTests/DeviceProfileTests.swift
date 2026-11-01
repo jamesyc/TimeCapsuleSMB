@@ -185,8 +185,9 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(settings.smbBrowseCompatibility, false)
         XCTAssertEqual(settings.mdnsAdvertiseAFP, false)
         XCTAssertEqual(settings.anyProtocol, false)
+        XCTAssertEqual(settings.requireSMBSigning, false)
         XCTAssertEqual(settings.requireSMBEncryption, false)
-        XCTAssertEqual(settings.forceDisableSMBSigningAndEncryption, false)
+        XCTAssertEqual(settings.disableSMBEncryption, false)
         XCTAssertEqual(settings.fruitMetadataNetatalk, true)
         XCTAssertEqual(settings.vfsAIOForkEnabled, true)
         XCTAssertEqual(settings.debugLogging, true)
@@ -216,7 +217,7 @@ final class DeviceProfileTests: XCTestCase {
         let enabled = try JSONDecoder().decode(DeviceProfileSettings.self, from: Data("""
         {
           "nbnsEnabled": true,
-          "forceDisableSMBSigningAndEncryption": true,
+          "disableSMBEncryption": true,
           "debugLogging": false,
           "mountWaitSeconds": 45
         }
@@ -229,8 +230,48 @@ final class DeviceProfileTests: XCTestCase {
         }
         """.utf8))
 
-        XCTAssertTrue(enabled.forceDisableSMBSigningAndEncryption)
-        XCTAssertFalse(older.forceDisableSMBSigningAndEncryption)
+        XCTAssertTrue(enabled.disableSMBEncryption)
+        XCTAssertFalse(older.disableSMBEncryption)
+    }
+
+    func testProfileSettingsDecodeRequiredSigningBesideEveryEncryptionSetting() throws {
+        // Signing conflicts with nothing, so decoding never clears it.
+        for (encryption, disable, anyProtocol) in [(false, true, false), (true, false, false), (false, false, true)] {
+            let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: Data("""
+            {
+              "requireSMBSigning": true,
+              "requireSMBEncryption": \(encryption),
+              "disableSMBEncryption": \(disable),
+              "anyProtocol": \(anyProtocol),
+              "mountWaitSeconds": 45
+            }
+            """.utf8))
+
+            XCTAssertTrue(settings.requireSMBSigning)
+            XCTAssertEqual(settings.requireSMBEncryption, encryption)
+            XCTAssertEqual(settings.disableSMBEncryption, disable)
+            XCTAssertEqual(settings.anyProtocol, anyProtocol)
+            let roundTrip = try JSONDecoder().decode(
+                DeviceProfileSettings.self,
+                from: JSONEncoder().encode(settings)
+            )
+            XCTAssertEqual(roundTrip, settings)
+        }
+    }
+
+    func testProfileSettingsReadOldDisableKeyAndWriteOnlyTheNewOne() throws {
+        let legacy = try JSONDecoder().decode(DeviceProfileSettings.self, from: Data("""
+        {"forceDisableSMBSigningAndEncryption": true, "mountWaitSeconds": 45}
+        """.utf8))
+        let both = try JSONDecoder().decode(DeviceProfileSettings.self, from: Data("""
+        {"disableSMBEncryption": false, "forceDisableSMBSigningAndEncryption": true, "mountWaitSeconds": 45}
+        """.utf8))
+
+        XCTAssertTrue(legacy.disableSMBEncryption)
+        XCTAssertFalse(both.disableSMBEncryption, "a value saved under the new name wins")
+        let encoded = String(decoding: try JSONEncoder().encode(legacy), as: UTF8.self)
+        XCTAssertFalse(encoded.contains("forceDisableSMBSigningAndEncryption"))
+        XCTAssertTrue(encoded.contains("\"disableSMBEncryption\":true"))
     }
 
     func testProfileSettingsRequireEncryptionWinsOverForcedDisableDuringDecode() throws {
@@ -238,14 +279,14 @@ final class DeviceProfileTests: XCTestCase {
         {
           "nbnsEnabled": true,
           "requireSMBEncryption": true,
-          "forceDisableSMBSigningAndEncryption": true,
+          "disableSMBEncryption": true,
           "debugLogging": false,
           "mountWaitSeconds": 45
         }
         """.utf8))
 
         XCTAssertTrue(settings.requireSMBEncryption)
-        XCTAssertFalse(settings.forceDisableSMBSigningAndEncryption)
+        XCTAssertFalse(settings.disableSMBEncryption)
     }
 
     func testProfileSettingsDecodeSmbBrowseCompatibility() throws {

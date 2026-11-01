@@ -153,6 +153,28 @@ func accessibleElements<V: View>(_ view: V, size: CGSize = CGSize(width: 1200, h
 /// `LiveHostedView`'s after its stores change.
 @MainActor
 func accessibleElements(in host: NSView) -> [AccessibleElement] {
+    withAccessibilityTree(of: host) { nodes in
+        nodes.compactMap { node in
+            guard let role = node.accessibilityRole?() ?? nil, let text = accessibleText(of: node) else { return nil }
+            return AccessibleElement(role: role, text: text, isEnabled: node.isAccessibilityEnabled?() ?? true)
+        }
+    }
+}
+
+/// Presses the control labeled `label`, as VoiceOver would, and reports
+/// whether one was found. SwiftUI's own controls have no AppKit view to click.
+@MainActor
+@discardableResult
+func pressAccessibleControl(in host: NSView, labeled label: String) -> Bool {
+    withAccessibilityTree(of: host) { nodes in
+        guard let node = nodes.first(where: { ($0.accessibilityLabel?() ?? nil) == label }) else { return false }
+        return node.accessibilityPerformPress?() ?? false
+    }
+}
+
+/// Every node of a hosted view's accessibility tree, in order.
+@MainActor
+private func withAccessibilityTree<T>(of host: NSView, _ body: ([AnyObject]) -> T) -> T {
     // SwiftUI builds its accessibility tree only after assistive software asks
     // the app for one, as VoiceOver does by setting AXEnhancedUserInterface.
     // Its getter and setter are deprecated with no replacement, hence perform.
@@ -172,17 +194,15 @@ func accessibleElements(in host: NSView) -> [AccessibleElement] {
     }
     host.layoutSubtreeIfNeeded()
 
-    var elements: [AccessibleElement] = []
+    var nodes: [AnyObject] = []
     func collect(_ node: AnyObject) {
-        if let role = node.accessibilityRole?() ?? nil, let text = accessibleText(of: node) {
-            elements.append(AccessibleElement(role: role, text: text, isEnabled: node.isAccessibilityEnabled?() ?? true))
-        }
+        nodes.append(node)
         for child in (node.accessibilityChildren?() ?? nil) ?? [] {
             collect(child as AnyObject)
         }
     }
     collect(host)
-    return elements
+    return body(nodes)
 }
 
 /// The texts on a device's page, read as `accessibleElements` reads them. Fails

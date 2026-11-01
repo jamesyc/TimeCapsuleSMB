@@ -3224,8 +3224,9 @@ class AppApiTests(unittest.TestCase):
                             "smb_browse_compatibility": True,
                             "mdns_advertise_afp": True,
                             "any_protocol": True,
+                            "require_smb_signing": True,
                             "require_smb_encryption": False,
-                            "force_disable_smb_signing_and_encryption": True,
+                            "disable_smb_encryption": True,
                             "fruit_metadata_netatalk": False,
                             "vfs_aio_fork_enabled": True,
                             "debug_logging": True,
@@ -3247,8 +3248,9 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(values["TC_SMB_BROWSE_COMPATIBILITY"], "true")
         self.assertEqual(values["TC_MDNS_ADVERTISE_AFP"], "true")
         self.assertEqual(values["TC_ANY_PROTOCOL"], "true")
+        self.assertEqual(values["TC_REQUIRE_SMB_SIGNING"], "true")
         self.assertEqual(values["TC_REQUIRE_SMB_ENCRYPTION"], "false")
-        self.assertEqual(values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
+        self.assertEqual(values["TC_DISABLE_SMB_ENCRYPTION"], "true")
         self.assertEqual(values["TC_FRUIT_METADATA_NETATALK"], "false")
         self.assertEqual(values["TC_VFS_AIO_FORK_DISABLED"], "false")
         self.assertEqual(values["TC_DEBUG_LOGGING"], "true")
@@ -3373,7 +3375,56 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("SMB encryption requires SMB3-only", collector.events_of_type("error")[0]["message"])
 
-    def test_configure_force_disable_smb_security_param_writes_true(self) -> None:
+    def test_configure_require_smb_signing_param_writes_and_keeps_value(self) -> None:
+        for saved, params, expected in (
+            ("", {"require_smb_signing": True}, "true"),
+            ("TC_REQUIRE_SMB_SIGNING=true\n", {}, "true"),
+            ("TC_REQUIRE_SMB_SIGNING=true\n", {"require_smb_signing": False}, "false"),
+        ):
+            with self.subTest(saved=saved, params=params):
+                collector = CollectingSink()
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / ".env"
+                    if saved:
+                        config_path.write_text(saved)
+                    with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()):
+                        rc = service.run_api_request(
+                            {
+                                "operation": "configure",
+                                "params": {
+                                    "config": str(config_path),
+                                    "host": "root@10.0.0.2",
+                                    "password": "goodpw",
+                                    **params,
+                                },
+                            },
+                            collector.sink,
+                        )
+                    values = parse_env_file(config_path)
+
+                self.assertEqual(rc, 0)
+                self.assertEqual(values["TC_REQUIRE_SMB_SIGNING"], expected)
+
+    def test_update_config_settings_replaces_old_disable_key_and_keeps_its_value(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text(
+                "TC_HOST=root@10.0.0.2\n"
+                "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true\n"
+            )
+            rc = service.run_api_request(
+                {"operation": "update-config-settings", "params": {"config": str(config_path)}},
+                collector.sink,
+            )
+            text = config_path.read_text()
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_DISABLE_SMB_ENCRYPTION"], "true")
+        self.assertNotIn("TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION", text)
+
+    def test_configure_disable_smb_encryption_param_writes_true(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
@@ -3385,7 +3436,7 @@ class AppApiTests(unittest.TestCase):
                             "config": str(config_path),
                             "host": "root@10.0.0.2",
                             "password": "goodpw",
-                            "force_disable_smb_signing_and_encryption": True,
+                            "disable_smb_encryption": True,
                         },
                     },
                     collector.sink,
@@ -3393,7 +3444,7 @@ class AppApiTests(unittest.TestCase):
             values = parse_env_file(config_path)
 
         self.assertEqual(rc, 0)
-        self.assertEqual(values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
+        self.assertEqual(values["TC_DISABLE_SMB_ENCRYPTION"], "true")
 
     def test_configure_rejects_required_and_disabled_smb_encryption(self) -> None:
         collector = CollectingSink()
@@ -3406,14 +3457,14 @@ class AppApiTests(unittest.TestCase):
                         "host": "root@10.0.0.2",
                         "password": "goodpw",
                         "require_smb_encryption": True,
-                        "force_disable_smb_signing_and_encryption": True,
+                        "disable_smb_encryption": True,
                     },
                 },
                 collector.sink,
             )
 
         self.assertEqual(rc, 1)
-        self.assertIn("cannot be used with Force Disable", collector.events_of_type("error")[0]["message"])
+        self.assertIn("cannot be used with Turn Off SMB Encryption", collector.events_of_type("error")[0]["message"])
 
     def test_configure_ata_params_write_drive_timer_settings(self) -> None:
         collector = CollectingSink()
@@ -5643,8 +5694,9 @@ class AppApiTests(unittest.TestCase):
             "internal_share_use_disk_root": False,
             "smb_browse_compatibility": True,
             "any_protocol": False,
+            "require_smb_signing": True,
             "require_smb_encryption": True,
-            "force_disable_smb_signing_and_encryption": False,
+            "disable_smb_encryption": False,
             "fruit_metadata_netatalk": True,
             "vfs_aio_fork_enabled": True,
             "debug_logging": False,
@@ -5702,8 +5754,15 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(render_runtime.call_args.kwargs["smb_browse_compatibility"], True)
         self.assertEqual(render_runtime.call_args.kwargs["mdns_advertise_afp"], False)
         self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], False)
+        self.assertEqual(render_runtime.call_args.kwargs["require_smb_signing"], True)
+        # The app's deploy reports what the device gets, like the CLI's.
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["effective_require_smb_signing"], True)
+        self.assertEqual(finished["effective_require_smb_encryption"], True)
+        self.assertEqual(finished["effective_disable_smb_encryption"], False)
+        self.assertEqual(finished["effective_any_protocol"], False)
         self.assertEqual(render_runtime.call_args.kwargs["require_smb_encryption"], True)
-        self.assertEqual(render_runtime.call_args.kwargs["force_disable_smb_signing_and_encryption"], False)
+        self.assertEqual(render_runtime.call_args.kwargs["disable_smb_encryption"], False)
         self.assertEqual(render_runtime.call_args.kwargs["fruit_metadata_netatalk"], True)
         self.assertEqual(render_runtime.call_args.kwargs["vfs_aio_fork_enabled"], True)
         self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], False)

@@ -337,6 +337,24 @@ class TelemetryTests(unittest.TestCase):
         self.assertFalse(finished_kwargs["details"]["verified"])
         self.assertEqual(finished_kwargs["execution"]["version"], 1)
 
+    def test_command_context_records_smb_security_options_and_skips_unset_flags(self) -> None:
+        # The app sends every setting; a CLI flag left out is None and is not recorded.
+        for args, expected in (
+            (
+                {"require_smb_signing": True, "require_smb_encryption": False, "disable_smb_encryption": True},
+                {"require_smb_signing": True, "require_smb_encryption": False, "disable_smb_encryption": True},
+            ),
+            (
+                SimpleNamespace(require_smb_signing=None, require_smb_encryption=None, disable_smb_encryption=False),
+                {"disable_smb_encryption": False},
+            ),
+        ):
+            with self.subTest(args=args):
+                telemetry = mock.Mock()
+                command = CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", args=args)
+                command.finish(result="success")
+                self.assertEqual(telemetry.emit.call_args_list[0].kwargs["options"], expected)
+
     def test_command_context_records_execution_stages_and_measurements(self) -> None:
         telemetry = mock.Mock()
 

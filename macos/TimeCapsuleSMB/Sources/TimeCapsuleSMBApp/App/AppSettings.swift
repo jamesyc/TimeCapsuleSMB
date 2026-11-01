@@ -406,8 +406,9 @@ struct AppSettingsDraft: Equatable {
     var smbBrowseCompatibility: Bool
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
+    var requireSMBSigning: Bool
     var requireSMBEncryption: Bool
-    var forceDisableSMBSigningAndEncryption: Bool
+    var disableSMBEncryption: Bool
     var fruitMetadataNetatalk: Bool
     var vfsAIOForkEnabled: Bool
     var debugLogging: Bool
@@ -428,8 +429,9 @@ struct AppSettingsDraft: Equatable {
         smbBrowseCompatibility = settings.defaultDeviceSettings.smbBrowseCompatibility
         mdnsAdvertiseAFP = settings.defaultDeviceSettings.mdnsAdvertiseAFP
         anyProtocol = settings.defaultDeviceSettings.anyProtocol
+        requireSMBSigning = settings.defaultDeviceSettings.requireSMBSigning
         requireSMBEncryption = settings.defaultDeviceSettings.requireSMBEncryption
-        forceDisableSMBSigningAndEncryption = settings.defaultDeviceSettings.forceDisableSMBSigningAndEncryption
+        disableSMBEncryption = settings.defaultDeviceSettings.disableSMBEncryption
         fruitMetadataNetatalk = settings.defaultDeviceSettings.fruitMetadataNetatalk
         vfsAIOForkEnabled = settings.defaultDeviceSettings.vfsAIOForkEnabled
         debugLogging = settings.defaultDeviceSettings.debugLogging
@@ -472,8 +474,9 @@ struct AppSettingsDraft: Equatable {
                 smbBrowseCompatibility: smbBrowseCompatibility,
                 mdnsAdvertiseAFP: mdnsAdvertiseAFP,
                 anyProtocol: anyProtocol,
+                requireSMBSigning: requireSMBSigning,
                 requireSMBEncryption: requireSMBEncryption,
-                forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
+                disableSMBEncryption: disableSMBEncryption,
                 fruitMetadataNetatalk: fruitMetadataNetatalk,
                 vfsAIOForkEnabled: vfsAIOForkEnabled,
                 debugLogging: debugLogging,

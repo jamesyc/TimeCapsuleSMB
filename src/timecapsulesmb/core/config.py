@@ -57,8 +57,9 @@ DEFAULTS = {
     "TC_SMB_BROWSE_COMPATIBILITY": "false",
     "TC_MDNS_ADVERTISE_AFP": "false",
     "TC_ANY_PROTOCOL": "false",
+    "TC_REQUIRE_SMB_SIGNING": "false",
     "TC_REQUIRE_SMB_ENCRYPTION": "false",
-    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": "false",
+    "TC_DISABLE_SMB_ENCRYPTION": "false",
     "TC_FRUIT_METADATA_NETATALK": "true",
     "TC_VFS_AIO_FORK_DISABLED": "false",
     "TC_DEBUG_LOGGING": "false",
@@ -74,8 +75,9 @@ ENV_FILE_KEYS = [
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_MDNS_ADVERTISE_AFP",
     "TC_ANY_PROTOCOL",
+    "TC_REQUIRE_SMB_SIGNING",
     "TC_REQUIRE_SMB_ENCRYPTION",
-    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+    "TC_DISABLE_SMB_ENCRYPTION",
     "TC_FRUIT_METADATA_NETATALK",
     "TC_VFS_AIO_FORK_DISABLED",
     "TC_DEBUG_LOGGING",
@@ -93,6 +95,11 @@ REMOVED_ENV_FILE_KEYS = {
     "TC_NETBIOS_NAME": "the NetBIOS name is derived from the device hostname",
     "TC_MDNS_HOST_LABEL": "v3.1.0 removed the mDNS host label; the advertised hostname is the AirPort name",
     "TC_MDNS_DEVICE_MODEL": "the mDNS device model is observed from the device instead of configured",
+}
+# Keys saved under an older name. parse_env_file reads them under the new
+# name, so the next configure or app settings save writes only the new one.
+RENAMED_ENV_FILE_KEYS = {
+    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": "TC_DISABLE_SMB_ENCRYPTION",
 }
 ENV_FILE_OMIT_KEYS = frozenset({
     # Runtime-derived/deprecated naming keys may still exist in older .env
@@ -279,6 +286,10 @@ def parse_env_file(path: Path) -> dict[str, str]:
             continue
         key, value = line.split("=", 1)
         values[key.strip()] = parse_env_value(value)
+    for old, new in RENAMED_ENV_FILE_KEYS.items():
+        if old in values:
+            # A value saved under the new name wins.
+            values.setdefault(new, values.pop(old))
     return values
 
 
@@ -363,6 +374,42 @@ def vfs_aio_fork_enabled_in(values) -> bool:
     return not parse_bool(values.get("TC_VFS_AIO_FORK_DISABLED", DEFAULTS["TC_VFS_AIO_FORK_DISABLED"]))
 
 
+@dataclass(frozen=True)
+class SmbSecuritySettings:
+    any_protocol: bool
+    require_smb_signing: bool
+    require_smb_encryption: bool
+    disable_smb_encryption: bool
+
+
+def effective_smb_security(
+    values,
+    *,
+    any_protocol: bool | None = None,
+    require_smb_signing: bool | None = None,
+    require_smb_encryption: bool | None = None,
+    disable_smb_encryption: bool | None = None,
+) -> SmbSecuritySettings:
+    """The SMB protocol and security settings: each override, or the value saved in values
+    (an AppConfig or a .env dict). Raises ValueError for a combination the device refuses."""
+
+    def pick(override: bool | None, key: str) -> bool:
+        return parse_bool(values.get(key, DEFAULTS[key])) if override is None else override
+
+    settings = SmbSecuritySettings(
+        any_protocol=pick(any_protocol, "TC_ANY_PROTOCOL"),
+        require_smb_signing=pick(require_smb_signing, "TC_REQUIRE_SMB_SIGNING"),
+        require_smb_encryption=pick(require_smb_encryption, "TC_REQUIRE_SMB_ENCRYPTION"),
+        disable_smb_encryption=pick(disable_smb_encryption, "TC_DISABLE_SMB_ENCRYPTION"),
+    )
+    validate_smb_protocol_options(
+        any_protocol=settings.any_protocol,
+        require_smb_encryption=settings.require_smb_encryption,
+        disable_smb_encryption=settings.disable_smb_encryption,
+    )
+    return settings
+
+
 def validate_bool(value: str, field_name: str) -> Optional[str]:
     if value == "":
         return None
@@ -420,8 +467,9 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_SMB_BROWSE_COMPATIBILITY": validate_bool,
     "TC_MDNS_ADVERTISE_AFP": validate_bool,
     "TC_ANY_PROTOCOL": validate_bool,
+    "TC_REQUIRE_SMB_SIGNING": validate_bool,
     "TC_REQUIRE_SMB_ENCRYPTION": validate_bool,
-    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": validate_bool,
+    "TC_DISABLE_SMB_ENCRYPTION": validate_bool,
     "TC_FRUIT_METADATA_NETATALK": validate_bool,
     "TC_VFS_AIO_FORK_DISABLED": validate_bool,
     "TC_DEBUG_LOGGING": validate_bool,
@@ -444,8 +492,9 @@ CONFIGURE_VALIDATED_KEYS = (
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_MDNS_ADVERTISE_AFP",
     "TC_ANY_PROTOCOL",
+    "TC_REQUIRE_SMB_SIGNING",
     "TC_REQUIRE_SMB_ENCRYPTION",
-    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+    "TC_DISABLE_SMB_ENCRYPTION",
     "TC_FRUIT_METADATA_NETATALK",
     "TC_VFS_AIO_FORK_DISABLED",
     "TC_DEBUG_LOGGING",
@@ -459,8 +508,9 @@ MANAGED_VALIDATED_KEYS = (
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_MDNS_ADVERTISE_AFP",
     "TC_ANY_PROTOCOL",
+    "TC_REQUIRE_SMB_SIGNING",
     "TC_REQUIRE_SMB_ENCRYPTION",
-    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+    "TC_DISABLE_SMB_ENCRYPTION",
     "TC_FRUIT_METADATA_NETATALK",
     "TC_VFS_AIO_FORK_DISABLED",
     "TC_DEBUG_LOGGING",
@@ -571,24 +621,13 @@ def validate_app_config(config: AppConfig, *, profile: str) -> list[ConfigIssue]
     smb_policy_keys = {
         "TC_ANY_PROTOCOL",
         "TC_REQUIRE_SMB_ENCRYPTION",
-        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+        "TC_DISABLE_SMB_ENCRYPTION",
     }
     if smb_policy_keys.issubset(profile_config.validated_keys) and not (
         smb_policy_keys & missing_keys or smb_policy_keys & invalid_keys
     ):
         try:
-            validate_smb_protocol_options(
-                any_protocol=parse_bool(config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
-                require_smb_encryption=parse_bool(
-                    config.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"])
-                ),
-                force_disable_smb_signing_and_encryption=parse_bool(
-                    config.get(
-                        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
-                        DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
-                    )
-                ),
-            )
+            effective_smb_security(config)
         except ValueError as exc:
             errors.append(ConfigIssue(
                 kind="inconsistent_values",

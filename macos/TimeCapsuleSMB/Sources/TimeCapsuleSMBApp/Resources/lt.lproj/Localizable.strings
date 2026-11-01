@@ -1334,9 +1334,9 @@
 "toggle.mdns_advertise_afp" = "Skelbti AFP per Bonjour";
 "toggle.mdns_advertise_afp.help" = "Skelbti AFP per Bonjour. Palikite išjungtą: macOS 26.x/27 slepia Time Capsule, kurios skelbia AFP.";
 "toggle.any_protocol" = "Leisti bet kurį SMB protokolą";
+"toggle.require_smb_signing" = "Reikalauti SMB pasirašymo";
 "toggle.require_smb_encryption" = "Reikalauti SMB šifravimo";
-"toggle.force_disable_smb_signing_and_encryption" = "Išjungti SMB pasirašymą ir šifravimą";
-"toggle.force_disable_smb_signing_and_encryption.note" = "Numatytoji nuostata. Leidžia greičiau perduoti duomenis.";
+"toggle.disable_smb_encryption" = "Išjungti SMB šifravimą";
 "toggle.use_netatalk_metadata" = "Naudoti Netatalk metaduomenis";
 "toggle.enable_vfs_aio_fork" = "Įjungti vfs_aio_fork";
 "toggle.force_debug_logging" = "Įjungti derinimo žurnalą";
@@ -1395,7 +1395,9 @@
 
 "settings.note.protocol" = "Įjungti nesaugų SMB1, o ne apsiriboti SMB2/3.";
 
+"settings.note.signing" = "Pasirašyti kiekvieną ryšį, kad perduodamų duomenų nebūtų galima pakeisti. Gerokai lėčiau. Samba negali išjungti pasirašymo SMB2 ir SMB3 ryšiams.";
 "settings.note.encryption" = "Reikalauti šifruotų SMB3 ryšių. Gerokai lėčiau.";
+"settings.note.disable_encryption" = "Nebesiūlyti šifravimo. Klientai, kurie reikalauja šifravimo, negalės prisijungti.";
 
 "settings.note.aio" = "Papildomi disko įvesties ir išvesties procesai gali naudoti daugiau atminties.";
 

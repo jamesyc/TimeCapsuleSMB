@@ -1334,9 +1334,9 @@
 "toggle.mdns_advertise_afp" = "AFP aankondigen via Bonjour";
 "toggle.mdns_advertise_afp.help" = "AFP via Bonjour aankondigen. Laat uit: macOS 26.x/27 verbergt Time Capsules die AFP aankondigen.";
 "toggle.any_protocol" = "Elk SMB-protocol toestaan";
+"toggle.require_smb_signing" = "SMB-ondertekening vereisen";
 "toggle.require_smb_encryption" = "SMB-versleuteling vereisen";
-"toggle.force_disable_smb_signing_and_encryption" = "SMB-ondertekening en -versleuteling uitschakelen";
-"toggle.force_disable_smb_signing_and_encryption.note" = "Standaardinstelling. Maakt snellere overdrachten mogelijk.";
+"toggle.disable_smb_encryption" = "SMB-versleuteling uitschakelen";
 "toggle.use_netatalk_metadata" = "Netatalk-metadata gebruiken";
 "toggle.enable_vfs_aio_fork" = "vfs_aio_fork inschakelen";
 "toggle.force_debug_logging" = "Debuglogboek inschakelen";
@@ -1395,7 +1395,9 @@
 
 "settings.note.protocol" = "Het onveilige SMB1 inschakelen in plaats van alleen SMB2/3 toestaan.";
 
+"settings.note.signing" = "Onderteken elke verbinding, zodat de gegevens tijdens de overdracht niet kunnen worden gewijzigd. Veel langzamer. Samba kan ondertekening voor SMB2 en SMB3 niet uitschakelen.";
 "settings.note.encryption" = "Vereis versleutelde SMB3-verbindingen. Veel langzamer.";
+"settings.note.disable_encryption" = "Bied geen versleuteling meer aan. Clients die versleuteling vereisen, kunnen geen verbinding maken.";
 
 "settings.note.aio" = "Extra processen voor schijf-I/O; mogelijk meer geheugengebruik.";
 

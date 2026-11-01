@@ -6,8 +6,9 @@ struct DeviceAdvancedSettingsFields: View {
     @Binding var smbBrowseCompatibility: Bool
     @Binding var mdnsAdvertiseAFP: Bool
     @Binding var anyProtocol: Bool
+    @Binding var requireSMBSigning: Bool
     @Binding var requireSMBEncryption: Bool
-    @Binding var forceDisableSMBSigningAndEncryption: Bool
+    @Binding var disableSMBEncryption: Bool
     @Binding var fruitMetadataNetatalk: Bool
     @Binding var vfsAIOForkEnabled: Bool
     @Binding var debugLogging: Bool
@@ -39,14 +40,14 @@ struct DeviceAdvancedSettingsFields: View {
             group("settings.group.security") {
                 option("toggle.any_protocol", note: "settings.note.protocol", isOn: anyProtocolBinding)
                     .disabled(!SMBProtocolOptionPolicy.allowsAnyProtocol(requireSMBEncryption: requireSMBEncryption))
+                option("toggle.require_smb_signing", note: "settings.note.signing", isOn: $requireSMBSigning)
                 option("toggle.require_smb_encryption", note: "settings.note.encryption", isOn: requireSMBEncryptionBinding)
                     .disabled(!SMBProtocolOptionPolicy.allowsRequireSMBEncryption(
                         anyProtocol: anyProtocol,
-                        forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption))
-                option("toggle.force_disable_smb_signing_and_encryption",
-                       note: "toggle.force_disable_smb_signing_and_encryption.note",
-                       isOn: forceDisableSMBSigningAndEncryptionBinding)
-                    .disabled(!SMBProtocolOptionPolicy.allowsForceDisableSMBSigningAndEncryption(
+                        disableSMBEncryption: disableSMBEncryption))
+                option("toggle.disable_smb_encryption", note: "settings.note.disable_encryption",
+                       isOn: disableSMBEncryptionBinding)
+                    .disabled(!SMBProtocolOptionPolicy.allowsDisableSMBEncryption(
                         requireSMBEncryption: requireSMBEncryption))
             }
             group("settings.group.performance") {
@@ -107,14 +108,14 @@ struct DeviceAdvancedSettingsFields: View {
             requireSMBEncryption = value
             if value {
                 anyProtocol = false
-                forceDisableSMBSigningAndEncryption = false
+                disableSMBEncryption = false
             }
         })
     }
 
-    private var forceDisableSMBSigningAndEncryptionBinding: Binding<Bool> {
-        Binding(get: { forceDisableSMBSigningAndEncryption }, set: { value in
-            forceDisableSMBSigningAndEncryption = value
+    private var disableSMBEncryptionBinding: Binding<Bool> {
+        Binding(get: { disableSMBEncryption }, set: { value in
+            disableSMBEncryption = value
             if value { requireSMBEncryption = false }
         })
     }

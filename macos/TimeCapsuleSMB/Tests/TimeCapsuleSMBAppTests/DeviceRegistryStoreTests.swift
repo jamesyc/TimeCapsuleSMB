@@ -18,6 +18,43 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.devicesDirectoryURL.path))
     }
 
+    func testOldDisableKeyLoadsUnchangedAndLeavesAtTheNextSave() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        let profile = try await store.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        // Write the registry as an older app saved it.
+        var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.registryURL)) as? [[String: Any]])
+        var settings = try XCTUnwrap(raw[0]["settings"] as? [String: Any])
+        settings.removeValue(forKey: "disableSMBEncryption")
+        settings["forceDisableSMBSigningAndEncryption"] = true
+        raw[0]["settings"] = settings
+        let legacyData = try JSONSerialization.data(withJSONObject: raw)
+        try legacyData.write(to: store.registryURL)
+
+        let reloaded = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await reloaded.load()
+
+        XCTAssertEqual(reloaded.state, .loaded)
+        XCTAssertEqual(reloaded.profile(id: profile.id)?.settings.disableSMBEncryption, true)
+        // Loading never writes.
+        XCTAssertEqual(try Data(contentsOf: store.registryURL), legacyData)
+
+        // Any routine save writes the new name only.
+        await reloaded.updateDeployState(testDeployState(status: .succeeded), for: profile.id)
+        let saved = String(decoding: try Data(contentsOf: store.registryURL), as: UTF8.self)
+        XCTAssertFalse(saved.contains("forceDisableSMBSigningAndEncryption"))
+        XCTAssertTrue(saved.contains("disableSMBEncryption"))
+        let again = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await again.load()
+        XCTAssertEqual(again.profile(id: profile.id)?.settings.disableSMBEncryption, true)
+    }
+
     func testFailedDeployDiagnosticTextSurvivesRegistryReload() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)

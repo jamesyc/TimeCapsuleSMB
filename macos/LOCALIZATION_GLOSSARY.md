@@ -418,7 +418,8 @@ How to write a plural entry:
 ## Wording decisions
 
 - The approved English keeps **Activate** as the action name, including the NetBSD 4 notices that say "may need Activate". Translate these with the localized Activate label; do not turn them into automatic startup.
-- Keep the approved English claims "Enable insecure SMB1", "Default setting", both AFP help descriptions, and "Much slower". Do not soften, expand or reconcile them while translating.
+- Keep the approved English claims "Enable insecure SMB1", both AFP help descriptions, and "Much slower" for both signing and encryption (measured: signing halves a Mac's throughput or worse, encryption cuts it to about a third). Do not soften, expand or reconcile them while translating.
+- **Require SMB signing**'s note ends by saying Samba cannot turn signing off for SMB2 or SMB3. Keep that sentence in every language: it tells the user why there is no checkbox to turn signing off. **Turn off SMB encryption** stops the device offering encryption; its note says only that clients that require encryption cannot connect, never that it makes transfers faster.
 - ATA error messages say **non-negative number of seconds**, not "whole number" or "integer"; the wording does not change how the number is parsed.
 - Maintenance still supports "No Reboot", and the NetBSD 4 deploy confirmations still describe reboot-then-activate. Keep those messages.
 - **Reconnect saved device** links the discovered appliance to an existing saved profile after its identity is verified. It keeps that profile's settings, configuration path and credentials account; avoid wording that suggests restoring firmware or creating another saved device. "Device identity" identifies the appliance; a model name, Bonjour name or IP address alone does not. Keep the Apple property `waMA` and `MAC` unchanged in technical text.

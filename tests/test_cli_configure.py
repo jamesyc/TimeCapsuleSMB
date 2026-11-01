@@ -314,8 +314,9 @@ class CliConfigureTests(CliTestCase):
         self.assertEqual(fake_values["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(fake_values["TC_MDNS_ADVERTISE_AFP"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
+        self.assertEqual(fake_values["TC_REQUIRE_SMB_SIGNING"], "false")
         self.assertEqual(fake_values["TC_REQUIRE_SMB_ENCRYPTION"], "false")
-        self.assertEqual(fake_values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "false")
+        self.assertEqual(fake_values["TC_DISABLE_SMB_ENCRYPTION"], "false")
         self.assertEqual(fake_values["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertEqual(fake_values["TC_ATA_IDLE_SECONDS"], "300")
         self.assertEqual(fake_values["TC_ATA_STANDBY"], "")
@@ -441,16 +442,74 @@ class CliConfigureTests(CliTestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_REQUIRE_SMB_ENCRYPTION"], "true")
 
-    def test_configure_force_disable_smb_signing_and_encryption_arg_writes_true(self) -> None:
+    def test_configure_require_smb_signing_args_write_true_and_false(self) -> None:
+        for argv, existing, expected in (
+            (["--require-smb-signing"], "false", "true"),
+            (["--no-require-smb-signing"], "true", "false"),
+            ([], "true", "true"),
+        ):
+            with self.subTest(argv=argv, existing=existing):
+                result = self.run_configure_cli(
+                    argv,
+                    existing_values=self.make_valid_env(TC_REQUIRE_SMB_SIGNING=existing),
+                    prompt_side_effect=self.configure_prompt_defaults(),
+                    probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+                    confirm=True,
+                    command_context=FakeCommandContext(),
+                )
+                self.assertEqual(result.rc, 0)
+                self.assertEqual(result.values["TC_REQUIRE_SMB_SIGNING"], expected)
+
+    def test_configure_requires_smb_signing_with_encryption_off(self) -> None:
         result = self.run_configure_cli(
-            ["--disable-smb-security"],
+            ["--require-smb-signing", "--disable-smb-encryption"],
             prompt_side_effect=self.configure_prompt_defaults(),
             probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
             confirm=True,
             command_context=FakeCommandContext(),
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
+        self.assertEqual(result.values["TC_REQUIRE_SMB_SIGNING"], "true")
+        self.assertEqual(result.values["TC_DISABLE_SMB_ENCRYPTION"], "true")
+
+    def test_configure_disable_smb_encryption_args_write_true_and_false(self) -> None:
+        for argv, existing, expected in (
+            (["--disable-smb-encryption"], "false", "true"),
+            (["--no-disable-smb-encryption"], "true", "false"),
+        ):
+            with self.subTest(argv=argv):
+                result = self.run_configure_cli(
+                    argv,
+                    existing_values=self.make_valid_env(TC_DISABLE_SMB_ENCRYPTION=existing),
+                    prompt_side_effect=self.configure_prompt_defaults(),
+                    probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+                    confirm=True,
+                    command_context=FakeCommandContext(),
+                )
+                self.assertEqual(result.rc, 0)
+                self.assertEqual(result.values["TC_DISABLE_SMB_ENCRYPTION"], expected)
+
+    def test_configure_help_lists_the_security_flags_without_old_spellings(self) -> None:
+        result = self.run_configure_cli(["--help"], raises=SystemExit)
+        self.assertEqual(result.exception.code, 0)
+        self.assertIn("--disable-smb-encryption", result.text)
+        self.assertIn("--require-smb-signing", result.text)
+        self.assertIn("--require-smb-encryption", result.text)
+        self.assertNotIn("signing-and-encryption", result.text)
+        self.assertNotIn("--disable-smb-security", result.text)
+
+    def test_configure_older_disable_spellings_still_turn_encryption_off(self) -> None:
+        for flag in ("--disable-smb-security", "--force-disable-smb-signing-and-encryption"):
+            with self.subTest(flag=flag):
+                result = self.run_configure_cli(
+                    [flag],
+                    prompt_side_effect=self.configure_prompt_defaults(),
+                    probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+                    confirm=True,
+                    command_context=FakeCommandContext(),
+                )
+                self.assertEqual(result.rc, 0)
+                self.assertEqual(result.values["TC_DISABLE_SMB_ENCRYPTION"], "true")
 
     def test_configure_rejects_required_and_disabled_smb_encryption(self) -> None:
         with redirect_stderr(io.StringIO()):
@@ -459,19 +518,26 @@ class CliConfigureTests(CliTestCase):
                 raises=SystemExit,
             )
         self.assertEqual(result.exception.code, 2)
-
-    def test_configure_force_disable_smb_security_args_are_mutually_exclusive(self) -> None:
         stderr = io.StringIO()
         with redirect_stderr(stderr):
             result = self.run_configure_cli(
-                [
-                    "--disable-smb-security",
-                    "--no-disable-smb-security",
-                ],
+                ["--require-smb-encryption", "--disable-smb-encryption"],
                 raises=SystemExit,
             )
         self.assertEqual(result.exception.code, 2)
-        self.assertIn("not allowed with argument", stderr.getvalue())
+        self.assertIn("Turn Off SMB Encryption", stderr.getvalue())
+
+    def test_configure_refuses_contradictory_spellings_of_disable_smb_encryption(self) -> None:
+        positives = ["--disable-smb-encryption", "--force-disable-smb-signing-and-encryption", "--disable-smb-security"]
+        negatives = ["--no-disable-smb-encryption", "--no-force-disable-smb-signing-and-encryption", "--no-disable-smb-security"]
+        for on in positives:
+            for off in negatives:
+                with self.subTest(on=on, off=off):
+                    stderr = io.StringIO()
+                    with redirect_stderr(stderr):
+                        result = self.run_configure_cli([on, off], raises=SystemExit)
+                    self.assertEqual(result.exception.code, 2)
+                    self.assertIn("not allowed with argument", stderr.getvalue())
 
     def test_configure_rejects_any_protocol_with_smb_encryption(self) -> None:
         with redirect_stderr(io.StringIO()):
@@ -567,18 +633,6 @@ class CliConfigureTests(CliTestCase):
                 )
                 self.assertEqual(disabled.rc, 0)
                 self.assertEqual(disabled.values[config_key], "false")
-
-    def test_configure_canonical_force_disable_smb_security_arg_is_supported(self) -> None:
-        result = self.run_configure_cli(
-            ["--force-disable-smb-signing-and-encryption"],
-            prompt_side_effect=self.configure_prompt_defaults(),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-            command_context=FakeCommandContext(),
-        )
-
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
 
     def test_configure_hidden_ata_args_write_drive_settings(self) -> None:
         result = self.run_configure_cli(

@@ -424,8 +424,9 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         deployStore.smbBrowseCompatibility = settings.smbBrowseCompatibility
         deployStore.mdnsAdvertiseAFP = settings.mdnsAdvertiseAFP
         deployStore.anyProtocol = settings.anyProtocol
+        deployStore.requireSMBSigning = settings.requireSMBSigning
         deployStore.requireSMBEncryption = settings.requireSMBEncryption
-        deployStore.forceDisableSMBSigningAndEncryption = settings.forceDisableSMBSigningAndEncryption
+        deployStore.disableSMBEncryption = settings.disableSMBEncryption
         deployStore.fruitMetadataNetatalk = settings.fruitMetadataNetatalk
         deployStore.vfsAIOForkEnabled = settings.vfsAIOForkEnabled
         deployStore.debugLogging = settings.debugLogging

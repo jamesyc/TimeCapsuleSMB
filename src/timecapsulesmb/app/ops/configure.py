@@ -7,6 +7,7 @@ from timecapsulesmb.app.confirmations import build_confirmation, require_confirm
 from timecapsulesmb.app.contracts import configure_payload
 from timecapsulesmb.core.config import (
     DEFAULTS,
+    effective_smb_security,
     parse_bool,
     parse_env_file,
     vfs_aio_fork_enabled_in,
@@ -14,7 +15,6 @@ from timecapsulesmb.core.config import (
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.paths import resolve_app_paths
-from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.device.probe import probe_connection_state
 from timecapsulesmb.integrations.acp import ACPConnectionError, ACPError
 from timecapsulesmb.services.app import (
@@ -127,11 +127,9 @@ def update_config_settings_operation(
             smb_browse_compatibility=optional_bool_param(params, "smb_browse_compatibility"),
             mdns_advertise_afp=optional_bool_param(params, "mdns_advertise_afp"),
             any_protocol=optional_bool_param(params, "any_protocol"),
+            require_smb_signing=optional_bool_param(params, "require_smb_signing"),
             require_smb_encryption=optional_bool_param(params, "require_smb_encryption"),
-            force_disable_smb_signing_and_encryption=optional_bool_param(
-                params,
-                "force_disable_smb_signing_and_encryption",
-            ),
+            disable_smb_encryption=optional_bool_param(params, "disable_smb_encryption"),
             fruit_metadata_netatalk=optional_bool_param(params, "fruit_metadata_netatalk"),
             vfs_aio_fork_enabled=optional_bool_param(params, "vfs_aio_fork_enabled"),
             debug_logging=optional_bool_param(params, "debug_logging"),
@@ -197,31 +195,13 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     host = target.host
     password = require_string_param(params, "password")
     context.add_debug_fields(configure_target_source=target.source)
-    any_protocol = bool_param(
-        params,
-        "any_protocol",
-        parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
-    )
-    require_smb_encryption = bool_param(
-        params,
-        "require_smb_encryption",
-        parse_bool(existing.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"])),
-    )
-    force_disable_smb_signing_and_encryption = bool_param(
-        params,
-        "force_disable_smb_signing_and_encryption",
-        parse_bool(
-            existing.get(
-                "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
-                DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
-            )
-        ),
-    )
     try:
-        validate_smb_protocol_options(
-            any_protocol=any_protocol,
-            require_smb_encryption=require_smb_encryption,
-            force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
+        smb = effective_smb_security(
+            existing,
+            any_protocol=optional_bool_param(params, "any_protocol"),
+            require_smb_signing=optional_bool_param(params, "require_smb_signing"),
+            require_smb_encryption=optional_bool_param(params, "require_smb_encryption"),
+            disable_smb_encryption=optional_bool_param(params, "disable_smb_encryption"),
         )
     except ValueError as exc:
         raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
@@ -271,9 +251,10 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                     "mdns_advertise_afp",
                     parse_bool(existing.get("TC_MDNS_ADVERTISE_AFP", DEFAULTS["TC_MDNS_ADVERTISE_AFP"])),
                 ),
-                any_protocol=any_protocol,
-                require_smb_encryption=require_smb_encryption,
-                force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
+                any_protocol=smb.any_protocol,
+                require_smb_signing=smb.require_smb_signing,
+                require_smb_encryption=smb.require_smb_encryption,
+                disable_smb_encryption=smb.disable_smb_encryption,
                 fruit_metadata_netatalk=bool_param(
                     params,
                     "fruit_metadata_netatalk",

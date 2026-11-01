@@ -88,7 +88,7 @@
 
 struct tc_runtime_config {
     int netbsd4, telemetry, rsync, internal_root, browse_compatibility;
-    int any_protocol, require_encryption, disable_security, netatalk, aio_fork;
+    int any_protocol, require_signing, require_encryption, disable_encryption, netatalk, aio_fork;
     int debug, discovery_debug, advertise_afp;
     unsigned mount_attempts, mount_timeout, mount_poll, ata_idle;
     char ata_standby[32];

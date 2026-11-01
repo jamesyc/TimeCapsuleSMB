@@ -1334,9 +1334,9 @@
 "toggle.mdns_advertise_afp" = "通过 Bonjour 广播 AFP";
 "toggle.mdns_advertise_afp.help" = "通过 Bonjour 广播 AFP。请保持关闭：macOS 26.x/27 会隐藏广播 AFP 的 Time Capsule。";
 "toggle.any_protocol" = "允许任意 SMB 协议";
+"toggle.require_smb_signing" = "要求 SMB 签名";
 "toggle.require_smb_encryption" = "要求 SMB 加密";
-"toggle.force_disable_smb_signing_and_encryption" = "禁用 SMB 签名和加密";
-"toggle.force_disable_smb_signing_and_encryption.note" = "默认设置。可加快传输速度。";
+"toggle.disable_smb_encryption" = "禁用 SMB 加密";
 "toggle.use_netatalk_metadata" = "使用 Netatalk 元数据";
 "toggle.enable_vfs_aio_fork" = "启用 vfs_aio_fork";
 "toggle.force_debug_logging" = "启用调试日志";
@@ -1395,7 +1395,9 @@
 
 "settings.note.protocol" = "启用不安全的 SMB1，而不限制为 SMB2/3。";
 
+"settings.note.signing" = "为每个连接签名，使数据在传输中无法被更改。速度会慢很多。Samba 无法为 SMB2 和 SMB3 关闭签名。";
 "settings.note.encryption" = "要求使用加密的 SMB3 连接。速度会慢很多。";
+"settings.note.disable_encryption" = "不再提供加密。要求加密的客户端将无法连接。";
 
 "settings.note.aio" = "使用额外进程处理磁盘 I/O；可能占用更多内存。";
 

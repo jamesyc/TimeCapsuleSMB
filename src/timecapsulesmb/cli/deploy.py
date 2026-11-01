@@ -14,12 +14,10 @@ from timecapsulesmb.cli.runtime import (
     print_json,
 )
 from timecapsulesmb.core.config import (
-    DEFAULTS,
     airport_family_display_name_from_identity,
-    parse_bool,
+    effective_smb_security,
 )
 from timecapsulesmb.core.paths import resolve_app_paths
-from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.identity import ensure_install_id, load_install_identity
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.telemetry import TelemetryClient
@@ -90,6 +88,31 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Enable the bundled writable rsync daemon on TCP port 873",
     )
+    # Public flags go before the internal-only groups below (Python 3.9
+    # argparse usage formatting; see configure).
+    add_boolean_override_arguments(
+        parser,
+        dest="require_smb_signing",
+        positive_flags=("--require-smb-signing",),
+        negative_flags=("--no-require-smb-signing",),
+        help="Require every SMB client to sign its traffic, for this deploy only",
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="require_smb_encryption",
+        positive_flags=("--require-smb-encryption",),
+        negative_flags=("--no-require-smb-encryption",),
+        help="Require encrypted SMB3 connections, for this deploy only",
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="disable_smb_encryption",
+        positive_flags=("--disable-smb-encryption",),
+        negative_flags=("--no-disable-smb-encryption",),
+        help="Turn off SMB encryption, so no client can use it, for this deploy only",
+        hidden_positive_flags=("--force-disable-smb-signing-and-encryption",),
+        hidden_negative_flags=("--no-force-disable-smb-signing-and-encryption",),
+    )
     add_boolean_override_arguments(
         parser,
         dest="internal_share_use_disk_root",
@@ -122,18 +145,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     add_boolean_override_arguments(
         parser,
-        dest="require_smb_encryption",
-        positive_flags=("--require-smb-encryption",),
-        negative_flags=("--no-require-smb-encryption",),
-    )
-    add_boolean_override_arguments(
-        parser,
-        dest="force_disable_smb_signing_and_encryption",
-        positive_flags=("--force-disable-smb-signing-and-encryption",),
-        negative_flags=("--no-force-disable-smb-signing-and-encryption",),
-    )
-    add_boolean_override_arguments(
-        parser,
         dest="fruit_metadata_netatalk",
         positive_flags=("--netatalk",),
         negative_flags=("--no-netatalk",),
@@ -160,8 +171,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     mdns_advertise_afp = args.mdns_advertise_afp
     any_protocol = args.any_protocol
     vfs_aio_fork_enabled = args.vfs_aio_fork_enabled
+    require_smb_signing = args.require_smb_signing
     require_smb_encryption = args.require_smb_encryption
-    force_disable_smb_signing_and_encryption = args.force_disable_smb_signing_and_encryption
+    disable_smb_encryption = args.disable_smb_encryption
     deploy_options = DeployOptions(
         dry_run=args.dry_run,
         no_wait=args.no_wait,
@@ -175,27 +187,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     telemetry_enabled = load_install_identity().telemetry_enabled
     config = load_env_config(env_path=args.config)
     try:
-        validate_smb_protocol_options(
-            any_protocol=(
-                parse_bool(config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))
-                if any_protocol is None
-                else any_protocol
-            ),
-            require_smb_encryption=(
-                parse_bool(config.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"]))
-                if require_smb_encryption is None
-                else require_smb_encryption
-            ),
-            force_disable_smb_signing_and_encryption=(
-                parse_bool(
-                    config.get(
-                        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
-                        DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
-                    )
-                )
-                if force_disable_smb_signing_and_encryption is None
-                else force_disable_smb_signing_and_encryption
-            ),
+        effective_smb_security(
+            config,
+            any_protocol=any_protocol,
+            require_smb_encryption=require_smb_encryption,
+            disable_smb_encryption=disable_smb_encryption,
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -343,8 +339,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     smb_browse_compatibility=args.smb_browse_compatibility,
                     mdns_advertise_afp=mdns_advertise_afp,
                     any_protocol=any_protocol,
+                    require_smb_signing=require_smb_signing,
                     require_smb_encryption=require_smb_encryption,
-                    force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
+                    disable_smb_encryption=disable_smb_encryption,
                     fruit_metadata_netatalk=args.fruit_metadata_netatalk,
                     vfs_aio_fork_enabled=vfs_aio_fork_enabled,
                 ),

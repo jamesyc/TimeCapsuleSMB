@@ -335,7 +335,7 @@ Generated `smb.conf` settings:
 - `netbios name = <name from the device hostname>`
 - `server string = <name from Apple syNm>`
 - `security = user`
-- `min protocol = SMB2` and `max protocol = SMB3` by default; the protocol and signing options change these
+- `min protocol = SMB2` and `max protocol = SMB3` by default; the protocol and encryption options change these
 - `guest ok = no`
 - `valid users = root`
 - `force user = root`
@@ -354,7 +354,7 @@ Generated `smb.conf` settings:
 - `deadtime = 720`
 - `max smbd processes = 12`: room for eight backup clients plus their reconnects. Twelve backups at once have not been tested.
 - `socket options` with larger receive buffers than the firmware default (and larger send buffers on NetBSD 4), so a Mac can keep sending Time Machine data while `smbd` waits for the disk
-- `server smb3 signing algorithms` and `server smb3 encryption algorithms` ordered by cost on these CPUs. On NetBSD 6, signing a 128 MiB read takes 9.4 CPU seconds with HMAC-SHA256 and 38.4 with Samba's default AES-GMAC; encrypting it takes 20.9 with AES-128-CCM and 45.6 with AES-128-GCM. Unsigned traffic, macOS's default, is not affected.
+- `server smb3 signing algorithms` and `server smb3 encryption algorithms` ordered by cost on these CPUs. On NetBSD 6, signing a 128 MiB read takes 9.4 CPU seconds with HMAC-SHA256 and 38.4 with Samba's default AES-GMAC; encrypting it takes 20.9 with AES-128-CCM and 45.6 with AES-128-GCM. Unsigned traffic, macOS's default, is not affected. A Mac offers only AES-128-CMAC and AES-128-GMAC for SMB 3.1.1 signing, so it signs with AES-128-CMAC: 12.0 CPU seconds per 128 MiB on NetBSD 6, 20.0 on NetBSD 4 big-endian and 12.3 on NetBSD 4 little-endian. HMAC-SHA256 is used only by clients that offer it. For encryption a Mac offers AES-128-CCM, AES-128-GCM, AES-256-CCM and AES-256-GCM, and the device picks AES-128-CCM.
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`, plus `aio_fork` (at most two helpers per connection and share) unless `TC_VFS_AIO_FORK_DISABLED=true`
 - `fruit:resource = file`; HFS shares use the native resource fork regardless
 - `fruit:veto_appledouble = yes`
@@ -442,8 +442,9 @@ The `service` image on flash also computes NT password hashes, prints `--print-*
 - `TC_SMB_BROWSE_COMPATIBILITY`
 - `TC_MDNS_ADVERTISE_AFP`
 - `TC_ANY_PROTOCOL`
+- `TC_REQUIRE_SMB_SIGNING`
 - `TC_REQUIRE_SMB_ENCRYPTION`
-- `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION`
+- `TC_DISABLE_SMB_ENCRYPTION`
 - `TC_FRUIT_METADATA_NETATALK`
 - `TC_VFS_AIO_FORK_DISABLED`
 - `TC_DEBUG_LOGGING`
@@ -495,13 +496,28 @@ On by default. Lets each client connection use up to two helper processes per sh
 
 Off by default. Allows SMB1 and NTLMv1 logins (`server min protocol = NT1`, `ntlm auth = ntlmv1-permitted`), as Apple's firmware did, for old clients such as Windows XP, scanners and media players. SMB1 Unix extensions stay off. SMB1 and NTLMv1 are insecure, so leave this off unless an old client needs it. It cannot be combined with Require SMB Encryption.
 
+### Require SMB Signing
+
+Off by default. Writes `server signing = mandatory`, so every client must sign, SMB1 clients too when Allow Any SMB Protocol is on. Left off, the client decides: Samba signs a session whenever the client asks, and a Mac asks when its `nsmb.conf` (`/etc/nsmb.conf`, or `~/Library/Preferences/nsmb.conf` for one user) has `signing_required=yes`. Signing costs device CPU: a Mac signs with AES-128-CMAC, whose cost is in the `server smb3 signing algorithms` entry above. There is no option to turn signing off, because Samba cannot turn it off for SMB2 or SMB3.
+
+Signing halves a Mac's throughput or worse, and encryption cuts it to about a third. A 256 MiB file copied from a Mac over SMB 3.1.1, written and then read back on a fresh mount, two runs each:
+
+| Device | Unsigned | Signed (AES-128-CMAC) | Encrypted (AES-128-CCM) |
+|---|---|---|---|
+| NetBSD 6, write | 17.5 MiB/s | 8.7 MiB/s | 5.7 MiB/s |
+| NetBSD 6, read | 21.9 MiB/s | 9.9 MiB/s | 5.9 MiB/s |
+| NetBSD 4 little-endian, write | 13.6 MiB/s | 5.9 MiB/s | 3.9 MiB/s |
+| NetBSD 4 little-endian, read | 12.3 MiB/s | 5.7 MiB/s | 4.1 MiB/s |
+
+NetBSD 4 big-endian was not measured; its C AES makes AES-128-CMAC cost more CPU there (see the `server smb3 signing algorithms` entry).
+
 ### Require SMB Encryption
 
-Off by default. Requires encrypted SMB3 (`server smb encrypt = required`, `server min protocol = SMB3_00`). Selecting it disables Allow Any SMB Protocol and Disable SMB signing and encryption.
+Off by default. Requires encrypted SMB3 (`server smb encrypt = required`, `server min protocol = SMB3_00`). Selecting it disables Allow Any SMB Protocol and Turn Off SMB Encryption. Its speed is in the table under Require SMB Signing. With both encryption options off, the device offers encryption and the client decides whether to use it.
 
-### Disable SMB signing and encryption
+### Turn Off SMB Encryption
 
-Off by default. Writes `server signing = disabled` and `server smb encrypt = off`. Throughput may improve when a client would otherwise sign, but traffic is no longer protected. It cannot be combined with Require SMB Encryption.
+Off by default. Writes `server smb encrypt = off`: the device stops offering encryption, and a client that requires encryption, such as `smbclient --client-protection=encrypt`, cannot connect. It does not change signing. It is saved as `TC_DISABLE_SMB_ENCRYPTION=true`. An older `.env` that has `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION` instead is read as this setting. Reading never changes the file: the next `configure` or settings save in the app writes it under the new name. It cannot be combined with Require SMB Encryption.
 
 ## App updates
 
@@ -598,21 +614,22 @@ Arguments:
 - `--enable-ssh`: turn SSH on through ACP when it is off
 - `--no-enable-ssh`: fail when SSH is off
 - `--json`: print a machine-readable result; requires `--no-input`
-- `--force-disable-smb-signing-and-encryption` / `--no-force-disable-smb-signing-and-encryption`: write `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true|false`; `--disable-smb-security` and `--no-disable-smb-security` are aliases
+- `--require-smb-signing` / `--no-require-smb-signing`: write `TC_REQUIRE_SMB_SIGNING=true|false`
+- `--require-smb-encryption` / `--no-require-smb-encryption`: write `TC_REQUIRE_SMB_ENCRYPTION=true|false`
+- `--disable-smb-encryption` / `--no-disable-smb-encryption`: write `TC_DISABLE_SMB_ENCRYPTION=true|false` (Turn Off SMB Encryption); `--force-disable-smb-signing-and-encryption`, `--disable-smb-security` and their `--no-` forms are older spellings, and two that contradict each other are refused
 
 Hidden advanced arguments:
 - `--internal-share-use-disk-root` / `--no-internal-share-use-disk-root`: write `TC_INTERNAL_SHARE_USE_DISK_ROOT=true|false`
 - `--smb-browse-compatibility` / `--no-smb-browse-compatibility`: write `TC_SMB_BROWSE_COMPATIBILITY=true|false`
 - `--mdns-advertise-afp` / `--no-mdns-advertise-afp`: write `TC_MDNS_ADVERTISE_AFP=true|false`
 - `--any-protocol` / `--no-any-protocol`: write `TC_ANY_PROTOCOL=true|false`
-- `--require-smb-encryption` / `--no-require-smb-encryption`: write `TC_REQUIRE_SMB_ENCRYPTION=true|false`
 - `--netatalk` / `--no-netatalk`: write `TC_FRUIT_METADATA_NETATALK=true|false`
 - `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: write `TC_VFS_AIO_FORK_DISABLED=false|true`
 - `--debug-logging` / `--no-debug-logging`: turn debug logging on or off
 - `--ata-idle-seconds SECONDS`: write `TC_ATA_IDLE_SECONDS`, a whole number; `0` turns the ATA idle timer off
 - `--ata-standby SECONDS`: write `TC_ATA_STANDBY`, a whole number; `0` turns standby off, and a blank saved value leaves standby as it is
 
-`TC_ANY_PROTOCOL=true` and `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true` each conflict with `TC_REQUIRE_SMB_ENCRYPTION=true`. Configure refuses either combination before writing `.env`.
+`TC_ANY_PROTOCOL=true` and `TC_DISABLE_SMB_ENCRYPTION=true` each conflict with `TC_REQUIRE_SMB_ENCRYPTION=true`. Configure refuses either combination before writing `.env`.
 
 Non-interactive examples:
 
@@ -652,9 +669,10 @@ Arguments:
 - `--allow-unsupported`: continue when the device is not a supported model
 - `--enable-rsync`: write `RSYNC_ENABLED=1` so the manager starts rsync; the rsync files are uploaded either way
 - `--mount-wait SECONDS`: how long each volume mount may take, `30` by default
+- `--require-smb-signing`, `--require-smb-encryption` and `--disable-smb-encryption`, each with a `--no-` form: override the saved setting for this deploy only; `.env` is not changed
 
 Hidden advanced arguments:
-- each saved profile setting (internal-share root, SMB browsing, AFP advertising, protocol and security, Netatalk metadata, debug logging, `vfs_aio_fork`) has an on/off override pair; without one, the saved `.env` value is used
+- each other saved profile setting (internal-share root, SMB browsing, AFP advertising, Allow Any SMB Protocol, Netatalk metadata, debug logging, `vfs_aio_fork`) has an on/off override pair; without one, the saved `.env` value is used
 
 Plan modes:
 
@@ -814,8 +832,9 @@ Defaults and fixed values:
 - `TC_SMB_BROWSE_COMPATIBILITY=false`
 - `TC_MDNS_ADVERTISE_AFP=false`
 - `TC_ANY_PROTOCOL=false`
+- `TC_REQUIRE_SMB_SIGNING=false`
 - `TC_REQUIRE_SMB_ENCRYPTION=false`
-- `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=false`
+- `TC_DISABLE_SMB_ENCRYPTION=false`
 - `TC_FRUIT_METADATA_NETATALK=true`
 - `TC_VFS_AIO_FORK_DISABLED=false`
 - `TC_DEBUG_LOGGING=false`
@@ -832,7 +851,7 @@ Validation:
 - `TC_PASSWORD` is required by doctor, flash and `set-ssh` (except `--status`). Deploy and activate ask for it when it is missing. fsck and uninstall can log in with an SSH key or agent instead.
 - `TC_SSH_OPTS` is written by `configure` with the old SSH options AirPort firmware needs.
 - The share, browsing, AFP, protocol and security, Netatalk metadata, `vfs_aio_fork` and debug settings above must be `true` or `false`.
-- Required encryption cannot be combined with `TC_ANY_PROTOCOL=true` or `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true`.
+- Required encryption cannot be combined with `TC_ANY_PROTOCOL=true` or `TC_DISABLE_SMB_ENCRYPTION=true`.
 - `TC_ATA_IDLE_SECONDS` is an optional whole number, `300` by default; `0` turns the ATA idle timer off with `atactl setidle 0`.
 - `TC_ATA_STANDBY` is an optional whole number; blank leaves standby as it is, and `0` turns it off with `atactl setstandby 0`.
 - `TC_CONFIGURE_ID` is a local revision ID and is not checked.

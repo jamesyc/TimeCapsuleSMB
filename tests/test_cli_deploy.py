@@ -546,6 +546,51 @@ class CliDeployTests(CliTestCase):
         self.assertEqual(result.rc, 0)
         self.assertIn("REQUIRE_SMB_ENCRYPTION=1\n", captured["flash_config"])
 
+    def test_deploy_smb_signing_and_encryption_args_override_config(self) -> None:
+        for argv, expected in (
+            (["--require-smb-signing"], ("REQUIRE_SMB_SIGNING=1\n", "DISABLE_SMB_ENCRYPTION=0\n")),
+            (["--no-require-smb-signing"], ("REQUIRE_SMB_SIGNING=0\n",)),
+            (["--disable-smb-encryption"], ("DISABLE_SMB_ENCRYPTION=1\n",)),
+            (["--require-smb-signing", "--disable-smb-encryption"],
+             ("REQUIRE_SMB_SIGNING=1\n", "DISABLE_SMB_ENCRYPTION=1\n")),
+        ):
+            with self.subTest(argv=argv):
+                captured: dict[str, str] = {}
+
+                def fake_upload(_plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
+                    captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+                saved = "false" if "--require-smb-signing" in argv else "true"
+                result = self.run_deploy_cli(
+                    ["--yes", *argv],
+                    values=self.make_valid_env(TC_REQUIRE_SMB_SIGNING=saved),
+                    patch_actions=True,
+                    patch_upload=True,
+                    upload_side_effect=fake_upload,
+                )
+
+                self.assertEqual(result.rc, 0)
+                for line in expected:
+                    self.assertIn(line, captured["flash_config"])
+
+    def test_deploy_help_lists_security_flags_and_refuses_contradictions(self) -> None:
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), self.assertRaises(SystemExit) as raised:
+            deploy.main(["--help"])
+        self.assertEqual(raised.exception.code, 0)
+        for flag in ("--require-smb-signing", "--require-smb-encryption", "--disable-smb-encryption"):
+            self.assertIn(flag, stdout.getvalue())
+        self.assertNotIn("signing-and-encryption", stdout.getvalue())
+        for argv in (
+            ["--disable-smb-encryption", "--no-force-disable-smb-signing-and-encryption"],
+            ["--force-disable-smb-signing-and-encryption", "--no-disable-smb-encryption"],
+            ["--require-smb-signing", "--no-require-smb-signing"],
+        ):
+            with self.subTest(argv=argv), redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as raised:
+                deploy.main(argv)
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("not allowed with argument", stderr.getvalue())
+
     def test_deploy_rejects_any_protocol_with_smb_encryption(self) -> None:
         with redirect_stderr(io.StringIO()):
             result = self.run_deploy_cli(
@@ -1223,6 +1268,26 @@ class CliDeployTests(CliTestCase):
         self.assertEqual(result.rc, 0)
         finished = self.telemetry_payload("deploy_finished")
         self.assertEqual(finished["upload_transport"], "ssh_pipe")
+
+    def test_deploy_finished_telemetry_reports_the_smb_settings_the_device_gets(self) -> None:
+        saved = dict(TC_REQUIRE_SMB_SIGNING="true", TC_DISABLE_SMB_ENCRYPTION="true")
+        for argv, expected_signing in ((["--yes"], True), (["--yes", "--no-require-smb-signing"], False)):
+            with self.subTest(argv=argv):
+                result = self.run_deploy_cli(
+                    argv,
+                    values=self.make_valid_env(**saved),
+                    patch_actions=True,
+                    patch_upload=True,
+                    verify_runtime=self.managed_runtime_probe(True),
+                )
+
+                self.assertEqual(result.rc, 0)
+                finished = self.telemetry_payload("deploy_finished")
+                # Saved values count even when no flag was passed; a flag overrides them.
+                self.assertEqual(finished["effective_require_smb_signing"], expected_signing)
+                self.assertEqual(finished["effective_require_smb_encryption"], False)
+                self.assertEqual(finished["effective_disable_smb_encryption"], True)
+                self.assertEqual(finished["effective_any_protocol"], False)
 
     def test_deploy_netbsd4_dry_run_json_outputs_activation_plan(self) -> None:
         result = self.run_deploy_cli(

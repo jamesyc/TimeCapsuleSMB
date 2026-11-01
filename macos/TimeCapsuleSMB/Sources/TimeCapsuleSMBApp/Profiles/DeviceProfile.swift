@@ -43,8 +43,9 @@ struct DeviceProfileSettings: Codable, Equatable {
     var smbBrowseCompatibility: Bool
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
+    var requireSMBSigning: Bool
     var requireSMBEncryption: Bool
-    var forceDisableSMBSigningAndEncryption: Bool
+    var disableSMBEncryption: Bool
     var fruitMetadataNetatalk: Bool
     var vfsAIOForkEnabled: Bool
     var debugLogging: Bool
@@ -58,8 +59,9 @@ struct DeviceProfileSettings: Codable, Equatable {
         smbBrowseCompatibility: false,
         mdnsAdvertiseAFP: false,
         anyProtocol: false,
+        requireSMBSigning: false,
         requireSMBEncryption: false,
-        forceDisableSMBSigningAndEncryption: false,
+        disableSMBEncryption: false,
         fruitMetadataNetatalk: true,
         vfsAIOForkEnabled: true,
         debugLogging: false,
@@ -74,8 +76,9 @@ struct DeviceProfileSettings: Codable, Equatable {
         smbBrowseCompatibility: Bool = false,
         mdnsAdvertiseAFP: Bool = false,
         anyProtocol: Bool = false,
+        requireSMBSigning: Bool = false,
         requireSMBEncryption: Bool = false,
-        forceDisableSMBSigningAndEncryption: Bool = false,
+        disableSMBEncryption: Bool = false,
         fruitMetadataNetatalk: Bool = true,
         vfsAIOForkEnabled: Bool = true,
         debugLogging: Bool,
@@ -88,11 +91,12 @@ struct DeviceProfileSettings: Codable, Equatable {
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
+        self.requireSMBSigning = requireSMBSigning
         self.requireSMBEncryption = requireSMBEncryption
         if self.requireSMBEncryption {
             self.anyProtocol = false
         }
-        self.forceDisableSMBSigningAndEncryption = forceDisableSMBSigningAndEncryption && !requireSMBEncryption
+        self.disableSMBEncryption = disableSMBEncryption && !requireSMBEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.vfsAIOForkEnabled = vfsAIOForkEnabled
         self.debugLogging = debugLogging
@@ -107,8 +111,9 @@ struct DeviceProfileSettings: Codable, Equatable {
         case smbBrowseCompatibility
         case mdnsAdvertiseAFP
         case anyProtocol
+        case requireSMBSigning
         case requireSMBEncryption
-        case forceDisableSMBSigningAndEncryption
+        case disableSMBEncryption
         case fruitMetadataNetatalk
         // A saved vfsAIOForkEnabled is ignored: it was written as false by
         // default when aio_fork was opt-in.
@@ -119,20 +124,29 @@ struct DeviceProfileSettings: Codable, Equatable {
         case ataStandby
     }
 
+    /// Keys saved under an older name. Decoding reads them; encoding writes only
+    /// the new names, so a file drops them at its next save.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case disableSMBEncryption = "forceDisableSMBSigningAndEncryption"
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
         rsyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .rsyncEnabled) ?? Self.default.rsyncEnabled
         internalShareUseDiskRoot = try container.decodeIfPresent(Bool.self, forKey: .internalShareUseDiskRoot) ?? Self.default.internalShareUseDiskRoot
         smbBrowseCompatibility = try container.decodeIfPresent(Bool.self, forKey: .smbBrowseCompatibility) ?? Self.default.smbBrowseCompatibility
         mdnsAdvertiseAFP = try container.decodeIfPresent(Bool.self, forKey: .mdnsAdvertiseAFP) ?? Self.default.mdnsAdvertiseAFP
         anyProtocol = try container.decodeIfPresent(Bool.self, forKey: .anyProtocol) ?? Self.default.anyProtocol
+        requireSMBSigning = try container.decodeIfPresent(Bool.self, forKey: .requireSMBSigning) ?? Self.default.requireSMBSigning
         requireSMBEncryption = try container.decodeIfPresent(Bool.self, forKey: .requireSMBEncryption) ?? Self.default.requireSMBEncryption
         if requireSMBEncryption {
             anyProtocol = false
         }
-        forceDisableSMBSigningAndEncryption = (
-            try container.decodeIfPresent(Bool.self, forKey: .forceDisableSMBSigningAndEncryption)
-            ?? Self.default.forceDisableSMBSigningAndEncryption
+        disableSMBEncryption = (
+            try container.decodeIfPresent(Bool.self, forKey: .disableSMBEncryption)
+            ?? legacy.decodeIfPresent(Bool.self, forKey: .disableSMBEncryption)
+            ?? Self.default.disableSMBEncryption
         ) && !requireSMBEncryption
         fruitMetadataNetatalk = try container.decodeIfPresent(Bool.self, forKey: .fruitMetadataNetatalk) ?? Self.default.fruitMetadataNetatalk
         vfsAIOForkEnabled = try container.decodeIfPresent(Bool.self, forKey: .vfsAIOForkEnabled) ?? Self.default.vfsAIOForkEnabled

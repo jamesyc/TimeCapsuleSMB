@@ -5,15 +5,11 @@ enum SMBProtocolOptionPolicy {
         !requireSMBEncryption
     }
 
-    static func allowsRequireSMBEncryption(anyProtocol: Bool) -> Bool {
-        !anyProtocol
+    static func allowsRequireSMBEncryption(anyProtocol: Bool, disableSMBEncryption: Bool) -> Bool {
+        !anyProtocol && !disableSMBEncryption
     }
 
-    static func allowsRequireSMBEncryption(anyProtocol: Bool, forceDisableSMBSigningAndEncryption: Bool) -> Bool {
-        !anyProtocol && !forceDisableSMBSigningAndEncryption
-    }
-
-    static func allowsForceDisableSMBSigningAndEncryption(requireSMBEncryption: Bool) -> Bool {
+    static func allowsDisableSMBEncryption(requireSMBEncryption: Bool) -> Bool {
         !requireSMBEncryption
     }
 }

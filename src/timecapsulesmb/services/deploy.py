@@ -14,6 +14,7 @@ from timecapsulesmb.core.config import (
     MANAGED_PAYLOAD_DIR_NAME,
     AppConfig,
     airport_identity_from_model_or_syap,
+    effective_smb_security,
     parse_bool,
     shell_quote,
     vfs_aio_fork_enabled_in,
@@ -21,7 +22,6 @@ from timecapsulesmb.core.config import (
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.migration import (
     CRASH_SIGNALS,
@@ -415,8 +415,9 @@ class DeployRuntimeConfig:
     smb_browse_compatibility: bool | None = None
     mdns_advertise_afp: bool | None = None
     any_protocol: bool | None = None
+    require_smb_signing: bool | None = None
     require_smb_encryption: bool | None = None
-    force_disable_smb_signing_and_encryption: bool | None = None
+    disable_smb_encryption: bool | None = None
     fruit_metadata_netatalk: bool | None = None
     vfs_aio_fork_enabled: bool | None = None
     ata_idle_seconds: str | int | None = None
@@ -1326,12 +1327,28 @@ def upload_and_verify_deployment_payload(
         smb_browse_compatibility=runtime_config.smb_browse_compatibility,
         mdns_advertise_afp=runtime_config.mdns_advertise_afp,
         any_protocol=runtime_config.any_protocol,
+        require_smb_signing=runtime_config.require_smb_signing,
         require_smb_encryption=runtime_config.require_smb_encryption,
-        force_disable_smb_signing_and_encryption=runtime_config.force_disable_smb_signing_and_encryption,
+        disable_smb_encryption=runtime_config.disable_smb_encryption,
         fruit_metadata_netatalk=runtime_config.fruit_metadata_netatalk,
         vfs_aio_fork_enabled=runtime_config.vfs_aio_fork_enabled,
         ata_idle_seconds=runtime_config.ata_idle_seconds,
         ata_standby=runtime_config.ata_standby,
+    )
+    # What the device will run, whether saved or overridden for this deploy:
+    # the CLI's option fields only show the flags that were passed.
+    smb = effective_smb_security(
+        config,
+        any_protocol=runtime_config.any_protocol,
+        require_smb_signing=runtime_config.require_smb_signing,
+        require_smb_encryption=runtime_config.require_smb_encryption,
+        disable_smb_encryption=runtime_config.disable_smb_encryption,
+    )
+    callbacks.update(
+        effective_any_protocol=smb.any_protocol,
+        effective_require_smb_signing=smb.require_smb_signing,
+        effective_require_smb_encryption=smb.require_smb_encryption,
+        effective_disable_smb_encryption=smb.disable_smb_encryption,
     )
     rsync_config_text = render_rsync_daemon_config(payload_home)
     migration_helper_cleanup_safe = False
@@ -1739,8 +1756,9 @@ def render_flash_runtime_config(
     smb_browse_compatibility: bool | None = None,
     mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
+    require_smb_signing: bool | None = None,
     require_smb_encryption: bool | None = None,
-    force_disable_smb_signing_and_encryption: bool | None = None,
+    disable_smb_encryption: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
     vfs_aio_fork_enabled: bool | None = None,
     ata_idle_seconds: str | int | None = None,
@@ -1754,15 +1772,6 @@ def render_flash_runtime_config(
     mdns_advertise_afp_default = config.get(
         "TC_MDNS_ADVERTISE_AFP",
         DEFAULTS["TC_MDNS_ADVERTISE_AFP"],
-    )
-    any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
-    require_smb_encryption_default = config.get(
-        "TC_REQUIRE_SMB_ENCRYPTION",
-        DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"],
-    )
-    force_disable_smb_signing_and_encryption_default = config.get(
-        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
-        DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
     )
     fruit_metadata_netatalk_default = config.get(
         "TC_FRUIT_METADATA_NETATALK",
@@ -1780,25 +1789,12 @@ def render_flash_runtime_config(
         else _runtime_unsigned_override_value(ata_standby)
     )
     effective_internal_root = _effective_internal_root(config, internal_share_use_disk_root)
-    effective_any_protocol = (
-        parse_bool(any_protocol_default)
-        if any_protocol is None
-        else any_protocol
-    )
-    effective_require_smb_encryption = (
-        parse_bool(require_smb_encryption_default)
-        if require_smb_encryption is None
-        else require_smb_encryption
-    )
-    effective_force_disable_smb_signing_and_encryption = (
-        parse_bool(force_disable_smb_signing_and_encryption_default)
-        if force_disable_smb_signing_and_encryption is None
-        else force_disable_smb_signing_and_encryption
-    )
-    validate_smb_protocol_options(
-        any_protocol=effective_any_protocol,
-        require_smb_encryption=effective_require_smb_encryption,
-        force_disable_smb_signing_and_encryption=effective_force_disable_smb_signing_and_encryption,
+    smb = effective_smb_security(
+        config,
+        any_protocol=any_protocol,
+        require_smb_signing=require_smb_signing,
+        require_smb_encryption=require_smb_encryption,
+        disable_smb_encryption=disable_smb_encryption,
     )
     effective_smb_browse_compatibility = (
         parse_bool(smb_browse_compatibility_default)
@@ -1827,12 +1823,10 @@ def render_flash_runtime_config(
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if effective_internal_root else 0),
         ("SMB_BROWSE_COMPATIBILITY", 1 if effective_smb_browse_compatibility else 0),
         ("MDNS_ADVERTISE_AFP", 1 if effective_mdns_advertise_afp else 0),
-        ("ANY_PROTOCOL", 1 if effective_any_protocol else 0),
-        ("REQUIRE_SMB_ENCRYPTION", 1 if effective_require_smb_encryption else 0),
-        (
-            "FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
-            1 if effective_force_disable_smb_signing_and_encryption else 0,
-        ),
+        ("ANY_PROTOCOL", 1 if smb.any_protocol else 0),
+        ("REQUIRE_SMB_SIGNING", 1 if smb.require_smb_signing else 0),
+        ("REQUIRE_SMB_ENCRYPTION", 1 if smb.require_smb_encryption else 0),
+        ("DISABLE_SMB_ENCRYPTION", 1 if smb.disable_smb_encryption else 0),
         ("FRUIT_METADATA_NETATALK", 1 if effective_fruit_metadata_netatalk else 0),
         ("VFS_AIO_FORK_ENABLED", 1 if effective_vfs_aio_fork_enabled else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),

@@ -40,9 +40,10 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.internalShareUseDiskRoot = true
         store.smbBrowseCompatibility = true
         store.mdnsAdvertiseAFP = true
+        store.requireSMBSigning = true
         store.anyProtocol = true
         store.requireSMBEncryption = true
-        store.forceDisableSMBSigningAndEncryption = true
+        store.disableSMBEncryption = true
         store.fruitMetadataNetatalk = true
         store.vfsAIOForkEnabled = true
         store.debugLogging = true
@@ -68,8 +69,10 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(false))
+        // Clearing the encryption and protocol choices leaves signing alone.
+        XCTAssertEqual(runner.calls[0].params["require_smb_signing"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["require_smb_encryption"], .bool(false))
-        XCTAssertEqual(runner.calls[0].params["force_disable_smb_signing_and_encryption"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["disable_smb_encryption"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["debug_logging"], .bool(true))

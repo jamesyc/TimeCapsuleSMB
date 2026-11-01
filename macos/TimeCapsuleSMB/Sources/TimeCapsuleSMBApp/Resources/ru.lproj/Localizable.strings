@@ -1334,9 +1334,9 @@
 "toggle.mdns_advertise_afp" = "Объявлять AFP через Bonjour";
 "toggle.mdns_advertise_afp.help" = "Объявлять AFP через Bonjour. Оставьте выключенным: macOS 26.x/27 скрывает Time Capsule, объявляющие AFP.";
 "toggle.any_protocol" = "Разрешить любой протокол SMB";
+"toggle.require_smb_signing" = "Требовать подпись SMB";
 "toggle.require_smb_encryption" = "Требовать шифрование SMB";
-"toggle.force_disable_smb_signing_and_encryption" = "Отключить подпись и шифрование SMB";
-"toggle.force_disable_smb_signing_and_encryption.note" = "Настройка по умолчанию. Ускоряет передачу данных.";
+"toggle.disable_smb_encryption" = "Отключить шифрование SMB";
 "toggle.use_netatalk_metadata" = "Использовать метаданные Netatalk";
 "toggle.enable_vfs_aio_fork" = "Включить vfs_aio_fork";
 "toggle.force_debug_logging" = "Включить журналы отладки";
@@ -1395,7 +1395,9 @@
 
 "settings.note.protocol" = "Включить небезопасный SMB1 вместо ограничения SMB2/3.";
 
+"settings.note.signing" = "Подписывать каждое подключение, чтобы данные нельзя было изменить при передаче. Значительно медленнее. Samba не может отключить подпись для SMB2 и SMB3.";
 "settings.note.encryption" = "Требовать зашифрованные подключения SMB3. Значительно медленнее.";
+"settings.note.disable_encryption" = "Не предлагать шифрование. Клиенты, которые требуют шифрования, не смогут подключиться.";
 
 "settings.note.aio" = "Дополнительные процессы дискового ввода-вывода могут потреблять больше памяти.";
 

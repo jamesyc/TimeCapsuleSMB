@@ -60,6 +60,46 @@ class ConfigTests(unittest.TestCase):
             values = parse_env_file(path)
         self.assertEqual(values, {"TC_HOST": "root@10.0.0.5"})
 
+    def test_parse_env_file_reads_old_disable_key_without_changing_the_file(self) -> None:
+        text = (
+            "# my notes\n"
+            "TC_HOST='root@10.0.0.5'\n"
+            "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(text)
+            before = path.stat().st_mtime_ns
+
+            values = parse_env_file(path)
+
+            self.assertEqual(values, {"TC_HOST": "root@10.0.0.5", "TC_DISABLE_SMB_ENCRYPTION": "true"})
+            self.assertEqual(path.read_text(), text)
+            self.assertEqual(path.stat().st_mtime_ns, before)
+
+    def test_parse_env_file_keeps_new_disable_key_over_old(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(
+                "TC_DISABLE_SMB_ENCRYPTION=false\n"
+                "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true\n"
+            )
+            self.assertEqual(parse_env_file(path), {"TC_DISABLE_SMB_ENCRYPTION": "false"})
+
+    def test_old_disable_key_reaches_validation_and_the_device_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(
+                "TC_HOST='root@10.0.0.5'\n"
+                "TC_REQUIRE_SMB_ENCRYPTION=true\n"
+                "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true\n"
+            )
+            config = load_app_config(path)
+            errors = validate_app_config(config, profile="deploy")
+        # The renamed value still conflicts with required encryption.
+        self.assertEqual([(e.kind, e.key) for e in errors], [("inconsistent_values", "TC_REQUIRE_SMB_ENCRYPTION")])
+        self.assertEqual(config.get("TC_DISABLE_SMB_ENCRYPTION"), "true")
+
     def test_tc_host_round_trips_through_the_env_file_unchanged(self) -> None:
         for host in ("root@10.0.0.2", "root@capsule.local", "root@fd00::2", "root@fe80::82ea:96ff:fee6:5868%en0"):
             with self.subTest(host=host), tempfile.TemporaryDirectory() as tmp:
@@ -156,8 +196,9 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_SMB_BROWSE_COMPATIBILITY=false", rendered)
         self.assertIn("TC_MDNS_ADVERTISE_AFP=false", rendered)
         self.assertIn("TC_ANY_PROTOCOL=false", rendered)
+        self.assertIn("TC_REQUIRE_SMB_SIGNING=false", rendered)
         self.assertIn("TC_REQUIRE_SMB_ENCRYPTION=false", rendered)
-        self.assertIn("TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=false", rendered)
+        self.assertIn("TC_DISABLE_SMB_ENCRYPTION=false", rendered)
         self.assertIn("TC_FRUIT_METADATA_NETATALK=true", rendered)
         self.assertIn("TC_VFS_AIO_FORK_DISABLED=false", rendered)
         self.assertIn("TC_DEBUG_LOGGING=false", rendered)
@@ -461,12 +502,22 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(errors[0].kind, "inconsistent_values")
         self.assertEqual(errors[0].key, "TC_REQUIRE_SMB_ENCRYPTION")
         values["TC_ANY_PROTOCOL"] = "false"
-        values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"] = "true"
+        values["TC_DISABLE_SMB_ENCRYPTION"] = "true"
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].kind, "inconsistent_values")
-        self.assertIn("Force Disable", errors[0].message)
+        self.assertIn("Turn Off SMB Encryption", errors[0].message)
         values["TC_REQUIRE_SMB_ENCRYPTION"] = "false"
+        # Signing joins no conflict: it can be required with encryption off.
+        values["TC_REQUIRE_SMB_SIGNING"] = "true"
+        config = AppConfig.from_values(values, file_values=values)
+        self.assertEqual(validate_app_config(config, profile="deploy"), [])
+        values["TC_REQUIRE_SMB_SIGNING"] = "sometimes"
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual([(e.kind, e.key) for e in errors], [("invalid_value", "TC_REQUIRE_SMB_SIGNING")])
+        values["TC_REQUIRE_SMB_SIGNING"] = "false"
+        values["TC_DISABLE_SMB_ENCRYPTION"] = "false"
         # v3.1.0 removed TC_SMB_BIND_LAN_ONLY: a stale value is ignored, never validated.
         values["TC_SMB_BIND_LAN_ONLY"] = "not-bool"
         config = AppConfig.from_values(values, file_values=values)

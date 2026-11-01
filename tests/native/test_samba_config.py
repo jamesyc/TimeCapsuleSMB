@@ -120,16 +120,18 @@ def test_tested_aio_and_debug_preferences(renderer):
 
 
 @pytest.mark.parametrize("options,expected,absent", [
-    ({}, {"min protocol": "SMB2", "max protocol": "SMB3"}, ["server min protocol", "ntlm auth", "smb1 unix extensions"]),
+    # By default the client decides about signing and encryption.
+    ({}, {"min protocol": "SMB2", "max protocol": "SMB3"},
+     ["server min protocol", "ntlm auth", "smb1 unix extensions", "server signing", "server smb encrypt"]),
     # Samba's own default minimum is SMB 2.0.2, so SMB1 must be named, and its
     # older clients often log in only with NTLMv1. SMB1 Unix extensions would
     # bypass fruit and the native link handling.
     ({"ANY_PROTOCOL": 1},
      {"server min protocol": "NT1", "ntlm auth": "ntlmv1-permitted", "smb1 unix extensions": "no"},
      ["min protocol", "max protocol"]),
-    ({"ANY_PROTOCOL": 1, "FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": 1},
+    ({"ANY_PROTOCOL": 1, "DISABLE_SMB_ENCRYPTION": 1},
      {"server min protocol": "NT1", "ntlm auth": "ntlmv1-permitted", "smb1 unix extensions": "no",
-      "server signing": "disabled"}, ["min protocol"]),
+      "server smb encrypt": "off"}, ["min protocol", "server signing"]),
     ({"REQUIRE_SMB_ENCRYPTION": 1}, {"server smb encrypt": "required", "server min protocol": "SMB3_00"},
      ["min protocol", "ntlm auth", "smb1 unix extensions"]),
     # Configure refuses this pair, but a hand-edited Flash config can hold it:
@@ -137,8 +139,21 @@ def test_tested_aio_and_debug_preferences(renderer):
     ({"REQUIRE_SMB_ENCRYPTION": 1, "ANY_PROTOCOL": 1},
      {"server smb encrypt": "required", "server min protocol": "SMB3_00", "server max protocol": "SMB3"},
      ["min protocol", "ntlm auth", "smb1 unix extensions"]),
-    ({"FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": 1}, {"server signing": "disabled", "server smb encrypt": "off", "min protocol": "SMB2"},
-     ["server min protocol", "ntlm auth", "smb1 unix extensions"]),
+    # The old key turns off encryption only: "server signing = disabled" does
+    # nothing for SMB2/3, so it is not written.
+    ({"DISABLE_SMB_ENCRYPTION": 1}, {"server smb encrypt": "off", "min protocol": "SMB2"},
+     ["server min protocol", "ntlm auth", "smb1 unix extensions", "server signing"]),
+    ({"REQUIRE_SMB_SIGNING": 1}, {"server signing": "mandatory", "min protocol": "SMB2", "max protocol": "SMB3"},
+     ["server smb encrypt", "server min protocol"]),
+    # Signed but never encrypted.
+    ({"REQUIRE_SMB_SIGNING": 1, "DISABLE_SMB_ENCRYPTION": 1},
+     {"server signing": "mandatory", "server smb encrypt": "off"}, []),
+    ({"REQUIRE_SMB_SIGNING": 1, "REQUIRE_SMB_ENCRYPTION": 1},
+     {"server signing": "mandatory", "server smb encrypt": "required", "server min protocol": "SMB3_00"}, []),
+    # SMB1 clients have to sign too.
+    ({"REQUIRE_SMB_SIGNING": 1, "ANY_PROTOCOL": 1},
+     {"server signing": "mandatory", "server min protocol": "NT1"}, ["server smb encrypt"]),
+    ({"REQUIRE_SMB_SIGNING": 0}, {"min protocol": "SMB2"}, ["server signing"]),
 ])
 def test_protocol_preferences(renderer, options, expected, absent):
     global_ = render(renderer, options)["global"]
@@ -234,8 +249,8 @@ def test_cut_names_do_not_end_in_a_space_samba_would_change(renderer, names, exp
     assert served == raw
 
 
-@pytest.mark.parametrize("text", ["RSYNC_ENABLED=maybe\n", "TELEMETRY=$(touch bad)\n",
-                                 "REQUIRE_SMB_ENCRYPTION=1\nFORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=1\n",
+@pytest.mark.parametrize("text", ["RSYNC_ENABLED=maybe\n", "TELEMETRY=$(touch bad)\n", "REQUIRE_SMB_SIGNING=maybe\n",
+                                 "REQUIRE_SMB_ENCRYPTION=1\nDISABLE_SMB_ENCRYPTION=1\n",
                                  "RSYNC_ENABLED='unterminated\n"])
 def test_invalid_configuration_is_rejected_before_render(renderer, text):
     binary, config = renderer

@@ -128,7 +128,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.smbBrowseCompatibility = true
         store.draft.mdnsAdvertiseAFP = true
         store.draft.anyProtocol = true
-        store.draft.forceDisableSMBSigningAndEncryption = true
+        store.draft.requireSMBSigning = true
+        store.draft.disableSMBEncryption = true
         store.draft.fruitMetadataNetatalk = true
         store.draft.vfsAIOForkEnabled = true
         store.draft.debugLogging = true
@@ -148,7 +149,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
-            forceDisableSMBSigningAndEncryption: true,
+            requireSMBSigning: true,
+            disableSMBEncryption: true,
             fruitMetadataNetatalk: true,
             vfsAIOForkEnabled: true,
             debugLogging: true,
@@ -159,6 +161,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         let call = try XCTUnwrap(fixture.runner.calls.first)
         XCTAssertEqual(call.operation, "update-config-settings")
         XCTAssertEqual(call.params["vfs_aio_fork_enabled"], .bool(true))
+        XCTAssertEqual(call.params["require_smb_signing"], .bool(true))
         XCTAssertTrue(try String(contentsOf: saved.configURL, encoding: .utf8).contains("TC_TEST_SETTINGS_SYNCED=1"))
     }
 
@@ -409,7 +412,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.smbBrowseCompatibility = true
         store.draft.mdnsAdvertiseAFP = true
         store.draft.anyProtocol = true
-        store.draft.forceDisableSMBSigningAndEncryption = true
+        store.draft.disableSMBEncryption = true
         store.draft.fruitMetadataNetatalk = true
         store.draft.vfsAIOForkEnabled = true
         store.draft.debugLogging = true
@@ -436,7 +439,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(call.params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(call.params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(call.params["any_protocol"], .bool(true))
-        XCTAssertEqual(call.params["force_disable_smb_signing_and_encryption"], .bool(true))
+        XCTAssertEqual(call.params["disable_smb_encryption"], .bool(true))
         XCTAssertEqual(call.params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(call.params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(call.params["debug_logging"], .bool(true))
@@ -456,7 +459,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
-            forceDisableSMBSigningAndEncryption: true,
+            disableSMBEncryption: true,
             fruitMetadataNetatalk: true,
             vfsAIOForkEnabled: true,
             debugLogging: true,

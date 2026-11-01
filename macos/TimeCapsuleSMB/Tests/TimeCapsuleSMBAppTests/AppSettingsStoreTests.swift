@@ -28,7 +28,7 @@ final class AppSettingsStoreTests: XCTestCase {
                 smbBrowseCompatibility: true,
                 mdnsAdvertiseAFP: true,
                 anyProtocol: true,
-                forceDisableSMBSigningAndEncryption: true,
+                disableSMBEncryption: true,
                 fruitMetadataNetatalk: true,
                 vfsAIOForkEnabled: true,
                 debugLogging: true,
@@ -49,6 +49,27 @@ final class AppSettingsStoreTests: XCTestCase {
 
         XCTAssertEqual(reader.state, .loaded)
         XCTAssertEqual(reader.settings, saved)
+    }
+
+    func testOldDisableKeyLoadsUnchangedAndLeavesAtTheNextSave() async throws {
+        let temp = try TemporaryDirectory()
+        let settingsURL = temp.url.appendingPathComponent("settings.json")
+        let legacy = #"{"defaultDeviceSettings":{"forceDisableSMBSigningAndEncryption":true}}"#
+        try legacy.write(to: settingsURL, atomically: true, encoding: .utf8)
+        let store = AppSettingsStore(settingsURL: settingsURL)
+
+        await store.load()
+
+        XCTAssertEqual(store.state, .loaded)
+        XCTAssertTrue(store.settings.defaultDeviceSettings.disableSMBEncryption)
+        XCTAssertEqual(try String(contentsOf: settingsURL, encoding: .utf8), legacy, "loading never writes")
+
+        try await store.save(store.settings)
+        let saved = try String(contentsOf: settingsURL, encoding: .utf8)
+        XCTAssertFalse(saved.contains("forceDisableSMBSigningAndEncryption"))
+        let reread = AppSettingsStore(settingsURL: settingsURL)
+        await reread.load()
+        XCTAssertEqual(reread.settings, store.settings)
     }
 
     func testLegacySettingsWithoutLanguageUseSystemDefault() async throws {
@@ -296,7 +317,7 @@ final class AppSettingsStoreTests: XCTestCase {
             "toggle.force_debug_logging": "启用调试日志",
             "toggle.smb_browse_compatibility": "允许浏览 SMB 共享",
             "toggle.mdns_advertise_afp": "通过 Bonjour 广播 AFP",
-            "toggle.force_disable_smb_signing_and_encryption": "禁用 SMB 签名和加密",
+            "toggle.disable_smb_encryption": "禁用 SMB 加密",
             "toggle.use_netatalk_metadata": "使用 Netatalk 元数据",
             "toggle.enable_vfs_aio_fork": "启用 vfs_aio_fork",
             "value.never": "从未",

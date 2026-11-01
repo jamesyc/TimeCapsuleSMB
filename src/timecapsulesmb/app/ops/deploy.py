@@ -8,12 +8,12 @@ from timecapsulesmb.app.confirmations import build_confirmation, disk_failing_co
 from timecapsulesmb.core.config import (
     DEFAULTS,
     airport_family_display_name_from_identity,
+    effective_smb_security,
     parse_bool,
     vfs_aio_fork_enabled_in,
 )
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.paths import resolve_app_paths
-from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.app.ops.common import (
     load_request_config,
     resolve_request_target,
@@ -206,31 +206,13 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         "mdns_advertise_afp",
         parse_bool(config.get("TC_MDNS_ADVERTISE_AFP", DEFAULTS["TC_MDNS_ADVERTISE_AFP"])),
     )
-    any_protocol = bool_param(
-        params,
-        "any_protocol",
-        parse_bool(config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
-    )
-    require_smb_encryption = bool_param(
-        params,
-        "require_smb_encryption",
-        parse_bool(config.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"])),
-    )
-    force_disable_smb_signing_and_encryption = bool_param(
-        params,
-        "force_disable_smb_signing_and_encryption",
-        parse_bool(
-            config.get(
-                "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
-                DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
-            )
-        ),
-    )
     try:
-        validate_smb_protocol_options(
-            any_protocol=any_protocol,
-            require_smb_encryption=require_smb_encryption,
-            force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
+        smb = effective_smb_security(
+            config,
+            any_protocol=optional_bool_param(params, "any_protocol"),
+            require_smb_signing=optional_bool_param(params, "require_smb_signing"),
+            require_smb_encryption=optional_bool_param(params, "require_smb_encryption"),
+            disable_smb_encryption=optional_bool_param(params, "disable_smb_encryption"),
         )
     except ValueError as exc:
         raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
@@ -354,9 +336,10 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 internal_share_use_disk_root=internal_share_use_disk_root,
                 smb_browse_compatibility=smb_browse_compatibility,
                 mdns_advertise_afp=mdns_advertise_afp,
-                any_protocol=any_protocol,
-                require_smb_encryption=require_smb_encryption,
-                force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
+                any_protocol=smb.any_protocol,
+                require_smb_signing=smb.require_smb_signing,
+                require_smb_encryption=smb.require_smb_encryption,
+                disable_smb_encryption=smb.disable_smb_encryption,
                 fruit_metadata_netatalk=fruit_metadata_netatalk,
                 vfs_aio_fork_enabled=vfs_aio_fork_enabled,
                 ata_idle_seconds=ata_idle_seconds,

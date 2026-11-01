@@ -45,7 +45,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["mdns_advertise_afp"], .bool(false))
         XCTAssertEqual(params["any_protocol"], .bool(false))
         XCTAssertEqual(params["require_smb_encryption"], .bool(false))
-        XCTAssertEqual(params["force_disable_smb_signing_and_encryption"], .bool(false))
+        XCTAssertEqual(params["disable_smb_encryption"], .bool(false))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertNil(params["credentials"])
@@ -59,7 +59,7 @@ final class PendingConfirmationTests: XCTestCase {
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
             requireSMBEncryption: false,
-            forceDisableSMBSigningAndEncryption: true,
+            disableSMBEncryption: true,
             fruitMetadataNetatalk: true,
             vfsAIOForkEnabled: true,
             debugLogging: false,
@@ -74,7 +74,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
         XCTAssertEqual(params["require_smb_encryption"], .bool(false))
-        XCTAssertEqual(params["force_disable_smb_signing_and_encryption"], .bool(true))
+        XCTAssertEqual(params["disable_smb_encryption"], .bool(true))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(false))
@@ -156,7 +156,7 @@ final class PendingConfirmationTests: XCTestCase {
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
             requireSMBEncryption: false,
-            forceDisableSMBSigningAndEncryption: true,
+            disableSMBEncryption: true,
             fruitMetadataNetatalk: false,
             vfsAIOForkEnabled: true,
             debugLogging: true,
@@ -172,7 +172,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
         XCTAssertEqual(params["require_smb_encryption"], .bool(false))
-        XCTAssertEqual(params["force_disable_smb_signing_and_encryption"], .bool(true))
+        XCTAssertEqual(params["disable_smb_encryption"], .bool(true))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(false))
         XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(true))

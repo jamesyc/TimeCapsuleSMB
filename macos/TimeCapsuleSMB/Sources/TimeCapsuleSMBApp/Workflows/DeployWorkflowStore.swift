@@ -8,8 +8,9 @@ struct DeployOptions: Equatable {
     let smbBrowseCompatibility: Bool
     let mdnsAdvertiseAFP: Bool
     let anyProtocol: Bool
+    let requireSMBSigning: Bool
     let requireSMBEncryption: Bool
-    let forceDisableSMBSigningAndEncryption: Bool
+    let disableSMBEncryption: Bool
     let fruitMetadataNetatalk: Bool
     let vfsAIOForkEnabled: Bool
     let debugLogging: Bool
@@ -24,8 +25,9 @@ struct DeployOptions: Equatable {
         smbBrowseCompatibility: Bool,
         mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
         anyProtocol: Bool,
+        requireSMBSigning: Bool = DeviceProfileSettings.default.requireSMBSigning,
         requireSMBEncryption: Bool = DeviceProfileSettings.default.requireSMBEncryption,
-        forceDisableSMBSigningAndEncryption: Bool = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption,
+        disableSMBEncryption: Bool = DeviceProfileSettings.default.disableSMBEncryption,
         fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
         vfsAIOForkEnabled: Bool = DeviceProfileSettings.default.vfsAIOForkEnabled,
         debugLogging: Bool,
@@ -39,8 +41,9 @@ struct DeployOptions: Equatable {
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
+        self.requireSMBSigning = requireSMBSigning
         self.requireSMBEncryption = requireSMBEncryption
-        self.forceDisableSMBSigningAndEncryption = forceDisableSMBSigningAndEncryption
+        self.disableSMBEncryption = disableSMBEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.vfsAIOForkEnabled = vfsAIOForkEnabled
         self.debugLogging = debugLogging
@@ -87,19 +90,20 @@ final class DeployWorkflowStore: ObservableObject {
             }
         }
     }
+    @Published var requireSMBSigning = DeviceProfileSettings.default.requireSMBSigning
     @Published var requireSMBEncryption = DeviceProfileSettings.default.requireSMBEncryption {
         didSet {
             if requireSMBEncryption && anyProtocol {
                 anyProtocol = false
             }
-            if requireSMBEncryption && forceDisableSMBSigningAndEncryption {
-                forceDisableSMBSigningAndEncryption = false
+            if requireSMBEncryption && disableSMBEncryption {
+                disableSMBEncryption = false
             }
         }
     }
-    @Published var forceDisableSMBSigningAndEncryption = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption {
+    @Published var disableSMBEncryption = DeviceProfileSettings.default.disableSMBEncryption {
         didSet {
-            if forceDisableSMBSigningAndEncryption && requireSMBEncryption {
+            if disableSMBEncryption && requireSMBEncryption {
                 requireSMBEncryption = false
             }
         }
@@ -210,8 +214,9 @@ final class DeployWorkflowStore: ObservableObject {
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
                 mdnsAdvertiseAFP: options.mdnsAdvertiseAFP,
                 anyProtocol: options.anyProtocol,
+                requireSMBSigning: options.requireSMBSigning,
                 requireSMBEncryption: options.requireSMBEncryption,
-                forceDisableSMBSigningAndEncryption: options.forceDisableSMBSigningAndEncryption,
+                disableSMBEncryption: options.disableSMBEncryption,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 vfsAIOForkEnabled: options.vfsAIOForkEnabled,
                 debugLogging: options.debugLogging,
@@ -270,8 +275,9 @@ final class DeployWorkflowStore: ObservableObject {
             smbBrowseCompatibility: smbBrowseCompatibility,
             mdnsAdvertiseAFP: mdnsAdvertiseAFP,
             anyProtocol: anyProtocol,
+            requireSMBSigning: requireSMBSigning,
             requireSMBEncryption: requireSMBEncryption,
-            forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
+            disableSMBEncryption: disableSMBEncryption,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
             vfsAIOForkEnabled: vfsAIOForkEnabled,
             debugLogging: debugLogging,

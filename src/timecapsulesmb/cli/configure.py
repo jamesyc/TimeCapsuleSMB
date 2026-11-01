@@ -13,11 +13,10 @@ from timecapsulesmb.core.config import (
     CONFIG_VALIDATORS,
     ConfigError,
     DEFAULTS,
-    parse_bool,
+    effective_smb_security,
     parse_env_file,
 )
 from timecapsulesmb.core.error_codes import ErrorCode
-from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
     add_boolean_override_arguments,
@@ -298,14 +297,30 @@ def main(argv: Optional[list[str]] = None) -> int:
     ssh_group.add_argument("--no-enable-ssh", action="store_true", help="Fail instead of enabling SSH via ACP if SSH is closed")
     parser.add_argument("--json", action="store_true", help="Output a machine-readable configure result")
     # Python 3.9 argparse can fail while formatting usage when a visible option
-    # follows fully suppressed mutually exclusive groups. Keep this public flag
+    # follows fully suppressed mutually exclusive groups. Keep these public flags
     # before the internal-only groups below.
     add_boolean_override_arguments(
         parser,
-        dest="force_disable_smb_signing_and_encryption",
-        positive_flags=("--force-disable-smb-signing-and-encryption", "--disable-smb-security"),
-        negative_flags=("--no-force-disable-smb-signing-and-encryption", "--no-disable-smb-security"),
-        help="Force the Samba server to disable SMB signing and encryption",
+        dest="require_smb_signing",
+        positive_flags=("--require-smb-signing",),
+        negative_flags=("--no-require-smb-signing",),
+        help="Require every SMB client to sign its traffic",
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="require_smb_encryption",
+        positive_flags=("--require-smb-encryption",),
+        negative_flags=("--no-require-smb-encryption",),
+        help="Require encrypted SMB3 connections",
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="disable_smb_encryption",
+        positive_flags=("--disable-smb-encryption",),
+        negative_flags=("--no-disable-smb-encryption",),
+        help="Turn off SMB encryption, so no client can use it",
+        hidden_positive_flags=("--force-disable-smb-signing-and-encryption", "--disable-smb-security"),
+        hidden_negative_flags=("--no-force-disable-smb-signing-and-encryption", "--no-disable-smb-security"),
     )
     add_boolean_override_arguments(
         parser,
@@ -339,12 +354,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     add_boolean_override_arguments(
         parser,
-        dest="require_smb_encryption",
-        positive_flags=("--require-smb-encryption",),
-        negative_flags=("--no-require-smb-encryption",),
-    )
-    add_boolean_override_arguments(
-        parser,
         dest="fruit_metadata_netatalk",
         positive_flags=("--netatalk",),
         negative_flags=("--no-netatalk",),
@@ -367,30 +376,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     existing = parse_env_file(env_path)
     any_protocol = args.any_protocol
     vfs_aio_fork_enabled = args.vfs_aio_fork_enabled
+    require_smb_signing = args.require_smb_signing
     require_smb_encryption = args.require_smb_encryption
-    force_disable_smb_signing_and_encryption = args.force_disable_smb_signing_and_encryption
+    disable_smb_encryption = args.disable_smb_encryption
     try:
-        validate_smb_protocol_options(
-            any_protocol=(
-                parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))
-                if any_protocol is None
-                else any_protocol
-            ),
-            require_smb_encryption=(
-                parse_bool(existing.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"]))
-                if require_smb_encryption is None
-                else require_smb_encryption
-            ),
-            force_disable_smb_signing_and_encryption=(
-                parse_bool(
-                    existing.get(
-                        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
-                        DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
-                    )
-                )
-                if force_disable_smb_signing_and_encryption is None
-                else force_disable_smb_signing_and_encryption
-            ),
+        effective_smb_security(
+            existing,
+            any_protocol=any_protocol,
+            require_smb_encryption=require_smb_encryption,
+            disable_smb_encryption=disable_smb_encryption,
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -616,8 +610,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                         smb_browse_compatibility=args.smb_browse_compatibility,
                         mdns_advertise_afp=args.mdns_advertise_afp,
                         any_protocol=any_protocol,
+                        require_smb_signing=require_smb_signing,
                         require_smb_encryption=require_smb_encryption,
-                        force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
+                        disable_smb_encryption=disable_smb_encryption,
                         fruit_metadata_netatalk=args.fruit_metadata_netatalk,
                         vfs_aio_fork_enabled=vfs_aio_fork_enabled,
                         debug_logging=args.debug_logging,

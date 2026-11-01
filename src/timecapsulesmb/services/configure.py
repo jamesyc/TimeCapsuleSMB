@@ -11,6 +11,7 @@ from timecapsulesmb.core.config import (
     AIRPORT_SYAP_TO_MODEL,
     DEFAULTS,
     CONFIG_VALIDATORS,
+    effective_smb_security,
     parse_bool,
     preserved_env_file_values,
     REMOVED_ENV_FILE_KEYS,
@@ -19,7 +20,6 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.core.error_codes import CodedError, ErrorCode
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
-from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device import probe as device_probe
 from timecapsulesmb.device.compat import (
@@ -125,8 +125,9 @@ class ConfigureFlowRequest:
     smb_browse_compatibility: bool | None = None
     mdns_advertise_afp: bool | None = None
     any_protocol: bool | None = None
+    require_smb_signing: bool | None = None
     require_smb_encryption: bool | None = None
-    force_disable_smb_signing_and_encryption: bool | None = None
+    disable_smb_encryption: bool | None = None
     fruit_metadata_netatalk: bool | None = None
     vfs_aio_fork_enabled: bool | None = None
     debug_logging: bool | None = None
@@ -292,8 +293,9 @@ def run_configure_flow(
         smb_browse_compatibility=request.smb_browse_compatibility,
         mdns_advertise_afp=request.mdns_advertise_afp,
         any_protocol=request.any_protocol,
+        require_smb_signing=request.require_smb_signing,
         require_smb_encryption=request.require_smb_encryption,
-        force_disable_smb_signing_and_encryption=request.force_disable_smb_signing_and_encryption,
+        disable_smb_encryption=request.disable_smb_encryption,
         fruit_metadata_netatalk=request.fruit_metadata_netatalk,
         vfs_aio_fork_enabled=request.vfs_aio_fork_enabled,
         debug_logging=request.debug_logging,
@@ -508,8 +510,9 @@ def build_configure_env_values(
     smb_browse_compatibility: bool | None = None,
     mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
+    require_smb_signing: bool | None = None,
     require_smb_encryption: bool | None = None,
-    force_disable_smb_signing_and_encryption: bool | None = None,
+    disable_smb_encryption: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
     vfs_aio_fork_enabled: bool | None = None,
     debug_logging: bool | None = None,
@@ -522,8 +525,9 @@ def build_configure_env_values(
         smb_browse_compatibility=smb_browse_compatibility,
         mdns_advertise_afp=mdns_advertise_afp,
         any_protocol=any_protocol,
+        require_smb_signing=require_smb_signing,
         require_smb_encryption=require_smb_encryption,
-        force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
+        disable_smb_encryption=disable_smb_encryption,
         fruit_metadata_netatalk=fruit_metadata_netatalk,
         vfs_aio_fork_enabled=vfs_aio_fork_enabled,
         debug_logging=debug_logging,
@@ -546,8 +550,9 @@ def build_managed_config_env_values(
     smb_browse_compatibility: bool | None = None,
     mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
+    require_smb_signing: bool | None = None,
     require_smb_encryption: bool | None = None,
-    force_disable_smb_signing_and_encryption: bool | None = None,
+    disable_smb_encryption: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
     vfs_aio_fork_enabled: bool | None = None,
     debug_logging: bool | None = None,
@@ -555,30 +560,12 @@ def build_managed_config_env_values(
     ata_standby: object | None = None,
 ) -> dict[str, str]:
     """Apply profile-managed settings without changing device identity or credentials."""
-    effective_any_protocol = (
-        parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))
-        if any_protocol is None
-        else any_protocol
-    )
-    effective_require_smb_encryption = (
-        parse_bool(existing.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"]))
-        if require_smb_encryption is None
-        else require_smb_encryption
-    )
-    effective_force_disable_smb_signing_and_encryption = (
-        parse_bool(
-            existing.get(
-                "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
-                DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
-            )
-        )
-        if force_disable_smb_signing_and_encryption is None
-        else force_disable_smb_signing_and_encryption
-    )
-    validate_smb_protocol_options(
-        any_protocol=effective_any_protocol,
-        require_smb_encryption=effective_require_smb_encryption,
-        force_disable_smb_signing_and_encryption=effective_force_disable_smb_signing_and_encryption,
+    smb = effective_smb_security(
+        existing,
+        any_protocol=any_protocol,
+        require_smb_signing=require_smb_signing,
+        require_smb_encryption=require_smb_encryption,
+        disable_smb_encryption=disable_smb_encryption,
     )
 
     values = preserved_env_file_values(existing)
@@ -598,11 +585,10 @@ def build_managed_config_env_values(
             if mdns_advertise_afp is None
             else mdns_advertise_afp
         ) else "false",
-        "TC_ANY_PROTOCOL": "true" if effective_any_protocol else "false",
-        "TC_REQUIRE_SMB_ENCRYPTION": "true" if effective_require_smb_encryption else "false",
-        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": (
-            "true" if effective_force_disable_smb_signing_and_encryption else "false"
-        ),
+        "TC_ANY_PROTOCOL": "true" if smb.any_protocol else "false",
+        "TC_REQUIRE_SMB_SIGNING": "true" if smb.require_smb_signing else "false",
+        "TC_REQUIRE_SMB_ENCRYPTION": "true" if smb.require_smb_encryption else "false",
+        "TC_DISABLE_SMB_ENCRYPTION": "true" if smb.disable_smb_encryption else "false",
         "TC_FRUIT_METADATA_NETATALK": "true" if (
             parse_bool(existing.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"]))
             if fruit_metadata_netatalk is None

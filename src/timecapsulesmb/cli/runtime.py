@@ -167,8 +167,14 @@ def add_boolean_override_arguments(
     positive_flags: tuple[str, ...],
     negative_flags: tuple[str, ...],
     help: str = argparse.SUPPRESS,
+    hidden_positive_flags: tuple[str, ...] = (),
+    hidden_negative_flags: tuple[str, ...] = (),
 ) -> None:
-    """Add an explicit true/false pair whose omitted value preserves config."""
+    """Add an explicit true/false pair whose omitted value preserves config.
+
+    Hidden flags are older spellings: they share the group, so any two
+    contradictory spellings are refused, and they stay out of --help.
+    """
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         *positive_flags,
@@ -185,6 +191,9 @@ def add_boolean_override_arguments(
         const=False,
         help=argparse.SUPPRESS,
     )
+    for flags, const in ((hidden_positive_flags, True), (hidden_negative_flags, False)):
+        if flags:
+            group.add_argument(*flags, dest=dest, action="store_const", const=const, help=argparse.SUPPRESS)
 
 
 def json_text(data: object) -> str:

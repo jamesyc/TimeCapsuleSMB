@@ -80,8 +80,9 @@ struct DeviceProfileEditorDraft: Equatable {
     var smbBrowseCompatibility: Bool
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
+    var requireSMBSigning: Bool
     var requireSMBEncryption: Bool
-    var forceDisableSMBSigningAndEncryption: Bool
+    var disableSMBEncryption: Bool
     var fruitMetadataNetatalk: Bool
     var vfsAIOForkEnabled: Bool
     var debugLogging: Bool
@@ -97,8 +98,9 @@ struct DeviceProfileEditorDraft: Equatable {
         smbBrowseCompatibility: Bool = false,
         mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
         anyProtocol: Bool = false,
+        requireSMBSigning: Bool = DeviceProfileSettings.default.requireSMBSigning,
         requireSMBEncryption: Bool = DeviceProfileSettings.default.requireSMBEncryption,
-        forceDisableSMBSigningAndEncryption: Bool = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption,
+        disableSMBEncryption: Bool = DeviceProfileSettings.default.disableSMBEncryption,
         fruitMetadataNetatalk: Bool = true,
         vfsAIOForkEnabled: Bool = DeviceProfileSettings.default.vfsAIOForkEnabled,
         debugLogging: Bool,
@@ -113,8 +115,9 @@ struct DeviceProfileEditorDraft: Equatable {
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
+        self.requireSMBSigning = requireSMBSigning
         self.requireSMBEncryption = requireSMBEncryption
-        self.forceDisableSMBSigningAndEncryption = forceDisableSMBSigningAndEncryption
+        self.disableSMBEncryption = disableSMBEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.vfsAIOForkEnabled = vfsAIOForkEnabled
         self.debugLogging = debugLogging
@@ -132,8 +135,9 @@ struct DeviceProfileEditorDraft: Equatable {
             smbBrowseCompatibility: profile.settings.smbBrowseCompatibility,
             mdnsAdvertiseAFP: profile.settings.mdnsAdvertiseAFP,
             anyProtocol: profile.settings.anyProtocol,
+            requireSMBSigning: profile.settings.requireSMBSigning,
             requireSMBEncryption: profile.settings.requireSMBEncryption,
-            forceDisableSMBSigningAndEncryption: profile.settings.forceDisableSMBSigningAndEncryption,
+            disableSMBEncryption: profile.settings.disableSMBEncryption,
             fruitMetadataNetatalk: profile.settings.fruitMetadataNetatalk,
             vfsAIOForkEnabled: profile.settings.vfsAIOForkEnabled,
             debugLogging: profile.settings.debugLogging,
@@ -188,8 +192,9 @@ struct DeviceProfileEditorDraft: Equatable {
             smbBrowseCompatibility: smbBrowseCompatibility,
             mdnsAdvertiseAFP: mdnsAdvertiseAFP,
             anyProtocol: anyProtocol,
+            requireSMBSigning: requireSMBSigning,
             requireSMBEncryption: requireSMBEncryption,
-            forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
+            disableSMBEncryption: disableSMBEncryption,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
             vfsAIOForkEnabled: vfsAIOForkEnabled,
             debugLogging: debugLogging,
@@ -525,8 +530,9 @@ final class DeviceProfileEditorStore: ObservableObject {
             smbBrowseCompatibility: draft.smbBrowseCompatibility,
             mdnsAdvertiseAFP: draft.mdnsAdvertiseAFP,
             anyProtocol: draft.anyProtocol,
+            requireSMBSigning: draft.requireSMBSigning,
             requireSMBEncryption: draft.requireSMBEncryption,
-            forceDisableSMBSigningAndEncryption: draft.forceDisableSMBSigningAndEncryption,
+            disableSMBEncryption: draft.disableSMBEncryption,
             fruitMetadataNetatalk: draft.fruitMetadataNetatalk,
             vfsAIOForkEnabled: draft.vfsAIOForkEnabled,
             ataIdleSeconds: settings.ataIdleSeconds,

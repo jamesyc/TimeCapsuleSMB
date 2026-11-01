@@ -1334,9 +1334,9 @@
 "toggle.mdns_advertise_afp" = "AFP über Bonjour ankündigen";
 "toggle.mdns_advertise_afp.help" = "AFP über Bonjour ankündigen. Ausgeschaltet lassen: macOS 26.x/27 blendet Time Capsules aus, die AFP ankündigen.";
 "toggle.any_protocol" = "Alle SMB-Protokolle zulassen";
+"toggle.require_smb_signing" = "SMB-Signierung erforderlich";
 "toggle.require_smb_encryption" = "SMB-Verschlüsselung erforderlich";
-"toggle.force_disable_smb_signing_and_encryption" = "SMB-Signierung und -Verschlüsselung deaktivieren";
-"toggle.force_disable_smb_signing_and_encryption.note" = "Standardeinstellung. Ermöglicht schnellere Übertragungen.";
+"toggle.disable_smb_encryption" = "SMB-Verschlüsselung deaktivieren";
 "toggle.use_netatalk_metadata" = "Netatalk-Metadaten verwenden";
 "toggle.enable_vfs_aio_fork" = "vfs_aio_fork aktivieren";
 "toggle.force_debug_logging" = "Debug-Protokollierung aktivieren";
@@ -1395,7 +1395,9 @@
 
 "settings.note.protocol" = "Unsicheres SMB1 aktivieren, statt auf SMB2/3 zu beschränken.";
 
+"settings.note.signing" = "Jede Verbindung signieren, damit ihre Daten bei der Übertragung nicht verändert werden können. Deutlich langsamer. Samba kann die Signierung für SMB2 und SMB3 nicht deaktivieren.";
 "settings.note.encryption" = "Verschlüsselte SMB3-Verbindungen verlangen. Deutlich langsamer.";
+"settings.note.disable_encryption" = "Verschlüsselung nicht mehr anbieten. Clients, die Verschlüsselung verlangen, können keine Verbindung herstellen.";
 
 "settings.note.aio" = "Zusätzliche Prozesse für Festplatten-I/O; möglicherweise höherer Speicherbedarf.";
 
