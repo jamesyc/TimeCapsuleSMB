@@ -1622,9 +1622,11 @@ def main() -> int:
             mac_stall_case(results, device, work / "smb", args.stall)
     finally:
         device.sh(f"rm -rf {shlex.quote(test_dir)}", check=False)
+        # A mount that stayed keeps its folder: unmount() said so.
         with contextlib.suppress(OSError):
             (work / "smb").rmdir()
-        work.rmdir()
+        with contextlib.suppress(OSError):
+            work.rmdir()
     print(f"RESULT pass={results.passed} fail={len(results.failed)}")
     return 1 if results.failed else 0
 

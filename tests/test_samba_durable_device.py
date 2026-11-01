@@ -1087,5 +1087,30 @@ class SmbdLogSinceTests(unittest.TestCase):
         self.assertEqual(logged, "tc_desync before\ntc_desync after\n")
 
 
+class MainCleanupTests(unittest.TestCase):
+    def test_a_mount_left_behind_does_not_hide_the_result(self) -> None:
+        # The stall case's mount stayed, so its folder cannot be removed: every
+        # check still counts and the result line still prints.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "work"
+            (work / "smb").mkdir(parents=True)
+            (work / "smb" / "file on the mount").write_text("")
+            device = mock.Mock(root="/Volumes/dk2/ShareRoot")
+            out = io.StringIO()
+            logger = logging.getLogger("smbprotocol.connection")
+            filters = list(logger.filters)
+            with mock.patch.object(durable_device, "Device", return_value=device), \
+                    mock.patch.object(durable_device, "parse_env_file", return_value={}), \
+                    mock.patch.object(durable_device.tempfile, "mkdtemp", return_value=str(work)), \
+                    mock.patch.object(durable_device.threading, "excepthook"), \
+                    mock.patch("sys.argv", ["durable_device", "--stall", "0", "--case", "mac"]), \
+                    contextlib.redirect_stdout(out):
+                status = durable_device.main()
+            logger.filters[:] = filters
+            self.assertEqual(status, 0)
+            self.assertIn("RESULT pass=0 fail=0", out.getvalue())
+            self.assertTrue((work / "smb").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
