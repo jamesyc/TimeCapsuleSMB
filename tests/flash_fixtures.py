@@ -23,8 +23,14 @@ from timecapsulesmb.services.flash import FlashInputs
 
 
 def make_gzip_member(data: bytes) -> bytes:
-    compressor = zlib.compressobj(level=1, wbits=16 + zlib.MAX_WBITS)
-    return compressor.compress(data) + compressor.flush()
+    # A fixed header (no mtime, fastest level, OS unknown) around a raw deflate
+    # stream. zlib and gzip.compress write the OS they run on (macOS 19,
+    # Linux 3), which would change each bank's checksum and the fixture built
+    # from them.
+    compressor = zlib.compressobj(level=1, wbits=-zlib.MAX_WBITS)
+    body = compressor.compress(data) + compressor.flush()
+    trailer = struct.pack("<II", zlib.crc32(data) & 0xFFFFFFFF, len(data) & 0xFFFFFFFF)
+    return b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x04\xff" + body + trailer
 
 
 class FastFakeZopfliGzip:

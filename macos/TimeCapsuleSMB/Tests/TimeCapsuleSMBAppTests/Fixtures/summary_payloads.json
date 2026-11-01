@@ -1006,17 +1006,129 @@
       "ok": true,
       "operation": "flash",
       "payload": {
-        "backup_dir": "/tmp/flash-backup",
-        "banks": [],
-        "counts": {
-          "banks": 0
+        "acp_properties": {
+          "cks1": 1080599274,
+          "cks2": 103390548
         },
+        "active_bank": "primary",
+        "active_selection": {
+          "candidates": [
+            "primary"
+          ],
+          "selected_by": "automatic",
+          "status": "selected"
+        },
+        "backup_dir": "/tmp/flash-backup",
+        "banks": [
+          {
+            "acp_checksum": "0x4068a2ea",
+            "acp_checksum_matches": true,
+            "active_candidate": true,
+            "active_failures": [],
+            "active_selection_failures": [],
+            "analysis_error": null,
+            "backup_failures": [],
+            "backup_valid": true,
+            "device": "/dev/rflash0.raw",
+            "footer": {
+              "checksum": "0x4068a2ea",
+              "end_offset": 358,
+              "offset": 374,
+              "valid": true
+            },
+            "gzip": {
+              "consumed_length": 336,
+              "decompressed_sha256": "2e33cd92403a8acd268cfc40d98eacff0b27ec24a09c4165169780cfbe8ad0bd",
+              "decompressed_size": 615,
+              "offset": 20
+            },
+            "kernel_identity_detail": "running OS release '4.0_STABLE' found in decompressed image",
+            "kernel_identity_match": true,
+            "live_login_match": true,
+            "login": {
+              "classification": "stock",
+              "length": 386,
+              "match_count": 1,
+              "offset": 165,
+              "sha256": "348bf84c9b6a8131322934e9a9a5277b92db2afebf42de8498d80023f364d70f"
+            },
+            "name": "primary",
+            "patch": null,
+            "patch_error": null,
+            "sha256": "bff85367f1e21fc701d833761529039610c619001443418d0ac207037538215b",
+            "size": 406,
+            "would_write": false,
+            "write_decision": "backup only; no patch candidate built"
+          },
+          {
+            "acp_checksum": "0x06299d54",
+            "acp_checksum_matches": true,
+            "active_candidate": false,
+            "active_failures": [
+              "running OS release '4.0_STABLE' not found in decompressed image"
+            ],
+            "active_selection_failures": [
+              "running OS release '4.0_STABLE' not found in decompressed image"
+            ],
+            "analysis_error": null,
+            "backup_failures": [],
+            "backup_valid": true,
+            "device": "/dev/rflash1.raw",
+            "footer": {
+              "checksum": "0x06299d54",
+              "end_offset": 355,
+              "offset": 371,
+              "valid": true
+            },
+            "gzip": {
+              "consumed_length": 333,
+              "decompressed_sha256": "ae6ab75233e2b21b6b9fe1e66af33f5863324e54c077c42368c9c68279ace3c3",
+              "decompressed_size": 610,
+              "offset": 20
+            },
+            "kernel_identity_detail": "running OS release '4.0_STABLE' not found in decompressed image",
+            "kernel_identity_match": false,
+            "live_login_match": true,
+            "login": {
+              "classification": "stock",
+              "length": 386,
+              "match_count": 1,
+              "offset": 160,
+              "sha256": "348bf84c9b6a8131322934e9a9a5277b92db2afebf42de8498d80023f364d70f"
+            },
+            "name": "secondary",
+            "patch": null,
+            "patch_error": null,
+            "sha256": "ef0a13e524eca8dbabcf3c0c446c83f69aae4fc486e5de41e13c751d03d8a8e6",
+            "size": 403,
+            "would_write": false,
+            "write_decision": "backup only; no patch candidate built"
+          }
+        ],
+        "counts": {
+          "banks": 2
+        },
+        "device_model": "TimeCapsule8,119",
+        "files": {
+          "manifest": "/tmp/flash-backup/manifest.json",
+          "primary": "/tmp/flash-backup/primary.raw",
+          "secondary": "/tmp/flash-backup/secondary.raw"
+        },
+        "host": "10.0.0.2",
+        "live_login": {
+          "sha256": "348bf84c9b6a8131322934e9a9a5277b92db2afebf42de8498d80023f364d70f",
+          "size": 386
+        },
+        "operation": "read_only",
+        "os_release": "4.0_STABLE",
         "schema_version": 1,
         "summary": "Flash backup saved to /tmp/flash-backup.",
         "summary_args": [
           "/tmp/flash-backup"
         ],
-        "summary_key": "flash_backup_saved"
+        "summary_key": "flash_backup_saved",
+        "syap": "119",
+        "write_policy": "active_bank_only"
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -1029,23 +1141,339 @@
       "ok": true,
       "operation": "flash",
       "payload": {
-        "already_satisfied": false,
+        "acp_properties": {
+          "cks1": 1378643261,
+          "cks2": 103390548
+        },
+        "active_bank": "primary",
+        "active_selection": {
+          "candidates": [
+            "primary"
+          ],
+          "selected_by": "automatic",
+          "status": "selected"
+        },
+        "backup_dir": "/tmp/flash-backup",
+        "banks": [
+          {
+            "acp_checksum": "0x522c6d3d",
+            "acp_checksum_matches": true,
+            "active_candidate": true,
+            "active_failures": [],
+            "active_selection_failures": [],
+            "analysis_error": null,
+            "backup_failures": [],
+            "backup_valid": true,
+            "device": "/dev/rflash0.raw",
+            "footer": {
+              "checksum": "0x522c6d3d",
+              "end_offset": 246,
+              "offset": 262,
+              "valid": true
+            },
+            "gzip": {
+              "consumed_length": 224,
+              "decompressed_sha256": "8e2a5c3c158ebf6254001937ff1c78fa033b6982a73051c3ced4ce9202db8afd",
+              "decompressed_size": 448,
+              "offset": 20
+            },
+            "kernel_identity_detail": "running OS release '4.0_STABLE' found in decompressed image",
+            "kernel_identity_match": true,
+            "live_login_match": true,
+            "login": {
+              "classification": "already_patched",
+              "length": 219,
+              "match_count": 1,
+              "offset": 165,
+              "sha256": "6985bd9cf96750099d1da086fd441ec6a926563c1059e1923c986f6adafae16c"
+            },
+            "name": "primary",
+            "patch": null,
+            "patch_error": null,
+            "sha256": "d147e8e0c0c51d19928979aaeed7f33e7f85c95b6206a4547bfd53607e2c5866",
+            "size": 294,
+            "would_write": false,
+            "write_decision": "backup only; no patch candidate built"
+          },
+          {
+            "acp_checksum": "0x06299d54",
+            "acp_checksum_matches": true,
+            "active_candidate": false,
+            "active_failures": [
+              "running OS release '4.0_STABLE' not found in decompressed image"
+            ],
+            "active_selection_failures": [
+              "running OS release '4.0_STABLE' not found in decompressed image"
+            ],
+            "analysis_error": null,
+            "backup_failures": [],
+            "backup_valid": true,
+            "device": "/dev/rflash1.raw",
+            "footer": {
+              "checksum": "0x06299d54",
+              "end_offset": 355,
+              "offset": 371,
+              "valid": true
+            },
+            "gzip": {
+              "consumed_length": 333,
+              "decompressed_sha256": "ae6ab75233e2b21b6b9fe1e66af33f5863324e54c077c42368c9c68279ace3c3",
+              "decompressed_size": 610,
+              "offset": 20
+            },
+            "kernel_identity_detail": "running OS release '4.0_STABLE' not found in decompressed image",
+            "kernel_identity_match": false,
+            "live_login_match": false,
+            "login": {
+              "classification": "stock",
+              "length": 386,
+              "match_count": 1,
+              "offset": 160,
+              "sha256": "348bf84c9b6a8131322934e9a9a5277b92db2afebf42de8498d80023f364d70f"
+            },
+            "name": "secondary",
+            "patch": null,
+            "patch_error": null,
+            "sha256": "ef0a13e524eca8dbabcf3c0c446c83f69aae4fc486e5de41e13c751d03d8a8e6",
+            "size": 403,
+            "would_write": false,
+            "write_decision": "backup only; no patch candidate built"
+          }
+        ],
+        "counts": {
+          "banks": 2
+        },
+        "device_model": "TimeCapsule8,119",
+        "files": {
+          "manifest": "/tmp/flash-backup/manifest.json",
+          "primary": "/tmp/flash-backup/primary.raw",
+          "secondary": "/tmp/flash-backup/secondary.raw"
+        },
+        "host": "10.0.0.2",
+        "live_login": {
+          "sha256": "6985bd9cf96750099d1da086fd441ec6a926563c1059e1923c986f6adafae16c",
+          "size": 219
+        },
+        "operation": "read_only",
+        "os_release": "4.0_STABLE",
+        "schema_version": 1,
+        "summary": "Flash backup saved to /tmp/flash-backup.",
+        "summary_args": [
+          "/tmp/flash-backup"
+        ],
+        "summary_key": "flash_backup_saved",
+        "syap": "119",
+        "write_policy": "active_bank_only"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_backup_patched_primary"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "acp_properties": {
+          "cks1": 1060050899,
+          "cks2": 0
+        },
+        "active_bank": "primary",
+        "active_selection": {
+          "candidates": [
+            "primary"
+          ],
+          "selected_by": "automatic",
+          "status": "selected"
+        },
+        "backup_dir": "/tmp/flash-backup",
+        "banks": [
+          {
+            "acp_checksum": "0x3f2f17d3",
+            "acp_checksum_matches": true,
+            "active_candidate": true,
+            "active_failures": [],
+            "active_selection_failures": [],
+            "analysis_error": null,
+            "backup_failures": [],
+            "backup_valid": true,
+            "device": "/dev/rflash0.raw",
+            "footer": {
+              "checksum": "0x3f2f17d3",
+              "end_offset": 85,
+              "offset": 101,
+              "valid": true
+            },
+            "gzip": {
+              "consumed_length": 63,
+              "decompressed_sha256": "a949430675b44190c0161bb74ed002ebe13446115e9ce60a3c57a8c413af8ffd",
+              "decompressed_size": 229,
+              "offset": 20
+            },
+            "kernel_identity_detail": "running OS release '4.0_STABLE' found in decompressed image",
+            "kernel_identity_match": true,
+            "live_login_match": false,
+            "login": {
+              "classification": "unknown",
+              "length": null,
+              "match_count": 0,
+              "offset": null,
+              "sha256": null
+            },
+            "name": "primary",
+            "patch": null,
+            "patch_error": null,
+            "sha256": "0ecd4f7d56c8506d9d66f76dd15fd233e88622bc5c78b9466b8299edbd39a21c",
+            "size": 133,
+            "would_write": false,
+            "write_decision": "backup only; no patch candidate built"
+          },
+          {
+            "acp_checksum": "0x00000000",
+            "acp_checksum_matches": null,
+            "active_candidate": false,
+            "active_failures": [
+              "expected exactly one valid footer, found 0"
+            ],
+            "active_selection_failures": [
+              "expected exactly one valid footer, found 0"
+            ],
+            "analysis_error": "expected exactly one valid footer, found 0",
+            "backup_failures": [
+              "expected exactly one valid footer, found 0"
+            ],
+            "backup_valid": false,
+            "device": "/dev/rflash1.raw",
+            "footer": null,
+            "gzip": null,
+            "kernel_identity_detail": null,
+            "kernel_identity_match": false,
+            "live_login_match": null,
+            "login": null,
+            "name": "secondary",
+            "patch": null,
+            "patch_error": null,
+            "sha256": "353bdcc17616f4ab51672dfa651491e76a296fa73f7c1c029a7000d62975b478",
+            "size": 403,
+            "would_write": false,
+            "write_decision": "backup only; no patch candidate built"
+          }
+        ],
+        "counts": {
+          "banks": 2
+        },
+        "device_model": "TimeCapsule8,119",
+        "files": {
+          "manifest": "/tmp/flash-backup/manifest.json",
+          "primary": "/tmp/flash-backup/primary.raw",
+          "secondary": "/tmp/flash-backup/secondary.raw"
+        },
+        "host": "10.0.0.2",
+        "live_login": {
+          "sha256": "348bf84c9b6a8131322934e9a9a5277b92db2afebf42de8498d80023f364d70f",
+          "size": 386
+        },
+        "operation": "read_only",
+        "os_release": "4.0_STABLE",
+        "schema_version": 1,
+        "summary": "Flash backup saved to /tmp/flash-backup.",
+        "summary_args": [
+          "/tmp/flash-backup"
+        ],
+        "summary_key": "flash_backup_saved",
+        "syap": "119",
+        "write_policy": "active_bank_only"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_backup_unrecognized_banks"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": true,
         "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "inner-sha",
+          "inner_size": 123,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
           "matched": true,
+          "template_path": null,
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": null
         },
-        "apple_firmware_matches": [],
-        "apple_match_status": null,
+        "apple_firmware_matches": [
+          {
+            "bank": "primary",
+            "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
+              "matched": true,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
+              "template_version": null
+            }
+          }
+        ],
+        "apple_match_status": "all_candidates_match",
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
+          "already_satisfied": true,
           "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "inner-sha",
+            "inner_size": 123,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
             "matched": true,
+            "template_path": null,
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": null
           },
-          "apple_matches": [],
-          "mode": "check_apple"
+          "apple_match_status": "all_candidates_match",
+          "apple_matches": [
+            {
+              "bank": "primary",
+              "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
+                "matched": true,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
+                "template_version": null
+              }
+            }
+          ],
+          "mode": "check_apple",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "check_apple",
         "schema_version": 1,
@@ -1066,23 +1494,83 @@
       "ok": true,
       "operation": "flash",
       "payload": {
-        "already_satisfied": false,
+        "already_satisfied": true,
         "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "inner-sha",
+          "inner_size": 123,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
           "matched": true,
+          "template_path": null,
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": "7.8.1"
         },
-        "apple_firmware_matches": [],
-        "apple_match_status": null,
+        "apple_firmware_matches": [
+          {
+            "bank": "primary",
+            "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
+              "matched": true,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
+              "template_version": "7.8.1"
+            }
+          }
+        ],
+        "apple_match_status": "all_candidates_match",
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
+          "already_satisfied": true,
           "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "inner-sha",
+            "inner_size": 123,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
             "matched": true,
+            "template_path": null,
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": "7.8.1"
           },
-          "apple_matches": [],
-          "mode": "check_apple"
+          "apple_match_status": "all_candidates_match",
+          "apple_matches": [
+            {
+              "bank": "primary",
+              "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
+                "matched": true,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
+                "template_version": "7.8.1"
+              }
+            }
+          ],
+          "mode": "check_apple",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "check_apple",
         "schema_version": 1,
@@ -1107,21 +1595,81 @@
       "payload": {
         "already_satisfied": false,
         "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "inner-sha",
+          "inner_size": 123,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
           "matched": false,
+          "template_path": null,
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": null
         },
-        "apple_firmware_matches": [],
-        "apple_match_status": null,
+        "apple_firmware_matches": [
+          {
+            "bank": "primary",
+            "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
+              "matched": false,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
+              "template_version": null
+            }
+          }
+        ],
+        "apple_match_status": "no_candidates_match",
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
+          "already_satisfied": false,
           "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "inner-sha",
+            "inner_size": 123,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
             "matched": false,
+            "template_path": null,
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": null
           },
-          "apple_matches": [],
-          "mode": "check_apple"
+          "apple_match_status": "no_candidates_match",
+          "apple_matches": [
+            {
+              "bank": "primary",
+              "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
+                "matched": false,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
+                "template_version": null
+              }
+            }
+          ],
+          "mode": "check_apple",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "check_apple",
         "schema_version": 1,
@@ -1144,21 +1692,81 @@
       "payload": {
         "already_satisfied": false,
         "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "inner-sha",
+          "inner_size": 123,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
           "matched": false,
+          "template_path": null,
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": "7.8.1"
         },
-        "apple_firmware_matches": [],
-        "apple_match_status": null,
+        "apple_firmware_matches": [
+          {
+            "bank": "primary",
+            "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
+              "matched": false,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
+              "template_version": "7.8.1"
+            }
+          }
+        ],
+        "apple_match_status": "no_candidates_match",
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
+          "already_satisfied": false,
           "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "inner-sha",
+            "inner_size": 123,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
             "matched": false,
+            "template_path": null,
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": "7.8.1"
           },
-          "apple_matches": [],
-          "mode": "check_apple"
+          "apple_match_status": "no_candidates_match",
+          "apple_matches": [
+            {
+              "bank": "primary",
+              "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
+                "matched": false,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
+                "template_version": "7.8.1"
+              }
+            }
+          ],
+          "mode": "check_apple",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "check_apple",
         "schema_version": 1,
@@ -1181,53 +1789,115 @@
       "ok": true,
       "operation": "flash",
       "payload": {
-        "already_satisfied": false,
+        "already_satisfied": true,
         "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "inner-sha",
+          "inner_size": 123,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
           "matched": true,
+          "template_path": null,
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": null
         },
         "apple_firmware_matches": [
           {
-            "bank": "bank0",
+            "bank": "primary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": true,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": null
             }
           },
           {
-            "bank": "bank1",
+            "bank": "secondary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": true,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": null
             }
           }
         ],
-        "apple_match_status": null,
+        "apple_match_status": "all_candidates_match",
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
+          "already_satisfied": true,
           "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "inner-sha",
+            "inner_size": 123,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
             "matched": true,
+            "template_path": null,
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": null
           },
+          "apple_match_status": "all_candidates_match",
           "apple_matches": [
             {
-              "bank": "bank0",
+              "bank": "primary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": true,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": null
               }
             },
             {
-              "bank": "bank1",
+              "bank": "secondary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": true,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": null
               }
             }
           ],
-          "mode": "check_apple"
+          "mode": "check_apple",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": null,
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "check_apple",
         "schema_version": 1,
@@ -1248,53 +1918,115 @@
       "ok": true,
       "operation": "flash",
       "payload": {
-        "already_satisfied": false,
+        "already_satisfied": true,
         "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "inner-sha",
+          "inner_size": 123,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
           "matched": true,
+          "template_path": null,
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": "7.8.1"
         },
         "apple_firmware_matches": [
           {
-            "bank": "bank0",
+            "bank": "primary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": true,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": "7.8.1"
             }
           },
           {
-            "bank": "bank1",
+            "bank": "secondary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": true,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": "7.8.1"
             }
           }
         ],
-        "apple_match_status": null,
+        "apple_match_status": "all_candidates_match",
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
+          "already_satisfied": true,
           "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "inner-sha",
+            "inner_size": 123,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
             "matched": true,
+            "template_path": null,
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": "7.8.1"
           },
+          "apple_match_status": "all_candidates_match",
           "apple_matches": [
             {
-              "bank": "bank0",
+              "bank": "primary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": true,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": "7.8.1"
               }
             },
             {
-              "bank": "bank1",
+              "bank": "secondary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": true,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": "7.8.1"
               }
             }
           ],
-          "mode": "check_apple"
+          "mode": "check_apple",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": null,
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "check_apple",
         "schema_version": 1,
@@ -1319,51 +2051,113 @@
       "payload": {
         "already_satisfied": false,
         "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "inner-sha",
+          "inner_size": 123,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
           "matched": false,
+          "template_path": null,
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": null
         },
         "apple_firmware_matches": [
           {
-            "bank": "bank0",
+            "bank": "primary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": false,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": null
             }
           },
           {
-            "bank": "bank1",
+            "bank": "secondary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": false,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": null
             }
           }
         ],
-        "apple_match_status": null,
+        "apple_match_status": "no_candidates_match",
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
+          "already_satisfied": false,
           "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "inner-sha",
+            "inner_size": 123,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
             "matched": false,
+            "template_path": null,
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": null
           },
+          "apple_match_status": "no_candidates_match",
           "apple_matches": [
             {
-              "bank": "bank0",
+              "bank": "primary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": false,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": null
               }
             },
             {
-              "bank": "bank1",
+              "bank": "secondary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": false,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": null
               }
             }
           ],
-          "mode": "check_apple"
+          "mode": "check_apple",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": null,
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "check_apple",
         "schema_version": 1,
@@ -1386,51 +2180,113 @@
       "payload": {
         "already_satisfied": false,
         "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "inner-sha",
+          "inner_size": 123,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
           "matched": false,
+          "template_path": null,
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": "7.8.1"
         },
         "apple_firmware_matches": [
           {
-            "bank": "bank0",
+            "bank": "primary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": false,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": "7.8.1"
             }
           },
           {
-            "bank": "bank1",
+            "bank": "secondary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": false,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": "7.8.1"
             }
           }
         ],
-        "apple_match_status": null,
+        "apple_match_status": "no_candidates_match",
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
+          "already_satisfied": false,
           "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "inner-sha",
+            "inner_size": 123,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
             "matched": false,
+            "template_path": null,
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": "7.8.1"
           },
+          "apple_match_status": "no_candidates_match",
           "apple_matches": [
             {
-              "bank": "bank0",
+              "bank": "primary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": false,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": "7.8.1"
               }
             },
             {
-              "bank": "bank1",
+              "bank": "secondary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": false,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": "7.8.1"
               }
             }
           ],
-          "mode": "check_apple"
+          "mode": "check_apple",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": null,
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "check_apple",
         "schema_version": 1,
@@ -1455,51 +2311,113 @@
       "payload": {
         "already_satisfied": false,
         "apple_firmware_match": {
-          "matched": true,
+          "inner_model": 119,
+          "inner_sha256": "inner-sha",
+          "inner_size": 123,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "matched": false,
+          "template_path": null,
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": null
         },
         "apple_firmware_matches": [
           {
-            "bank": "bank0",
+            "bank": "primary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": true,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": null
             }
           },
           {
-            "bank": "bank1",
+            "bank": "secondary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": false,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": null
             }
           }
         ],
-        "apple_match_status": null,
+        "apple_match_status": "some_candidates_match",
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
+          "already_satisfied": false,
           "apple_match": {
-            "matched": true,
+            "inner_model": 119,
+            "inner_sha256": "inner-sha",
+            "inner_size": 123,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "matched": false,
+            "template_path": null,
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": null
           },
+          "apple_match_status": "some_candidates_match",
           "apple_matches": [
             {
-              "bank": "bank0",
+              "bank": "primary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": true,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": null
               }
             },
             {
-              "bank": "bank1",
+              "bank": "secondary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": false,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": null
               }
             }
           ],
-          "mode": "check_apple"
+          "mode": "check_apple",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": null,
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "check_apple",
         "schema_version": 1,
@@ -1525,51 +2443,113 @@
       "payload": {
         "already_satisfied": false,
         "apple_firmware_match": {
-          "matched": true,
+          "inner_model": 119,
+          "inner_sha256": "inner-sha",
+          "inner_size": 123,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "matched": false,
+          "template_path": null,
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": "7.8.1"
         },
         "apple_firmware_matches": [
           {
-            "bank": "bank0",
+            "bank": "primary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": true,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": "7.8.1"
             }
           },
           {
-            "bank": "bank1",
+            "bank": "secondary",
             "match": {
+              "inner_model": 119,
+              "inner_sha256": "inner-sha",
+              "inner_size": 123,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
               "matched": false,
+              "template_path": null,
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
               "template_version": "7.8.1"
             }
           }
         ],
-        "apple_match_status": null,
+        "apple_match_status": "some_candidates_match",
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
+          "already_satisfied": false,
           "apple_match": {
-            "matched": true,
+            "inner_model": 119,
+            "inner_sha256": "inner-sha",
+            "inner_size": 123,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "matched": false,
+            "template_path": null,
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": "7.8.1"
           },
+          "apple_match_status": "some_candidates_match",
           "apple_matches": [
             {
-              "bank": "bank0",
+              "bank": "primary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": true,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": "7.8.1"
               }
             },
             {
-              "bank": "bank1",
+              "bank": "secondary",
               "match": {
+                "inner_model": 119,
+                "inner_sha256": "inner-sha",
+                "inner_size": 123,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
                 "matched": false,
+                "template_path": null,
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
                 "template_version": "7.8.1"
               }
             }
           ],
-          "mode": "check_apple"
+          "mode": "check_apple",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": null,
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "check_apple",
         "schema_version": 1,
@@ -1594,16 +2574,115 @@
       "ok": true,
       "operation": "flash",
       "payload": {
-        "already_satisfied": false,
-        "apple_firmware_match": null,
-        "apple_firmware_matches": [],
-        "apple_match_status": null,
+        "already_satisfied": true,
+        "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+          "inner_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "matched": true,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": null,
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": null
+        },
+        "apple_firmware_matches": [
+          {
+            "bank": "primary",
+            "match": {
+              "inner_model": 119,
+              "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+              "inner_size": 64,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
+              "matched": true,
+              "template_path": "/tmp/firmware.basebinary",
+              "template_product_id": null,
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
+              "template_version": null
+            }
+          }
+        ],
+        "apple_match_status": "all_candidates_match",
         "backup_dir": "/tmp/flash-backup",
-        "firmware_payload": {},
-        "firmware_payload_path": null,
+        "files": {
+          "primary_download_only_basebinary_payload": "/tmp/flash-backup/primary.download_only.basebinary"
+        },
+        "firmware_payload": {
+          "expected_login_classification": "stock",
+          "expected_prefix_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+          "expected_prefix_size": 64,
+          "inner_model": 119,
+          "inner_payload_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "payload_sha256": "payload-sha",
+          "payload_size": 10,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": null,
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": null
+        },
+        "firmware_payload_path": "/tmp/flash-backup/primary.download_only.basebinary",
         "flash_plan": {
+          "already_satisfied": true,
+          "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+            "inner_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "matched": true,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": null,
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": null
+          },
+          "apple_match_status": "all_candidates_match",
+          "apple_matches": [
+            {
+              "bank": "primary",
+              "match": {
+                "inner_model": 119,
+                "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+                "inner_size": 64,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
+                "matched": true,
+                "template_path": "/tmp/firmware.basebinary",
+                "template_product_id": null,
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
+                "template_version": null
+              }
+            }
+          ],
           "mode": "download_only",
-          "payload": {}
+          "payload": {
+            "expected_login_classification": "stock",
+            "expected_prefix_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+            "expected_prefix_size": 64,
+            "inner_model": 119,
+            "inner_payload_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "payload_sha256": "payload-sha",
+            "payload_size": 10,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": null,
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": null
+          },
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "download_only",
         "schema_version": 1,
@@ -1624,20 +2703,115 @@
       "ok": true,
       "operation": "flash",
       "payload": {
-        "already_satisfied": false,
-        "apple_firmware_match": null,
-        "apple_firmware_matches": [],
-        "apple_match_status": null,
-        "backup_dir": "/tmp/flash-backup",
-        "firmware_payload": {
+        "already_satisfied": true,
+        "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+          "inner_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "matched": true,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": null,
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": "7.8.1"
         },
-        "firmware_payload_path": null,
+        "apple_firmware_matches": [
+          {
+            "bank": "primary",
+            "match": {
+              "inner_model": 119,
+              "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+              "inner_size": 64,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
+              "matched": true,
+              "template_path": "/tmp/firmware.basebinary",
+              "template_product_id": null,
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
+              "template_version": "7.8.1"
+            }
+          }
+        ],
+        "apple_match_status": "all_candidates_match",
+        "backup_dir": "/tmp/flash-backup",
+        "files": {
+          "primary_download_only_basebinary_payload": "/tmp/flash-backup/primary.download_only.basebinary"
+        },
+        "firmware_payload": {
+          "expected_login_classification": "stock",
+          "expected_prefix_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+          "expected_prefix_size": 64,
+          "inner_model": 119,
+          "inner_payload_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "payload_sha256": "payload-sha",
+          "payload_size": 10,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": null,
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": "7.8.1"
+        },
+        "firmware_payload_path": "/tmp/flash-backup/primary.download_only.basebinary",
         "flash_plan": {
+          "already_satisfied": true,
+          "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+            "inner_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "matched": true,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": null,
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": "7.8.1"
+          },
+          "apple_match_status": "all_candidates_match",
+          "apple_matches": [
+            {
+              "bank": "primary",
+              "match": {
+                "inner_model": 119,
+                "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+                "inner_size": 64,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
+                "matched": true,
+                "template_path": "/tmp/firmware.basebinary",
+                "template_product_id": null,
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
+                "template_version": "7.8.1"
+              }
+            }
+          ],
           "mode": "download_only",
           "payload": {
+            "expected_login_classification": "stock",
+            "expected_prefix_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+            "expected_prefix_size": 64,
+            "inner_model": 119,
+            "inner_payload_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "payload_sha256": "payload-sha",
+            "payload_size": 10,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": null,
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": "7.8.1"
-          }
+          },
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "download_only",
         "schema_version": 1,
@@ -1660,20 +2834,115 @@
       "ok": true,
       "operation": "flash",
       "payload": {
-        "already_satisfied": false,
-        "apple_firmware_match": null,
-        "apple_firmware_matches": [],
-        "apple_match_status": null,
-        "backup_dir": "/tmp/flash-backup",
-        "firmware_payload": {
-          "template_product_id": "119"
+        "already_satisfied": true,
+        "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+          "inner_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "matched": true,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": null
         },
-        "firmware_payload_path": null,
+        "apple_firmware_matches": [
+          {
+            "bank": "primary",
+            "match": {
+              "inner_model": 119,
+              "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+              "inner_size": 64,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
+              "matched": true,
+              "template_path": "/tmp/firmware.basebinary",
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
+              "template_version": null
+            }
+          }
+        ],
+        "apple_match_status": "all_candidates_match",
+        "backup_dir": "/tmp/flash-backup",
+        "files": {
+          "primary_download_only_basebinary_payload": "/tmp/flash-backup/primary.download_only.basebinary"
+        },
+        "firmware_payload": {
+          "expected_login_classification": "stock",
+          "expected_prefix_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+          "expected_prefix_size": 64,
+          "inner_model": 119,
+          "inner_payload_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "payload_sha256": "payload-sha",
+          "payload_size": 10,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": null
+        },
+        "firmware_payload_path": "/tmp/flash-backup/primary.download_only.basebinary",
         "flash_plan": {
+          "already_satisfied": true,
+          "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+            "inner_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "matched": true,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": null
+          },
+          "apple_match_status": "all_candidates_match",
+          "apple_matches": [
+            {
+              "bank": "primary",
+              "match": {
+                "inner_model": 119,
+                "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+                "inner_size": 64,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
+                "matched": true,
+                "template_path": "/tmp/firmware.basebinary",
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
+                "template_version": null
+              }
+            }
+          ],
           "mode": "download_only",
           "payload": {
-            "template_product_id": "119"
-          }
+            "expected_login_classification": "stock",
+            "expected_prefix_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+            "expected_prefix_size": 64,
+            "inner_model": 119,
+            "inner_payload_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "payload_sha256": "payload-sha",
+            "payload_size": 10,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": null
+          },
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "download_only",
         "schema_version": 1,
@@ -1696,22 +2965,115 @@
       "ok": true,
       "operation": "flash",
       "payload": {
-        "already_satisfied": false,
-        "apple_firmware_match": null,
-        "apple_firmware_matches": [],
-        "apple_match_status": null,
-        "backup_dir": "/tmp/flash-backup",
-        "firmware_payload": {
+        "already_satisfied": true,
+        "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+          "inner_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "matched": true,
+          "template_path": "/tmp/firmware.basebinary",
           "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
           "template_version": "7.8.1"
         },
-        "firmware_payload_path": null,
+        "apple_firmware_matches": [
+          {
+            "bank": "primary",
+            "match": {
+              "inner_model": 119,
+              "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+              "inner_size": 64,
+              "inner_version": "0x00070801",
+              "key_id": "key-one",
+              "matched": true,
+              "template_path": "/tmp/firmware.basebinary",
+              "template_product_id": "119",
+              "template_sha256": "template-sha",
+              "template_source": "catalog",
+              "template_version": "7.8.1"
+            }
+          }
+        ],
+        "apple_match_status": "all_candidates_match",
+        "backup_dir": "/tmp/flash-backup",
+        "files": {
+          "primary_download_only_basebinary_payload": "/tmp/flash-backup/primary.download_only.basebinary"
+        },
+        "firmware_payload": {
+          "expected_login_classification": "stock",
+          "expected_prefix_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+          "expected_prefix_size": 64,
+          "inner_model": 119,
+          "inner_payload_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "payload_sha256": "payload-sha",
+          "payload_size": 10,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": "7.8.1"
+        },
+        "firmware_payload_path": "/tmp/flash-backup/primary.download_only.basebinary",
         "flash_plan": {
+          "already_satisfied": true,
+          "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+            "inner_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "matched": true,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": "7.8.1"
+          },
+          "apple_match_status": "all_candidates_match",
+          "apple_matches": [
+            {
+              "bank": "primary",
+              "match": {
+                "inner_model": 119,
+                "inner_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+                "inner_size": 64,
+                "inner_version": "0x00070801",
+                "key_id": "key-one",
+                "matched": true,
+                "template_path": "/tmp/firmware.basebinary",
+                "template_product_id": "119",
+                "template_sha256": "template-sha",
+                "template_source": "catalog",
+                "template_version": "7.8.1"
+              }
+            }
+          ],
           "mode": "download_only",
           "payload": {
+            "expected_login_classification": "stock",
+            "expected_prefix_sha256": "b5f7217b8480e6c8bc10c23a3c8994c36cfb982afbbce5cdd10c80448a722cdd",
+            "expected_prefix_size": 64,
+            "inner_model": 119,
+            "inner_payload_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "payload_sha256": "payload-sha",
+            "payload_size": 10,
+            "template_path": "/tmp/firmware.basebinary",
             "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
             "template_version": "7.8.1"
-          }
+          },
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "download_only",
         "schema_version": 1,
@@ -1740,11 +3102,20 @@
         "apple_firmware_matches": [],
         "apple_match_status": null,
         "backup_dir": "/tmp/flash-backup",
+        "files": {},
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
           "already_satisfied": true,
-          "mode": "patch"
+          "apple_match": null,
+          "apple_match_status": null,
+          "apple_matches": [],
+          "mode": "patch",
+          "payload": null,
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
+          "write_requested": false
         },
         "mode": "patch",
         "schema_version": 1,
@@ -1828,10 +3199,51 @@
         "apple_firmware_matches": [],
         "apple_match_status": null,
         "backup_dir": "/tmp/flash-backup",
-        "firmware_payload": null,
-        "firmware_payload_path": null,
+        "files": {
+          "primary_patch_basebinary_payload": "/tmp/flash-backup/primary.patched.basebinary"
+        },
+        "firmware_payload": {
+          "expected_login_classification": "already_patched",
+          "expected_prefix_sha256": "6473d723bc68992424dc599fb24f5db284b35c243ae9a23f35fd9fbb51137d6a",
+          "expected_prefix_size": 64,
+          "inner_model": 119,
+          "inner_payload_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "payload_sha256": "payload-sha",
+          "payload_size": 10,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": "7.8.1"
+        },
+        "firmware_payload_path": "/tmp/flash-backup/primary.patched.basebinary",
         "flash_plan": {
+          "already_satisfied": false,
+          "apple_match": null,
+          "apple_match_status": null,
+          "apple_matches": [],
           "mode": "patch",
+          "payload": {
+            "expected_login_classification": "already_patched",
+            "expected_prefix_sha256": "6473d723bc68992424dc599fb24f5db284b35c243ae9a23f35fd9fbb51137d6a",
+            "expected_prefix_size": 64,
+            "inner_model": 119,
+            "inner_payload_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "payload_sha256": "payload-sha",
+            "payload_size": 10,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": "7.8.1"
+          },
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
           "write_requested": true
         },
         "mode": "patch",
@@ -1854,14 +3266,79 @@
       "operation": "flash",
       "payload": {
         "already_satisfied": false,
-        "apple_firmware_match": null,
+        "apple_firmware_match": {
+          "inner_model": 119,
+          "inner_sha256": "8f48ecba4c2eb1d287dffc18726b8393694bf604e39ed0fdd26a6fed6ef28f28",
+          "inner_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "matched": false,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": "7.8.1"
+        },
         "apple_firmware_matches": [],
         "apple_match_status": null,
         "backup_dir": "/tmp/flash-backup",
-        "firmware_payload": null,
-        "firmware_payload_path": null,
+        "files": {
+          "primary_restore_basebinary_payload": "/tmp/flash-backup/primary.restore.basebinary"
+        },
+        "firmware_payload": {
+          "expected_login_classification": "stock",
+          "expected_prefix_sha256": "8f48ecba4c2eb1d287dffc18726b8393694bf604e39ed0fdd26a6fed6ef28f28",
+          "expected_prefix_size": 64,
+          "inner_model": 119,
+          "inner_payload_size": 64,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "payload_sha256": "payload-sha",
+          "payload_size": 10,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": "119",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": "7.8.1"
+        },
+        "firmware_payload_path": "/tmp/flash-backup/primary.restore.basebinary",
         "flash_plan": {
+          "already_satisfied": false,
+          "apple_match": {
+            "inner_model": 119,
+            "inner_sha256": "8f48ecba4c2eb1d287dffc18726b8393694bf604e39ed0fdd26a6fed6ef28f28",
+            "inner_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "matched": false,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": "7.8.1"
+          },
+          "apple_match_status": null,
+          "apple_matches": [],
           "mode": "restore",
+          "payload": {
+            "expected_login_classification": "stock",
+            "expected_prefix_sha256": "8f48ecba4c2eb1d287dffc18726b8393694bf604e39ed0fdd26a6fed6ef28f28",
+            "expected_prefix_size": 64,
+            "inner_model": 119,
+            "inner_payload_size": 64,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "payload_sha256": "payload-sha",
+            "payload_size": 10,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": "119",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": "7.8.1"
+          },
+          "secondary_refresh": null,
+          "target_bank": "primary",
+          "warnings": [],
           "write_requested": true
         },
         "mode": "restore",
@@ -1884,18 +3361,87 @@
       "operation": "flash",
       "payload": {
         "already_satisfied": false,
-        "apple_firmware_match": null,
+        "apple_firmware_match": {
+          "inner_model": 116,
+          "inner_sha256": "738d47bcf12a86398ca71e9f6771f277b0394cd5f432a7dd25a5566da63221ab",
+          "inner_size": 3407972,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "matched": false,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": "116",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": "7.8.1"
+        },
         "apple_firmware_matches": [],
         "apple_match_status": null,
         "backup_dir": "/tmp/flash-backup",
-        "firmware_payload": null,
-        "firmware_payload_path": null,
+        "files": {
+          "secondary_restore_basebinary_payload": "/tmp/flash-backup/secondary.restore.basebinary"
+        },
+        "firmware_payload": {
+          "expected_login_classification": "stock",
+          "expected_prefix_sha256": "738d47bcf12a86398ca71e9f6771f277b0394cd5f432a7dd25a5566da63221ab",
+          "expected_prefix_size": 3407972,
+          "inner_model": 116,
+          "inner_payload_size": 3407972,
+          "inner_version": "0x00070801",
+          "key_id": "key-one",
+          "payload_sha256": "payload-sha",
+          "payload_size": 10,
+          "template_path": "/tmp/firmware.basebinary",
+          "template_product_id": "116",
+          "template_sha256": "template-sha",
+          "template_source": "catalog",
+          "template_version": "7.8.1"
+        },
+        "firmware_payload_path": "/tmp/flash-backup/secondary.restore.basebinary",
         "flash_plan": {
+          "already_satisfied": false,
+          "apple_match": {
+            "inner_model": 116,
+            "inner_sha256": "738d47bcf12a86398ca71e9f6771f277b0394cd5f432a7dd25a5566da63221ab",
+            "inner_size": 3407972,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "matched": false,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": "116",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": "7.8.1"
+          },
+          "apple_match_status": null,
+          "apple_matches": [],
           "mode": "restore",
+          "payload": {
+            "expected_login_classification": "stock",
+            "expected_prefix_sha256": "738d47bcf12a86398ca71e9f6771f277b0394cd5f432a7dd25a5566da63221ab",
+            "expected_prefix_size": 3407972,
+            "inner_model": 116,
+            "inner_payload_size": 3407972,
+            "inner_version": "0x00070801",
+            "key_id": "key-one",
+            "payload_sha256": "payload-sha",
+            "payload_size": 10,
+            "template_path": "/tmp/firmware.basebinary",
+            "template_product_id": "116",
+            "template_sha256": "template-sha",
+            "template_source": "catalog",
+            "template_version": "7.8.1"
+          },
           "secondary_refresh": {
-            "device": "/dev/rflash1.raw"
+            "device": "/dev/rflash1.raw",
+            "end_offset": 3407972,
+            "footer_checksum": "0xe875a7b9",
+            "image_sha256": "0f6a5af3c5a476eb606c7b621f7ac8040a2d2ab1663b1bb5fdd93a168ca85c00",
+            "image_size": 7340032,
+            "previous_secondary_sha256": "a1fd285da8cfd921d606e01f57f500fc692f3c8a83903d168620e86d10eacf8c",
+            "primary_login": "stock"
           },
           "target_bank": "secondary",
+          "warnings": [],
           "write_requested": true
         },
         "mode": "restore",
@@ -1928,8 +3474,12 @@
         "summary_key": "flash_write_not_needed",
         "waited_after_reboot": false,
         "write_outcome": {
+          "bank": "primary",
+          "device": "/dev/rflash0.raw",
           "mode": "patch",
-          "status": "not_needed"
+          "status": "not_needed",
+          "write_may_have_modified_device": false,
+          "write_validated": false
         },
         "write_status": "not_needed",
         "write_validated": false
@@ -1956,12 +3506,22 @@
         "summary_key": "flash_patch_write_validated_power_cycle",
         "waited_after_reboot": false,
         "write_outcome": {
+          "bank": "primary",
+          "device": "/dev/rflash0.raw",
+          "expected_prefix_sha256": "6473d723bc68992424dc599fb24f5db284b35c243ae9a23f35fd9fbb51137d6a",
+          "expected_prefix_size": 64,
+          "firmware_payload_sha256": "payload-sha",
+          "firmware_payload_size": 10,
           "mode": "patch",
           "post_write_action": "manual_power_cycle",
-          "status": "written",
+          "reboot_requested": false,
+          "rebooted": false,
+          "status": "validated",
+          "waited_after_reboot": false,
+          "write_may_have_modified_device": true,
           "write_validated": true
         },
-        "write_status": "written",
+        "write_status": "validated",
         "write_validated": true
       },
       "request_id": "fixture",
@@ -1984,16 +3544,24 @@
         "summary": "Flash restore write validated; device rebooted.",
         "summary_args": [],
         "summary_key": "flash_restore_write_validated_rebooted",
-        "waited_after_reboot": false,
+        "waited_after_reboot": true,
         "write_outcome": {
+          "bank": "primary",
+          "device": "/dev/rflash0.raw",
+          "expected_prefix_sha256": "8f48ecba4c2eb1d287dffc18726b8393694bf604e39ed0fdd26a6fed6ef28f28",
+          "expected_prefix_size": 64,
+          "firmware_payload_sha256": "payload-sha",
+          "firmware_payload_size": 10,
           "mode": "restore",
           "post_write_action": "ssh_reboot",
           "reboot_requested": true,
           "rebooted": true,
-          "status": "written",
+          "status": "validated",
+          "waited_after_reboot": true,
+          "write_may_have_modified_device": true,
           "write_validated": true
         },
-        "write_status": "written",
+        "write_status": "validated",
         "write_validated": true
       },
       "request_id": "fixture",
@@ -2018,13 +3586,22 @@
         "summary_key": "flash_restore_write_validated_reboot_requested",
         "waited_after_reboot": false,
         "write_outcome": {
+          "bank": "primary",
+          "device": "/dev/rflash0.raw",
+          "expected_prefix_sha256": "8f48ecba4c2eb1d287dffc18726b8393694bf604e39ed0fdd26a6fed6ef28f28",
+          "expected_prefix_size": 64,
+          "firmware_payload_sha256": "payload-sha",
+          "firmware_payload_size": 10,
           "mode": "restore",
           "post_write_action": "ssh_reboot",
           "reboot_requested": true,
-          "status": "written",
+          "rebooted": false,
+          "status": "validated",
+          "waited_after_reboot": false,
+          "write_may_have_modified_device": true,
           "write_validated": true
         },
-        "write_status": "written",
+        "write_status": "validated",
         "write_validated": true
       },
       "request_id": "fixture",
@@ -2049,12 +3626,22 @@
         "summary_key": "flash_restore_write_validated_manual_reboot",
         "waited_after_reboot": false,
         "write_outcome": {
+          "bank": "primary",
+          "device": "/dev/rflash0.raw",
+          "expected_prefix_sha256": "8f48ecba4c2eb1d287dffc18726b8393694bf604e39ed0fdd26a6fed6ef28f28",
+          "expected_prefix_size": 64,
+          "firmware_payload_sha256": "payload-sha",
+          "firmware_payload_size": 10,
           "mode": "restore",
           "post_write_action": "manual_reboot",
-          "status": "written",
+          "reboot_requested": false,
+          "rebooted": false,
+          "status": "validated",
+          "waited_after_reboot": false,
+          "write_may_have_modified_device": true,
           "write_validated": true
         },
-        "write_status": "written",
+        "write_status": "validated",
         "write_validated": true
       },
       "request_id": "fixture",
@@ -2079,9 +3666,19 @@
         "summary_key": "flash_restore_secondary_write_validated",
         "waited_after_reboot": false,
         "write_outcome": {
+          "bank": "secondary",
+          "device": "/dev/rflash1.raw",
+          "expected_prefix_sha256": "738d47bcf12a86398ca71e9f6771f277b0394cd5f432a7dd25a5566da63221ab",
+          "expected_prefix_size": 3407972,
+          "firmware_payload_sha256": "payload-sha",
+          "firmware_payload_size": 10,
           "mode": "restore",
           "post_write_action": "none",
+          "reboot_requested": false,
+          "rebooted": false,
           "status": "validated",
+          "waited_after_reboot": false,
+          "write_may_have_modified_device": true,
           "write_validated": true
         },
         "write_status": "validated",
@@ -2109,10 +3706,18 @@
         "summary_key": "flash_write_completed",
         "waited_after_reboot": false,
         "write_outcome": {
+          "bank": "primary",
+          "device": "/dev/rflash0.raw",
+          "expected_prefix_sha256": "6473d723bc68992424dc599fb24f5db284b35c243ae9a23f35fd9fbb51137d6a",
+          "expected_prefix_size": 64,
+          "firmware_payload_sha256": "payload-sha",
+          "firmware_payload_size": 10,
           "mode": "patch",
-          "status": "written"
+          "status": "attempting",
+          "write_may_have_modified_device": true,
+          "write_validated": false
         },
-        "write_status": "written",
+        "write_status": "attempting",
         "write_validated": false
       },
       "request_id": "fixture",

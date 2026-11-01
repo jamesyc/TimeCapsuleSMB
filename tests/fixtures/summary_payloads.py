@@ -9,12 +9,16 @@ Swift tests decode exactly what the helper emits.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import functools
 import json
 import sys
 from pathlib import Path
 
+from types import SimpleNamespace
 from unittest import mock
 
+from tests import flash_fixtures
 from tests.reboot_support import FakeAcpDevice
 from timecapsulesmb.app import contracts
 from timecapsulesmb.app.events import AppEvent, EventSink
@@ -25,6 +29,23 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.messages import netbsd4_activation_summary
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.migration import OversizedSummary, OversizedValue, SkippedEntry, SkippedSummary
+from timecapsulesmb.flash import PATCHED_LOGIN_SCRIPT, STOCK_LOGIN_NETBSD4_DUMMY, FlashInspection, inspect_flash_banks
+from timecapsulesmb.flash_payloads import AcpFlashPayload, AppleFirmwareMatch
+from timecapsulesmb.flash_workflow import (
+    BankAppleFirmwareMatch,
+    FlashPlan,
+    plan_check_apple,
+    plan_download_only,
+    plan_patch_primary,
+    plan_restore_apple,
+)
+from timecapsulesmb.services.flash import (
+    FlashInputs,
+    manifest_from_inspection,
+    record_post_write_action,
+    record_write_outcome,
+    save_acp_flash_payload,
+)
 from timecapsulesmb.services.maintenance import fsck_failure_message, fsck_plan_to_jsonable, FsckTarget
 from timecapsulesmb.services.reachability import ReachabilityCheck, ReachabilityResult, result_from_checks, run_reachability
 from timecapsulesmb.services.deploy import (
@@ -90,24 +111,162 @@ def _no_reachability_candidates() -> ReachabilityResult:
 
 # The flash operation passes its backup directory through every flash payload.
 BACKUP_DIR = "/tmp/flash-backup"
+FLASH_OS_RELEASE = "4.0_STABLE"
+FLASH_SYAP = "119"
 
 
-def _apple_match(matched: bool, version: str | None) -> dict[str, object]:
-    return {"matched": matched, "template_version": version}
+def _flash_bank(release: bytes = b"current", *, login: bytes = STOCK_LOGIN_NETBSD4_DUMMY) -> bytes:
+    """A small kernel bank; its release decides whether it is an active
+    candidate, its LOGIN how the helper classifies it."""
+    return flash_fixtures.make_bank(release=b"NetBSD " + FLASH_OS_RELEASE.encode() + b" #0: " + release, login=login)
+
+
+def _old_flash_bank() -> bytes:
+    return flash_fixtures.make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+
+
+def _flash_inputs(primary: bytes, secondary: bytes, *, live_login: bytes = STOCK_LOGIN_NETBSD4_DUMMY) -> FlashInputs:
+    """What reading these banks returns, with the checksums ACPd reports and
+    the LOGIN the running system booted with."""
+    return flash_fixtures.flash_inputs(primary, secondary, syap=FLASH_SYAP, cks1=flash_fixtures.acpd_checksum(primary),
+                                       cks2=flash_fixtures.acpd_checksum(secondary), live_login=live_login)
+
+
+def _flash_inspection(inputs: FlashInputs, *, patch_candidate: bool = False) -> FlashInspection:
+    # As save_flash_backup inspects what it read; planning a patch also builds
+    # the patched primary, which needs zopfli, here stubbed.
+    with flash_fixtures.zopfli_available() if patch_candidate else contextlib.nullcontext():
+        return inspect_flash_banks(primary_data=inputs.primary, secondary_data=inputs.secondary, cks1=inputs.cks1,
+                                   cks2=inputs.cks2, os_release=FLASH_OS_RELEASE, live_login=inputs.live_login,
+                                   build_primary_patch_candidate=patch_candidate)
+
+
+def _flash_backup(primary: bytes, secondary: bytes, *, live_login: bytes = STOCK_LOGIN_NETBSD4_DUMMY) -> dict[str, object]:
+    """A backup result as save_flash_backup builds it from these two banks."""
+    inputs = _flash_inputs(primary, secondary, live_login=live_login)
+    target = SimpleNamespace(acp_host="10.0.0.2", compatibility=SimpleNamespace(os_release=FLASH_OS_RELEASE))
+    return contracts.flash_backup_payload(manifest_from_inspection(
+        operation="read_only", inspection=_flash_inspection(inputs), target=target, inputs=inputs,
+        backup_dir=Path(BACKUP_DIR)))
+
+
+def _apple_firmware_match(matched: bool, version: str | None) -> AppleFirmwareMatch:
+    return AppleFirmwareMatch(
+        matched=matched, template_source="catalog", template_path=None, template_product_id=FLASH_SYAP,
+        template_version=version, template_sha256="template-sha", inner_sha256="inner-sha", inner_size=123,
+        key_id="key-one", inner_model=int(FLASH_SYAP), inner_version=0x00070801,
+    )
+
+
+def _acp_payload(prefix: bytes, *, version: str | None = "7.8.1", product: str | None = FLASH_SYAP,
+                 login: str = "stock") -> AcpFlashPayload:
+    """A firmware payload as the helper builds one from Apple's firmware,
+    which these fixtures never download."""
+    return AcpFlashPayload(
+        data=b"basebinary", expected_prefix=prefix, expected_login_classification=login,
+        template_source="catalog", template_path=Path("/tmp/firmware.basebinary"), template_product_id=product,
+        template_version=version, template_sha256="template-sha", payload_sha256="payload-sha", key_id="key-one",
+        inner_model=int(product or FLASH_SYAP), inner_version=0x00070801, inner_payload_size=len(prefix),
+    )
 
 
 def _flash_plan(mode: str, **plan: object) -> dict[str, object]:
     return contracts.flash_plan_payload({"backup_dir": BACKUP_DIR, "flash_plan": {"mode": mode, **plan}})
 
 
+def _plan_result(plan: FlashPlan) -> dict[str, object]:
+    """The parts of a plan result the app reads, as plan_flash_from_backup
+    records them: the plan, and where save_acp_flash_payload saves its payload,
+    under the key it files it as. The helper's record also carries the rest of
+    the backup manifest, such as its banks, which the app does not read."""
+    with mock.patch.object(Path, "write_bytes"):
+        path = save_acp_flash_payload(backup_dir=Path(BACKUP_DIR), plan=plan)
+    key = plan.mode if plan.target_name is None else f"{plan.target_name}_{plan.mode}"
+    files = {} if path is None else {f"{key}_basebinary_payload": str(path)}
+    return contracts.flash_plan_payload({"backup_dir": BACKUP_DIR, "files": files, "flash_plan": plan.to_jsonable()})
+
+
+@functools.cache
+def _patch_plan() -> FlashPlan:
+    """Plan Patch for a stock primary bank."""
+    inspection = _flash_inspection(_flash_inputs(_flash_bank(), _old_flash_bank()), patch_candidate=True)
+    patched = _acp_payload(b"PATCHED!" * 8, login="already_patched")
+    with mock.patch("timecapsulesmb.flash_workflow.build_patch_payload_for_bank", return_value=patched):
+        return plan_patch_primary(inspection, syap=FLASH_SYAP, firmware_template=None)
+
+
+@functools.cache
+def _satisfied_patch_plan() -> FlashPlan:
+    """Plan Patch for a primary bank that is already patched: nothing to write."""
+    patched = _flash_bank(login=PATCHED_LOGIN_SCRIPT)
+    inputs = _flash_inputs(patched, _old_flash_bank(), live_login=PATCHED_LOGIN_SCRIPT)
+    return plan_patch_primary(_flash_inspection(inputs), syap=FLASH_SYAP, firmware_template=None)
+
+
+@functools.cache
+def _restore_plan() -> FlashPlan:
+    """Plan Restore for a primary bank that differs from Apple's firmware."""
+    inspection = _flash_inspection(_flash_inputs(_flash_bank(), _old_flash_bank()))
+    with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_bank",
+                    return_value=_acp_payload(b"APPLE!!!" * 8)):
+        return plan_restore_apple(inspection, syap=FLASH_SYAP, firmware_template=None)
+
+
+@functools.cache
+def _secondary_refresh_plan() -> FlashPlan:
+    """Plan Restore when the secondary bank is not a valid backup: the helper
+    rewrites it from Apple's newest firmware. It does that only for the models
+    in SECONDARY_REFRESH_SYAPS, which full-size banks of 116 stand in for."""
+    prefix = flash_fixtures.newest_firmware_prefix()
+    payload = _acp_payload(prefix, product="116")
+    with (
+        mock.patch("timecapsulesmb.flash_workflow.build_download_payload_for_syap", return_value=payload),
+        mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_bank", return_value=payload),
+    ):
+        return plan_restore_apple(flash_fixtures.inspect_full_banks(), syap="116", firmware_template=None)
+
+
 def _check_apple(matched: list[bool], version: str | None) -> dict[str, object]:
-    matches = [{"bank": f"bank{i}", "match": _apple_match(m, version)} for i, m in enumerate(matched)]
-    return _flash_plan("check_apple", apple_match=_apple_match(matched[0], version),
-                       apple_matches=matches if len(matches) > 1 else [])
+    """Check Apple Firmware from the real planner: one candidate bank, or two
+    when several results are given, each matching as listed."""
+    second = _flash_bank(b"other") if len(matched) > 1 else _old_flash_bank()
+    inspection = _flash_inspection(_flash_inputs(_flash_bank(), second))
+
+    def matches(candidates, **_kwargs):
+        assert len(candidates) == len(matched), f"{len(candidates)} candidate banks for {len(matched)} results"
+        return tuple(BankAppleFirmwareMatch(bank=bank.name, match=_apple_firmware_match(result, version))
+                     for bank, result in zip(candidates, matched))
+
+    with mock.patch("timecapsulesmb.flash_workflow._match_apple_firmware_for_candidates", side_effect=matches):
+        return _plan_result(plan_check_apple(inspection, syap=FLASH_SYAP, firmware_template=None,
+                                             firmware_version=version))
 
 
-def _flash_write(**outcome: object) -> dict[str, object]:
-    return contracts.flash_write_payload({"backup_dir": BACKUP_DIR, "write_outcome": outcome})
+def _validate_apple_restore(version: str | None, product: str | None) -> dict[str, object]:
+    """Validate Apple Restore Firmware from the real planner, with the download
+    stubbed."""
+    primary = _flash_bank()
+    payload = _acp_payload(primary[:64], version=version, product=product)
+    with mock.patch("timecapsulesmb.flash_workflow.build_download_payload_for_syap", return_value=payload):
+        return _plan_result(plan_download_only(_flash_inspection(_flash_inputs(primary, _old_flash_bank())),
+                                               syap=FLASH_SYAP, firmware_template=None, firmware_version=version))
+
+
+def _flash_write(plan: FlashPlan, status: str = "validated", **post_write: object) -> dict[str, object]:
+    """A write result as the write operation records it: record_write_outcome
+    with `status`, then, after a validated write, record_post_write_action with
+    `post_write`."""
+    bundle = SimpleNamespace(manifest={"backup_dir": BACKUP_DIR}, backup_dir=Path(BACKUP_DIR))
+    with mock.patch("timecapsulesmb.services.flash.save_flash_manifest"):
+        record_write_outcome(bundle=bundle, plan=plan, status=status, write_validated=status == "validated",
+                             write_may_have_modified_device=status != "not_needed")
+        if post_write:
+            record_post_write_action(bundle=bundle, **post_write)
+    return contracts.flash_write_payload(bundle.manifest)
+
+
+def _no_reboot(action: str) -> dict[str, object]:
+    return {"post_write_action": action, "reboot_requested": False, "rebooted": False, "waited_after_reboot": False}
 
 
 def _kept_values_logs() -> list[tuple[str, str, str, bool, object]]:
@@ -225,7 +384,14 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         # The Swift boot hook tests (BootHookTestSupport.swift) build their
         # helper replies from these flash rows by name; rename or drop one
         # there too.
-        ("flash_backup", result, "flash", True, contracts.flash_backup_payload({"backup_dir": BACKUP_DIR, "banks": []})),
+        ("flash_backup", result, "flash", True, _flash_backup(_flash_bank(), _old_flash_bank())),
+        # The running system booted the patched primary, so its LOGIN is patched.
+        ("flash_backup_patched_primary", result, "flash", True, _flash_backup(
+            _flash_bank(login=PATCHED_LOGIN_SCRIPT), _old_flash_bank(), live_login=PATCHED_LOGIN_SCRIPT)),
+        # An unrecognized LOGIN in the primary bank; a secondary bank with no
+        # valid footer, which the helper cannot analyze.
+        ("flash_backup_unrecognized_banks", result, "flash", True, _flash_backup(
+            _flash_bank(login=b""), flash_fixtures.without_footer(_old_flash_bank()))),
         ("flash_apple_stock_match", result, "flash", True, _check_apple([True], None)),
         ("flash_apple_stock_match_version", result, "flash", True, _check_apple([True], "7.8.1")),
         ("flash_apple_stock_mismatch", result, "flash", True, _check_apple([False], None)),
@@ -236,33 +402,35 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         ("flash_apple_none_match_version", result, "flash", True, _check_apple([False, False], "7.8.1")),
         ("flash_apple_some_match", result, "flash", True, _check_apple([True, False], None)),
         ("flash_apple_some_match_version", result, "flash", True, _check_apple([True, False], "7.8.1")),
-        ("flash_restore_validated", result, "flash", True, _flash_plan("download_only", payload={})),
-        ("flash_restore_validated_version", result, "flash", True, _flash_plan(
-            "download_only", payload={"template_version": "7.8.1"})),
-        ("flash_restore_validated_product", result, "flash", True, _flash_plan(
-            "download_only", payload={"template_product_id": "119"})),
-        ("flash_restore_validated_version_product", result, "flash", True, _flash_plan(
-            "download_only", payload={"template_version": "7.8.1", "template_product_id": "119"})),
-        ("flash_plan_satisfied", result, "flash", True, _flash_plan("patch", already_satisfied=True)),
+        ("flash_restore_validated", result, "flash", True, _validate_apple_restore(None, None)),
+        ("flash_restore_validated_version", result, "flash", True, _validate_apple_restore("7.8.1", None)),
+        ("flash_restore_validated_product", result, "flash", True, _validate_apple_restore(None, FLASH_SYAP)),
+        ("flash_restore_validated_version_product", result, "flash", True, _validate_apple_restore("7.8.1", FLASH_SYAP)),
+        ("flash_plan_satisfied", result, "flash", True, _plan_result(_satisfied_patch_plan())),
+        # The planners request a write for every patch or restore plan that is
+        # not satisfied; these two cover the contract's remaining branch.
         ("flash_patch_plan", result, "flash", True, _flash_plan("patch")),
         ("flash_restore_plan", result, "flash", True, _flash_plan("restore")),
-        ("flash_patch_write_plan", result, "flash", True, _flash_plan("patch", write_requested=True)),
-        ("flash_restore_write_plan", result, "flash", True, _flash_plan("restore", write_requested=True)),
-        ("flash_restore_secondary_write_plan", result, "flash", True, _flash_plan(
-            "restore", write_requested=True, target_bank="secondary", secondary_refresh={"device": "/dev/rflash1.raw"})),
-        ("flash_write_not_needed", result, "flash", True, _flash_write(status="not_needed", mode="patch")),
+        ("flash_patch_write_plan", result, "flash", True, _plan_result(_patch_plan())),
+        ("flash_restore_write_plan", result, "flash", True, _plan_result(_restore_plan())),
+        ("flash_restore_secondary_write_plan", result, "flash", True, _plan_result(_secondary_refresh_plan())),
+        ("flash_write_not_needed", result, "flash", True, _flash_write(_satisfied_patch_plan(), "not_needed")),
         ("flash_patch_write_validated", result, "flash", True, _flash_write(
-            status="written", mode="patch", write_validated=True, post_write_action="manual_power_cycle")),
+            _patch_plan(), **_no_reboot("manual_power_cycle"))),
         ("flash_restore_write_rebooted", result, "flash", True, _flash_write(
-            status="written", mode="restore", write_validated=True, post_write_action="ssh_reboot",
-            reboot_requested=True, rebooted=True)),
+            _restore_plan(), post_write_action="ssh_reboot", reboot_requested=True, rebooted=True,
+            waited_after_reboot=True)),
         ("flash_restore_write_reboot_requested", result, "flash", True, _flash_write(
-            status="written", mode="restore", write_validated=True, post_write_action="ssh_reboot", reboot_requested=True)),
+            _restore_plan(), post_write_action="ssh_reboot", reboot_requested=True, rebooted=False,
+            waited_after_reboot=False)),
         ("flash_restore_write_manual_reboot", result, "flash", True, _flash_write(
-            status="written", mode="restore", write_validated=True, post_write_action="manual_reboot")),
+            _restore_plan(), **_no_reboot("manual_reboot"))),
         ("flash_restore_secondary_write_validated", result, "flash", True, _flash_write(
-            status="validated", mode="restore", write_validated=True, post_write_action="none")),
-        ("flash_write_completed", result, "flash", True, _flash_write(status="written", mode="patch")),
+            _secondary_refresh_plan(), **_no_reboot("none"))),
+        # A write recorded as started and never validated. The app never gets
+        # such a result (a failed write arrives as an error); this row gives
+        # the contract's last branch a fixture.
+        ("flash_write_completed", result, "flash", True, _flash_write(_patch_plan(), "attempting")),
     ]
     for name, ssh_result in _set_ssh_results():
         rows.append((name, result, "set-ssh", True, contracts.set_ssh_payload(ssh_result)))

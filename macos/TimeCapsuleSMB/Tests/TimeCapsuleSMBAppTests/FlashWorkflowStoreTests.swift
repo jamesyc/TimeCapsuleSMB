@@ -106,7 +106,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "stage", operation: "flash", stage: "plan_flash", risk: "local_write", cancellable: true),
-                testBootHookResult(testBootHookPlanPayload(mode: .patch, writeRequested: true))
+                testBootHookResult(testBootHookPlanPayload(mode: .patch))
             ])
         ])
         let store = fixture.store
@@ -132,7 +132,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         // Each case has a fresh gate: releasing backup must not unpause plan/write.
         for pausedStep in 0...2 {
             let responses = testBootHookResponses(
-                plan: testBootHookPlanPayload(mode: .patch, writeRequested: true),
+                plan: testBootHookPlanPayload(mode: .patch),
                 write: testBootHookWritePayload(.patchNeedsPowerCycle)
             )
             let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: responses.enumerated().map { index, response in
@@ -215,7 +215,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
 
     func testFirmwareSelectionEditsInvalidateExistingWritePlan() async throws {
         let fixture = try BootHookTestFixture(responses: testBootHookResponses(
-            plan: testBootHookPlanPayload(mode: .patch, writeRequested: true)
+            plan: testBootHookPlanPayload(mode: .patch)
         ))
         let store = fixture.store
 
@@ -260,7 +260,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testValidateAppleRestoreFirmwarePresentationShowsPayloadDetails() async throws {
-        let store = try await BootHookTestFixture.afterPlan(testAppleRestoreFirmwarePayload(withPayloadDetails: true)).store
+        let store = try await BootHookTestFixture.afterPlan(testAppleRestoreFirmwarePayload()).store
 
         XCTAssertEqual(store.state, .appleFirmwareReady)
         let presentation = FlashPresentation(store: store)
@@ -273,7 +273,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
     func testWriteConfirmationCancellationRestoresPlanAvailable() async throws {
         for mode in [FlashPlanMode.patch, .restore] {
             let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses(
-                plan: testBootHookPlanPayload(mode: mode, writeRequested: true)
+                plan: testBootHookPlanPayload(mode: mode)
             ) + [
                 .init(events: [
                     BackendEvent(
@@ -383,7 +383,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
 
     func testFreshBackupClearsStaleSnapshotAfterWrite() async throws {
         let fixture = try BootHookTestFixture(responses: testBootHookResponses(
-            plan: testBootHookPlanPayload(mode: .patch, writeRequested: true),
+            plan: testBootHookPlanPayload(mode: .patch),
             write: testBootHookWritePayload(.patchNeedsPowerCycle)
         ) + testBootHookResponses(backup: testBootHookBackupPayload(banks: [
             testBootHookBank(name: "primary", backupValid: true, login: "already_patched"),
@@ -486,7 +486,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
 
     func testWriteInProgressDoesNotAskForWritePatch() async throws {
         let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses(
-            plan: testBootHookPlanPayload(mode: .patch, writeRequested: true)
+            plan: testBootHookPlanPayload(mode: .patch)
         ) + [
             .init(events: [
                 BackendEvent(type: "stage", operation: "flash", stage: "write_primary_bank", risk: "remote_write", cancellable: false)
@@ -514,7 +514,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         ]
         for testCase in cases {
             let fixture = try BootHookTestFixture(responses: testBootHookResponses(
-                plan: testBootHookPlanPayload(mode: .patch, writeRequested: true),
+                plan: testBootHookPlanPayload(mode: .patch),
                 failure: [
                     BackendEvent(type: "stage", operation: "flash", stage: testCase.stage, risk: "remote_write", cancellable: false),
                     testBootHookError("write failed")
@@ -537,23 +537,17 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testPlansThatCannotWriteAPatchKeepTheirOwnSummary() async throws {
-        let cases: [(mode: FlashPlanMode, writeRequested: Bool, alreadySatisfied: Bool, expected: String)] = [
-            (.restore, true, false, "Flash restore write plan generated."),
-            (.patch, false, true, "Flash plan is already satisfied; no write is needed.")
+        let cases: [(plan: JSONValue, expected: String)] = [
+            (testBootHookPlanPayload(mode: .restore), "Flash restore write plan generated."),
+            (testBootHookSatisfiedPatchPlanPayload(), "Flash plan is already satisfied; no write is needed.")
         ]
         for testCase in cases {
-            let store = try await BootHookTestFixture.afterPlan(
-                testBootHookPlanPayload(
-                    mode: testCase.mode,
-                    writeRequested: testCase.writeRequested,
-                    alreadySatisfied: testCase.alreadySatisfied
-                )
-            ).store
+            let store = try await BootHookTestFixture.afterPlan(testCase.plan).store
 
             let presentation = FlashPresentation(store: store)
 
-            XCTAssertFalse(presentation.isEnabled(.writePatch), "\(testCase)")
-            XCTAssertEqual(presentation.message, testCase.expected, "\(testCase)")
+            XCTAssertFalse(presentation.isEnabled(.writePatch), testCase.expected)
+            XCTAssertEqual(presentation.message, testCase.expected)
         }
     }
 

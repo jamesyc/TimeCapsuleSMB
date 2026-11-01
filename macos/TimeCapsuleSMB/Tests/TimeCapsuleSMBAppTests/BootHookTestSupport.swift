@@ -69,112 +69,83 @@ private func helperResultPayload(_ name: String, _ overrides: [String: JSONValue
     return .object(payload)
 }
 
-/// The fixture's payloads come from an empty backup; the real one names the
-/// device it read and its banks.
-func testBootHookBackupPayload(activeBank: String? = "primary", banks: [JSONValue]? = nil) -> JSONValue {
-    let banks = banks ?? [
-        testBootHookBank(name: "primary", backupValid: true, login: "stock"),
-        testBootHookBank(name: "secondary", backupValid: true, login: "stock")
-    ]
-    return helperResultPayload("flash_backup", [
-        "host": .string("10.0.0.2"),
-        "syap": .string("119"),
-        "active_bank": activeBank.map(JSONValue.string) ?? .null,
-        "banks": .array(banks),
-        "counts": .object(["banks": .number(Double(banks.count))])
-    ])
+/// The banks of the helper's backup payload `name`.
+private func helperBanks(_ name: String) -> [JSONValue] {
+    guard case .object(let backup) = helperResultPayload(name), case .array(let banks)? = backup["banks"] else {
+        XCTFail("\(name) has no banks")
+        return []
+    }
+    return banks
 }
 
-/// A bank as the helper reports it; `login: nil` is a bank whose analysis failed.
-/// A bank is an active candidate only if it is also a valid backup.
+/// A backup of a stock primary bank, the active one, and an older stock
+/// secondary bank, as the helper reports it; `activeBank` and `banks` replace
+/// its own.
+func testBootHookBackupPayload(activeBank: String? = "primary", banks: [JSONValue]? = nil) -> JSONValue {
+    var overrides: [String: JSONValue] = ["active_bank": activeBank.map(JSONValue.string) ?? .null]
+    if let banks {
+        overrides["banks"] = .array(banks)
+        overrides["counts"] = .object(["banks": .number(Double(banks.count))])
+    }
+    return helperResultPayload("flash_backup", overrides)
+}
+
+/// A bank as the helper reports it, taken from its backups by LOGIN
+/// classification: "stock", "already_patched", "unknown", or `nil` for a bank
+/// it could not analyze. `name`, `backupValid` and `activeCandidate` replace
+/// the bank's own, the values the tests vary; the rest stays the source bank's,
+/// whose failure lists the app does not read. A bank is an active candidate
+/// only if it is also a valid backup.
 func testBootHookBank(
     name: String,
     backupValid: Bool,
     activeCandidate: Bool? = nil,
     login: String?
 ) -> JSONValue {
-    .object([
-        "name": .string(name),
-        "device": .string(name == "primary" ? "/dev/rflash0.raw" : "/dev/rflash1.raw"),
-        "size": .number(128),
-        "sha256": .string("abc"),
-        "backup_valid": .bool(backupValid),
-        "active_candidate": .bool(activeCandidate ?? backupValid),
-        "would_write": .bool(false),
-        "write_decision": .string("no write"),
-        "login": login.map { .object(["classification": .string($0)]) } ?? .null
-    ])
+    let source: (backup: String, index: Int)
+    switch login {
+    case "stock": source = ("flash_backup", 0)
+    case "already_patched": source = ("flash_backup_patched_primary", 0)
+    case "unknown": source = ("flash_backup_unrecognized_banks", 0)
+    case nil: source = ("flash_backup_unrecognized_banks", 1)
+    default:
+        XCTFail("no helper bank has LOGIN classification \(login ?? "")")
+        return .null
+    }
+    let banks = helperBanks(source.backup)
+    guard source.index < banks.count, case .object(var bank) = banks[source.index] else {
+        return .null
+    }
+    bank["name"] = .string(name)
+    bank["backup_valid"] = .bool(backupValid)
+    bank["active_candidate"] = .bool(activeCandidate ?? backupValid)
+    return .object(bank)
 }
 
-/// A patch or restore plan. The helper sends one satisfied plan, which writes
-/// nothing, for either mode.
-func testBootHookPlanPayload(mode: FlashPlanMode, writeRequested: Bool, alreadySatisfied: Bool = false) -> JSONValue {
-    if alreadySatisfied {
-        // A satisfied plan writes nothing, whatever `writeRequested` says.
-        return helperResultPayload("flash_plan_satisfied", [
-            "mode": .string(mode.rawValue),
-            "flash_plan": .object(["already_satisfied": .bool(true), "mode": .string(mode.rawValue)])
-        ])
-    }
-    return helperResultPayload("flash_\(mode.rawValue)\(writeRequested ? "_write" : "")_plan")
+/// A patch or restore plan for the backup's stock primary bank, with the
+/// firmware payload the helper built and saved for it.
+func testBootHookPlanPayload(mode: FlashPlanMode) -> JSONValue {
+    helperResultPayload("flash_\(mode.rawValue)_write_plan")
+}
+
+/// A patch plan for a primary bank that is already patched: it writes nothing.
+func testBootHookSatisfiedPatchPlanPayload() -> JSONValue {
+    helperResultPayload("flash_plan_satisfied")
 }
 
 /// Check Apple Firmware against 7.8.1: the active bank, or with `allBanks`
-/// every candidate bank, all matching or none.
+/// both candidate banks, all matching or none.
 func testAppleCheckPayload(matched: Bool, allBanks: Bool = false) -> JSONValue {
-    let match = testAppleFirmwareMatch(matched: matched)
     if allBanks {
-        return helperResultPayload(matched ? "flash_apple_all_match_version" : "flash_apple_none_match_version", [
-            "apple_firmware_match": match,
-            "apple_match_status": .string(matched ? "all_candidates_match" : "no_candidates_match"),
-            "apple_firmware_matches": .array(["primary", "secondary"].map { bank in
-                .object(["bank": .string(bank), "match": match])
-            })
-        ])
+        return helperResultPayload(matched ? "flash_apple_all_match_version" : "flash_apple_none_match_version")
     }
-    let name = matched ? "flash_apple_stock_match_version" : "flash_apple_stock_mismatch_version"
-    return helperResultPayload(name, ["apple_firmware_match": match])
+    return helperResultPayload(matched ? "flash_apple_stock_match_version" : "flash_apple_stock_mismatch_version")
 }
 
-private func testAppleFirmwareMatch(matched: Bool) -> JSONValue {
-    .object([
-        "matched": .bool(matched),
-        "template_source": .string("catalog"),
-        "template_product_id": .string("119"),
-        "template_version": .string("7.8.1"),
-        "template_sha256": .string("template-sha"),
-        "inner_sha256": .string("inner-sha"),
-        "inner_size": .number(123),
-        "key_id": .string("key-one"),
-        "inner_model": .number(119),
-        "inner_version": .string("0x00070801")
-    ])
-}
-
-/// Validate Apple Restore Firmware for 7.8.1, product 119; `withPayloadDetails`
-/// adds what the helper reports about the payload it validated.
-func testAppleRestoreFirmwarePayload(withPayloadDetails: Bool = false) -> JSONValue {
-    guard withPayloadDetails else {
-        return helperResultPayload("flash_restore_validated_version_product")
-    }
-    return helperResultPayload("flash_restore_validated_version_product", [
-        "firmware_payload": .object([
-            "template_source": .string("catalog"),
-            "template_path": .string("/tmp/firmware.basebinary"),
-            "template_product_id": .string("119"),
-            "template_version": .string("7.8.1"),
-            "template_sha256": .string("template-sha"),
-            "payload_sha256": .string("payload-sha"),
-            "payload_size": .number(456),
-            "expected_prefix_sha256": .string("prefix-sha"),
-            "expected_prefix_size": .number(123),
-            "key_id": .string("key-one"),
-            "inner_model": .number(119),
-            "inner_version": .string("0x00070801"),
-            "inner_payload_size": .number(123)
-        ]),
-        "firmware_payload_path": .string("/tmp/flash-backup/primary.download_only.basebinary")
-    ])
+/// Validate Apple Restore Firmware for 7.8.1, product 119, with the payload
+/// the helper validated and the path it saved it to.
+func testAppleRestoreFirmwarePayload() -> JSONValue {
+    helperResultPayload("flash_restore_validated_version_product")
 }
 
 /// How a validated write ended, named by the helper's payload for it.
@@ -297,7 +268,7 @@ extension BootHookTestFixture where Runner == StoreTestRunner {
     /// Backs up, plans a write of `mode` and writes it.
     static func afterWrite(_ mode: FlashPlanMode, _ outcome: BootHookWriteOutcome? = nil) async throws -> Self {
         let fixture = try Self(responses: testBootHookResponses(
-            plan: testBootHookPlanPayload(mode: mode, writeRequested: true),
+            plan: testBootHookPlanPayload(mode: mode),
             write: testBootHookWritePayload(outcome ?? .usual(for: mode))
         ))
         try await fixture.run(.backup, .plan(mode), .write(mode))

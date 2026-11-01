@@ -67,7 +67,7 @@ final class StoreTestSupportTests: XCTestCase {
     func testBootHookStepDriverThrowsWhenAStepEndsWithoutItsPayload() async throws {
         let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses() + [
             .init(
-                events: [testBootHookResult(testBootHookPlanPayload(mode: .patch, writeRequested: true))],
+                events: [testBootHookResult(testBootHookPlanPayload(mode: .patch))],
                 pauseBeforeEvents: true
             )
         ]))
@@ -98,7 +98,7 @@ final class StoreTestSupportTests: XCTestCase {
 
     func testBootHookPayloadsShowTheHelpersKeyNotItsEnglishSummary() async throws {
         let store = try await BootHookTestFixture.afterPlan(
-            testBootHookPlanPayload(mode: .patch, writeRequested: true)
+            testBootHookPlanPayload(mode: .patch)
         ).store
 
         XCTAssertEqual(store.plan?.summary, helperEnglishSummaryStandIn)
