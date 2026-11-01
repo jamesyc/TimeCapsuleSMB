@@ -199,7 +199,7 @@ jobs:
 
       - name: Name the package cache
         id: package-cache-key
-        run: echo "key=package-app-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/TimeCapsuleSMB/dist/python-packages.txt', 'macos/TimeCapsuleSMB/tools/package_app.py', 'macos/TimeCapsuleSMB/Assets/AppIcon/tcs.jpg') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=package-app-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/TimeCapsuleSMB/dist/python-packages.txt', 'macos/TimeCapsuleSMB/tools/package_app.py', 'macos/TimeCapsuleSMB/Assets/AppIcon/TimeCapsuleSMB.icon/**') }}" >> "$GITHUB_OUTPUT"
 
       # A cache restored under this very key holds what this run built already.
       - name: Save package cache

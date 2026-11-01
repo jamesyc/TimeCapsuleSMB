@@ -45,7 +45,9 @@ APP_VERSION = CLI_VERSION
 APP_VERSION_CODE = str(CLI_VERSION_CODE)
 APP_ICON_FILE = f"{PRODUCT_NAME}.icns"
 APP_ICON_NAME = PRODUCT_NAME
-DEFAULT_ICON_SOURCE = PACKAGE_ROOT / "Assets" / "AppIcon" / "tcs.jpg"
+APP_ICON_CATALOG = "Assets.car"
+# Written from Assets/AppIcon/tcs.jpg by tools/app_icon.py.
+DEFAULT_ICON_SOURCE = PACKAGE_ROOT / "Assets" / "AppIcon" / f"{APP_ICON_NAME}.icon"
 ARTIFACT_MANIFEST = REPO_ROOT / "src" / "timecapsulesmb" / "assets" / "artifact-manifest.json"
 RESOURCE_BUNDLE_NAME = "TimeCapsuleSMBMac_TimeCapsuleSMBApp.bundle"
 # Sparkle reads its feed and the key that signs updates from Info.plist. The
@@ -76,7 +78,9 @@ CACHE_KEY_VERSION = 1
 PYTHON_RUNTIME_CACHE_VERSION = 2
 # 4: keyed on the packages resolved for the build, not on pinned files.
 PYTHON_SITE_PACKAGES_CACHE_VERSION = 4
-APP_ICON_CACHE_VERSION = 1
+# 2: actool compiles an Icon Composer document into Assets.car and the .icns.
+APP_ICON_CACHE_VERSION = 2
+ACTOOL_MINIMUM_MAJOR = 26
 DEFAULT_NOTARY_PROFILE = "tcapsulesmb-notary"
 DEFAULT_NOTARY_TIMEOUT = "30m"
 CACHE_COMPLETE_MARKER = ".complete"
@@ -99,18 +103,6 @@ PACKAGE_CACHE_KEEP_ENTRIES = 4
 # is still copying from.
 PACKAGE_CACHE_LOCK_FILE = ".lock"
 PYTHON_SUBPROCESS_BYTECODE_CACHE = "python-bytecode"
-APP_ICON_ENTRIES = [
-    ("icon_16x16.png", 16),
-    ("icon_16x16@2x.png", 32),
-    ("icon_32x32.png", 32),
-    ("icon_32x32@2x.png", 64),
-    ("icon_128x128.png", 128),
-    ("icon_128x128@2x.png", 256),
-    ("icon_256x256.png", 256),
-    ("icon_256x256@2x.png", 512),
-    ("icon_512x512.png", 512),
-    ("icon_512x512@2x.png", 1024),
-]
 # The oldest macOS the app supports, as in Package.swift's platforms. dyld does
 # not enforce a binary's declared minimum macOS (a binary declaring 30.0 ran on
 # 26.6.2): one built for a newer macOS opens and then fails on a missing symbol,
@@ -433,59 +425,77 @@ def write_info_plist(contents_dir: Path, *, languages: list[str], icon_name: str
     }
     if icon_name:
         info["CFBundleIconFile"] = icon_name
+        info["CFBundleIconName"] = icon_name
     with (contents_dir / "Info.plist").open("wb") as handle:
         plistlib.dump(info, handle)
     (contents_dir / "PkgInfo").write_text("APPL????", encoding="utf-8")
 
 
-def app_icon_cache_entry(source: Path) -> Path:
+def actool_version() -> str:
+    completed = run(["xcrun", "actool", "--version"], capture=True)
+    version = plistlib.loads(completed.stdout.encode("utf-8"))["com.apple.actool.version"]["short-bundle-version"]
+    # Only Xcode 26 and later compile an Icon Composer document.
+    if int(version.split(".")[0]) < ACTOOL_MINIMUM_MAJOR:
+        raise RuntimeError(f"Compiling the app icon needs Xcode {ACTOOL_MINIMUM_MAJOR} or later; actool is {version}")
+    return version
+
+
+def app_icon_cache_entry(source: Path, version: str) -> Path:
     key = cache_key({
         "kind": "app-icon",
         "version": APP_ICON_CACHE_VERSION,
         "source": str(source.resolve()),
-        "source_sha256": sha256_file(source),
-        "entries": APP_ICON_ENTRIES,
+        "source_sha256": sha256_tree(source),
+        "actool": version,
+        "minimum_macos": MINIMUM_MACOS,
     })
-    return evict_stale_cache_entries(package_cache_dir("app-icon") / f"{key}.icns")
+    return evict_stale_cache_entries(package_cache_dir("app-icon") / key)
 
 
 @timed_step("Preparing app icon")
 def create_app_icon(source: Path, resources_dir: Path, *, use_cache: bool = True) -> None:
-    if not source.is_file():
-        raise RuntimeError(f"App icon source does not exist: {source}")
+    """Compile the Icon Composer document with actool. macOS 26 and later
+    draw the icon from Assets.car through CFBundleIconName; macOS 14 and 15
+    use the flattened copies actool renders into the same catalog. The .icns
+    actool writes beside it is the CFBundleIconFile fallback and the disk
+    image's volume icon."""
+    if not (source / "icon.json").is_file():
+        raise RuntimeError(f"App icon source is not an Icon Composer document: {source}")
 
-    icon_path = resources_dir / APP_ICON_FILE
-    if use_cache:
-        cached_icon = app_icon_cache_entry(source)
-        if cached_icon.is_file():
-            print("Using cached app icon.", file=sys.stderr)
-            shutil.copy2(cached_icon, icon_path)
-            return
+    version = actool_version()
+    outputs = [APP_ICON_CATALOG, APP_ICON_FILE]
+    entry = app_icon_cache_entry(source, version) if use_cache else None
+    if entry is not None and cache_is_complete(entry, entry / APP_ICON_CATALOG):
+        print("Using cached app icon.", file=sys.stderr)
+        for name in outputs:
+            shutil.copy2(entry / name, resources_dir / name)
+        return
 
-    with tempfile.TemporaryDirectory(prefix="timecapsulesmb-iconset-") as tmp:
-        iconset = Path(tmp) / f"{APP_ICON_NAME}.iconset"
-        iconset.mkdir()
-        for filename, size in APP_ICON_ENTRIES:
-            run([
-                "sips",
-                "-s",
-                "format",
-                "png",
-                "-z",
-                str(size),
-                str(size),
-                str(source),
-                "--out",
-                str(iconset / filename),
-            ])
-        run(["iconutil", "-c", "icns", str(iconset), "-o", str(icon_path)])
-
-    if not icon_path.is_file():
-        raise RuntimeError(f"App icon generation did not produce {icon_path}")
-    if use_cache:
-        cached_icon = app_icon_cache_entry(source)
-        cached_icon.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(icon_path, cached_icon)
+    with tempfile.TemporaryDirectory(prefix="timecapsulesmb-app-icon-") as tmp:
+        # actool names the icon after the document, whatever --icon was called.
+        document = Path(tmp) / f"{APP_ICON_NAME}.icon"
+        shutil.copytree(source, document)
+        compiled = Path(tmp) / "compiled"
+        compiled.mkdir()
+        run([
+            "xcrun", "actool", str(document),
+            "--compile", str(compiled),
+            "--app-icon", APP_ICON_NAME,
+            "--include-all-app-icons",
+            "--output-partial-info-plist", str(Path(tmp) / "partial-info.plist"),
+            "--platform", "macosx",
+            "--target-device", "mac",
+            "--minimum-deployment-target", MINIMUM_MACOS,
+            "--errors", "--warnings",
+        ])
+        missing = [name for name in outputs if not (compiled / name).is_file()]
+        if missing:
+            raise RuntimeError(f"actool did not produce {', '.join(missing)} from {source}")
+        for name in outputs:
+            shutil.copy2(compiled / name, resources_dir / name)
+        if entry is not None:
+            mark_cache_complete(compiled)
+            replace_path(compiled, entry)
 
 
 def sparkle_framework(app: Path) -> Path:
@@ -1960,8 +1970,11 @@ def assert_bundle_layout(
             raise RuntimeError(f"App bundle is missing app icon: {icon_file}")
         with info_plist.open("rb") as handle:
             info = plistlib.load(handle)
-        if info.get("CFBundleIconFile") != icon_name:
+        if info.get("CFBundleIconFile") != icon_name or info.get("CFBundleIconName") != icon_name:
             raise RuntimeError(f"Info.plist does not reference app icon {icon_name}")
+        catalog = app / "Contents" / "Resources" / APP_ICON_CATALOG
+        if not catalog.is_file():
+            raise RuntimeError(f"App bundle is missing app icon catalog: {catalog}")
     assert_distribution_artifacts(distribution)
     assert_bundled_ca_certificates(app)
     assert_python_dependencies_are_bundled(app)
@@ -2375,7 +2388,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--icon",
         type=Path,
         default=DEFAULT_ICON_SOURCE,
-        help="Source image to convert into the app bundle .icns icon.",
+        help="Icon Composer document to compile into the app icon.",
     )
     parser.add_argument(
         "--python-runtime-url",

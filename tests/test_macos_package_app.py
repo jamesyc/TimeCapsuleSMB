@@ -203,6 +203,67 @@ def test_smoke_request_rejects_failed_result_event(monkeypatch: pytest.MonkeyPat
         package_app.smoke_request(tmp_path / "tcapsule", "validate-install", tmp_path)
 
 
+def make_valid_layout_bundle(package_app, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A bundle assert_bundle_layout accepts, with the Mach-O checks stubbed."""
+    app = tmp_path / "TimeCapsuleSMB.app"
+    helper = app / "Contents" / "Helpers" / "tcapsule"
+    python_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
+    distribution = app / "Contents" / "Resources" / "Distribution"
+    for directory in (helper.parent, python_packages, distribution / "bin" / "payloads"):
+        directory.mkdir(parents=True)
+    create_fake_app_executable_and_resources(app)
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    (distribution / "artifact-manifest.json").write_text('{"artifacts":{}}', encoding="utf-8")
+    (distribution / "bin" / "payloads" / "one").write_text("one", encoding="utf-8")
+    monkeypatch.setattr(package_app, "artifact_paths", lambda: ["bin/payloads/one"])
+    monkeypatch.setattr(package_app, "assert_python_dependencies_are_bundled", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_bundled_ca_certificates", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "validate_app_resources", lambda app: None)
+    create_fake_certifi_package(python_packages)
+    return app
+
+
+@pytest.mark.parametrize("broken", [None, "no catalog", "no icns", "no icon name", "no icon file"])
+def test_assert_bundle_layout_checks_the_app_icon_for_old_and_new_macos(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    broken: str | None,
+) -> None:
+    package_app = load_package_app_module()
+    app = make_valid_layout_bundle(package_app, monkeypatch, tmp_path)
+    contents = app / "Contents"
+    package_app.write_info_plist(contents, languages=["en"], icon_name="TimeCapsuleSMB")
+    (contents / "Resources" / "Assets.car").write_bytes(b"car")
+    (contents / "Resources" / "TimeCapsuleSMB.icns").write_bytes(b"icns")
+    if broken == "no catalog":
+        (contents / "Resources" / "Assets.car").unlink()
+    elif broken == "no icns":
+        (contents / "Resources" / "TimeCapsuleSMB.icns").unlink()
+    elif broken in ("no icon name", "no icon file"):
+        key = "CFBundleIconName" if broken == "no icon name" else "CFBundleIconFile"
+        with (contents / "Info.plist").open("rb") as handle:
+            info = plistlib.load(handle)
+        del info[key]
+        with (contents / "Info.plist").open("wb") as handle:
+            plistlib.dump(info, handle)
+
+    if broken is None:
+        package_app.assert_bundle_layout(app, icon_name="TimeCapsuleSMB")
+        return
+    expected = {
+        "no catalog": "missing app icon catalog",
+        "no icns": "missing app icon",
+        "no icon name": "does not reference app icon",
+        "no icon file": "does not reference app icon",
+    }[broken]
+    with pytest.raises(RuntimeError, match=expected):
+        package_app.assert_bundle_layout(app, icon_name="TimeCapsuleSMB")
+
+
 def test_assert_bundle_layout_checks_helper_python_and_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1083,38 +1144,233 @@ def test_prune_python_runtime_removes_unused_gui_frameworks(tmp_path: Path) -> N
     assert not (dynload / "_tkinter.cpython-313-darwin.so").exists()
 
 
-def test_create_app_icon_reuses_cached_icns(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    package_app = load_package_app_module()
-    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
-    source = tmp_path / "tcs.jpg"
-    source.write_bytes(b"fake jpg")
-    calls: list[list[str]] = []
+class FakeActool:
+    """Stands in for `xcrun actool`: reports `version` and, on --compile,
+    writes `outputs` stamped with the document's icon.json."""
 
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append(cmd)
-        if cmd[0] == "sips":
-            output = Path(cmd[cmd.index("--out") + 1])
-            output.write_text("png", encoding="utf-8")
-        elif cmd[0] == "iconutil":
-            output = Path(cmd[cmd.index("-o") + 1])
-            output.write_text("icns", encoding="utf-8")
+    def __init__(self, version: str = "27.2", outputs: tuple[str, ...] = ("Assets.car", "TimeCapsuleSMB.icns")) -> None:
+        self.version = version
+        self.outputs = outputs
+        self.compiles: list[list[str]] = []
+
+    def __call__(self, cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert cmd[:2] == ["xcrun", "actool"]
+        if cmd[2] == "--version":
+            stdout = plistlib.dumps({"com.apple.actool.version": {"short-bundle-version": self.version}}).decode()
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout)
+        self.compiles.append(cmd)
+        document = Path(cmd[2])
+        stamp = (document / "icon.json").read_text(encoding="utf-8")
+        compiled = Path(cmd[cmd.index("--compile") + 1])
+        for name in self.outputs:
+            (compiled / name).write_text(f"{name} {stamp}", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr(package_app, "run", fake_run)
 
-    first_resources = tmp_path / "FirstResources"
-    second_resources = tmp_path / "SecondResources"
-    first_resources.mkdir()
-    second_resources.mkdir()
+def make_icon_document(directory: Path, name: str = "Artwork.icon", contents: str = "v1") -> Path:
+    document = directory / name
+    (document / "Assets").mkdir(parents=True)
+    (document / "icon.json").write_text(contents, encoding="utf-8")
+    (document / "Assets" / "artwork.png").write_bytes(b"png")
+    return document
 
-    package_app.create_app_icon(source, first_resources)
-    assert calls
 
-    calls.clear()
-    package_app.create_app_icon(source, second_resources)
+def test_create_app_icon_compiles_the_document_once_and_reuses_the_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    actool = FakeActool()
+    monkeypatch.setattr(package_app, "run", actool)
+    source = make_icon_document(tmp_path)
+    first, second = tmp_path / "First", tmp_path / "Second"
+    first.mkdir()
+    second.mkdir()
 
-    assert calls == []
-    assert (second_resources / "TimeCapsuleSMB.icns").read_text(encoding="utf-8") == "icns"
+    package_app.create_app_icon(source, first)
+
+    [compile_cmd] = actool.compiles
+    # actool names the icon after the document, so it gets the bundle's name.
+    assert Path(compile_cmd[2]).name == "TimeCapsuleSMB.icon"
+    assert compile_cmd[compile_cmd.index("--app-icon") + 1] == "TimeCapsuleSMB"
+    assert compile_cmd[compile_cmd.index("--minimum-deployment-target") + 1] == "14.0"
+    assert (first / "Assets.car").read_text(encoding="utf-8") == "Assets.car v1"
+    assert (first / "TimeCapsuleSMB.icns").read_text(encoding="utf-8") == "TimeCapsuleSMB.icns v1"
+
+    package_app.create_app_icon(source, second)
+
+    assert len(actool.compiles) == 1
+    assert (second / "Assets.car").read_text(encoding="utf-8") == "Assets.car v1"
+    assert (second / "TimeCapsuleSMB.icns").read_text(encoding="utf-8") == "TimeCapsuleSMB.icns v1"
+
+
+def test_create_app_icon_recompiles_when_the_document_or_actool_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    actool = FakeActool()
+    monkeypatch.setattr(package_app, "run", actool)
+    source = make_icon_document(tmp_path)
+    resources = tmp_path / "Resources"
+    resources.mkdir()
+
+    package_app.create_app_icon(source, resources)
+    (source / "icon.json").write_text("v2", encoding="utf-8")
+    package_app.create_app_icon(source, resources)
+
+    assert len(actool.compiles) == 2
+    assert (resources / "Assets.car").read_text(encoding="utf-8") == "Assets.car v2"
+
+    # A new Xcode renders the icon its own way.
+    actool.version = "27.3"
+    package_app.create_app_icon(source, resources)
+
+    assert len(actool.compiles) == 3
+
+
+def test_create_app_icon_without_cache_always_compiles(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    actool = FakeActool()
+    monkeypatch.setattr(package_app, "run", actool)
+    source = make_icon_document(tmp_path)
+    resources = tmp_path / "Resources"
+    resources.mkdir()
+
+    package_app.create_app_icon(source, resources, use_cache=False)
+    package_app.create_app_icon(source, resources, use_cache=False)
+
+    assert len(actool.compiles) == 2
+    assert not (tmp_path / ".build").exists()
+
+
+def test_create_app_icon_refuses_actool_older_than_xcode_26(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    actool = FakeActool(version="16.4")
+    monkeypatch.setattr(package_app, "run", actool)
+
+    with pytest.raises(RuntimeError, match="needs Xcode 26 or later; actool is 16.4"):
+        package_app.create_app_icon(make_icon_document(tmp_path), tmp_path)
+
+    assert actool.compiles == []
+
+
+def test_create_app_icon_does_not_cache_a_compile_missing_an_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    actool = FakeActool(outputs=("Assets.car",))
+    monkeypatch.setattr(package_app, "run", actool)
+    source = make_icon_document(tmp_path)
+    resources = tmp_path / "Resources"
+    resources.mkdir()
+
+    with pytest.raises(RuntimeError, match="did not produce TimeCapsuleSMB.icns"):
+        package_app.create_app_icon(source, resources)
+
+    actool.outputs = ("Assets.car", "TimeCapsuleSMB.icns")
+    package_app.create_app_icon(source, resources)
+
+    assert len(actool.compiles) == 2
+    assert (resources / "TimeCapsuleSMB.icns").is_file()
+
+
+def test_create_app_icon_needs_an_icon_composer_document(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    actool = FakeActool()
+    monkeypatch.setattr(package_app, "run", actool)
+    image = tmp_path / "tcs.jpg"
+    image.write_bytes(b"jpg")
+
+    with pytest.raises(RuntimeError, match="not an Icon Composer document"):
+        package_app.create_app_icon(image, tmp_path)
+
+    assert actool.compiles == []
+
+
+def test_write_info_plist_names_the_icon_for_every_macos(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+
+    package_app.write_info_plist(tmp_path, languages=["en"], icon_name="TimeCapsuleSMB")
+    with (tmp_path / "Info.plist").open("rb") as handle:
+        info = plistlib.load(handle)
+
+    # macOS 26 and later read the catalog by name; the .icns is the file fallback.
+    assert info["CFBundleIconName"] == "TimeCapsuleSMB"
+    assert info["CFBundleIconFile"] == "TimeCapsuleSMB"
+
+    package_app.write_info_plist(tmp_path, languages=["en"])
+    with (tmp_path / "Info.plist").open("rb") as handle:
+        info = plistlib.load(handle)
+
+    assert "CFBundleIconName" not in info
+    assert "CFBundleIconFile" not in info
+
+
+def read_png_rgb(path: Path) -> tuple[int, int, list[bytes]]:
+    """Rows of an 8-bit, non-interlaced RGB or RGBA PNG, as RGB bytes."""
+    import zlib
+
+    data = path.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    offset, idat, header = 8, b"", b""
+    while offset < len(data):
+        (length,) = struct.unpack(">I", data[offset:offset + 4])
+        kind = data[offset + 4:offset + 8]
+        body = data[offset + 8:offset + 8 + length]
+        if kind == b"IHDR":
+            header = body
+        elif kind == b"IDAT":
+            idat += body
+        offset += length + 12
+    width, height, depth, color, _, _, interlace = struct.unpack(">IIBBBBB", header)
+    assert (depth, interlace) == (8, 0) and color in (2, 6)
+    channels = 3 if color == 2 else 4
+    stride = width * channels
+    raw = zlib.decompress(idat)
+    rows: list[bytes] = []
+    previous = bytearray(stride)
+    for y in range(height):
+        kind, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for x in range(stride):
+            left = line[x - channels] if x >= channels else 0
+            up = previous[x]
+            upper_left = previous[x - channels] if x >= channels else 0
+            if kind == 1:
+                line[x] = (line[x] + left) & 0xFF
+            elif kind == 2:
+                line[x] = (line[x] + up) & 0xFF
+            elif kind == 3:
+                line[x] = (line[x] + (left + up) // 2) & 0xFF
+            elif kind == 4:
+                p = left + up - upper_left
+                pa, pb, pc = abs(p - left), abs(p - up), abs(p - upper_left)
+                line[x] = (line[x] + (left if pa <= pb and pa <= pc else up if pb <= pc else upper_left)) & 0xFF
+        previous = line
+        rows.append(bytes(b for i, b in enumerate(line) if i % channels < 3))
+    return width, height, rows
+
+
+def test_committed_app_icon_fills_the_whole_canvas_without_black_corners() -> None:
+    package_app = load_package_app_module()
+    document = package_app.DEFAULT_ICON_SOURCE
+    info = json.loads((document / "icon.json").read_text(encoding="utf-8"))
+    [group] = info["groups"]
+    [layer] = group["layers"]
+    width, height, rows = read_png_rgb(document / "Assets" / layer["image-name"])
+
+    # One full-bleed layer: macOS clips it to its own shape on every version,
+    # so it must cover Icon Composer's 1024-point canvas exactly.
+    assert width == height
+    assert layer["position"]["scale"] * width == pytest.approx(1024, abs=0.01)
+    assert layer["position"]["translation-in-points"] == [0, 0]
+    # The flattened icons for macOS 14 and 15 reach into the artwork's corners;
+    # black there showed as a dark rim (issue 407).
+    for x, y in [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1), (40, 40), (width - 41, height - 41)]:
+        assert min(rows[y][3 * x:3 * x + 3]) > 150, (x, y)
 
 
 def test_prepared_python_framework_reuses_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
