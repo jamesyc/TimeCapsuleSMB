@@ -222,6 +222,9 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         ("doctor_passed", result, "doctor", True, contracts.doctor_payload(fatal=False, results=[])),
         ("doctor_fatal", result, "doctor", False, contracts.doctor_payload(
             fatal=True, results=doctor_fail, error="Doctor failures:\nFAIL smbd is not running")),
+        # The Swift boot hook tests (BootHookTestSupport.swift) build their
+        # helper replies from these flash rows by name; rename or drop one
+        # there too.
         ("flash_backup", result, "flash", True, contracts.flash_backup_payload({"backup_dir": BACKUP_DIR, "banks": []})),
         ("flash_apple_stock_match", result, "flash", True, _check_apple([True], None)),
         ("flash_apple_stock_match_version", result, "flash", True, _check_apple([True], "7.8.1")),

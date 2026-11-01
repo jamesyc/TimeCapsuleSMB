@@ -52,4 +52,72 @@ final class StoreTestSupportTests: XCTestCase {
         await second.value
         XCTAssertEqual(gate.waitingCount, 0)
     }
+
+    func testBootHookStepDriverThrowsTheFailedStepsError() async throws {
+        let fixture = try BootHookTestFixture(responses: testBootHookResponses(failure: [testBootHookError("plan failed")]))
+        try await fixture.run(.backup)
+
+        await assertBootHookFixtureFails(.failed(.plan(.patch), "plan failed")) {
+            try await fixture.run(.plan(.patch))
+        }
+        XCTAssertNotNil(fixture.store.backup)
+        XCTAssertNil(fixture.store.plan)
+    }
+
+    func testBootHookStepDriverThrowsWhenAStepEndsWithoutItsPayload() async throws {
+        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses() + [
+            .init(
+                events: [testBootHookResult(testBootHookPlanPayload(mode: .patch, writeRequested: true))],
+                pauseBeforeEvents: true
+            )
+        ]))
+        defer { fixture.runner.finishAll() }
+        try await fixture.run(.backup)
+
+        // A firmware choice changed while planning drops the finished plan.
+        let planRun = Task { try await fixture.run(.plan(.patch)) }
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 }
+        fixture.store.firmwareVersion = "7.8.2"
+        fixture.runner.finishAll()
+
+        await assertBootHookFixtureFails(.endedWithoutPayload(.plan(.patch))) {
+            try await planRun.value
+        }
+        XCTAssertNil(fixture.store.error)
+    }
+
+    func testBootHookFixtureRefreshesForTheGivenProfile() throws {
+        let netbsd6 = try testDeviceProfile(payloadFamily: "netbsd6_samba4")
+
+        let fixture = try BootHookTestFixture(profile: netbsd6)
+
+        XCTAssertEqual(fixture.profile.id, netbsd6.id)
+        XCTAssertEqual(fixture.store.state, .unavailable)
+        XCTAssertFalse(fixture.store.canBackup)
+    }
+
+    func testBootHookPayloadsShowTheHelpersKeyNotItsEnglishSummary() async throws {
+        let store = try await BootHookTestFixture.afterPlan(
+            testBootHookPlanPayload(mode: .patch, writeRequested: true)
+        ).store
+
+        XCTAssertEqual(store.plan?.summary, helperEnglishSummaryStandIn)
+        XCTAssertEqual(store.plan?.localizedSummary, "Flash patch write plan generated.")
+    }
+
+    private func assertBootHookFixtureFails(
+        _ expected: BootHookFixtureFailure,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ body: () async throws -> Void
+    ) async {
+        do {
+            try await body()
+            XCTFail("expected \(expected)", file: file, line: line)
+        } catch let failure as BootHookFixtureFailure {
+            XCTAssertEqual(failure, expected, file: file, line: line)
+        } catch {
+            XCTFail("unexpected \(error)", file: file, line: line)
+        }
+    }
 }

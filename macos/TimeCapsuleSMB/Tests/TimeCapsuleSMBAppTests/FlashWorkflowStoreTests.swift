@@ -29,7 +29,8 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testDefaultPolicyEnablesFlashWritesForNetBSD4() throws {
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        let profile = try testNetBSD4Profile()
+        // The store's own default policy, so not the fixture, which names one.
         let store = FlashWorkflowStore()
 
         store.refresh(profile: profile)
@@ -39,7 +40,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testReadOnlyPolicyAllowsAnalysisButNotWrites() throws {
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        let profile = try testNetBSD4Profile()
 
         let eligibility = FlashEligibilityPolicy.eligibility(for: profile, buildPolicy: .readOnly)
 
@@ -49,7 +50,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testNonNetBSD4DeviceIsUnavailable() throws {
-        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let profile = try testDeviceProfile(payloadFamily: "netbsd6_samba4")
 
         let eligibility = FlashEligibilityPolicy.eligibility(for: profile, buildPolicy: .writesEnabled)
 
@@ -59,8 +60,8 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testBootHookSectionVisibilityIsLimitedToNetBSD4Profiles() throws {
-        let netbsd4 = try makeProfile(payloadFamily: "netbsd4_samba4")
-        let netbsd6 = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let netbsd4 = try testNetBSD4Profile()
+        let netbsd6 = try testDeviceProfile(payloadFamily: "netbsd6_samba4")
 
         XCTAssertTrue(FlashBootHookVisibilityPolicy.isVisible(for: netbsd4))
         XCTAssertFalse(FlashBootHookVisibilityPolicy.isVisible(for: netbsd6))
@@ -98,25 +99,24 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testBackupAndPlanFlowTracksStructuredPayloads() async throws {
-        let runner = StoreTestRunner(responses: [
+        let fixture = try BootHookTestFixture(responses: [
             .init(events: [
                 BackendEvent(type: "stage", operation: "flash", stage: "read_flash", risk: "remote_read", cancellable: true),
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
+                testBootHookResult(testBootHookBackupPayload())
             ]),
             .init(events: [
                 BackendEvent(type: "stage", operation: "flash", stage: "plan_flash", risk: "local_write", cancellable: true),
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: .patch, writeRequested: true))
+                testBootHookResult(testBootHookPlanPayload(mode: .patch, writeRequested: true))
             ])
         ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
+        let store = fixture.store
+        let runner = fixture.runner
 
-        store.backupAndInspect(password: "pw", profile: profile)
+        store.backupAndInspect(password: "pw", profile: fixture.profile)
         XCTAssertEqual(store.state, .readingBanks)
         try await waitUntilStoreState { store.backup != nil && store.state == .planAvailable && !store.isBusy }
 
-        store.planFlash(mode: .patch, profile: profile)
+        store.planFlash(mode: .patch, profile: fixture.profile)
         try await waitUntilStoreState { store.plan != nil && store.canWritePatch }
 
         XCTAssertEqual(runner.calls.count, 2)
@@ -131,14 +131,17 @@ final class FlashWorkflowStoreTests: XCTestCase {
     func testEachFlashTransitionWaitsForHelperCompletion() async throws {
         // Each case has a fresh gate: releasing backup must not unpause plan/write.
         for pausedStep in 0...2 {
-            let payloads = [flashBackupPayload(), flashPlanPayload(mode: .patch, writeRequested: true), flashWritePayload(mode: .patch)]
-            let runner = PausingStoreTestRunner(responses: payloads.enumerated().map { index, payload in
-                .init(events: [BackendEvent(type: "result", operation: "flash", ok: true, payload: payload)], pauseAfterEvents: index == pausedStep)
-            })
+            let responses = testBootHookResponses(
+                plan: testBootHookPlanPayload(mode: .patch, writeRequested: true),
+                write: testBootHookWritePayload(.patchNeedsPowerCycle)
+            )
+            let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: responses.enumerated().map { index, response in
+                .init(events: response.events, pauseAfterEvents: index == pausedStep)
+            }))
+            let runner = fixture.runner
             defer { runner.finishAll() }
-            let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-            let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-            store.refresh(profile: profile)
+            let store = fixture.store
+            let profile = fixture.profile
             for step in 0...2 {
                 switch step {
                 case 0: store.backupAndInspect(password: "pw", profile: profile)
@@ -169,14 +172,8 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testPublishesWhenBackendFinishesAfterBackupResult() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
+        let fixture = try BootHookTestFixture(responses: testBootHookResponses())
+        let store = fixture.store
         let finishPublished = expectation(description: "FlashWorkflowStore publishes after backend running state clears")
         var didFulfill = false
         var cancellables: Set<AnyCancellable> = []
@@ -194,7 +191,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
             }
             .store(in: &cancellables)
 
-        store.backupAndInspect(password: "pw", profile: profile)
+        store.backupAndInspect(password: "pw", profile: fixture.profile)
 
         try await waitUntilStoreState { store.state == .planAvailable }
         await fulfillment(of: [finishPublished], timeout: 2)
@@ -203,48 +200,29 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testPlanFlashCarriesAppleFirmwareSelectionOptions() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: .downloadOnly, writeRequested: false))
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
+        let fixture = try BootHookTestFixture(responses: testBootHookResponses(plan: testAppleRestoreFirmwarePayload()))
+        let store = fixture.store
 
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
+        try await fixture.run(.backup)
         store.firmwareVersion = " 7.8.1 "
         store.firmwareTemplatePath = " /tmp/firmware.basebinary "
+        try await fixture.run(.plan(.downloadOnly))
 
-        store.planFlash(mode: .downloadOnly, profile: profile)
-        try await waitUntilStoreState { runner.calls.count == 2 && store.plan != nil && !store.isBusy }
-
-        XCTAssertEqual(runner.calls[1].params["firmware_version"], .string("7.8.1"))
-        XCTAssertEqual(runner.calls[1].params["firmware_template"], .string("/tmp/firmware.basebinary"))
+        XCTAssertEqual(fixture.runner.calls.count, 2)
+        XCTAssertEqual(fixture.runner.calls[1].params["firmware_version"], .string("7.8.1"))
+        XCTAssertEqual(fixture.runner.calls[1].params["firmware_template"], .string("/tmp/firmware.basebinary"))
     }
 
     func testFirmwareSelectionEditsInvalidateExistingWritePlan() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: .patch, writeRequested: true))
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
+        let fixture = try BootHookTestFixture(responses: testBootHookResponses(
+            plan: testBootHookPlanPayload(mode: .patch, writeRequested: true)
+        ))
+        let store = fixture.store
 
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
+        try await fixture.run(.backup)
         store.firmwareVersion = "7.8.1"
-        store.planFlash(mode: .patch, profile: profile)
-        try await waitUntilStoreState { store.canWritePatch }
+        try await fixture.run(.plan(.patch))
+        XCTAssertTrue(store.canWritePatch)
 
         store.firmwareVersion = "7.8.2"
 
@@ -254,33 +232,9 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testAppleCheckPresentationShowsMatchDetails() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(
-                    type: "result",
-                    operation: "flash",
-                    ok: true,
-                    payload: flashPlanPayload(
-                        mode: .checkApple,
-                        writeRequested: false,
-                        alreadySatisfied: true,
-                        appleMatched: true
-                    )
-                )
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
+        let store = try await BootHookTestFixture.afterPlan(testAppleCheckPayload(matched: true)).store
 
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-        store.planFlash(mode: .checkApple, profile: profile)
-        try await waitUntilStoreState { store.state == .appleCheckComplete }
-
+        XCTAssertEqual(store.state, .appleCheckComplete)
         let presentation = FlashPresentation(store: store)
         XCTAssertEqual(presentation.message, "Active firmware bank matches Apple stock firmware 7.8.1.")
         XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Apple Match", value: "yes")))
@@ -289,34 +243,9 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testAppleCheckPresentationShowsMultiBankMatchDetails() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(
-                    type: "result",
-                    operation: "flash",
-                    ok: true,
-                    payload: flashPlanPayload(
-                        mode: .checkApple,
-                        writeRequested: false,
-                        alreadySatisfied: true,
-                        appleMatched: true,
-                        includeAppleFirmwareMatches: true
-                    )
-                )
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
+        let store = try await BootHookTestFixture.afterPlan(testAppleCheckPayload(matched: true, allBanks: true)).store
 
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-        store.planFlash(mode: .checkApple, profile: profile)
-        try await waitUntilStoreState { store.state == .appleCheckComplete }
-
+        XCTAssertEqual(store.state, .appleCheckComplete)
         let presentation = FlashPresentation(store: store)
         XCTAssertEqual(presentation.message, "All candidate firmware banks match Apple stock firmware 7.8.1.")
         XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Apple Match (primary)", value: "yes")))
@@ -324,61 +253,18 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testAppleCheckMismatchUsesDedicatedState() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(
-                    type: "result",
-                    operation: "flash",
-                    ok: true,
-                    payload: flashPlanPayload(
-                        mode: .checkApple,
-                        writeRequested: false,
-                        alreadySatisfied: false,
-                        appleMatched: false
-                    )
-                )
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
+        let store = try await BootHookTestFixture.afterPlan(testAppleCheckPayload(matched: false)).store
 
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-        store.planFlash(mode: .checkApple, profile: profile)
-        try await waitUntilStoreState { store.state == .appleFirmwareMismatch }
-
+        XCTAssertEqual(store.state, .appleFirmwareMismatch)
         XCTAssertTrue(FlashPresentation(store: store).rows.contains(PresentationRow(label: "Apple Match", value: "no")))
     }
 
     func testValidateAppleRestoreFirmwarePresentationShowsPayloadDetails() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(
-                    type: "result",
-                    operation: "flash",
-                    ok: true,
-                    payload: flashPlanPayload(mode: .downloadOnly, writeRequested: false, includeFirmwarePayload: true)
-                )
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
+        let store = try await BootHookTestFixture.afterPlan(testAppleRestoreFirmwarePayload(withPayloadDetails: true)).store
 
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-        store.planFlash(mode: .downloadOnly, profile: profile)
-        try await waitUntilStoreState { store.state == .appleFirmwareReady }
-
+        XCTAssertEqual(store.state, .appleFirmwareReady)
         let presentation = FlashPresentation(store: store)
-        XCTAssertEqual(presentation.message, "Apple restore firmware validated (version 7.8.1, product 116).")
+        XCTAssertEqual(presentation.message, "Apple restore firmware validated (version 7.8.1, product 119).")
         XCTAssertEqual(presentation.title(for: .downloadApple), "Validate Apple Restore Firmware")
         XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Firmware Payload", value: "/tmp/flash-backup/primary.download_only.basebinary")))
         XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Firmware Payload SHA-256", value: "payload-sha")))
@@ -386,13 +272,9 @@ final class FlashWorkflowStoreTests: XCTestCase {
 
     func testWriteConfirmationCancellationRestoresPlanAvailable() async throws {
         for mode in [FlashPlanMode.patch, .restore] {
-            let runner = PausingStoreTestRunner(responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-                ]),
-                .init(events: [
-                    BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: mode, writeRequested: true))
-                ]),
+            let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses(
+                plan: testBootHookPlanPayload(mode: mode, writeRequested: true)
+            ) + [
                 .init(events: [
                     BackendEvent(
                         type: "error",
@@ -406,18 +288,14 @@ final class FlashWorkflowStoreTests: XCTestCase {
                         ])
                     )
                 ], pauseAfterEvents: true)
-            ])
+            ]), onDeviceLane: true)
+            let runner = fixture.runner
             defer { runner.finishAll() }
-            let backend = BackendClient(runner: runner)
-            let coordinator = OperationCoordinator(backend: backend)
-            let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-            let store = FlashWorkflowStore(coordinator: coordinator, laneKey: .deviceWorkflow(profile.id, .flash))
-            store.refresh(profile: profile)
+            let coordinator = fixture.coordinator
+            let store = fixture.store
+            let profile = fixture.profile
 
-            store.backupAndInspect(password: "pw", profile: profile)
-            try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-            store.planFlash(mode: mode, profile: profile)
-            try await waitUntilStoreState { store.plan != nil && !store.isBusy }
+            try await fixture.run(.backup, .plan(mode))
 
             store.write(mode: mode, password: "pw", profile: profile)
             try await waitUntilStoreState { store.state == .awaitingStrongConfirmation }
@@ -445,7 +323,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testValidatedPatchWriteShowsManualPowerCycleNotice() async throws {
-        let store = try await storeAfterValidatedWrite(mode: .patch)
+        let store = try await BootHookTestFixture.afterWrite(.patch).store
 
         XCTAssertEqual(store.state, .writeValidatedSnapshotStale)
         XCTAssertEqual(store.manualPowerCycleNotice?.mode, .patch)
@@ -461,7 +339,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testValidatedRestoreWriteWithDefaultRebootDoesNotShowManualPowerCycleNotice() async throws {
-        let store = try await storeAfterValidatedWrite(mode: .restore)
+        let store = try await BootHookTestFixture.afterWrite(.restore).store
 
         XCTAssertEqual(store.state, .writeValidatedSnapshotStale)
         XCTAssertNil(store.manualPowerCycleNotice)
@@ -471,17 +349,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testValidatedRestoreWriteWithoutRebootShowsManualPowerCycleNotice() async throws {
-        let store = try await storeAfterValidatedWrite(
-            mode: .restore,
-            writePayload: flashWritePayload(
-                mode: .restore,
-                postWriteAction: "manual_reboot",
-                rebootRequested: false,
-                rebooted: false,
-                waitedAfterReboot: false,
-                summary: "Flash restore write validated; manual reboot required."
-            )
-        )
+        let store = try await BootHookTestFixture.afterWrite(.restore, .restoreNeedsManualReboot).store
 
         XCTAssertEqual(store.state, .writeValidatedSnapshotStale)
         XCTAssertEqual(store.manualPowerCycleNotice?.mode, .restore)
@@ -490,17 +358,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
     func testValidatedSecondaryBankRestoreShowsNoPowerCycleNoticeAndAsksForAFreshBackup() async throws {
         // The device keeps running its primary bank, so nothing needs restarting,
         // but the backup no longer describes the rewritten secondary bank.
-        let store = try await storeAfterValidatedWrite(
-            mode: .restore,
-            writePayload: flashWritePayload(
-                mode: .restore,
-                postWriteAction: "none",
-                rebootRequested: false,
-                rebooted: false,
-                waitedAfterReboot: false,
-                summary: "Secondary (backup) firmware bank restored and verified; no reboot needed."
-            )
-        )
+        let store = try await BootHookTestFixture.afterWrite(.restore, .restoredSecondaryBank).store
 
         XCTAssertEqual(store.state, .writeValidatedSnapshotStale)
         XCTAssertNil(store.manualPowerCycleNotice)
@@ -510,7 +368,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testValidatedWriteMarksSnapshotStaleAndDisablesPlanning() async throws {
-        let store = try await storeAfterValidatedWrite(mode: .patch)
+        let store = try await BootHookTestFixture.afterWrite(.patch).store
         let presentation = FlashPresentation(store: store)
 
         XCTAssertTrue(store.backupSnapshotStale)
@@ -524,36 +382,21 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testFreshBackupClearsStaleSnapshotAfterWrite() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: .patch, writeRequested: true))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashWritePayload(mode: .patch))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload(banks: [
-                    flashBank(name: "primary", backupValid: true, login: "already_patched"),
-                    flashBank(name: "secondary", backupValid: true, login: "stock")
-                ]))
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
+        let fixture = try BootHookTestFixture(responses: testBootHookResponses(
+            plan: testBootHookPlanPayload(mode: .patch, writeRequested: true),
+            write: testBootHookWritePayload(.patchNeedsPowerCycle)
+        ) + testBootHookResponses(backup: testBootHookBackupPayload(banks: [
+            testBootHookBank(name: "primary", backupValid: true, login: "already_patched"),
+            testBootHookBank(name: "secondary", backupValid: true, login: "stock")
+        ])))
+        let store = fixture.store
 
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-        store.planFlash(mode: .patch, profile: profile)
-        try await waitUntilStoreState { store.plan != nil && !store.isBusy }
-        store.write(mode: .patch, password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backupSnapshotStale && !store.isBusy }
+        try await fixture.run(.backup, .plan(.patch), .write(.patch))
+        XCTAssertTrue(store.backupSnapshotStale)
 
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { !store.backupSnapshotStale && store.state == .planAvailable && !store.isBusy }
+        try await fixture.run(.backup)
+        XCTAssertFalse(store.backupSnapshotStale)
+        XCTAssertEqual(store.state, .planAvailable)
 
         XCTAssertTrue(store.canPlan)
         XCTAssertEqual(FlashPresentation(store: store).title(for: .backupAndInspect), "Back Up and Inspect")
@@ -561,7 +404,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testFlashPresentationUsesWriteResultSummaryAfterWrite() async throws {
-        let store = try await storeAfterValidatedWrite(mode: .patch)
+        let store = try await BootHookTestFixture.afterWrite(.patch).store
 
         let presentation = FlashPresentation(store: store)
 
@@ -576,10 +419,10 @@ final class FlashWorkflowStoreTests: XCTestCase {
             (false, false, "Both failed checks")
         ]
         for testCase in cases {
-            let store = try await storeAfterBackup(flashBackupPayload(activeBank: nil, banks: [
-                flashBank(name: "primary", backupValid: testCase.primary, login: "stock"),
-                flashBank(name: "secondary", backupValid: testCase.secondary, login: "stock")
-            ]))
+            let store = try await BootHookTestFixture.afterBackup(testBootHookBackupPayload(activeBank: nil, banks: [
+                testBootHookBank(name: "primary", backupValid: testCase.primary, login: "stock"),
+                testBootHookBank(name: "secondary", backupValid: testCase.secondary, login: "stock")
+            ])).store
 
             let presentation = FlashPresentation(store: store)
 
@@ -597,10 +440,10 @@ final class FlashWorkflowStoreTests: XCTestCase {
             ("secondary", false, true, "Secondary")
         ]
         for testCase in cases {
-            let store = try await storeAfterBackup(flashBackupPayload(activeBank: testCase.activeBank, banks: [
-                flashBank(name: "primary", backupValid: true, activeCandidate: testCase.primaryCandidate, login: "stock"),
-                flashBank(name: "secondary", backupValid: true, activeCandidate: testCase.secondaryCandidate, login: "stock")
-            ]))
+            let store = try await BootHookTestFixture.afterBackup(testBootHookBackupPayload(activeBank: testCase.activeBank, banks: [
+                testBootHookBank(name: "primary", backupValid: true, activeCandidate: testCase.primaryCandidate, login: "stock"),
+                testBootHookBank(name: "secondary", backupValid: true, activeCandidate: testCase.secondaryCandidate, login: "stock")
+            ])).store
 
             let presentation = FlashPresentation(store: store)
 
@@ -619,17 +462,17 @@ final class FlashWorkflowStoreTests: XCTestCase {
             (nil, "stock", "Not recognized")
         ]
         for testCase in cases {
-            let store = try await storeAfterBackup(flashBackupPayload(banks: [
-                flashBank(name: "primary", backupValid: testCase.primary != nil, login: testCase.primary),
-                flashBank(name: "secondary", backupValid: true, login: testCase.secondary)
-            ]))
+            let store = try await BootHookTestFixture.afterBackup(testBootHookBackupPayload(banks: [
+                testBootHookBank(name: "primary", backupValid: testCase.primary != nil, login: testCase.primary),
+                testBootHookBank(name: "secondary", backupValid: true, login: testCase.secondary)
+            ])).store
 
             XCTAssertEqual(row("Boot Hook", in: FlashPresentation(store: store)), testCase.expected, "\(testCase)")
         }
     }
 
     func testBankRowsLeaveWithTheStaleBackupAfterAWrite() async throws {
-        let store = try await storeAfterValidatedWrite(mode: .patch)
+        let store = try await BootHookTestFixture.afterWrite(.patch).store
 
         let presentation = FlashPresentation(store: store)
 
@@ -642,27 +485,18 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testWriteInProgressDoesNotAskForWritePatch() async throws {
-        let runner = PausingStoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: .patch, writeRequested: true))
-            ]),
+        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses(
+            plan: testBootHookPlanPayload(mode: .patch, writeRequested: true)
+        ) + [
             .init(events: [
                 BackendEvent(type: "stage", operation: "flash", stage: "write_primary_bank", risk: "remote_write", cancellable: false)
             ], pauseAfterEvents: true)
-        ])
-        defer { runner.finishAll() }
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-        store.planFlash(mode: .patch, profile: profile)
-        try await waitUntilStoreState { store.plan != nil && !store.isBusy }
+        ]))
+        defer { fixture.runner.finishAll() }
+        let store = fixture.store
+        try await fixture.run(.backup, .plan(.patch))
 
-        store.write(mode: .patch, password: "pw", profile: profile)
+        store.write(mode: .patch, password: "pw", profile: fixture.profile)
         try await waitUntilStoreState { store.state == .writing }
 
         let presentation = FlashPresentation(store: store)
@@ -679,26 +513,16 @@ final class FlashWorkflowStoreTests: XCTestCase {
             ("write_primary_bank", false)
         ]
         for testCase in cases {
-            let runner = StoreTestRunner(responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-                ]),
-                .init(events: [
-                    BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: .patch, writeRequested: true))
-                ]),
-                .init(events: [
+            let fixture = try BootHookTestFixture(responses: testBootHookResponses(
+                plan: testBootHookPlanPayload(mode: .patch, writeRequested: true),
+                failure: [
                     BackendEvent(type: "stage", operation: "flash", stage: testCase.stage, risk: "remote_write", cancellable: false),
-                    BackendEvent(type: "error", operation: "flash", code: "validation_failed", message: "write failed")
-                ])
-            ])
-            let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-            let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-            store.refresh(profile: profile)
-            store.backupAndInspect(password: "pw", profile: profile)
-            try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-            store.planFlash(mode: .patch, profile: profile)
-            try await waitUntilStoreState { store.plan != nil && !store.isBusy }
-            store.write(mode: .patch, password: "pw", profile: profile)
+                    testBootHookError("write failed")
+                ]
+            ))
+            let store = fixture.store
+            try await fixture.run(.backup, .plan(.patch))
+            store.write(mode: .patch, password: "pw", profile: fixture.profile)
             try await waitUntilStoreState { store.state == .failed && !store.isBusy }
 
             let presentation = FlashPresentation(store: store)
@@ -718,30 +542,13 @@ final class FlashWorkflowStoreTests: XCTestCase {
             (.patch, false, true, "Flash plan is already satisfied; no write is needed.")
         ]
         for testCase in cases {
-            let runner = StoreTestRunner(responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-                ]),
-                .init(events: [
-                    BackendEvent(
-                        type: "result",
-                        operation: "flash",
-                        ok: true,
-                        payload: flashPlanPayload(
-                            mode: testCase.mode,
-                            writeRequested: testCase.writeRequested,
-                            alreadySatisfied: testCase.alreadySatisfied
-                        )
-                    )
-                ])
-            ])
-            let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-            let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-            store.refresh(profile: profile)
-            store.backupAndInspect(password: "pw", profile: profile)
-            try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-            store.planFlash(mode: testCase.mode, profile: profile)
-            try await waitUntilStoreState { store.plan != nil && !store.isBusy }
+            let store = try await BootHookTestFixture.afterPlan(
+                testBootHookPlanPayload(
+                    mode: testCase.mode,
+                    writeRequested: testCase.writeRequested,
+                    alreadySatisfied: testCase.alreadySatisfied
+                )
+            ).store
 
             let presentation = FlashPresentation(store: store)
 
@@ -752,20 +559,10 @@ final class FlashWorkflowStoreTests: XCTestCase {
 
     func testFlashFailureShowsInAnErrorBoxNotInTheStatusLine() async throws {
         let failure = "refusing to patch primary because the secondary (backup) firmware bank is not a valid backup"
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(type: "error", operation: "flash", code: "validation_failed", message: failure)
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-        store.planFlash(mode: .patch, profile: profile)
+        let fixture = try BootHookTestFixture(responses: testBootHookResponses(failure: [testBootHookError(failure)]))
+        let store = fixture.store
+        try await fixture.run(.backup)
+        store.planFlash(mode: .patch, profile: fixture.profile)
         try await waitUntilStoreState { store.error != nil && !store.isBusy }
 
         let error = try XCTUnwrap(store.error)
@@ -776,233 +573,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(error.operation, "flash")
     }
 
-    private func storeAfterValidatedWrite(
-        mode: FlashPlanMode,
-        writePayload: JSONValue? = nil
-    ) async throws -> FlashWorkflowStore {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: mode, writeRequested: true))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: writePayload ?? flashWritePayload(mode: mode))
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
-
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-        store.planFlash(mode: mode, profile: profile)
-        try await waitUntilStoreState { store.plan != nil && !store.isBusy }
-        store.write(mode: mode, password: "pw", profile: profile)
-        try await waitUntilStoreState { store.writeResult != nil && !store.isBusy }
-        return store
-    }
-
-    private func makeProfile(payloadFamily: String) throws -> DeviceProfile {
-        DeviceProfile.make(
-            id: "device-one",
-            configuredDevice: try testConfiguredDevice(payloadFamily: payloadFamily),
-            discoveredDevice: nil,
-            applicationSupportURL: URL(fileURLWithPath: "/tmp/timecapsulesmb-tests", isDirectory: true)
-        )
-    }
-
-    private func flashBackupPayload(
-        activeBank: String? = "primary",
-        banks: [JSONValue]? = nil
-    ) -> JSONValue {
-        let banks = banks ?? [
-            flashBank(name: "primary", backupValid: true, login: "stock"),
-            flashBank(name: "secondary", backupValid: true, login: "stock")
-        ]
-        return .object([
-            "schema_version": .number(1),
-            "backup_dir": .string("/tmp/flash-backup"),
-            "host": .string("10.0.0.2"),
-            "syap": .string("116"),
-            "active_bank": activeBank.map(JSONValue.string) ?? .null,
-            "banks": .array(banks),
-            "counts": .object(["banks": .number(Double(banks.count))]),
-            "summary": .string("Flash backup saved to /tmp/flash-backup.")
-        ])
-    }
-
-    /// A bank as the helper reports it; `login: nil` is a bank whose analysis failed.
-    /// A bank is an active candidate only if it is also a valid backup.
-    private func flashBank(
-        name: String,
-        backupValid: Bool,
-        activeCandidate: Bool? = nil,
-        login: String?
-    ) -> JSONValue {
-        .object([
-            "name": .string(name),
-            "device": .string(name == "primary" ? "/dev/rflash0.raw" : "/dev/rflash1.raw"),
-            "size": .number(128),
-            "sha256": .string("abc"),
-            "backup_valid": .bool(backupValid),
-            "active_candidate": .bool(activeCandidate ?? backupValid),
-            "would_write": .bool(false),
-            "write_decision": .string("no write"),
-            "login": login.map { .object(["classification": .string($0)]) } ?? .null
-        ])
-    }
-
-    private func storeAfterBackup(_ payload: JSONValue) async throws -> FlashWorkflowStore {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: payload)
-            ])
-        ])
-        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-        return store
-    }
-
     private func row(_ label: String, in presentation: FlashPresentation) -> String? {
         presentation.rows.first { $0.label == label }?.value
     }
-
-    private func flashPlanPayload(
-        mode: FlashPlanMode,
-        writeRequested: Bool,
-        alreadySatisfied: Bool = false,
-        appleMatched: Bool? = nil,
-        includeFirmwarePayload: Bool = false,
-        includeAppleFirmwareMatches: Bool = false
-    ) -> JSONValue {
-        var payload: [String: JSONValue] = [
-            "schema_version": .number(1),
-            "backup_dir": .string("/tmp/flash-backup"),
-            "mode": .string(mode.rawValue),
-            "write_requested": .bool(writeRequested),
-            "already_satisfied": .bool(alreadySatisfied),
-            "active_bank": .string("primary"),
-            "banks": .array([]),
-            "flash_plan": .object(["mode": .string(mode.rawValue)]),
-            "summary": .string(summary(for: mode, writeRequested: writeRequested, alreadySatisfied: alreadySatisfied))
-        ]
-        if let appleMatched {
-            payload["apple_firmware_match"] = .object([
-                "matched": .bool(appleMatched),
-                "template_source": .string("catalog"),
-                "template_product_id": .string("116"),
-                "template_version": .string("7.8.1"),
-                "template_sha256": .string("template-sha"),
-                "inner_sha256": .string("inner-sha"),
-                "inner_size": .number(123),
-                "key_id": .string("key-one"),
-                "inner_model": .number(116),
-                "inner_version": .string("0x00070801")
-            ])
-        }
-        if includeAppleFirmwareMatches {
-            let match: [String: JSONValue] = [
-                "matched": .bool(true),
-                "template_source": .string("catalog"),
-                "template_product_id": .string("116"),
-                "template_version": .string("7.8.1"),
-                "template_sha256": .string("template-sha"),
-                "inner_sha256": .string("inner-sha"),
-                "inner_size": .number(123),
-                "key_id": .string("key-one"),
-                "inner_model": .number(116),
-                "inner_version": .string("0x00070801")
-            ]
-            payload["apple_match_status"] = .string("all_candidates_match")
-            payload["apple_firmware_matches"] = .array([
-                .object(["bank": .string("primary"), "match": .object(match)]),
-                .object(["bank": .string("secondary"), "match": .object(match)])
-            ])
-            payload["summary"] = .string("All candidate firmware banks match Apple stock firmware 7.8.1.")
-        }
-        if includeFirmwarePayload {
-            payload["firmware_payload"] = .object([
-                "template_source": .string("catalog"),
-                "template_path": .string("/tmp/firmware.basebinary"),
-                "template_product_id": .string("116"),
-                "template_version": .string("7.8.1"),
-                "template_sha256": .string("template-sha"),
-                "payload_sha256": .string("payload-sha"),
-                "payload_size": .number(456),
-                "expected_prefix_sha256": .string("prefix-sha"),
-                "expected_prefix_size": .number(123),
-                "key_id": .string("key-one"),
-                "inner_model": .number(116),
-                "inner_version": .string("0x00070801"),
-                "inner_payload_size": .number(123)
-            ])
-            payload["firmware_payload_path"] = .string("/tmp/flash-backup/primary.download_only.basebinary")
-        }
-        return .object(payload)
-    }
-
-    /// The summary `flash_plan_payload` gives each plan.
-    private func summary(for mode: FlashPlanMode, writeRequested: Bool, alreadySatisfied: Bool) -> String {
-        switch mode {
-        case .checkApple:
-            return alreadySatisfied
-                ? "Active firmware bank matches Apple stock firmware 7.8.1."
-                : "Active firmware bank does not match Apple stock firmware 7.8.1."
-        case .downloadOnly:
-            return "Apple restore firmware validated (version 7.8.1, product 116)."
-        case .patch, .restore:
-            if alreadySatisfied {
-                return "Flash plan is already satisfied; no write is needed."
-            }
-            return writeRequested ? "Flash \(mode.rawValue) write plan generated." : "Flash \(mode.rawValue) plan generated."
-        }
-    }
-
-    private func flashWritePayload(
-        mode: FlashPlanMode,
-        postWriteAction: String? = nil,
-        rebootRequested: Bool? = nil,
-        rebooted: Bool? = nil,
-        waitedAfterReboot: Bool? = nil,
-        summary: String? = nil
-    ) -> JSONValue {
-        let resolvedPostWriteAction = postWriteAction ?? (mode == .restore ? "ssh_reboot" : "manual_power_cycle")
-        let resolvedRebootRequested = rebootRequested ?? (mode == .restore)
-        let resolvedRebooted = rebooted ?? (mode == .restore)
-        let resolvedWaitedAfterReboot = waitedAfterReboot ?? (mode == .restore)
-        let resolvedSummary = summary ?? {
-            if mode == .restore {
-                return "Flash restore write validated; device rebooted."
-            }
-            return "Flash \(mode.rawValue) write validated; manual power cycle required."
-        }()
-        return .object([
-            "schema_version": .number(1),
-            "backup_dir": .string("/tmp/flash-backup"),
-            "mode": .string(mode.rawValue),
-            "write_status": .string("validated"),
-            "write_validated": .bool(true),
-            "post_write_action": .string(resolvedPostWriteAction),
-            "reboot_requested": .bool(resolvedRebootRequested),
-            "rebooted": .bool(resolvedRebooted),
-            "waited_after_reboot": .bool(resolvedWaitedAfterReboot),
-            "write_outcome": .object([
-                "status": .string("validated"),
-                "mode": .string(mode.rawValue),
-                "write_validated": .bool(true),
-                "write_may_have_modified_device": .bool(true),
-                "post_write_action": .string(resolvedPostWriteAction),
-                "reboot_requested": .bool(resolvedRebootRequested),
-                "rebooted": .bool(resolvedRebooted),
-                "waited_after_reboot": .bool(resolvedWaitedAfterReboot)
-            ]),
-            "summary": .string(resolvedSummary)
-        ])
-    }
-
 }

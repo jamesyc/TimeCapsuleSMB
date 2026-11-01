@@ -895,6 +895,19 @@ func testConfiguredDevice(
     ).decode(ConfigurePayload.self))
 }
 
+func testDeviceProfile(payloadFamily: String) throws -> DeviceProfile {
+    DeviceProfile.make(
+        id: "device-one",
+        configuredDevice: try testConfiguredDevice(payloadFamily: payloadFamily),
+        discoveredDevice: nil,
+        applicationSupportURL: URL(fileURLWithPath: "/tmp/timecapsulesmb-tests", isDirectory: true)
+    )
+}
+
+func testNetBSD4Profile() throws -> DeviceProfile {
+    try testDeviceProfile(payloadFamily: "netbsd4_samba4")
+}
+
 /// A doctor result as the helper sends it, with the counts, each section's
 /// status and the overall status that services/doctor.py's doctor_report
 /// works out for these checks.
