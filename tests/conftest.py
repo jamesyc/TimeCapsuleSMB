@@ -40,6 +40,37 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         os.environ.pop("TC_NATIVE_OBJECT_DIR", None)
 
 
+def selected_shard() -> tuple[int, int] | None:
+    """TC_TEST_SHARD=N/COUNT: this run's share of the tests, for CI jobs that
+    split one suite."""
+    import os
+
+    value = os.environ.get("TC_TEST_SHARD")
+    if not value:
+        return None
+    index, _, count = value.partition("/")
+    if not (index.isdigit() and count.isdigit() and 1 <= int(index) <= int(count)):
+        raise pytest.UsageError(f"TC_TEST_SHARD must be N/COUNT with 1 <= N <= COUNT, not {value!r}")
+    return int(index), int(count)
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    shard = selected_shard()
+    if shard is None:
+        return
+    import zlib
+
+    # By test, not by file: test_manager.py alone is most of the native suite.
+    # crc32, unlike hash(), is the same in every xdist worker, which must all
+    # collect the same tests.
+    index, count = shard
+    kept, dropped = [], []
+    for item in items:
+        (kept if zlib.crc32(item.nodeid.encode()) % count == index - 1 else dropped).append(item)
+    items[:] = kept
+    config.hook.pytest_deselected(items=dropped)
+
+
 @pytest.fixture(autouse=True)
 def block_unmocked_telemetry_posts(monkeypatch: pytest.MonkeyPatch):
     post_mock = mock.Mock(side_effect=AssertionError("tests must not send telemetry"))

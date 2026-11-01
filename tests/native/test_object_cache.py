@@ -147,7 +147,8 @@ assert pathlib.Path(objects).is_dir()
 pathlib.Path({str(seen)!r}, os.environ["PYTEST_XDIST_WORKER"]).write_text(objects)
 def test_probe(): pass
 """)
-    env = {k: v for k, v in os.environ.items() if k != "TC_NATIVE_OBJECT_DIR"}
+    # Not the CI job's TC_TEST_SHARD either, which could deselect the probe.
+    env = {k: v for k, v in os.environ.items() if k not in ("TC_NATIVE_OBJECT_DIR", "TC_TEST_SHARD")}
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), str(ROOT)])
     result = subprocess.run([sys.executable, "-m", "pytest", "-p", "tests.conftest", "-n", "2",
                              "-p", "no:cacheprovider", "-q", "--rootdir", str(tmp_path), str(probe)],

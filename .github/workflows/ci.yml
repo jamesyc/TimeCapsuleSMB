@@ -52,6 +52,56 @@ jobs:
           --ignore GHSA-qc2x-6f54-m6h9
           --ignore GHSA-rfg2-pjw2-56x2
 
+  # The native service is C, so its tests run once per OS rather than once per
+  # Python. Python here only drives them and runs the fake daemons.
+  # The macOS runner's 3 CPUs stay busy with these tests, so two jobs share
+  # them there (TC_TEST_SHARD, tests/conftest.py).
+  native:
+    name: Native tests (${{ matrix.os }}, ${{ matrix.shard }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # These tests mostly wait on the manager's timers, so more workers than
+        # CPUs help: on Ubuntu's 4 CPUs, 8 workers take about half the time 4
+        # did. macOS's 3 CPUs are busier: 6 workers beat 3 clearly and were
+        # never slower than 8 on the shard that ends the job.
+        include:
+          - os: ubuntu-latest
+            shard: 1/1
+            workers: 8
+          - os: macos-latest
+            shard: 1/2
+            workers: 6
+          - os: macos-latest
+            shard: 2/2
+            workers: 6
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.15"
+
+      - name: Install Python dependencies
+        run: make install
+
+      - name: Compile the native service
+        run: ./build/native/host-check.sh
+
+      - name: Native sanitizer tests
+        env:
+          TC_NATIVE_SANITIZERS: "1"
+          UBSAN_OPTIONS: "halt_on_error=1"
+          TC_TEST_SHARD: ${{ matrix.shard }}
+        run: |
+          # Native children close descriptors up to the host soft limit.
+          ulimit -n 256
+          .venv/bin/python -m pytest -n ${{ matrix.workers }} --dist worksteal tests/native
+
   test:
     name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -88,20 +138,6 @@ jobs:
           "$venv/bin/python" -c 'import sys, Crypto.Cipher.AES, ifaddr, zeroconf, zopfli.gzip, timecapsulesmb.cli.main; print(sys.version)'
           "$venv/bin/python" -m pip list --format=freeze
 
-      - name: Compile the native service
-        run: ./build/native/host-check.sh
-
-      - name: Native sanitizer tests
-        env:
-          TC_NATIVE_SANITIZERS: "1"
-          UBSAN_OPTIONS: "halt_on_error=1"
-        run: |
-          # Native children close descriptors up to the host soft limit.
-          ulimit -n 256
-          # One worker per runner CPU: 3 on macOS, 4 on Ubuntu, which ran
-          # these serially in 14 minutes.
-          .venv/bin/python -m pytest -n auto --dist worksteal tests/native tests/test_deploy_modules.py
-
       - name: Run Ruff
         run: |
           .venv/bin/python -m ruff check src tests macos/TimeCapsuleSMB/tools .github/scripts tcapsule
@@ -127,8 +163,8 @@ jobs:
       - name: Run full test suite
         run: |
           ulimit -n 256
-          # The sanitizer step above already ran the native tests.
-          .venv/bin/python -m pytest -n 4 --dist worksteal --ignore=tests/native --ignore=tests/test_deploy_modules.py
+          # The native job runs tests/native.
+          .venv/bin/python -m pytest -n 4 --dist worksteal --ignore=tests/native
 
   swift-test:
     name: Swift Tests (macOS)
@@ -272,6 +308,7 @@ jobs:
     needs:
       - samba-regressions
       - audit
+      - native
       - test
       - swift-test
       - intel-check
