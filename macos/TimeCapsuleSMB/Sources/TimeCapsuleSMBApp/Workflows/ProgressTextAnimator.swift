@@ -10,6 +10,14 @@ enum ProgressTextAnimator {
               let base = animationBase(message) else {
             return message
         }
+        // Apple's Chinese status lines end a running step in one … and do not
+        // cycle it; a 。 would read as a finished sentence with dots added.
+        // Only the Chinese UI does this, and only to a line with a Han
+        // character in it: the helper's English keeps its dots unless it
+        // names a device with a Chinese name.
+        if L10n.translation == .simplifiedChinese, base.unicodeScalars.contains(where: \.properties.isIdeographic) {
+            return base + "…"
+        }
         return base + String(repeating: ".", count: frameIndex(phase) + 1)
     }
 
@@ -31,7 +39,7 @@ enum ProgressTextAnimator {
               !trimmed.isEmpty else {
             return nil
         }
-        let stripped = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let stripped = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: ".。…"))
         return stripped.isEmpty ? nil : stripped
     }
 

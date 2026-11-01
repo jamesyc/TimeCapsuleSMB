@@ -78,6 +78,13 @@ enum L10n {
         return AppLanguage.allCases.first { $0.localizationIdentifier == pick } ?? .english
     }
 
+    /// The translation the app shows now: the chosen language, or what System
+    /// stands for.
+    static var translation: AppLanguage {
+        let language = currentLanguage
+        return language == .system ? systemTranslation : language
+    }
+
     /// The translation System stands for right now.
     static var systemTranslation: AppLanguage {
         lock.lock()

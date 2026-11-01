@@ -67,12 +67,17 @@ class LocalizationStyleTests(unittest.TestCase):
                     if language != "zh-Hans":
                         self.assertNotIn("…", text)
                         continue
-                    # Chinese prose trails off with ……; a label that opens a
-                    # dialog ends with Apple's single ….
+                    # A Chinese line still in progress, or a label that opens a
+                    # dialog, ends with Apple's single …, as Apple's own status
+                    # lines do; …… marks text left out and never ends a line.
+                    # Each line of a value counts on its own.
                     self.assertNotIn("...", text)
-                    single = text.replace("……", "")
-                    if "…" in single:
-                        self.assertTrue(single.endswith("…") and single.count("…") == 1 and "。" not in single, text)
+                    self.assertNotIn("………", text)
+                    for line in re.split(r"\\n|\n", text):
+                        self.assertFalse(line.endswith("……"), text)
+                        single = line.replace("……", "")
+                        if "…" in single:
+                            self.assertTrue(single.endswith("…") and single.count("…") == 1 and not single.endswith("。…"), text)
 
     def test_chinese_uses_full_width_punctuation(self) -> None:
         half_width = re.compile(r"[()]|[一-鿿][,;:!?]")

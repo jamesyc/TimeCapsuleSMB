@@ -293,12 +293,12 @@ Commands use the matching form everywhere (Spanish *ejecute*, *vuelva a intentar
 | fr | `« … »` with no-break spaces | `’` | `...` |
 | es, ru | `«…»` | (none in use) | `...` |
 | it, pt | `“…”` | `’` in Italian | `...` |
-| zh-Hans | `“…”` | (none in use) | `……` in prose, `…` after a button label |
+| zh-Hans | `“…”` | (none in use) | `…` ending a line still in progress or a label that opens a dialog, `……` where text is left out, never ending a line |
 
 - One kind of quotation mark per locale, everywhere in its catalog. English never writes straight quotes (`\"…\"`). Dutch uses single quotes because Apple's Dutch documentation does (`Kies Apple-menu > 'Systeeminstellingen'`). Spanish uses `«…»`, the Real Academia Española's first choice, although Apple's Spanish documentation uses `“…”`.
 - French puts a no-break space (U+00A0) before `?`, `!`, `:` and `;` and inside `« »`, so a mark never starts or ends a line alone: `Continuer ?`, `app : %@`.
 - French and Italian write the typographic apostrophe (`l’appareil`, `dell’app`), never `'`. English and Dutch write `'`.
-- Ellipses follow the English three periods. Chinese writes `……` where a sentence trails off (`正在查找设备……`) and Apple's `…` after a label that opens a dialog (`保存诊断信息…`).
+- Ellipses follow the English three periods. Chinese ends a line that is still in progress (`正在查找设备…`) and a label that opens a dialog (`保存诊断信息…`) with Apple's single `…`, as Apple's own status lines do; `……` only marks text left out, such as the start of a shortened list (`……另有 %lld 个`), and never ends a line. While a step runs, the app ends its Chinese status line in one `…` in place of its `。` (`维护正在运行。` shows as `维护正在运行…`) and does not add the dots it cycles through in other languages.
 - Spanish questions open with `¿`.
 - Chinese uses full-width `，：；（）`, parentheses around Latin text included (`SMB 3（protocol_vers_map）`, `互联网（WAN）一侧`), and puts a space between Chinese and Latin text or numbers outside them (`Samba 元数据迁移`, `等待 10 秒`).
 
