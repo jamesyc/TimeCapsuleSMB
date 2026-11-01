@@ -90,6 +90,84 @@ final class BootHookStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.count, 1)
     }
 
+    func testPanelSubtitleSaysWhatTheBootHookChanges() throws {
+        let presentation = try BootHookTestFixture().presentation
+
+        XCTAssertEqual(
+            presentation.subtitle,
+            "Modify the firmware of NetBSD 4 devices to automatically start the installed Samba services after a restart."
+        )
+        // The card keeps its own, shorter line.
+        XCTAssertNotEqual(presentation.subtitle, MaintenanceWorkflow.bootHook.presentationSubtitle)
+    }
+
+    func testStatusLineFollowsEachStepAndNeverRepeatsTheBadge() async throws {
+        let fixture = try BootHookTestFixture(responses: testBootHookResponses(
+            plan: testBootHookPlanPayload(mode: .patch),
+            write: testBootHookWritePayload(.patchNeedsPowerCycle)
+        ))
+        var lines: [String] = []
+        func record(file: StaticString = #filePath, line: UInt = #line) {
+            let presentation = fixture.presentation
+            XCTAssertNotEqual(presentation.statusMessage, presentation.stateTitle, file: file, line: line)
+            lines.append(presentation.statusMessage)
+        }
+
+        record()
+        try await fixture.run(.backup)
+        record()
+        try await fixture.run(.plan(.patch))
+        record()
+        try await fixture.run(.write(.patch))
+        record()
+
+        XCTAssertEqual(lines, [
+            "Back up and inspect firmware before planning a patch or a restore.",
+            try XCTUnwrap(fixture.store.backup?.localizedSummary),
+            "Patch plan ready. Choose “Write Patch” to install the boot hook.",
+            "Flash patch write validated; manual power cycle required."
+        ])
+    }
+
+    func testButtonsComeInTwoRows() throws {
+        XCTAssertEqual(try BootHookTestFixture().presentation.actionRows, [
+            [.backUpAndInspectFirmware, .planPatch, .planRestore, .writePatch, .writeRestore],
+            [.checkAppleFirmware, .validateAppleFirmware]
+        ])
+    }
+
+    func testOnlyTheBootHooksOwnRunAnimatesItsStatusLine() async throws {
+        // A runner's gate stays open once released, so each run gets its own.
+        func detail(_ workflow: MaintenanceWorkflow, _ fixture: BootHookTestFixture<PausingStoreTestRunner>) -> MaintenanceWorkflowDetailPresentation {
+            MaintenanceWorkflowDetailPresentation(store: fixture.maintenanceStore, workflow: workflow)
+        }
+
+        // Another workflow's run holds the device but is not the boot hook's.
+        let activation = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true))
+            ], pauseBeforeEvents: true)
+        ]), onDeviceLane: true)
+        defer { activation.runner.finishAll() }
+        XCTAssertFalse(detail(.bootHook, activation).isRunning)
+        activation.maintenanceStore.runActivation(password: "pw", profile: activation.profile)
+        try await waitUntilStoreState { activation.runner.calls.count == 1 }
+        XCTAssertTrue(detail(.activate, activation).isRunning)
+        XCTAssertFalse(detail(.bootHook, activation).isRunning)
+
+        let backup = try BootHookTestFixture(runner: PausingStoreTestRunner(
+            responses: testBootHookResponses().map { .init(events: $0.events, pauseBeforeEvents: true) }
+        ), onDeviceLane: true)
+        defer { backup.runner.finishAll() }
+        backup.maintenanceStore.backUpAndInspectFirmware(password: "pw", profile: backup.profile)
+        try await waitUntilStoreState { backup.runner.calls.count == 1 }
+        XCTAssertTrue(detail(.bootHook, backup).isRunning)
+        XCTAssertFalse(detail(.activate, backup).isRunning)
+        backup.runner.finishAll()
+        try await waitUntilStoreState { !backup.maintenanceStore.isBusy }
+        XCTAssertFalse(detail(.bootHook, backup).isRunning)
+    }
+
     func testBootHookActionSymbolsResolveToSFSymbols() {
         for action in MaintenanceActionPolicy.actions(for: .bootHook) {
             XCTAssertNotNil(NSImage(systemSymbolName: action.systemImage, accessibilityDescription: nil), action.systemImage)
@@ -254,10 +332,10 @@ final class BootHookStoreTests: XCTestCase {
 
         XCTAssertEqual(store.state, .appleCheckComplete)
         let presentation = fixture.presentation
-        XCTAssertEqual(presentation.message, "Active firmware bank matches Apple stock firmware 7.8.1.")
-        XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Apple Match", value: "yes")))
-        XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Apple Version", value: "7.8.1")))
-        XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Apple Payload SHA-256", value: "inner-sha")))
+        XCTAssertEqual(presentation.statusMessage, "Active firmware bank matches Apple stock firmware 7.8.1.")
+        XCTAssertTrue(presentation.bootHookRows.contains(PresentationRow(label: "Apple Match", value: "yes")))
+        XCTAssertTrue(presentation.bootHookRows.contains(PresentationRow(label: "Apple Version", value: "7.8.1")))
+        XCTAssertTrue(presentation.bootHookRows.contains(PresentationRow(label: "Apple Payload SHA-256", value: "inner-sha")))
     }
 
     func testAppleCheckPresentationShowsMultiBankMatchDetails() async throws {
@@ -266,9 +344,9 @@ final class BootHookStoreTests: XCTestCase {
 
         XCTAssertEqual(store.state, .appleCheckComplete)
         let presentation = fixture.presentation
-        XCTAssertEqual(presentation.message, "All candidate firmware banks match Apple stock firmware 7.8.1.")
-        XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Apple Match (primary)", value: "yes")))
-        XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Apple Match (secondary)", value: "yes")))
+        XCTAssertEqual(presentation.statusMessage, "All candidate firmware banks match Apple stock firmware 7.8.1.")
+        XCTAssertTrue(presentation.bootHookRows.contains(PresentationRow(label: "Apple Match (primary)", value: "yes")))
+        XCTAssertTrue(presentation.bootHookRows.contains(PresentationRow(label: "Apple Match (secondary)", value: "yes")))
     }
 
     func testAppleCheckMismatchUsesDedicatedState() async throws {
@@ -283,7 +361,7 @@ final class BootHookStoreTests: XCTestCase {
 
             XCTAssertEqual(fixture.store.state, .appleFirmwareMismatch, "all banks: \(allBanks)")
             for label in rows {
-                XCTAssertTrue(fixture.presentation.rows.contains(PresentationRow(label: label, value: "no")), label)
+                XCTAssertTrue(fixture.presentation.bootHookRows.contains(PresentationRow(label: label, value: "no")), label)
             }
         }
     }
@@ -294,10 +372,10 @@ final class BootHookStoreTests: XCTestCase {
 
         XCTAssertEqual(store.state, .appleFirmwareReady)
         let presentation = fixture.presentation
-        XCTAssertEqual(presentation.message, "Apple restore firmware validated (version 7.8.1, product 119).")
+        XCTAssertEqual(presentation.statusMessage, "Apple restore firmware validated (version 7.8.1, product 119).")
         XCTAssertEqual(presentation.title(for: .validateAppleFirmware), "Validate Apple Restore Firmware")
-        XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Firmware Payload", value: "/tmp/flash-backup/primary.download_only.basebinary")))
-        XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Firmware Payload SHA-256", value: "payload-sha")))
+        XCTAssertTrue(presentation.bootHookRows.contains(PresentationRow(label: "Firmware Payload", value: "/tmp/flash-backup/primary.download_only.basebinary")))
+        XCTAssertTrue(presentation.bootHookRows.contains(PresentationRow(label: "Firmware Payload SHA-256", value: "payload-sha")))
     }
 
     func testWriteConfirmationCancellationRestoresPlanAvailable() async throws {
@@ -319,7 +397,7 @@ final class BootHookStoreTests: XCTestCase {
             try await waitUntilStoreState { store.state == .awaitingStrongConfirmation }
             if mode == .patch {
                 // Write Patch was just pressed; the plan's own summary stays true.
-                XCTAssertEqual(fixture.presentation.message, "Flash patch write plan generated.")
+                XCTAssertEqual(fixture.presentation.statusMessage, "Flash patch write plan generated.")
             }
             XCTAssertTrue(coordinator.isDeviceBusy(profile))
             XCTAssertNil(coordinator.readyConfirmation)
@@ -330,7 +408,7 @@ final class BootHookStoreTests: XCTestCase {
             coordinator.cancel(pending)
             XCTAssertEqual(store.state, .planAvailable)
             if mode == .patch {
-                XCTAssertEqual(fixture.presentation.message, "Patch plan ready. Choose “Write Patch” to install the boot hook.")
+                XCTAssertEqual(fixture.presentation.statusMessage, "Patch plan ready. Choose “Write Patch” to install the boot hook.")
             }
             XCTAssertFalse(coordinator.isDeviceBusy(profile))
             XCTAssertFalse(store.isBusy)
@@ -363,7 +441,7 @@ final class BootHookStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .planAvailable)
         XCTAssertTrue(fixture.maintenanceStore.canPlanFirmware)
         XCTAssertFalse(fixture.maintenanceStore.canWritePatch)
-        XCTAssertNotEqual(fixture.presentation.message, "Flash patch write plan generated.")
+        XCTAssertNotEqual(fixture.presentation.statusMessage, "Flash patch write plan generated.")
     }
 
     func testATemplateChosenAfterTheLastEventButBeforeTheHelperExitsDropsThePlan() async throws {
@@ -540,7 +618,7 @@ final class BootHookStoreTests: XCTestCase {
         let presentation = fixture.presentation
         XCTAssertEqual(store.state, .writeNotNeeded)
         XCTAssertEqual(presentation.stateTitle, "No Write Needed")
-        XCTAssertEqual(presentation.message, "Flash write was not needed.")
+        XCTAssertEqual(presentation.statusMessage, "Flash write was not needed.")
         // Nothing was written: the backup still holds, and only its plan goes.
         XCTAssertNil(store.plan)
         XCTAssertFalse(store.backupSnapshotStale)
@@ -566,7 +644,7 @@ final class BootHookStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .planAvailable)
         XCTAssertNotNil(store.plan)
         XCTAssertFalse(store.backupSnapshotStale)
-        XCTAssertEqual(fixture.presentation.message, "Flash write completed.")
+        XCTAssertEqual(fixture.presentation.statusMessage, "Flash write completed.")
     }
 
     func testWriteFirmwareRefusesWithoutAPlanItCanWrite() async throws {
@@ -618,12 +696,12 @@ final class BootHookStoreTests: XCTestCase {
         XCTAssertEqual(row("Boot Hook", in: fixture.presentation), "Installed")
     }
 
-    func testFlashPresentationUsesWriteResultSummaryAfterWrite() async throws {
+    func testStatusLineUsesWriteResultSummaryAfterWrite() async throws {
         let fixture = try await BootHookTestFixture.afterWrite(.patch)
 
         let presentation = fixture.presentation
 
-        XCTAssertEqual(presentation.message, "Flash patch write validated; manual power cycle required.")
+        XCTAssertEqual(presentation.statusMessage, "Flash patch write validated; manual power cycle required.")
     }
 
     func testBackupRowsReportBankHealth() async throws {
@@ -720,7 +798,7 @@ final class BootHookStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .writing)
         XCTAssertNotNil(store.plan)
         XCTAssertFalse(presentation.isEnabled(.writePatch))
-        XCTAssertEqual(presentation.message, "Flash patch write plan generated.")
+        XCTAssertEqual(presentation.statusMessage, "Flash patch write plan generated.")
         // The backup is there; the store is busy, and says so.
         XCTAssertEqual(
             store.planFirmware(mode: .restore, profile: fixture.profile).rejectionMessage,
@@ -753,7 +831,7 @@ final class BootHookStoreTests: XCTestCase {
 
             XCTAssertEqual(presentation.isEnabled(.writePatch), testCase.asksForWritePatch, testCase.stage)
             XCTAssertEqual(
-                presentation.message == "Patch plan ready. Choose “Write Patch” to install the boot hook.",
+                presentation.statusMessage == "Patch plan ready. Choose “Write Patch” to install the boot hook.",
                 testCase.asksForWritePatch,
                 testCase.stage
             )
@@ -1019,7 +1097,7 @@ final class BootHookStoreTests: XCTestCase {
             let presentation = fixture.presentation
 
             XCTAssertFalse(presentation.isEnabled(.writePatch), testCase.expected)
-            XCTAssertEqual(presentation.message, testCase.expected)
+            XCTAssertEqual(presentation.statusMessage, testCase.expected)
         }
     }
 
@@ -1032,7 +1110,8 @@ final class BootHookStoreTests: XCTestCase {
         try await waitUntilStoreState { store.error != nil && !store.isBusy }
 
         let error = try XCTUnwrap(store.error)
-        XCTAssertNotEqual(fixture.presentation.message, error.message)
+        XCTAssertEqual(fixture.presentation.error, error)
+        XCTAssertNotEqual(fixture.presentation.statusMessage, error.message)
         XCTAssertEqual(error.diagnosticMessage, failure)
         // The flash section's own buttons rerun each step, so the dashboard
         // gives its box no retry (DashboardStoreTests).
@@ -1053,7 +1132,7 @@ final class BootHookStoreTests: XCTestCase {
         )
     }
 
-    private func row(_ label: String, in presentation: FlashPresentation) -> String? {
-        presentation.rows.first { $0.label == label }?.value
+    private func row(_ label: String, in presentation: MaintenanceWorkflowDetailPresentation) -> String? {
+        presentation.bootHookRows.first { $0.label == label }?.value
     }
 }

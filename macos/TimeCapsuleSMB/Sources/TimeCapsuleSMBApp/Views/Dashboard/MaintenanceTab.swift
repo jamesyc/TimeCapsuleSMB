@@ -20,38 +20,26 @@ struct MaintenanceTab: View {
                     store.selectedWorkflow = workflow
                 }
 
-                if presentation.detail.workflow == .bootHook {
-                    FlashBootHookSection(
-                        store: store,
-                        timeline: presentation.detail.timeline,
-                        performAction: performAction,
-                        chooseFirmwareTemplate: {
-                            chooseFirmwareTemplate(store: store.bootHookStore)
-                        },
-                        recoveryAction: { kind, error in recoveryAction(kind, error: error) },
-                        diagnosticsText: diagnosticsText
-                    )
-                } else {
-                    MaintenanceDetailView(
-                        presentation: presentation.detail,
-                        store: store,
-                        performAction: performAction
-                    )
-
-                    if let error = store.error(for: presentation.detail.workflow) {
-                        ErrorRecoveryView(
-                            error: error,
-                            diagnosticsText: diagnosticsText
-                        ) { recoveryAction($0, error: error) }
+                MaintenanceDetailView(
+                    presentation: presentation.detail,
+                    store: store,
+                    performAction: { action in
+                        session.performMaintenanceAction(action, profile: profile, showDiagnostics: showDiagnostics)
+                    },
+                    chooseFirmwareTemplate: {
+                        chooseFirmwareTemplate(store: store.bootHookStore)
                     }
+                )
+
+                if let error = presentation.detail.error {
+                    ErrorRecoveryView(
+                        error: error,
+                        diagnosticsText: diagnosticsText
+                    ) { recoveryAction($0, error: error) }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-    }
-
-    private func performAction(_ action: MaintenanceUserAction) {
-        session.performMaintenanceAction(action, profile: profile, showDiagnostics: showDiagnostics)
     }
 
     private func recoveryAction(_ kind: RecoveryActionKind, error: BackendErrorViewModel) -> (() -> Void)? {
@@ -136,6 +124,7 @@ private struct MaintenanceDetailView: View {
     let presentation: MaintenanceWorkflowDetailPresentation
     @ObservedObject var store: MaintenanceStore
     let performAction: (MaintenanceUserAction) -> Void
+    let chooseFirmwareTemplate: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -159,22 +148,43 @@ private struct MaintenanceDetailView: View {
             Label(presentation.risk, systemImage: "exclamationmark.triangle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(presentation.statusMessage)
+            AnimatedProgressText(message: presentation.statusMessage, isRunning: presentation.isRunning)
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            if presentation.workflow == .fsck {
-                FsckTargetListView(store: store)
+            ForEach(presentation.warnings, id: \.self) { warning in
+                MaintenanceWarningLabel(text: warning)
             }
 
-            HStack {
-                ForEach(presentation.actions) { action in
-                    MaintenanceActionButton(
-                        action: action,
-                        isEnabled: presentation.isEnabled(action),
-                        perform: performAction
-                    )
+            switch presentation.workflow {
+            case .fsck:
+                FsckTargetListView(store: store)
+            case .bootHook:
+                DisclosureGroup {
+                    BootHookFirmwareOptionsView(store: store.bootHookStore, chooseFirmwareTemplate: chooseFirmwareTemplate)
+                } label: {
+                    Label(L10n.string("flash.options.apple_firmware"), systemImage: "gearshape")
+                        .font(.subheadline.weight(.medium))
                 }
+            case .sshAccess, .activate, .uninstall, .wipeDisk:
+                EmptyView()
+            }
+
+            ForEach(presentation.actionRows, id: \.self) { row in
+                WrappingHStack {
+                    ForEach(row) { action in
+                        MaintenanceActionButton(
+                            action: action,
+                            title: presentation.title(for: action),
+                            isEnabled: presentation.isEnabled(action),
+                            perform: performAction
+                        )
+                    }
+                }
+            }
+
+            if !presentation.bootHookRows.isEmpty {
+                BootHookRowsView(rows: presentation.bootHookRows)
             }
 
             if let timeline = presentation.timeline, !timeline.items.isEmpty {
@@ -189,8 +199,9 @@ private struct MaintenanceDetailView: View {
                 MaintenanceCompletionView(presentation: completion)
             }
 
-            // Wipe Internal Disk mounts nothing and always restarts and waits.
-            if presentation.workflow != .wipeDisk {
+            // Wipe Internal Disk mounts nothing and always restarts and waits;
+            // the boot hook's options are its firmware choices above.
+            if presentation.workflow != .wipeDisk, presentation.workflow != .bootHook {
                 MaintenanceAdvancedOptionsView(workflow: presentation.workflow, store: store)
             }
         }
@@ -203,6 +214,7 @@ private struct MaintenanceDetailView: View {
 
 private struct MaintenanceActionButton: View {
     let action: MaintenanceUserAction
+    let title: String
     let isEnabled: Bool
     let perform: (MaintenanceUserAction) -> Void
 
@@ -211,7 +223,7 @@ private struct MaintenanceActionButton: View {
             Button {
                 perform(action)
             } label: {
-                Label(action.title, systemImage: action.systemImage)
+                Label(title, systemImage: action.systemImage)
             }
             .buttonStyle(.borderedProminent)
             .disabled(!isEnabled)
@@ -219,7 +231,7 @@ private struct MaintenanceActionButton: View {
             Button {
                 perform(action)
             } label: {
-                Label(action.title, systemImage: action.systemImage)
+                Label(title, systemImage: action.systemImage)
             }
             .buttonStyle(.bordered)
             .disabled(!isEnabled)
@@ -263,11 +275,123 @@ private struct MaintenancePlanView: View {
                 .font(.headline)
             SummaryGrid(rows: presentation.rows.map { ($0.label, $0.value) })
             ForEach(presentation.warnings, id: \.self) { warning in
-                Label(warning, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.yellow)
+                MaintenanceWarningLabel(text: warning)
             }
         }
+    }
+}
+
+/// Lays out its views left to right and starts a new line when the next one
+/// does not fit, so a row of long translated buttons wraps instead of
+/// truncating their labels. A view wider than the whole row still truncates.
+struct WrappingHStack: Layout {
+    var spacing: CGFloat = 8
+
+    private struct Line {
+        var indices: [Int]
+        var width: CGFloat
+        var height: CGFloat
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let lines = lines(width: proposal.width ?? .infinity, subviews: subviews)
+        return CGSize(
+            width: lines.map(\.width).max() ?? 0,
+            height: lines.map(\.height).reduce(0, +) + spacing * CGFloat(max(lines.count - 1, 0))
+        )
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for line in lines(width: bounds.width, subviews: subviews) {
+            var x = bounds.minX
+            for index in line.indices {
+                let size = size(of: subviews[index], width: bounds.width)
+                subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += line.height + spacing
+        }
+    }
+
+    private func lines(width: CGFloat, subviews: Subviews) -> [Line] {
+        var lines: [Line] = []
+        for (index, subview) in subviews.enumerated() {
+            let size = size(of: subview, width: width)
+            if let last = lines.last, last.width + spacing + size.width <= width {
+                lines[lines.count - 1].indices.append(index)
+                lines[lines.count - 1].width += spacing + size.width
+                lines[lines.count - 1].height = max(last.height, size.height)
+            } else {
+                lines.append(Line(indices: [index], width: size.width, height: size.height))
+            }
+        }
+        return lines
+    }
+
+    private func size(of subview: LayoutSubview, width: CGFloat) -> CGSize {
+        let ideal = subview.sizeThatFits(.unspecified)
+        return ideal.width <= width ? ideal : subview.sizeThatFits(ProposedViewSize(width: width, height: nil))
+    }
+}
+
+/// A warning in the normal text color with an orange icon: orange or yellow
+/// text is too faint to read on a light background.
+private struct MaintenanceWarningLabel: View {
+    let text: String
+
+    var body: some View {
+        Label {
+            Text(text)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+        }
+        .font(.caption)
+    }
+}
+
+/// The boot hook's backup, plan and write details, each value selectable.
+private struct BootHookRowsView: View {
+    let rows: [PresentationRow]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(rows) { row in
+                HStack(alignment: .firstTextBaseline) {
+                    Text(row.label)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(row.value)
+                        .multilineTextAlignment(.trailing)
+                        .textSelection(.enabled)
+                }
+                .font(.caption)
+            }
+        }
+    }
+}
+
+private struct BootHookFirmwareOptionsView: View {
+    @ObservedObject var store: BootHookStore
+    let chooseFirmwareTemplate: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField(L10n.string("field.firmware_version"), text: $store.firmwareVersion)
+            HStack {
+                TextField(L10n.string("field.firmware_template"), text: $store.firmwareTemplatePath)
+                Button {
+                    chooseFirmwareTemplate()
+                } label: {
+                    Label(L10n.string("flash.action.choose_template"), systemImage: "doc")
+                }
+            }
+        }
+        .textFieldStyle(.roundedBorder)
+        // A plan is made for these values; changing them mid-run would leave
+        // the plan on screen without them.
+        .disabled(store.isBusy)
     }
 }
 

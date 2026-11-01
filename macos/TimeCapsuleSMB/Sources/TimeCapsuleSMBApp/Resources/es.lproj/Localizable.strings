@@ -416,7 +416,8 @@
 "field.firmware_version" = "Versión del firmware, opcional";
 "field.helper" = "Programa auxiliar";
 "field.mount_wait" = "Espera de montaje (segundos)";
-"flash.eligibility.write_ready" = "Modifique el firmware de los dispositivos NetBSD 4 para iniciar automáticamente los servicios Samba instalados después de un reinicio.\nHaga una copia de seguridad y compruebe el firmware antes de planificar un parche o una restauración.";
+"flash.description" = "Modifique el firmware de los dispositivos NetBSD 4 para iniciar automáticamente los servicios Samba instalados después de un reinicio.";
+"flash.status.ready" = "Haga una copia de seguridad e inspeccione el firmware antes de planificar un parche o una restauración.";
 "flash.action.backup_inspect" = "Crear copia de seguridad e inspeccionar";
 "flash.action.backup_inspect_again" = "Crear copia de seguridad e inspeccionar de nuevo";
 "flash.action.check_apple" = "Comprobar firmware de Apple";

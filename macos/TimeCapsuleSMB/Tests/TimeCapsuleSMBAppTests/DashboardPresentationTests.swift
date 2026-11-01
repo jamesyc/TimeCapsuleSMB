@@ -1918,23 +1918,41 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.detail.workflow, .sshAccess)
     }
 
+    func testTheOtherPanelsKeepTheirSubtitleAndOneRowOfButtons() throws {
+        let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
+
+        for workflow in MaintenanceWorkflow.allCases where workflow != .bootHook {
+            let detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: workflow)
+
+            XCTAssertEqual(detail.subtitle, workflow.presentationSubtitle, "\(workflow)")
+            XCTAssertEqual(detail.actionRows, [MaintenanceActionPolicy.actions(for: workflow)], "\(workflow)")
+            XCTAssertEqual(detail.warnings, [], "\(workflow)")
+            XCTAssertEqual(detail.bootHookRows, [], "\(workflow)")
+            XCTAssertFalse(detail.isRunning, "\(workflow)")
+            XCTAssertNil(detail.error, "\(workflow)")
+            for action in MaintenanceActionPolicy.actions(for: workflow) {
+                XCTAssertEqual(detail.title(for: action), action.title, "\(action)")
+            }
+        }
+    }
+
     func testMaintenancePresentationShowsRunActionsDisabledBeforePlanning() throws {
         let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
 
         var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .activate)
-        XCTAssertEqual(presentation.detail.actions, [.runActivation])
+        XCTAssertEqual(presentation.detail.actionRows, [[.runActivation]])
         XCTAssertTrue(presentation.detail.isEnabled(.runActivation))
 
         store.selectedWorkflow = .uninstall
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
-        XCTAssertEqual(presentation.detail.actions, [.runUninstall])
+        XCTAssertEqual(presentation.detail.actionRows, [[.runUninstall]])
         XCTAssertTrue(presentation.detail.isEnabled(.runUninstall))
 
         store.selectedWorkflow = .fsck
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
-        XCTAssertEqual(presentation.detail.actions, [.findVolumes, .planFsck, .runFsck])
+        XCTAssertEqual(presentation.detail.actionRows, [[.findVolumes, .planFsck, .runFsck]])
         XCTAssertTrue(presentation.detail.isEnabled(.findVolumes))
         XCTAssertFalse(presentation.detail.isEnabled(.planFsck))
         XCTAssertFalse(presentation.detail.isEnabled(.runFsck))
@@ -1959,7 +1977,7 @@ final class DashboardPresentationTests: XCTestCase {
         try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
         var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .activate)
-        XCTAssertEqual(presentation.detail.actions, [.runActivation])
+        XCTAssertEqual(presentation.detail.actionRows, [[.runActivation]])
         XCTAssertTrue(presentation.detail.isEnabled(.runActivation))
         XCTAssertNil(presentation.detail.plan)
         XCTAssertEqual(presentation.detail.completion?.title, "Activation Complete")
@@ -1969,7 +1987,7 @@ final class DashboardPresentationTests: XCTestCase {
         store.selectedWorkflow = .uninstall
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .uninstall)
-        XCTAssertEqual(presentation.detail.actions, [.runUninstall])
+        XCTAssertEqual(presentation.detail.actionRows, [[.runUninstall]])
         XCTAssertTrue(presentation.detail.isEnabled(.runUninstall))
         XCTAssertNil(presentation.detail.plan)
 
@@ -1977,7 +1995,7 @@ final class DashboardPresentationTests: XCTestCase {
         try await waitUntilStoreState { store.fsckState == .listReady && !store.isRunning }
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .fsck)
-        XCTAssertEqual(presentation.detail.actions, [.findVolumes, .planFsck, .runFsck])
+        XCTAssertEqual(presentation.detail.actionRows, [[.findVolumes, .planFsck, .runFsck]])
         XCTAssertTrue(presentation.detail.isEnabled(.findVolumes))
         XCTAssertTrue(presentation.detail.isEnabled(.planFsck))
         XCTAssertFalse(presentation.detail.isEnabled(.runFsck))

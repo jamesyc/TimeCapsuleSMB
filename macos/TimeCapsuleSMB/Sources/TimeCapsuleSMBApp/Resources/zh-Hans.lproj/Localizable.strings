@@ -412,7 +412,8 @@
 "backend.summary.ssh.enable_requested" = "已请求启用 SSH；不等待 SSH 开放。";
 "backend.summary.ssh.reachable" = "SSH 可达。";
 "backend.summary.ssh.unreachable" = "AirPort ACP 和 SSH 均不可达。";
-"flash.eligibility.write_ready" = "修改 NetBSD 4 设备的固件，使其重启后自动运行已安装的 Samba 服务。\n规划修补或恢复写入前，请先备份并检查固件。";
+"flash.description" = "修改 NetBSD 4 设备的固件，使其重启后自动启动已安装的 Samba 服务。";
+"flash.status.ready" = "规划修补或恢复前，请先备份并检查固件。";
 "field.firmware_template" = "固件模板路径，可选";
 "field.firmware_version" = "固件版本，可选";
 "field.helper" = "辅助程序";

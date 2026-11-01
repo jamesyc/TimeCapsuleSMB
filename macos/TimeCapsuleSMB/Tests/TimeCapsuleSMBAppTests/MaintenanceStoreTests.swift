@@ -589,7 +589,7 @@ final class MaintenanceStoreTests: XCTestCase {
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
         var detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk)
-        XCTAssertEqual(detail.actions, [.runWipeDisk])
+        XCTAssertEqual(detail.actionRows, [[.runWipeDisk]])
         XCTAssertTrue(detail.isEnabled(.runWipeDisk))
 
         store.runWipeDisk(password: "pw")
@@ -607,7 +607,7 @@ final class MaintenanceStoreTests: XCTestCase {
 
         // The Samba files were on the wiped disk: Install comes next.
         detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk)
-        XCTAssertEqual(detail.actions, [.runWipeDisk, .installSMB])
+        XCTAssertEqual(detail.actionRows, [[.runWipeDisk, .installSMB]])
         XCTAssertTrue(detail.isEnabled(.installSMB))
         XCTAssertTrue(detail.completion?.rows.contains { $0.value == L10n.string("maintenance.wipe_disk.install_next") } == true)
         // The disk by Apple's name ("Device" is the Time Capsule), and the
@@ -748,7 +748,7 @@ final class MaintenanceStoreTests: XCTestCase {
         try await waitUntilStoreState { store.wipeDiskState == .succeeded && !store.isRunning }
         let detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk)
         // Samba lives on another disk: no Install button.
-        XCTAssertEqual(detail.actions, [.runWipeDisk])
+        XCTAssertEqual(detail.actionRows, [[.runWipeDisk]])
     }
 
     private func confirmationRequired(operation: String, id: String) -> BackendEvent {

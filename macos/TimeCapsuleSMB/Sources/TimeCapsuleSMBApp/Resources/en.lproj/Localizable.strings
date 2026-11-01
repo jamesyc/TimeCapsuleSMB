@@ -416,7 +416,8 @@
 "field.firmware_version" = "Firmware version (optional)";
 "field.helper" = "Helper";
 "field.mount_wait" = "Mount wait time (seconds)";
-"flash.eligibility.write_ready" = "Modify the firmware of NetBSD 4 devices to automatically run the installed Samba payload after a restart.\nBack up and inspect firmware before planning a patch or restore write.";
+"flash.description" = "Modify the firmware of NetBSD 4 devices to automatically start the installed Samba services after a restart.";
+"flash.status.ready" = "Back up and inspect firmware before planning a patch or a restore.";
 "flash.action.backup_inspect" = "Back Up and Inspect";
 "flash.action.backup_inspect_again" = "Back Up and Inspect Again";
 "flash.action.check_apple" = "Check Apple Firmware";

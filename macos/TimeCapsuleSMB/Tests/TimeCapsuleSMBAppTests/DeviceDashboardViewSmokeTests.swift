@@ -267,6 +267,72 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
         runner.finishAll()
     }
 
+    func testBootHookPanelOffersWritePatchOnlyAfterAPlanAndItsButtonsRunTheSteps() async throws {
+        let runner = StoreTestRunner(responses: testBootHookResponses(plan: testBootHookPlanPayload(mode: .patch)))
+        let fixture = try await AppViewFixture(runner: runner)
+        let profile = try await fixture.saveProfile(id: "netbsd4-device", payloadFamily: "netbsd4_samba4")
+        let session = fixture.dashboardSession(for: profile)
+        let maintenance = session.maintenanceStore
+        maintenance.selectedWorkflow = .bootHook
+        // The tab alone: the dashboard around it starts device checks of its own.
+        let host = LiveHostedView(MaintenanceTab(profile: profile, session: session, showDiagnostics: {}, diagnosticsText: { "" }))
+        defer { host.close() }
+        func isEnabled(_ label: String) -> Bool? {
+            accessibleElements(in: host.contentView).first { $0.text == label }?.isEnabled
+        }
+
+        // The boot hook's own options replace the other panels' Advanced Options.
+        let texts = accessibleElements(in: host.contentView).map(\.text)
+        XCTAssertTrue(texts.contains("Apple Firmware Options"), "\(texts)")
+        XCTAssertFalse(texts.contains("Advanced Options"), "\(texts)")
+        XCTAssertEqual(isEnabled("Back Up and Inspect"), true)
+        XCTAssertEqual(isEnabled("Plan Patch"), false)
+        XCTAssertEqual(isEnabled("Write Patch"), false)
+
+        XCTAssertTrue(pressAccessibleControl(in: host.contentView, labeled: "Back Up and Inspect"))
+        try await waitUntilStoreState { maintenance.bootHookStore.backup != nil && !maintenance.isBusy }
+        try await waitUntilStoreState { isEnabled("Plan Patch") == true }
+        XCTAssertEqual(isEnabled("Write Patch"), false)
+
+        XCTAssertTrue(pressAccessibleControl(in: host.contentView, labeled: "Plan Patch"))
+        try await waitUntilStoreState { maintenance.bootHookStore.plan != nil && !maintenance.isBusy }
+        try await waitUntilStoreState { isEnabled("Write Patch") == true }
+        XCTAssertEqual(runner.calls.map { $0.params["action"] }, [.string("backup"), .string("plan")])
+        XCTAssertEqual(runner.calls.last?.params["mode"], .string("patch"))
+    }
+
+    func testBootHookFirmwareOptionsLockWhileTheBootHookRuns() async throws {
+        let runner = PausingStoreTestRunner(responses: testBootHookResponses().map {
+            .init(events: $0.events, result: $0.result, pauseBeforeEvents: true)
+        })
+        defer { runner.finishAll() }
+        let fixture = try await AppViewFixture(runner: runner)
+        let profile = try await fixture.saveProfile(id: "netbsd4-device", payloadFamily: "netbsd4_samba4")
+        let session = fixture.dashboardSession(for: profile)
+        let maintenance = session.maintenanceStore
+        maintenance.selectedWorkflow = .bootHook
+        // An empty field has no text to find it by.
+        maintenance.bootHookStore.firmwareVersion = "7.8.1"
+        maintenance.bootHookStore.firmwareTemplatePath = "/tmp/firmware.basebinary"
+        let host = LiveHostedView(MaintenanceTab(profile: profile, session: session, showDiagnostics: {}, diagnosticsText: { "" }))
+        defer { host.close() }
+        func enabledStates() -> [Bool] {
+            let fields = ["7.8.1", "/tmp/firmware.basebinary", "Choose"]
+            return accessibleElements(in: host.contentView).filter { fields.contains($0.text) }.map(\.isEnabled)
+        }
+
+        XCTAssertTrue(pressAccessibleControl(in: host.contentView, labeled: "Apple Firmware Options"))
+        try await waitUntilStoreState { enabledStates().count == 3 }
+        XCTAssertEqual(enabledStates(), [true, true, true], "\(accessibleElements(in: host.contentView).map(\.text))")
+
+        XCTAssertTrue(pressAccessibleControl(in: host.contentView, labeled: "Back Up and Inspect"))
+        try await waitUntilStoreState { runner.calls.count == 1 && enabledStates() == [false, false, false] }
+
+        runner.finishAll()
+        try await waitUntilStoreState { maintenance.bootHookStore.backup != nil && !maintenance.isBusy }
+        try await waitUntilStoreState { enabledStates() == [true, true, true] }
+    }
+
     private func dashboardView(
         fixture: AppViewFixture,
         profile: DeviceProfile,

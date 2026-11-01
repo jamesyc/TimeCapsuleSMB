@@ -203,7 +203,10 @@ struct BootHookTestFixture<Runner: HelperRunning> {
     /// The boot hook's own store, where its steps keep their results.
     var store: BootHookStore { maintenanceStore.bootHookStore }
 
-    var presentation: FlashPresentation { FlashPresentation(store: maintenanceStore) }
+    /// The boot hook panel as the Maintenance tab shows it.
+    var presentation: MaintenanceWorkflowDetailPresentation {
+        MaintenanceWorkflowDetailPresentation(store: maintenanceStore, workflow: .bootHook)
+    }
 
     init(
         runner: Runner,

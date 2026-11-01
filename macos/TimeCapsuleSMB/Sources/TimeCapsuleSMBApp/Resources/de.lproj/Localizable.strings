@@ -416,7 +416,8 @@
 "field.firmware_version" = "Firmware-Version, optional";
 "field.helper" = "Hilfsprogramm";
 "field.mount_wait" = "Wartezeit beim Einbinden (Sekunden)";
-"flash.eligibility.write_ready" = "Ändern Sie die Firmware von NetBSD 4-Geräten, damit die installierten Samba-Dienste nach einem Neustart automatisch starten.\nSichern und prüfen Sie die Firmware, bevor Sie einen Patch oder eine Wiederherstellung planen.";
+"flash.description" = "Ändern Sie die Firmware von NetBSD 4-Geräten, damit die installierten Samba-Dienste nach einem Neustart automatisch starten.";
+"flash.status.ready" = "Sichern und prüfen Sie die Firmware, bevor Sie einen Patch oder eine Wiederherstellung planen.";
 "flash.action.backup_inspect" = "Sichern und prüfen";
 "flash.action.backup_inspect_again" = "Sichern und erneut prüfen";
 "flash.action.check_apple" = "Apple-Firmware prüfen";

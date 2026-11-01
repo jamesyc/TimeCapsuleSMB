@@ -1,35 +1,10 @@
 import Foundation
 
-struct FlashPresentation: Equatable {
-    let title: String
-    let risk: String
-    let message: String
-    let stateTitle: String
-    let actionRows: [[MaintenanceUserAction]]
-    let enabledActions: Set<MaintenanceUserAction>
-    let rows: [PresentationRow]
-    let warnings: [String]
-    private let backupActionTitle: String
-
+/// What the boot hook panel shows beyond the parts every maintenance panel has.
+enum BootHookPresentation {
+    /// The panel's status line.
     @MainActor
-    init(store: MaintenanceStore) {
-        let bootHook = store.bootHookStore
-        self.title = MaintenanceWorkflow.bootHook.presentationTitle
-        self.risk = MaintenanceWorkflow.bootHook.presentationRisk
-        self.message = Self.message(store: store)
-        self.stateTitle = bootHook.state.title
-        self.actionRows = MaintenanceActionPolicy.bootHookActionRows
-        self.enabledActions = MaintenanceActionPolicy.enabledActions(workflow: .bootHook, store: store)
-        self.rows = Self.rows(store: bootHook)
-        self.warnings = Self.warnings(store: bootHook)
-        self.backupActionTitle = bootHook.backupSnapshotStale
-            ? L10n.string("flash.action.backup_inspect_again")
-            : L10n.string("flash.action.backup_inspect")
-    }
-
-    /// The boot hook panel's status line.
-    @MainActor
-    static func message(store: MaintenanceStore) -> String {
+    static func statusMessage(store: MaintenanceStore) -> String {
         let bootHook = store.bootHookStore
         // An error shows in its own box below, not in this line.
         return bootHook.writeResult?.localizedSummary
@@ -38,19 +13,11 @@ struct FlashPresentation: Equatable {
             ?? (store.canWritePatch ? L10n.string("flash.message.patch_plan_ready") : nil)
             ?? bootHook.plan?.localizedSummary
             ?? bootHook.backup?.localizedSummary
-            ?? L10n.string("flash.eligibility.write_ready")
-    }
-
-    func isEnabled(_ action: MaintenanceUserAction) -> Bool {
-        enabledActions.contains(action)
-    }
-
-    func title(for action: MaintenanceUserAction) -> String {
-        action == .backUpAndInspectFirmware ? backupActionTitle : action.title
+            ?? L10n.string("flash.status.ready")
     }
 
     @MainActor
-    private static func rows(store: BootHookStore) -> [PresentationRow] {
+    static func rows(store: BootHookStore) -> [PresentationRow] {
         var rows: [PresentationRow] = []
         if let backup = store.backup {
             rows.append(PresentationRow(label: L10n.string("flash.row.backup_dir"), value: backup.backupDir))
@@ -162,7 +129,7 @@ struct FlashPresentation: Equatable {
     }
 
     @MainActor
-    private static func warnings(store: BootHookStore) -> [String] {
+    static func warnings(store: BootHookStore) -> [String] {
         var warnings: [String] = []
         if store.backupSnapshotStale {
             warnings.append(L10n.string("flash.warning.snapshot_stale"))

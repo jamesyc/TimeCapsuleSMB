@@ -221,21 +221,24 @@ enum MaintenanceActionPolicy {
 
     /// The boot hook's buttons in their two rows: the steps of a patch or a
     /// restore, then the Apple firmware checks.
-    static let bootHookActionRows: [[MaintenanceUserAction]] = [
+    private static let bootHookActionRows: [[MaintenanceUserAction]] = [
         [.backUpAndInspectFirmware, .planPatch, .planRestore, .writePatch, .writeRestore],
         [.checkAppleFirmware, .validateAppleFirmware]
     ]
 
-    /// The workflow's actions now: Wipe Internal Disk adds Install / Update
-    /// Samba once it wiped the disk that held the Samba files (or no disk held
-    /// them).
+    /// The workflow's buttons now, a row each: the boot hook has two rows, and
+    /// Wipe Internal Disk adds Install / Update Samba once it wiped the disk
+    /// that held the Samba files (or no disk held them).
     @MainActor
-    static func actions(for workflow: MaintenanceWorkflow, store: MaintenanceStore) -> [MaintenanceUserAction] {
+    static func actionRows(for workflow: MaintenanceWorkflow, store: MaintenanceStore) -> [[MaintenanceUserAction]] {
+        if workflow == .bootHook {
+            return bootHookActionRows
+        }
         let actions = actions(for: workflow)
         if workflow == .wipeDisk, store.wipeDiskState == .succeeded, store.wipeDiskResult?.offerInstall == true {
-            return actions + [.installSMB]
+            return [actions + [.installSMB]]
         }
-        return actions
+        return [actions]
     }
 
     @MainActor
@@ -321,11 +324,17 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
     let risk: String
     let stateTitle: String
     let statusMessage: String
-    let actions: [MaintenanceUserAction]
+    /// Whether this workflow's own run is going, which animates its status line.
+    let isRunning: Bool
+    let warnings: [String]
+    let actionRows: [[MaintenanceUserAction]]
     let enabledActions: Set<MaintenanceUserAction>
+    let bootHookRows: [PresentationRow]
     let plan: MaintenancePlanPresentation?
     let completion: MaintenanceCompletionPresentation?
     let timeline: MaintenanceTimelinePresentation?
+    let error: BackendErrorViewModel?
+    private let backupSnapshotStale: Bool
 
     @MainActor
     init(store: MaintenanceStore, workflow selectedWorkflow: MaintenanceWorkflow? = nil) {
@@ -333,24 +342,43 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         let state = store.state(for: workflow)
         self.workflow = workflow
         self.title = workflow.presentationTitle
-        self.subtitle = workflow.presentationSubtitle
         self.risk = workflow.presentationRisk
         self.stateTitle = state.title
+        let bootHook = store.bootHookStore
         switch state {
         case .operation(let state):
+            self.subtitle = workflow.presentationSubtitle
             self.statusMessage = state.maintenanceStatusMessage(for: workflow)
+            self.warnings = []
+            self.bootHookRows = []
         case .bootHook:
-            self.statusMessage = FlashPresentation.message(store: store)
+            // The card's subtitle says what the boot hook is for; the panel
+            // says what it changes.
+            self.subtitle = L10n.string("flash.description")
+            self.statusMessage = BootHookPresentation.statusMessage(store: store)
+            self.warnings = BootHookPresentation.warnings(store: bootHook)
+            self.bootHookRows = BootHookPresentation.rows(store: bootHook)
         }
-        self.actions = MaintenanceActionPolicy.actions(for: workflow, store: store)
+        self.isRunning = store.isRunning(for: workflow)
+        self.actionRows = MaintenanceActionPolicy.actionRows(for: workflow, store: store)
         self.enabledActions = MaintenanceActionPolicy.enabledActions(workflow: workflow, store: store)
         self.plan = Self.plan(workflow: workflow, store: store)
         self.completion = Self.completion(workflow: workflow, store: store)
         self.timeline = Self.timeline(workflow: workflow, state: state, store: store)
+        self.error = store.error(for: workflow)
+        self.backupSnapshotStale = workflow == .bootHook && bootHook.backupSnapshotStale
     }
 
     func isEnabled(_ action: MaintenanceUserAction) -> Bool {
         enabledActions.contains(action)
+    }
+
+    /// A button's label: after a firmware write the backup no longer
+    /// describes the banks, so Back Up and Inspect says to do it again.
+    func title(for action: MaintenanceUserAction) -> String {
+        action == .backUpAndInspectFirmware && backupSnapshotStale
+            ? L10n.string("flash.action.backup_inspect_again")
+            : action.title
     }
 
     @MainActor

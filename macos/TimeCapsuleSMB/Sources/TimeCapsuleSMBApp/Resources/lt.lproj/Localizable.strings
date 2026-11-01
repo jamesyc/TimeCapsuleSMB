@@ -416,10 +416,11 @@
 "field.firmware_version" = "Programinės įrangos versija, neprivaloma";
 "field.helper" = "Pagalbinė programa";
 "field.mount_wait" = "Prijungimo laukimo sekundės";
-"flash.eligibility.write_ready" = "Pakeiskite NetBSD4 įrenginių programinę įrangą, kad po paleidimo iš naujo ji automatiškai paleistų įdiegtus Samba failus.\nPrieš planuodami pataisymą arba atkūrimo įrašymą, sukurkite atsarginę kopiją ir patikrinkite programinę įrangą.";
+"flash.description" = "Pakeiskite NetBSD4 įrenginių programinę įrangą, kad po paleidimo iš naujo ji automatiškai paleistų įdiegtas Samba paslaugas.";
+"flash.status.ready" = "Prieš planuodami pataisymą arba atkūrimą, sukurkite atsarginę kopiją ir patikrinkite programinę įrangą.";
 "flash.action.backup_inspect" = "Sukurti atsarginę kopiją ir patikrinti";
 "flash.action.backup_inspect_again" = "Sukurti atsarginę kopiją ir patikrinti dar kartą";
-"flash.action.check_apple" = "Tikrinti Apple programinę įrangą";
+"flash.action.check_apple" = "Patikrinti Apple programinę įrangą";
 "flash.action.choose_template" = "Pasirinkti";
 "flash.action.download_apple" = "Patvirtinti Apple atkūrimo programinę įrangą";
 "flash.action.plan_patch" = "Planuoti pataisymą";
@@ -438,7 +439,7 @@
 "flash.message.patch_plan_ready" = "Pataisymo planas paruoštas. Pasirinkite „Įrašyti pataisymą“, kad įdiegtumėte įkrovos įskiepį.";
 "flash.manual_power_cycle.message" = "Flash įrašymo tikrinimas baigtas. Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite. Palaukite, kol jis baigs įsikrauti, tada paleiskite operaciją „Patikrinimas“. Vienas programinės įrangos bankas liko nepakeistas.";
 "flash.manual_power_cycle.title" = "Reikalingas rankinis paleidimas iš naujo";
-"flash.mode.check_apple" = "Tikrinti Apple programinę įrangą";
+"flash.mode.check_apple" = "Patikrinti Apple programinę įrangą";
 "flash.mode.download_only" = "Patvirtinti Apple atkūrimo programinę įrangą";
 "flash.mode.patch" = "Pataisyti įkrovos įskiepį";
 "flash.mode.restore" = "Atkurti Apple programinę įrangą";

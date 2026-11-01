@@ -416,7 +416,8 @@
 "field.firmware_version" = "Versione del firmware, facoltativa";
 "field.helper" = "Programma ausiliario";
 "field.mount_wait" = "Attesa montaggio (secondi)";
-"flash.eligibility.write_ready" = "Modifica il firmware dei dispositivi NetBSD 4 per avviare automaticamente i servizi Samba installati dopo un riavvio.\nEsegui un backup e verifica il firmware prima di pianificare una patch o un ripristino.";
+"flash.description" = "Modifica il firmware dei dispositivi NetBSD 4 per avviare automaticamente i servizi Samba installati dopo un riavvio.";
+"flash.status.ready" = "Esegui un backup e ispeziona il firmware prima di pianificare una patch o un ripristino.";
 "flash.action.backup_inspect" = "Esegui il backup e ispeziona";
 "flash.action.backup_inspect_again" = "Esegui il backup e ispeziona di nuovo";
 "flash.action.check_apple" = "Verifica firmware Apple";
@@ -425,7 +426,7 @@
 "flash.action.plan_patch" = "Pianifica patch";
 "flash.action.plan_restore" = "Pianifica ripristino";
 "flash.action.write_patch" = "Scrivi patch";
-"flash.action.write_restore" = "Scrivi Ripristino";
+"flash.action.write_restore" = "Scrivi ripristino";
 "flash.bank.primary" = "Primario";
 "flash.bank.secondary" = "Secondario";
 "flash.banks.both_valid" = "Entrambi validi";

@@ -177,6 +177,10 @@ final class MaintenanceStore: ObservableObject {
         workflowStore(for: workflow).events
     }
 
+    func isRunning(for workflow: MaintenanceWorkflow) -> Bool {
+        workflowStore(for: workflow).isRunning
+    }
+
     func currentStage(for workflow: MaintenanceWorkflow) -> OperationStageState? {
         workflowStore(for: workflow).currentStage
     }

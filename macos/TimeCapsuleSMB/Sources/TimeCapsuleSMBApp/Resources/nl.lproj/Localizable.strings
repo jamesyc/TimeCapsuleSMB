@@ -416,7 +416,8 @@
 "field.firmware_version" = "Firmwareversie, optioneel";
 "field.helper" = "Hulpprogramma";
 "field.mount_wait" = "Wachttijd voor koppelen (seconden)";
-"flash.eligibility.write_ready" = "Wijzig de firmware van NetBSD 4-apparaten om de geïnstalleerde Samba-services na een herstart automatisch te starten.\nMaak een back-up en controleer de firmware voordat u een patch of herstelbewerking plant.";
+"flash.description" = "Wijzig de firmware van NetBSD 4-apparaten om de geïnstalleerde Samba-services na een herstart automatisch te starten.";
+"flash.status.ready" = "Maak een back-up en inspecteer de firmware voordat u een patch of herstelbewerking plant.";
 "flash.action.backup_inspect" = "Back-up maken en inspecteren";
 "flash.action.backup_inspect_again" = "Back-up maken en opnieuw inspecteren";
 "flash.action.check_apple" = "Apple-firmware controleren";
