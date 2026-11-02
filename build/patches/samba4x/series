@@ -583,7 +583,9 @@
 # descriptor and stat'ed with lstat; its target is mapped into the client's
 # namespace (an absolute target is kept verbatim); AAPL clients get the reparse
 # tag, not max_access, in EaSize; and non-Mac clients see a link to a directory
-# with FILE_ATTRIBUTE_DIRECTORY.
+# inside the share with FILE_ATTRIBUTE_DIRECTORY (the target resolved as smbd
+# follows links, as stock's dangling-link check does). A link's reparse tag is
+# SYMLINK without reading the link: a listing asks for it for every link.
 0045-smbd-native-links-reparse-points.patch|native POSIX symlinks as reparse points
 # Map catia's private-use characters in a link's own name when links are read
 # and created.
@@ -593,7 +595,8 @@
 # descriptor, by path, and stream deletion skips links. vfs_default's path
 # fallbacks never follow a link, on every share: chown and times act on the
 # link itself, while mode, flags and xattr writes fail with ENOTSUP, an xattr
-# read with ENOATTR, and a listing is empty.
+# read with ENOATTR, and a listing is empty. catia maps the handle's name for
+# xattr calls, as for its other fsp calls, so the backend's path is the disk's.
 0059-smbd-native-links-own-metadata.patch|a link keeps its own streams, xattrs and times
 # When the creating client explicitly closes the only handle to a file it
 # created (a shutdown close never converts), replace an XSym file, or a

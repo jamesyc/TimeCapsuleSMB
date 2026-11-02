@@ -525,9 +525,6 @@ static bool tc_candidate_target(TALLOC_CTX *mem_ctx,
 		uint32_t tag = 0, datalen = 0;
 		NTSTATUS status;
 
-		if (!(fdos_mode(fsp) & FILE_ATTRIBUTE_REPARSE_POINT)) {
-			return false;
-		}
 		status = fsctl_get_reparse_point(fsp, mem_ctx, &tag,
 						 &data, UINT16_MAX, &datalen);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -609,7 +606,6 @@ bool tc_native_links_close_prepare(TALLOC_CTX *mem_ctx,
 	}
 	cand->dev = sbuf.st_ex_dev;
 	cand->ino = sbuf.st_ex_ino;
-	cand->size = sbuf.st_ex_size;
 	return true;
 }
 
@@ -953,7 +949,6 @@ bool tc_native_links_close_commit(struct files_struct *fsp,
 	       aside->st.st_ex_ino == fst.st_ex_ino &&
 	       fst.st_ex_dev == cand->dev &&
 	       fst.st_ex_ino == cand->ino &&
-	       fst.st_ex_size == cand->size &&
 	       strcmp(now_target, cand->target) == 0;
 	TALLOC_FREE(now_target);
 	if (!same) {
@@ -1044,7 +1039,14 @@ bool tc_native_links_close_commit(struct files_struct *fsp,
 		    sbuf.st_ex_dev == created.st_ex_dev &&
 		    sbuf.st_ex_ino == created.st_ex_ino) {
 			atname->st = sbuf;
-			SMB_VFS_UNLINKAT(conn, parent->fsp, atname, 0);
+			ret = SMB_VFS_UNLINKAT(conn, parent->fsp, atname, 0);
+			if (ret != 0) {
+				/* The link stays: so does the original, aside. */
+				DBG_ERR("removing the link for %s failed: %s; "
+					"leaving the original as %s\n",
+					fsp_str_dbg(fsp), strerror(errno), tmp);
+				goto out;
+			}
 			tc_restore_aside(conn, parent->fsp, aside, atname);
 		} else if (ret == 0 || errno == ENOENT) {
 			/* Another client replaced or removed the link, as in step 4. */
@@ -1221,14 +1223,40 @@ uint32_t tc_native_links_dos_mode(struct files_struct *fsp, uint32_t dosmode)
 	    fsp->fsp_flags.posix_open) {
 		return dosmode;
 	}
-	target = cp_smb_filename_nostream(talloc_tos(), fsp->fsp_name);
+	/*
+	 * Follow the link as smbd does, only to a target inside the share,
+	 * as stock's dangling-link check in smbd_dirptr_get_entry() does: a
+	 * link to anywhere else is no directory to these clients.
+	 */
+	target = synthetic_smb_fname(talloc_tos(),
+				     fsp->fsp_name->base_name,
+				     NULL,
+				     NULL,
+				     fsp->fsp_name->twrp,
+				     fsp->fsp_name->flags);
 	if (target == NULL) {
 		return dosmode;
 	}
-	if (SMB_VFS_STAT(fsp->conn, target) == 0 &&
+	if (NT_STATUS_IS_OK(openat_pathref_fsp(fsp->conn->cwd_fsp, target)) &&
 	    S_ISDIR(target->st.st_ex_mode)) {
 		dosmode |= FILE_ATTRIBUTE_DIRECTORY;
 	}
 	TALLOC_FREE(target);
 	return dosmode;
+}
+
+/*
+ * A native link is a symlink reparse point whatever it points to: report
+ * the tag without reading the link. A directory listing asks for the tag of
+ * every link it lists (get_dirent_ea_size()), and a link it cannot read
+ * would get stock's DFS default.
+ */
+bool tc_native_links_reparse_tag(struct files_struct *fsp, uint32_t *_tag)
+{
+	if (!S_ISLNK(fsp->fsp_name->st.st_ex_mode) ||
+	    !tc_native_links_enabled(fsp->conn)) {
+		return false;
+	}
+	*_tag = IO_REPARSE_TAG_SYMLINK;
+	return true;
 }

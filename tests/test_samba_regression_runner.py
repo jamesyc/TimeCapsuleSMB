@@ -200,6 +200,12 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
               "NTSTATUS rename_open_files_below(void)\n{\n    return NT_STATUS_OK;\n}")
     (smbd / "smb2_reply.c").write_text(rename)
     (smbd / "open.c").write_text("void msg_file_was_renamed(void)\n{\n}\n")
+    # The reparse tag lookup, alone in its cut, hook included.
+    tag = ("NTSTATUS fsctl_get_reparse_tag(struct files_struct *fsp,\n\t\t\t       uint32_t *_reparse_tag)\n{\n"
+           "\tif (tc_native_links_reparse_tag(fsp, _reparse_tag)) {\n\t\treturn NT_STATUS_OK;\n\t}\n"
+           "\treturn NT_STATUS_OK;\n}")
+    (modules / "util_reparse.c").write_text("static int before;\n\n" + tag
+                                            + "\n\nNTSTATUS fsctl_set_reparse_point(void)\n{\n}\n")
     util = tmp_path / "lib/util"
     util.mkdir(parents=True)
     conversion = ("struct timespec nt_time_to_unix_timespec_raw(NTTIME nt)\n{\n"
@@ -215,6 +221,7 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     run.stage(tmp_path)
     run.stage(tmp_path)
     assert (modules / "tc_short_write.inc").read_text() == length + "\n\n" + short_write + "\n"
+    assert (modules / "tc_reparse_tag.inc").read_text() == tag + "\n"
     assert (modules / "tc_file_growth_callers.inc").read_text() == "\n\n".join(regions) + "\n"
     assert (modules / "tc_scavenger_hello.inc").read_text() == hello + "\n"
     assert (modules / "tc_scavenger_rescan.inc").read_text() == message + "\n\n" + rescan + "\n"

@@ -26,10 +26,15 @@ static int observed_fstat(int fd, struct stat *st)
 	if (fd == revoked_fd && fd_error) { errno = fd_error; return -1; }
 	return fstat(fd, st);
 }
+/* The share root's path now holds something other than a directory. */
+static bool path_not_directory;
 static int observed_stat(const char *path, struct stat *st)
 {
+	int ret;
 	if (path_error) { errno = path_error; return -1; }
-	return stat(path, st);
+	ret = stat(path, st);
+	if (ret == 0 && path_not_directory) st->st_mode = (st->st_mode & ~S_IFMT) | S_IFREG;
+	return ret;
 }
 static void observed_reset(void) { resets++; }
 static void observed_root_user(void) {}
@@ -142,7 +147,7 @@ static void run_case(const char *name)
 	int fd;
 	CHECK(ctx && sconn);
 	ZERO_ARRAY(trees); resets = disconnects = reloads = forwarded = guest_reinits = 0;
-	revoked_fd = -1; fd_error = path_error = 0; reload_valid = true;
+	revoked_fd = -1; fd_error = path_error = 0; reload_valid = true; path_not_directory = false;
 	load_config_root("first", true, !strcmp(name, "root_widen"), false);
 	sconn->ev_ctx = tevent_context_init(sconn); CHECK(sconn->ev_ctx);
 	first = tree_for(sconn, "Data", 0); second = tree_for(sconn, "USB", 1);
@@ -183,8 +188,23 @@ static void run_case(const char *name)
 		load_config("first", false); CHECK(tc_stale_disk_tree(first, &valid));
 		load_config("first", true); first->tc_root_ino++;
 		CHECK(tc_stale_disk_tree(first, &valid)); first->tc_root_ino--;
-		path_error = ENOENT; CHECK(tc_stale_disk_tree(first, &valid));
-		path_error = EACCES; CHECK(!tc_stale_disk_tree(first, &valid)); path_error = 0;
+		/* Another device or a non-directory at the root's path is another root. */
+		first->base_share_dev++; CHECK(tc_stale_disk_tree(first, &valid)); first->base_share_dev--;
+		path_not_directory = true; CHECK(tc_stale_disk_tree(first, &valid)); path_not_directory = false;
+		CHECK(!tc_stale_disk_tree(first, &valid));
+		{
+			/* A root that is gone, or on a disk that is gone, closes the tree;
+			 * other errors say nothing about the disk and keep it. */
+			int gone[] = {ENOENT, ENOTDIR, ESTALE, ENXIO, ENODEV}, kept[] = {EACCES, EIO};
+			unsigned i;
+			for (i = 0; i < ARRAY_SIZE(gone); i++) {
+				path_error = gone[i]; CHECK(tc_stale_disk_tree(first, &valid));
+			}
+			for (i = 0; i < ARRAY_SIZE(kept); i++) {
+				path_error = kept[i]; CHECK(!tc_stale_disk_tree(first, &valid));
+			}
+			path_error = 0;
+		}
 	} else if (strncmp(name, "root", 4) == 0) {
         bool aio = !strcmp(name, "root_aio");
         bool unchanged = !strcmp(name, "root_unchanged");

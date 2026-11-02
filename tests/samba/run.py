@@ -162,6 +162,10 @@ def stage(source: Path) -> None:
     reply = (source / "source3/smbd/smb2_reply.c").read_text()
     (modules / "tc_rename_open_files.inc").write_text(
         cut(reply, "static void rename_open_files(", "NTSTATUS rename_open_files_below(") + "\n")
+    # fsctl_get_reparse_tag() with patch 0045's native link hook in front.
+    reparse = (modules / "util_reparse.c").read_text()
+    head = "NTSTATUS fsctl_get_reparse_tag("
+    (modules / "tc_reparse_tag.inc").write_text(cut(reparse, head, head) + "\n")
     opened = (source / "source3/smbd/open.c").read_text()
     (modules / "tc_rename_message.inc").write_text(
         cut(opened, "void msg_file_was_renamed(", "void msg_file_was_renamed(") + "\n")
