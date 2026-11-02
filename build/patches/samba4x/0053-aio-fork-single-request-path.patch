@@ -112,7 +112,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	ssize_t nread;
  	uint8_t *buf;
  	int err;
-@@ -644,38 +652,33 @@ static void aio_fork_pread_done(struct tevent_req *subreq)
+@@ -644,39 +652,34 @@ static void aio_fork_pread_done(struct tevent_req *subreq)
  		return;
  	}
  
@@ -125,8 +125,9 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
 -	if (state->ret == -1) {
 -		/*
--		 * The worker's pread failed: return its errno. Cast to size_t,
--		 * -1 looked like an oversized read and became EIO.
+-		 * The worker's pread failed: return -1 with its errno.
+-		 * Checked first, as cast to size_t -1 would pass for an
+-		 * oversized read below and become EIO.
 -		 */
 -		state->child->busy = false;
 -		tevent_req_done(req);
@@ -138,8 +139,9 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 -		state->child->busy = false;
 -		return;
 +	/*
-+	 * A failed pread returns -1 and the worker's errno. Cast to size_t,
-+	 * -1 looked like an oversized read and became EIO.
++	 * A failed pread returns -1 and the worker's errno. Checked first,
++	 * as cast to size_t -1 would pass for an oversized read and become
++	 * EIO.
 +	 */
 +	if (state->cmd == READ_CMD && state->ret != -1) {
 +		if ((size_t)state->ret > state->n) {
@@ -167,7 +169,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  	if (tevent_req_is_unix_error(req, &vfs_aio_state->error)) {
  		return -1;
-@@ -684,234 +687,53 @@ static ssize_t aio_fork_pread_recv(struct tevent_req *req,
+@@ -685,234 +688,41 @@ static ssize_t aio_fork_pread_recv(struct tevent_req *req,
  	return state->ret;
  }
  
@@ -176,6 +178,8 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 -	ssize_t ret;
 -	struct vfs_aio_state vfs_aio_state;
 -};
+-
+-static void aio_fork_pwrite_done(struct tevent_req *subreq);
 +static struct tevent_req *aio_fork_pread_send(struct vfs_handle_struct *handle,
 +					      TALLOC_CTX *mem_ctx,
 +					      struct tevent_context *ev,
@@ -185,13 +189,6 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +{
 +	return aio_fork_send(
 +		handle, mem_ctx, ev, fsp, data, n, offset, READ_CMD);
-+}
- 
--static void aio_fork_pwrite_done(struct tevent_req *subreq);
-+static ssize_t aio_fork_pread_recv(struct tevent_req *req,
-+				   struct vfs_aio_state *vfs_aio_state)
-+{
-+	return aio_fork_recv(req, vfs_aio_state);
 +}
  
  static struct tevent_req *aio_fork_pwrite_send(
@@ -208,7 +205,9 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 -	SMB_VFS_HANDLE_GET_DATA(handle, config,
 -				struct aio_fork_config,
 -				return NULL);
--
++	enum cmd_type cmd = fsp->fsp_flags.posix_append
++		? WRITE_CMD : PWRITE_CMD;
+ 
 -	req = tevent_req_create(mem_ctx, &state, struct aio_fork_pwrite_state);
 -	if (req == NULL) {
 -		return NULL;
@@ -219,9 +218,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 -		tevent_req_error(req, EINVAL);
 -		return tevent_req_post(req, ev);
 -	}
-+	enum cmd_type cmd = fsp->fsp_flags.posix_append
-+		? WRITE_CMD : PWRITE_CMD;
- 
+-
 -	err = get_idle_child(handle, &state->child);
 -	if (err != 0) {
 -		tevent_req_error(req, err);
@@ -267,8 +264,10 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 -	}
 -	tevent_req_set_callback(subreq, aio_fork_pwrite_done, req);
 -	return req;
--}
--
++	return aio_fork_send(handle, mem_ctx, ev, fsp,
++			     discard_const(data), n, offset, cmd);
+ }
+ 
 -static void aio_fork_pwrite_done(struct tevent_req *subreq)
 -{
 -	struct tevent_req *req = tevent_req_callback_data(
@@ -295,13 +294,11 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 -	state->vfs_aio_state.error = retbuf->ret_errno;
 -	state->vfs_aio_state.duration = retbuf->duration;
 -	tevent_req_done(req);
-+	return aio_fork_send(handle, mem_ctx, ev, fsp,
-+			     discard_const(data), n, offset, cmd);
- }
- 
- static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
- 				    struct vfs_aio_state *vfs_aio_state)
- {
+-}
+-
+-static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
+-				    struct vfs_aio_state *vfs_aio_state)
+-{
 -	struct aio_fork_pwrite_state *state = tevent_req_data(
 -		req, struct aio_fork_pwrite_state);
 -
@@ -310,9 +307,8 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 -	}
 -	*vfs_aio_state = state->vfs_aio_state;
 -	return state->ret;
-+	return aio_fork_recv(req, vfs_aio_state);
- }
- 
+-}
+-
 -struct aio_fork_fsync_state {
 -	struct aio_child *child;
 -	ssize_t ret;
@@ -425,3 +421,15 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  }
  
  static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
+@@ -946,9 +756,9 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
+ static struct vfs_fn_pointers vfs_aio_fork_fns = {
+ 	.connect_fn = aio_fork_connect,
+ 	.pread_send_fn = aio_fork_pread_send,
+-	.pread_recv_fn = aio_fork_pread_recv,
++	.pread_recv_fn = aio_fork_recv,
+ 	.pwrite_send_fn = aio_fork_pwrite_send,
+-	.pwrite_recv_fn = aio_fork_pwrite_recv,
++	.pwrite_recv_fn = aio_fork_recv,
+ 	.fsync_send_fn = aio_fork_fsync_send,
+ 	.fsync_recv_fn = aio_fork_fsync_recv,
+ };
