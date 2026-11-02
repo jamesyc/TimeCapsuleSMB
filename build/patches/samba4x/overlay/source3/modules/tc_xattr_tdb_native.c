@@ -8,36 +8,33 @@
 #define TC_APPLE_STREAM_XATTR_PREFIX "user.DosStream."
 #define TC_APPLE_STREAM_XATTR_SUFFIX ":$DATA"
 
+/* The native name of a com.apple.* stream's xattr, or NULL for another. */
 static char *tc_apple_stream_native_name(TALLOC_CTX *mem_ctx,
 					 const char *name)
 {
 	size_t prefix_len = strlen(TC_APPLE_STREAM_XATTR_PREFIX);
-	size_t suffix_len = strlen(TC_APPLE_STREAM_XATTR_SUFFIX);
-	size_t name_len = strlen(name);
+	size_t native_len;
 
-	if (name_len <= prefix_len + suffix_len ||
-	    strncmp(name, TC_APPLE_STREAM_XATTR_PREFIX "com.apple.",
-		    strlen(TC_APPLE_STREAM_XATTR_PREFIX "com.apple.")) != 0 ||
-	    strcmp(name + name_len - suffix_len,
-		   TC_APPLE_STREAM_XATTR_SUFFIX) != 0)
-	{
+	if (strncmp(name, TC_APPLE_STREAM_XATTR_PREFIX, prefix_len) != 0) {
 		return NULL;
 	}
-	return talloc_strndup(
-		mem_ctx, name + prefix_len, name_len - prefix_len - suffix_len);
+	native_len = tc_apple_stream_native_len(name + prefix_len);
+	if (native_len == 0) {
+		return NULL;
+	}
+	return talloc_strndup(mem_ctx, name + prefix_len, native_len);
 }
 
 static bool tc_fruit_owned_native_xattr(const char *name)
 {
-	return strcmp(name, TC_FINDERINFO_XATTR) == 0 ||
-		strcmp(name, TC_RESOURCEFORK_XATTR) == 0;
+	return tc_fruit_owned_xattr(name, strlen(name));
 }
 
 /*
- * A native symlink opened as itself (Time Capsule native links, patch 0045)
- * has no descriptor; patch 0059 keeps its attributes on the link. Its attributes live on the link, as Apple's AFP server
- * stores them, and are reached by path with the no-follow syscalls. Any
- * other descriptor-less handle keeps failing with EBADF.
+ * A native symlink opened as itself (patch 0045) has no descriptor. Its
+ * attributes live on the link, as Apple's AFP server stores them (patch
+ * 0059), and are reached by path with the no-follow syscalls. Any other
+ * descriptor-less handle keeps failing with EBADF.
  *
  * The handle keeps only the link's name, and an AFP or SSH client can rename
  * the link between two SMB requests and put another object there. So check
@@ -115,12 +112,22 @@ static int tc_native_fsetxattr(files_struct *fsp, const char *name,
 		return -1;
 	}
 	if (path == NULL) {
-		return tc_airport_fsetxattr(
+		ret = tc_airport_fsetxattr(
 			fsp_get_pathref_fd(fsp), name, value, size, flags);
+	} else {
+		ret = tc_airport_lsetxattr(path, name, value, size, flags);
 	}
-	ret = tc_airport_lsetxattr(path, name, value, size, flags);
 	err = errno;
 	TALLOC_FREE(path);
+	/*
+	 * HFS holds at most 3,802 bytes in an attribute and fails a larger
+	 * one with E2BIG. Apple's AFP server answers that with EINVAL, so
+	 * do the same: smbd maps it to NT_STATUS_INVALID_PARAMETER, where
+	 * E2BIG would be ACCESS_DENIED.
+	 */
+	if (ret != 0 && err == E2BIG) {
+		err = EINVAL;
+	}
 	errno = err;
 	return ret;
 }
@@ -207,12 +214,11 @@ static int tc_native_apple_stream_set(files_struct *fsp,
 		errno = EINVAL;
 		return -1;
 	}
-	if (((const uint8_t *)value)[size - 1] != 0) {
-		/* HFS must expose one complete canonical xattr to AFP. A
-		 * streams_xattr extent count here would expose only its anchor. */
-		errno = E2BIG;
-		return -1;
-	}
+	/*
+	 * streams_xattr writes a native Apple stream as one fragment whose
+	 * last byte is its extent count, 0 (fsetxattr_multi() refuses a
+	 * larger value). The native attribute is the value without it.
+	 */
 	return tc_native_fsetxattr(fsp, native_name, value, size - 1, flags);
 }
 

@@ -69,6 +69,10 @@ static int primary_remove_error;
 static int ad_fset_error;
 static off_t test_resource_size;
 static int test_resource_stat_error;
+/* openat_pathref_fsp_lcomp() asserts a single component under a directory
+ * other than the share root; names relative to the root need
+ * openat_pathref_fsp(). Count which one each lookup takes. */
+static unsigned test_lcomp_opens, test_pathref_opens;
 /* Deleting the AFP_Resource stream truncates the native fork by path. */
 static unsigned test_truncate_calls;
 static char test_truncate_path[256];
@@ -137,6 +141,7 @@ static void reset_stores(void)
 	test_resource_size = 0;
 	test_resource_stat_error = 0;
 	test_truncate_calls = 0;
+	test_lcomp_opens = test_pathref_opens = 0;
 	test_truncate_path[0] = '\0';
 	test_truncate_length = -1;
 	test_truncate_error = 0;
@@ -625,17 +630,22 @@ static NTSTATUS test_openat_pathref_fsp_lcomp(
 	struct smb_filename *smb_fname,
 	uint32_t ucf_flags)
 {
-	(void)dirfsp;
 	(void)ucf_flags;
+	CHECK(dirfsp == NULL || dirfsp != dirfsp->conn->cwd_fsp);
+	CHECK(strchr(smb_fname->base_name, '/') == NULL);
+	test_lcomp_opens++;
 	smb_fname->fsp = test_pathref_fsp;
 	return NT_STATUS_OK;
 }
 
 static NTSTATUS test_openat_pathref_fsp(
-	struct files_struct *dirfsp,
+	const struct files_struct *dirfsp,
 	struct smb_filename *smb_fname)
 {
-	return test_openat_pathref_fsp_lcomp(dirfsp, smb_fname, 0);
+	(void)dirfsp;
+	test_pathref_opens++;
+	smb_fname->fsp = test_pathref_fsp;
+	return NT_STATUS_OK;
 }
 
 static uint64_t test_smb_roundup(connection_struct *conn, uint64_t value)
@@ -809,12 +819,14 @@ static NTSTATUS test_missing_synthetic_pathref(void)
 #define ad_fset(h, a, f) test_ad_fset((h), (a), (f))
 #define synthetic_pathref(...) test_missing_synthetic_pathref()
 #define openat_pathref_fsp_lcomp test_openat_pathref_fsp_lcomp
+#define openat_pathref_fsp test_openat_pathref_fsp
 #define truncate(p, l) test_truncate((p), (l))
 #undef vfs_fruit_init
 #define vfs_fruit_init regression_fruit_init
 #include "vfs_fruit.c"
 #undef vfs_fruit_init
 #undef truncate
+#undef openat_pathref_fsp
 #undef openat_pathref_fsp_lcomp
 #undef synthetic_pathref
 #undef ad_fset
@@ -884,7 +896,8 @@ static void test_native_stream_boundary(files_struct *fsp)
 		CHECK(fgetxattr_multi(&config, fsp, name, output, sizeof(output)) == size + 1);
 		memset(value, 0x62, sizeof(value)); value[3803] = 0;
 		CHECK(fsetxattr_multi(&config, fsp, name, value, 3804, 0) == -1);
-		CHECK(errno == E2BIG && native_store.size == size);
+		/* Refused as Apple's AFP server refuses it, nothing written. */
+		CHECK(errno == EINVAL && native_store.size == size);
 		CHECK(size == 0 || native_store.data[0] == 0x61);
 		/* Shrinking must not leave a synthetic extent or trailing bytes. */
 		CHECK(fsetxattr_multi(&config, fsp, name, "x", 2, 0) == 0);
@@ -1062,7 +1075,6 @@ static void test_native_xattrs(struct vfs_handle_struct *handle,
 	const uint8_t original[] = {'r', 'e', 'd'};
 	const uint8_t updated[] = {'b', 'l', 'u', 'e', 0};
 	uint8_t result[32] = {0};
-	uint8_t extended[] = {'x', 1};
 
 	handle->data = &config;
 	reset_stores();
@@ -1081,10 +1093,18 @@ static void test_native_xattrs(struct vfs_handle_struct *handle,
 	CHECK(memcmp(native_store.data, updated, sizeof(updated) - 1) == 0);
 	CHECK(native_options == 0);
 
+	/* HFS refuses a value it cannot hold with E2BIG; smbd gets EINVAL,
+	 * as Apple's AFP server answers, for a stream and a plain xattr. */
+	native_store.set_error = E2BIG;
 	errno = 0;
 	CHECK(xattr_tdb_fsetxattr(handle, fsp, stream_name,
-				 extended, sizeof(extended), 0) == -1);
-	CHECK(errno == E2BIG);
+				 updated, sizeof(updated), 0) == -1);
+	CHECK(errno == EINVAL);
+	errno = 0;
+	CHECK(xattr_tdb_fsetxattr(handle, fsp, "user.test",
+				 updated, sizeof(updated), 0) == -1);
+	CHECK(errno == EINVAL);
+	native_store.set_error = 0;
 
 	errno = 0;
 	CHECK(xattr_tdb_fgetxattr(
@@ -1327,6 +1347,51 @@ static void test_finderinfo_views(struct vfs_handle_struct *handle,
 
 	CHECK(fruit_unlink_meta(handle, NULL, &stream_name) == 0);
 	CHECK(!native_store.exists);
+
+	/* A FinderInfo of the wrong size leaves AFP_AfpInfo out of the stream
+	 * list, as stock fruit does for metadata it cannot read; the list
+	 * itself still succeeds. */
+	reset_stores();
+	seed_store(&native_store, TC_FINDERINFO_XATTR,
+		   finderinfo, sizeof(finderinfo) - 1);
+	num_streams = 0;
+	status = fruit_streaminfo_meta(
+		handle, fsp, smb_fname, mem_ctx, &num_streams, &streams);
+	CHECK(NT_STATUS_IS_OK(status));
+	CHECK(num_streams == 0);
+	TALLOC_FREE(streams);
+
+	/* A name relative to the share root can have several components:
+	 * it opens with openat_pathref_fsp(). A name under another directory
+	 * is a single component and opens with openat_pathref_fsp_lcomp(). */
+	{
+		struct smb_filename nested = {
+			.base_name = discard_const_p(char, "dir/object"),
+		};
+		struct smb_filename leaf = {
+			.base_name = discard_const_p(char, "object"),
+		};
+		struct smb_filename dir_name = {
+			.base_name = discard_const_p(char, "dir"),
+		};
+		files_struct dir = {
+			.conn = handle->conn,
+			.fsp_name = &dir_name,
+		};
+		uint8_t read_back[AFP_FinderSize] = {0};
+
+		reset_stores();
+		seed_store(&native_store, TC_FINDERINFO_XATTR,
+			   finderinfo, sizeof(finderinfo));
+		CHECK(tc_native_finderinfo_read_at(
+			      handle, handle->conn->cwd_fsp, &nested,
+			      read_back) == 1);
+		CHECK(test_pathref_opens == 1 && test_lcomp_opens == 0);
+		CHECK(read_back[0] == 'T');
+		CHECK(tc_native_finderinfo_read_at(
+			      handle, &dir, &leaf, read_back) == 1);
+		CHECK(test_pathref_opens == 1 && test_lcomp_opens == 1);
+	}
 }
 
 static void test_resource_backend(struct vfs_handle_struct *handle,
@@ -1370,6 +1435,8 @@ static void test_resource_backend(struct vfs_handle_struct *handle,
 		CHECK(fruit_fstat_rsrc(handle, &stream_fsp, &stream_st, fio) == 0);
 		CHECK(stream_st.st_ex_size == 4096);
 		CHECK(stream_st.st_ex_ino != base_fsp->fsp_name->st.st_ex_ino);
+		/* The fork's own allocation, not the data fork's. */
+		CHECK(stream_st.st_ex_blocks == 4096 / STAT_ST_BLOCKSIZE + 1);
 	}
 
 	CHECK(fruit_pwrite_rsrc(
@@ -1449,6 +1516,21 @@ static void test_resource_backend(struct vfs_handle_struct *handle,
 	CHECK(fruit_unlink_rsrc(
 		      handle, conn->cwd_fsp, &stream_name, true) == 0);
 	CHECK(test_truncate_calls == 0);
+	/* Only a regular file has a fork to empty: truncate() would follow a
+	 * symlink to its target's fork, and a directory has none. */
+	{
+		mode_t modes[] = {S_IFLNK | 0777, S_IFDIR | 0700};
+		size_t i;
+
+		for (i = 0; i < ARRAY_SIZE(modes); i++) {
+			reset_stores();
+			test_fstatat_base_mode = modes[i];
+			errno = 0;
+			CHECK(fruit_unlink_rsrc(handle, conn->cwd_fsp,
+						&stream_name, false) == -1);
+			CHECK(errno == ENOENT && test_truncate_calls == 0);
+		}
+	}
 
 	/* FILE_OVERWRITE opens an existing fork with O_TRUNC but not O_CREAT.
 	 * Check existence before open so the post-open zero length is not mistaken

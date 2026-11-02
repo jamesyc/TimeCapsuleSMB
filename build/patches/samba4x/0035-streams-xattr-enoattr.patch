@@ -26,18 +26,7 @@ diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_x
  				 * then nothing will follow.
  				 */
  				ret = 0;
-@@ -351,6 +351,10 @@ done:
- 	return ret;
- }
- 
-+/* VFS xattrs use ENOATTR. Unlike Linux, NetBSD defines ENODATA separately;
-+ * accepting only ENODATA for a missing optional extent reports a failed delete
-+ * after the primary stream has already been removed.
-+ * The same contract applies to extent reads and shrinking-write cleanup. */
- static int fremovexattr_multi(const struct streams_xattr_config *config,
- 			      struct files_struct *fsp,
- 			      const char *raw_stream_name)
-@@ -396,7 +400,7 @@ static int fremovexattr_multi(const struct streams_xattr_config *config,
+@@ -396,7 +396,7 @@ static int fremovexattr_multi(const struct streams_xattr_config *config,
  
  		TALLOC_FREE(xattr_name);
  		if (ret < 0) {

@@ -17,23 +17,24 @@ diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_x
  	bool store_stream_type;
  };
  
-@@ -83,13 +85,29 @@ static char *streams_xattr_ext_name(TALLOC_CTX *mem_ctx,
+@@ -83,13 +85,30 @@ static char *streams_xattr_ext_name(TALLOC_CTX *mem_ctx,
  	return name;
  }
  
-+/* Only canonical Apple streams omit the marker in physical HFS storage.
-+ * Windows ADS must retain their existing 3,802-byte extent layout. */
++/*
++ * Only a Mac's com.apple.* streams are stored as one native attribute
++ * without the extent count byte; Windows streams keep the extent layout.
++ */
 +static bool streams_xattr_native_apple(const struct streams_xattr_config *config,
-+				     const char *name)
++				       const char *name)
 +{
-+	size_t len = strlen(name);
-+	const char *suffix = ":$DATA";
++	size_t native_len;
 +
-+	return config->native_hfs && len > strlen(suffix) &&
-+		strncmp(name, "com.apple.", 10) == 0 &&
-+		strcmp(name + len - strlen(suffix), suffix) == 0 &&
-+		strcmp(name, "com.apple.FinderInfo:$DATA") != 0 &&
-+		strcmp(name, "com.apple.ResourceFork:$DATA") != 0;
++	if (!config->native_hfs) {
++		return false;
++	}
++	native_len = tc_apple_stream_native_len(name);
++	return native_len != 0 && !tc_fruit_owned_xattr(name, native_len);
 +}
 +
  static ssize_t fgetxattr_multi(const struct streams_xattr_config *config,
@@ -48,7 +49,7 @@ diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_x
  	uint8_t *value = NULL;
  	size_t valuelen;
  	ssize_t ret = -1;
-@@ -221,12 +239,18 @@ static int fsetxattr_multi(const struct streams_xattr_config *config,
+@@ -221,12 +240,25 @@ static int fsetxattr_multi(const struct streams_xattr_config *config,
  			   size_t size,
  			   int flags)
  {
@@ -60,15 +61,22 @@ diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_x
  	int ret = -1;
  	char *xattr_name = NULL;
  
-+	if (streams_xattr_native_apple(config, raw_stream_name) && size > fraglen) {
-+		/* Reject before writing an anchor: AFP must see the whole xattr. */
-+		errno = E2BIG;
++	if (streams_xattr_native_apple(config, raw_stream_name) &&
++	    size > fraglen)
++	{
++		/*
++		 * One HFS attribute cannot hold it. Refuse it before writing
++		 * anything, as Apple's AFP server does, with EINVAL: smbd
++		 * answers NT_STATUS_INVALID_PARAMETER, which a Mac reports
++		 * as AFP's "Invalid argument".
++		 */
++		errno = EINVAL;
 +		return -1;
 +	}
  	if (size < 1) {
  		errno = EINVAL;
  		return -1;
-@@ -1505,6 +1529,7 @@ static int streams_xattr_connect(vfs_handle_struct *handle,
+@@ -1501,6 +1533,7 @@ static int streams_xattr_connect(vfs_handle_struct *handle,
  		return -1;
  	}
  	config->max_extents = max_xattrs - 1;

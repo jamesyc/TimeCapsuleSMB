@@ -136,10 +136,27 @@ static int fruit_unlink_rsrc_native(vfs_handle_struct *handle,
 	TALLOC_CTX *frame = NULL;
 	struct smb_filename *full_fname = NULL;
 	struct smb_filename *native_name = NULL;
+	struct smb_filename base_name = *smb_fname;
+	SMB_STRUCT_STAT st = {0};
 	int ret;
 
 	if (force_unlink) {
 		return 0;
+	}
+	/*
+	 * Only a regular file has a fork to empty. truncate() follows a
+	 * symlink, which would empty its target's fork instead, as the
+	 * open would (fruit_open_rsrc_native() refuses both).
+	 */
+	base_name.stream_name = NULL;
+	ret = SMB_VFS_NEXT_FSTATAT(
+		handle, dirfsp, &base_name, &st, AT_SYMLINK_NOFOLLOW);
+	if (ret != 0) {
+		return -1;
+	}
+	if (!S_ISREG(st.st_ex_mode)) {
+		errno = ENOENT;
+		return -1;
 	}
 	frame = talloc_stackframe();
 	full_fname = full_path_from_dirfsp_atname(frame, dirfsp, smb_fname);
@@ -206,6 +223,8 @@ static int fruit_fstat_rsrc_native(vfs_handle_struct *handle,
 	*sbuf = fsp->base_fsp->fsp_name->st;
 	sbuf->st_ex_ino = hash_inode(sbuf, fsp->fsp_name->stream_name);
 	sbuf->st_ex_size = resource_st.st_ex_size;
+	/* As fruit_fstatat_rsrc_native() reports it. */
+	sbuf->st_ex_blocks = sbuf->st_ex_size / STAT_ST_BLOCKSIZE + 1;
 	return 0;
 }
 

@@ -1,7 +1,7 @@
 diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_xattr.c
 --- a/source3/modules/vfs_streams_xattr.c
 +++ b/source3/modules/vfs_streams_xattr.c
-@@ -1497,9 +1497,9 @@ static int streams_xattr_connect(vfs_handle_struct *handle,
+@@ -1493,9 +1493,9 @@ static int streams_xattr_connect(vfs_handle_struct *handle,
  				 "streams_xattr",
  				 "max xattrs per stream",
  				 1);

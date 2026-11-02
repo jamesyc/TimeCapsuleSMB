@@ -1,17 +1,34 @@
 diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
 --- a/source3/modules/vfs_fruit.c
 +++ b/source3/modules/vfs_fruit.c
-@@ -4767,6 +4767,16 @@ static struct tevent_req *fruit_offload_read_send(
+@@ -4767,6 +4767,15 @@ static struct tevent_req *fruit_offload_read_send(
  		return tevent_req_post(req, ev);
  	}
  	tevent_req_set_callback(subreq, fruit_offload_read_done, req);
 +	if (!tevent_req_is_in_progress(subreq)) {
 +		/*
-+		 * FSCTL_SRV_REQUEST_RESUME_KEY normally completes in the
-+		 * default VFS synchronously. Preserve that completion through
-+		 * the fruit wrapper so compounded Time Machine IOCTL requests
-+		 * are not mistaken for illegal mid-compound async work by the
-+		 * SMB2 request layer.
++		 * The default VFS completes FSCTL_SRV_REQUEST_RESUME_KEY
++		 * before returning. Complete this wrapper now too, or the
++		 * SMB2 layer takes a compounded resume-key IOCTL for async
++		 * work in the middle of a compound.
++		 */
++		tevent_req_notify_callback(subreq);
++	}
+ 	return req;
+ }
+ 
+diff --git a/source3/modules/vfs_time_audit.c b/source3/modules/vfs_time_audit.c
+--- a/source3/modules/vfs_time_audit.c
++++ b/source3/modules/vfs_time_audit.c
+@@ -2071,6 +2071,14 @@ static struct tevent_req *smb_time_audit_offload_read_send(
+ 	}
+ 
+ 	tevent_req_set_callback(subreq, smb_time_audit_offload_read_done, req);
++	if (!tevent_req_is_in_progress(subreq)) {
++		/*
++		 * The default VFS completes FSCTL_SRV_REQUEST_RESUME_KEY
++		 * before returning; complete this wrapper now too, as
++		 * vfs_fruit's does.
 +		 */
 +		tevent_req_notify_callback(subreq);
 +	}
@@ -21,17 +38,16 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
 diff --git a/source3/smbd/smb2_ioctl_network_fs.c b/source3/smbd/smb2_ioctl_network_fs.c
 --- a/source3/smbd/smb2_ioctl_network_fs.c
 +++ b/source3/smbd/smb2_ioctl_network_fs.c
-@@ -717,6 +717,16 @@ struct tevent_req *smb2_ioctl_network_fs(uint32_t ctl_code,
+@@ -717,6 +717,15 @@ struct tevent_req *smb2_ioctl_network_fs(uint32_t ctl_code,
  		}
  		tevent_req_set_callback(
  			subreq, smb2_ioctl_network_fs_offload_read_done, req);
 +		if (!tevent_req_is_in_progress(subreq)) {
 +			/*
-+			 * Resume-key offload reads can finish before the
-+			 * callback is attached. Complete the IOCTL parent
-+			 * now so the SMB2 compound handler sees this as a
-+			 * synchronous FSCTL rather than a cancel-resistant
-+			 * async IOCTL in the middle of a compound chain.
++			 * A resume-key offload read can finish before the
++			 * callback is set. Complete the IOCTL now, so the
++			 * SMB2 layer sees a synchronous FSCTL rather than
++			 * async work in the middle of a compound.
 +			 */
 +			tevent_req_notify_callback(subreq);
 +		}

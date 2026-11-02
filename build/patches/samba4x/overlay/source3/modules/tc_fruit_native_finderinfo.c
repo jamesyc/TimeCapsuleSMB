@@ -98,8 +98,19 @@ static int tc_native_finderinfo_base_fsp(
 	}
 
 	config->in_openat_pathref_fsp = true;
-	status = openat_pathref_fsp_lcomp(
-		discard_const_p(struct files_struct, dirfsp), base_name, 0);
+	if (dirfsp == handle->conn->cwd_fsp) {
+		/*
+		 * A name relative to the share root can have several
+		 * components, which openat_pathref_fsp_lcomp() asserts
+		 * against; stock fruit opens such names this way too.
+		 */
+		status = openat_pathref_fsp(dirfsp, base_name);
+	} else {
+		status = openat_pathref_fsp_lcomp(
+			discard_const_p(struct files_struct, dirfsp),
+			base_name,
+			0);
+	}
 	config->in_openat_pathref_fsp = false;
 	if (!NT_STATUS_IS_OK(status)) {
 		int error = map_errno_from_nt_status(status);
@@ -348,7 +359,16 @@ static NTSTATUS fruit_streaminfo_meta_native(
 		smb_fname,
 		native_finderinfo);
 	if (native_state < 0) {
-		return map_nt_error_from_unix(errno);
+		/*
+		 * List the other streams without AFP_AfpInfo, as stock fruit
+		 * does for metadata it cannot read, rather than fail the
+		 * whole listing over one attribute (such as a FinderInfo of
+		 * the wrong size).
+		 */
+		DBG_NOTICE("%s: FinderInfo unreadable: %s\n",
+			   smb_fname_str_dbg(smb_fname),
+			   strerror(errno));
+		return NT_STATUS_OK;
 	}
 	if (native_state == 0 ||
 	    all_zero(native_finderinfo, AFP_FinderSize))

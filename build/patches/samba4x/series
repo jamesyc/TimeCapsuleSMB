@@ -46,10 +46,12 @@
 # into a 60-byte stack buffer and stores all 60 bytes, so the stream kept
 # uninitialized stack bytes after the caller's data. Zero the buffer first.
 0067-fruit-pwrite-meta-zero-fill.patch|zero-fill short AfpInfo writes
-# xattr_tdb_setattr() returned without freeing its stackframe when it could
-# not lock the row; the caller's frame then freed it out of order ("Freed
-# frame ..., expected ..." at level 0, a panic in DEVELOPER builds).
-0068-xattr-tdb-setattr-lock-failure-frame.patch|free the stackframe when the xattr row cannot be locked
+# xattr_tdb_setattr() returns without freeing its stackframe when it cannot
+# lock the row; the caller's frame then frees it out of order ("Freed frame
+# ..., expected ..." at level 0, a panic in DEVELOPER builds). It and
+# xattr_tdb_removeattr() also return -1 without setting errno when the row
+# cannot be parsed (EINVAL) or stored (the store's status as an errno).
+0068-xattr-tdb-setattr-lock-failure-frame.patch|free the stackframe and set errno on every xattr_tdb write failure
 # streams_xattr_unlinkat() returned the positive error code from
 # streams_xattr_get_name(), returned 0 when it could not open the base file,
 # and reported success when removing the stream's xattr failed for any reason
@@ -96,16 +98,17 @@
 # sorts them first, where the lease and write-lease checks above already ask
 # whether they are stale, as stock does.
 0078-smbd-open-stale-breaking-lease.patch|no wait on a breaking lease whose open is stale
-# A file with no xattr_tdb row has an empty attribute set: report ENOATTR for
-# it, not EINVAL, to every caller of the library. Stock vfs_xattr_tdb's
-# fgetxattr already maps its errors to ENOATTR; EINVAL escaped through
-# getxattrat (async dosmode) and to the library's other callers, such as the
-# metadata migrator. Since 0038, HFS shares do not use this library.
+# A file with no xattr_tdb row has an empty attribute set: xattr_tdb_getattr()
+# reports ENOATTR for it, not EINVAL, to every caller of the library. Stock
+# vfs_xattr_tdb's fgetxattr already maps its errors to ENOATTR; EINVAL escapes
+# through getxattrat (async dosmode) and to the library's other callers, such
+# as the metadata migrator. Since 0038, HFS shares do not use this library.
 0018-xattr-tdb-missing-row-empty.patch|xattr_tdb missing rows behave like empty xattrs
 # macOS/iOS Photos writes many assetsd metadata streams. Once xattr_tdb's
 # stream-name list exceeds Samba's initial 1024-byte listxattr buffer, return
-# the normal -1/ERANGE retry signal instead of a positive required length that
-# callers mistake for bytes written into the too-small buffer.
+# -1 with ERANGE, the retry signal listxattr(2) gives, instead of the length it
+# needs, which callers take for bytes written into the too-small buffer. A probe
+# with size 0 still gets the length.
 0027-xattr-tdb-listxattr-erange.patch|xattr_tdb retries oversized xattr name lists
 # With xattr_tdb:ignore_user_xattr, user xattr reads pass to the next module
 # before xattr_tdb has built its local smb_fname copy, so upstream passes NULL.
@@ -117,7 +120,7 @@
 # offload_read wrapper and smb2_ioctl_network_fs each keep their parent request
 # in progress, and the SMB2 compound guard rejects it with
 # NT_STATUS_INTERNAL_ERROR. Run the callback right away when the subrequest has
-# already finished.
+# already finished, there and in vfs_time_audit's wrapper.
 0028-ioctl-resume-key-sync-completion.patch|propagate synchronous resume-key IOCTL completion
 # aio_child_cleanup() retires a helper idle for 30 to 60 seconds through
 # aio_child_destructor(), which makes it exit by writing one byte with no
@@ -149,8 +152,8 @@
 # missing, but VFS xattr calls report ENOATTR. Linux builds never see the
 # difference, since lib/replace/system/filesys.h defines ENOATTR as ENODATA
 # there. On BSD and macOS, which define ENODATA separately, a missing extent
-# failed a stream read, the cleanup after a shrinking write and a stream delete
-# after the primary xattr was gone. Check for ENOATTR.
+# fails a stream read, the cleanup after a shrinking write and a stream delete
+# after the primary xattr is gone. Check for ENOATTR.
 0035-streams-xattr-enoattr.patch|missing stream extents report ENOATTR
 # smbd_smb2_advance_incoming() reads a frame whose NBT type is not 0x00 in full
 # into a buffer allocated on the request, ignores it, and reuses the request
@@ -209,9 +212,9 @@
 # retaining thousands of per-hash-chain dead records after Time Machine closes
 # files; persistent TDBs already use 0, so only a positive value changes them.
 0017-dbwrap-tdb-max-dead.patch|configurable dbwrap TDB max-dead records
-# Native HFS xattrs hold at most 3802 bytes, so smb.conf sets 35 xattrs per
-# stream to keep the previous ~128 KiB Windows alternate data stream limit.
-# Upstream accepts at most 16.
+# Native HFS xattrs hold at most 3,802 bytes, so smb.conf sets 35 xattrs per
+# stream for Windows alternate data streams of up to about 130 KiB. Upstream
+# accepts at most 16.
 0048-streams-xattr-max-64-per-stream.patch|allow up to 64 xattrs per stream
 # Refactor only: pread, pwrite and fsync had three copies of the same
 # send/done/recv code; use one path that takes the command.
@@ -520,12 +523,19 @@
 #
 # On an HFS share, xattr_tdb keeps ordinary xattrs and Apple's com.apple.*
 # streams in native attributes instead of its database, and leaves FinderInfo
-# and resource forks to fruit.
+# and resource forks to fruit. A value HFS cannot hold (over 3,802 bytes) fails
+# with EINVAL, as Apple's AFP server fails it, not E2BIG, so the client gets
+# NT_STATUS_INVALID_PARAMETER rather than ACCESS_DENIED. A Mac's com.apple.*
+# stream never gets that far: smbd max xattr size (3,802) makes streams_xattr
+# refuse it first, with the same EINVAL (0054). What does reach the kernel's
+# E2BIG is a Windows client's NT ACL, EA or reparse data.
 0038-xattr-tdb-native-hfs.patch|native HFS attributes for xattr_tdb
-# Apple's com.apple.* streams are one native attribute without the trailing
-# NUL that streams_xattr stores, so allow that byte and refuse a larger value
-# (E2BIG) instead of splitting it across extents: AFP must see the whole
-# attribute. Windows streams keep their extent layout.
+# Apple's com.apple.* streams are one native attribute without the extent count
+# byte that streams_xattr stores, so allow that byte and refuse a larger value
+# instead of splitting it across extents: AFP must see the whole attribute. The
+# refusal is EINVAL, as for 0038's. Windows streams keep their extent layout.
+# streams_xattr, xattr_tdb and the migrator tell the streams apart with one
+# classifier (tc_apple_stream_native_len() in airport_native_xattr.h).
 0054-streams-xattr-native-apple-streams.patch|whole native attributes for Apple streams
 # On an HFS share fruit ignores fruit:metadata and serves the AFP_AfpInfo
 # stream from the native com.apple.FinderInfo attribute (overlay
@@ -535,12 +545,15 @@
 # still has a legacy xattr.tdb (every TimeCapsuleSMB version that wrote ._
 # files also wrote one), which saves a whole-disk walk on every deploy.
 # Uninstall removes the payload with that database, so ._ files on a disk
-# uninstalled and reinstalled stay unconverted and hidden.
+# uninstalled and reinstalled stay unconverted and hidden. A FinderInfo the
+# stream list cannot read leaves AFP_AfpInfo out of it, as stock fruit does for
+# unreadable metadata, instead of failing the whole list.
 0055-fruit-native-finderinfo.patch|native HFS FinderInfo in fruit
 # Building on 0055's native_hfs switch, fruit serves the AFP_Resource stream
 # from the file's native resource fork, opened as <file>/..namedfork/rsrc like
 # AFP does (overlay tc_fruit_native_rsrc.c). On an HFS share fruit:resource is
-# ignored.
+# ignored. Deleting the stream empties the fork of a regular file only:
+# truncate() would follow a symlink to its target's fork.
 0056-fruit-native-resource-fork.patch|native HFS resource forks in fruit
 # The static helper in overlay tc_xattr_hfs_migrate.c moves legacy
 # TDB/AppleDouble metadata during deploy only, on every deploy while legacy

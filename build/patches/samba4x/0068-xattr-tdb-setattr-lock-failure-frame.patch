@@ -9,3 +9,35 @@ diff --git a/source3/lib/xattr_tdb.c b/source3/lib/xattr_tdb.c
  		errno = EINVAL;
  		return -1;
  	}
+@@ -251,6 +252,7 @@ int xattr_tdb_setattr(struct db_context *db_ctx,
+ 		DEBUG(10, ("xattr_tdb_fetch_attrs failed: %s\n",
+ 			   nt_errstr(status)));
+ 		TALLOC_FREE(frame);
++		errno = EINVAL;
+ 		return -1;
+ 	}
+ 
+@@ -299,6 +301,7 @@ int xattr_tdb_setattr(struct db_context *db_ctx,
+ 
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		DEBUG(1, ("save failed: %s\n", nt_errstr(status)));
++		errno = map_errno_from_nt_status(status);
+ 		return -1;
+ 	}
+ 
+@@ -410,6 +413,7 @@ int xattr_tdb_removeattr(struct db_context *db_ctx,
+ 		DEBUG(10, ("xattr_tdb_fetch_attrs failed: %s\n",
+ 			   nt_errstr(status)));
+ 		TALLOC_FREE(rec);
++		errno = EINVAL;
+ 		return -1;
+ 	}
+ 
+@@ -441,6 +445,7 @@ int xattr_tdb_removeattr(struct db_context *db_ctx,
+ 
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		DEBUG(1, ("save failed: %s\n", nt_errstr(status)));
++		errno = map_errno_from_nt_status(status);
+ 		return -1;
+ 	}
+ 

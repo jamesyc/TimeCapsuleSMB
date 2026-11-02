@@ -25,6 +25,38 @@
 #define TC_FINDERINFO_XATTR "com.apple.FinderInfo"
 #define TC_RESOURCEFORK_XATTR "com.apple.ResourceFork"
 
+/*
+ * A Mac's com.apple.* named stream ("com.apple.X:$DATA") lives in the
+ * native attribute "com.apple.X" on an HFS share, where Apple's AFP server
+ * keeps it, not in streams_xattr's extent layout. Returns the length of
+ * that native name, the stream name without ":$DATA", or 0 for any other
+ * stream name. streams_xattr, xattr_tdb and the migrator all decide with
+ * this.
+ */
+static inline size_t tc_apple_stream_native_len(const char *stream_name)
+{
+	static const char prefix[] = "com.apple.";
+	static const char suffix[] = ":$DATA";
+	size_t len = strlen(stream_name);
+
+	if (len <= sizeof(suffix) - 1 ||
+	    strncmp(stream_name, prefix, sizeof(prefix) - 1) != 0 ||
+	    strcmp(stream_name + len - (sizeof(suffix) - 1), suffix) != 0)
+	{
+		return 0;
+	}
+	return len - (sizeof(suffix) - 1);
+}
+
+/* Whether the len bytes at name are one of fruit's two attributes. */
+static inline bool tc_fruit_owned_xattr(const char *name, size_t len)
+{
+	return (len == strlen(TC_FINDERINFO_XATTR) &&
+		strncmp(name, TC_FINDERINFO_XATTR, len) == 0) ||
+	       (len == strlen(TC_RESOURCEFORK_XATTR) &&
+		strncmp(name, TC_RESOURCEFORK_XATTR, len) == 0);
+}
+
 #ifndef TC_AIRPORT_XATTR_SYSCALL
 #define TC_AIRPORT_XATTR_SYSCALL syscall
 #endif
