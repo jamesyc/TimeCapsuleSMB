@@ -36,8 +36,16 @@ import time
 
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.core.error_codes import ErrorCode
-from timecapsulesmb.device.disk_errors import DiskFailingEvidence, read_disk_failing_evidence_conn
+from timecapsulesmb.device.disk_errors import (
+    DISK_NOT_RESPONDING_MESSAGE,
+    DiskFailingEvidence,
+    disk_check_running_message,
+    disk_stall_code,
+    disk_stall_facts,
+    read_disk_failing_evidence_conn,
+)
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.processes import disk_io_stalls, is_disk_check
 from timecapsulesmb.device.storage import (
     MAST_ACP_COMMAND,
     MaStDiskSnapshot,
@@ -82,6 +90,7 @@ from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.maintenance import render_disk_maintenance_preamble, reboot_and_restart_sharing
 from timecapsulesmb.services.reboot import RebootFlowError
+from timecapsulesmb.services.runtime import DiskCheckRunningError, require_no_disk_check
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_capture_bytes
 
@@ -289,12 +298,32 @@ def disk_jobs_conn(connection: SshConnection) -> tuple[str, ...] | None:
     return disk_jobs_in(proc.stdout)
 
 
-def require_no_disk_jobs(connection: SshConnection) -> None:
-    jobs = disk_jobs_conn(connection)
-    if jobs is None or jobs:
-        detail = f"running: {', '.join(jobs)}" if jobs else "the process list could not be read"
+def require_no_disk_jobs(connection: SshConnection, callbacks: OperationCallbacks) -> None:
+    """The strict disk-job check (runtime.require_no_disk_check): a wipe would
+    cut off a disk check, and diskd's erase, format and mount steps, which
+    name no disk; a process list that cannot be read refuses too. diskd's
+    short checks of one volume after another are waited out.
+
+    That check leaves out a process stuck on the disk for its caller to report
+    as the disk, as the preflight does; after the CLI's prompts no preflight
+    runs, so this reports it."""
+    try:
+        listing = require_no_disk_check(connection, callbacks, strict=True)
+    except DiskCheckRunningError as exc:
+        if exc.unreadable:
+            raise WipeDiskError(str(exc), code=ErrorCode.WIPE_DISK_JOB_RUNNING, reason="process_list_unreadable") from None
+        checkers = [check for check in exc.checks if is_disk_check(check.ucomm)]
+        if checkers:
+            message = disk_check_running_message(checkers, unanswered=exc.unanswered, interrupted_by="Wiping the disk")
+            raise WipeDiskError(f"{message} Nothing was changed.", code=ErrorCode.FSCK_ALREADY_RUNNING,
+                                reason="disk_check_running", detail=exc.detail) from None
         raise WipeDiskError(DISK_JOB_RUNNING_MESSAGE, code=ErrorCode.WIPE_DISK_JOB_RUNNING, reason="disk_job_running",
-                            detail=detail)
+                            detail=exc.detail) from None
+    stalls = disk_io_stalls(listing)
+    if stalls:
+        callbacks.debug(disk_io_stalls=[stall.describe() for stall in stalls])
+        raise WipeDiskError(f"{DISK_NOT_RESPONDING_MESSAGE} Nothing was changed.", code=disk_stall_code(stalls),
+                            reason="disk_stalled", detail=disk_stall_facts(stalls))
 
 
 @dataclass(frozen=True)
@@ -393,7 +422,7 @@ def prepare_wipe(connection: SshConnection, *, callbacks: OperationCallbacks) ->
     )
     require_wipeable(disk)
     callbacks.stage("check_disk_jobs")
-    require_no_disk_jobs(connection)
+    require_no_disk_jobs(connection, callbacks)
     # The wipe ends by restarting the device: a USB volume that exists only
     # until then would go with it. The internal disk's is what the wipe fixes.
     callbacks.stage("check_in_memory_volumes")
@@ -590,7 +619,8 @@ def run_wipe(
     RebootFlowError for the reboot)."""
     callbacks.stage("check_disk_identity")
     _check_identity(connection, plan, callbacks)
-    require_no_disk_jobs(connection)
+    # The CLI's prompts can take minutes after prepare_wipe's check.
+    require_no_disk_jobs(connection, callbacks)
     callbacks.stage("probe_erase")
     _probe_erase_rpc(connection, plan, callbacks)
 

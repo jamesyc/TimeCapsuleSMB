@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.device_ps import FakePs, process, ps_row
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.migration_jobs import running_migrations
 from timecapsulesmb.device.processes import render_stop_service_runtime, render_wait_for_idle_jobs
 
@@ -738,12 +739,34 @@ def test_fsck_ignores_a_finished_fsck_hfs_left_as_a_zombie(tmp_path):
     assert calls == ['umount -f /Volumes/dk2', 'fsck_hfs -fy /dev/dk2']
 
 
-def test_fsck_refuses_when_it_cannot_tell_whether_fsck_hfs_runs(tmp_path):
-    from timecapsulesmb.services.maintenance import FSCK_ALREADY_RUNNING_LINE
+def test_fsck_refuses_when_it_cannot_tell_whether_a_disk_check_runs(tmp_path):
+    # Says it could not tell, rather than that a check runs.
+    from timecapsulesmb.services.maintenance import (
+        FSCK_PROCESS_LIST_UNREADABLE_LINE,
+        FSCK_PROCESS_LIST_UNREADABLE_MESSAGE,
+        fsck_failure_code,
+        fsck_failure_message,
+    )
 
     result, calls, remaining, _ = _run_fsck_script(tmp_path, ps_fails=True)
 
     assert result.returncode == 1
-    assert FSCK_ALREADY_RUNNING_LINE in result.stdout.splitlines()
+    assert result.stdout.splitlines() == [FSCK_PROCESS_LIST_UNREADABLE_LINE]
+    assert calls == []
+    assert '30' in remaining
+    assert fsck_failure_code(None, result.stdout) == ErrorCode.FSCK_ALREADY_RUNNING
+    assert fsck_failure_message(None, result.stdout) == FSCK_PROCESS_LIST_UNREADABLE_MESSAGE
+
+
+def test_fsck_touches_nothing_while_any_disk_checker_runs(tmp_path):
+    # A USB disk's fsck_msdos too: the repair ends in a restart, which would
+    # cut it off.
+    from timecapsulesmb.services.maintenance import FSCK_ALREADY_RUNNING_LINE
+
+    result, calls, remaining, _ = _run_fsck_script(
+        tmp_path, extra_rows={'78': '78 S fsck_msdos /sbin/fsck_msdos -y /dev/sd0e'})
+
+    assert result.returncode == 1
+    assert result.stdout.splitlines() == [FSCK_ALREADY_RUNNING_LINE]
     assert calls == []
     assert '30' in remaining

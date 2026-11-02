@@ -12,9 +12,9 @@ from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.deploy.commands import managed_stop_actions, render_remote_actions
 from timecapsulesmb.deploy.planner import UninstallPlan, build_runtime_start_actions, build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
-from timecapsulesmb.device.disk_errors import DiskFailingError, DiskNotRespondingError
+from timecapsulesmb.device.disk_errors import PROCESS_LIST_UNREADABLE_MESSAGE, DiskFailingError, DiskNotRespondingError
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, DiskPayloadError, RsyncNotRunningError
-from timecapsulesmb.device.processes import render_process_present_by_ucomm
+from timecapsulesmb.device.processes import DISK_CHECK_UCOMM, render_process_present
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume, VolumeClaims
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import (
@@ -45,10 +45,12 @@ FSCK_NOT_UNMOUNTED_MESSAGE = (
     "fsck did not run: the volume could not be confirmed unmounted. "
     "File sharing stays off until the device restarts."
 )
-FSCK_ALREADY_RUNNING_LINE = "tcapsule-fsck: fsck_hfs already running"
+FSCK_ALREADY_RUNNING_LINE = "tcapsule-fsck: disk check already running"
 FSCK_ALREADY_RUNNING_MESSAGE = (
-    "fsck did not run: fsck_hfs from an earlier disk repair is still running on the device."
+    "fsck did not run: a disk check, such as an earlier disk repair, is still running on the device."
 )
+FSCK_PROCESS_LIST_UNREADABLE_LINE = "tcapsule-fsck: process list unreadable"
+FSCK_PROCESS_LIST_UNREADABLE_MESSAGE = f"fsck did not run: {PROCESS_LIST_UNREADABLE_MESSAGE}"
 FSCK_SESSION_DROPPED_MESSAGE = (
     "The connection to the device ended while fsck_hfs was running. The repair keeps running on the device."
 )
@@ -195,11 +197,11 @@ def format_fsck_plan(target: FsckTarget, *, reboot: bool, wait: bool) -> str:
     return "\n".join(lines)
 
 
-def render_disk_maintenance_preamble(busy_ucomm: str | None = None, busy_line: str = "") -> list[str]:
+def render_disk_maintenance_preamble(disk_check_lines: tuple[str, str] | None = None) -> list[str]:
     """The start of a script that works on a disk with file sharing stopped
-    (fsck, Wipe Internal Disk): ignore a hangup, refuse while `busy_ucomm`
-    runs, and stop every managed process and afpserver, aborting unless they
-    stopped.
+    (fsck, Wipe Internal Disk): ignore a hangup, with `disk_check_lines`
+    (busy, unreadable) refuse while a disk checker runs or when ps fails, and
+    stop every managed process and afpserver, aborting unless they stopped.
 
     A dropped session hangs up the script (fsck's runs on a terminal), and the
     disk job it started must not stop halfway. Nothing may write the disk while
@@ -207,10 +209,11 @@ def render_disk_maintenance_preamble(busy_ucomm: str | None = None, busy_line: s
     could write it too, so afpserver stops even without a reboot; file sharing
     then stays off until the next reboot either way."""
     lines = ["trap '' HUP"]
-    if busy_ucomm is not None:
+    if disk_check_lines is not None:
+        busy_line, unreadable_line = disk_check_lines
         lines.append(
-            f"if ( {render_process_present_by_ucomm(busy_ucomm)} ); then "
-            f"echo '{busy_line}'; exit 1; fi"
+            f"( {render_process_present(DISK_CHECK_UCOMM, when_ps_fails=2)} ); case $? in "
+            f"0) echo '{busy_line}'; exit 1 ;; 2) echo '{unreadable_line}'; exit 1 ;; esac"
         )
     lines += [
         f"( {command} ) || exit 1"
@@ -223,9 +226,10 @@ def build_remote_fsck_script(device: str, mountpoint: str) -> str:
     # The host gives this script a terminal so that fsck_hfs writes each step
     # as it starts. A fsck_hfs from an earlier session can outlive the session
     # that started it; a second one on the same disk would repair it while the
-    # first still writes, so touch nothing while any runs (or when the process
-    # list cannot be read).
-    lines = render_disk_maintenance_preamble("fsck_hfs", FSCK_ALREADY_RUNNING_LINE)
+    # first still writes, so touch nothing while any disk checker runs, nor
+    # when the process list cannot be read. The preflight waited out diskd's
+    # short checks just before (services.runtime.require_no_disk_check).
+    lines = render_disk_maintenance_preamble((FSCK_ALREADY_RUNNING_LINE, FSCK_PROCESS_LIST_UNREADABLE_LINE))
     # umount can fail harmlessly when Apple already unmounted the disk to save
     # power, so its status is not the test: the mount table is. A volume still
     # mounted (anywhere) must never be repaired. Stopping here skips the reboot
@@ -348,7 +352,7 @@ def fsck_failure_code(status: int | None, output: str = "", *, started: bool = F
     """
     if status is not None:
         return None
-    if any(line.strip() == FSCK_ALREADY_RUNNING_LINE for line in output.splitlines()):
+    if any(line.strip() in (FSCK_ALREADY_RUNNING_LINE, FSCK_PROCESS_LIST_UNREADABLE_LINE) for line in output.splitlines()):
         return ErrorCode.FSCK_ALREADY_RUNNING
     if started:
         return ErrorCode.FSCK_SESSION_DROPPED
@@ -365,6 +369,8 @@ def fsck_failure_message(
     if status is None:
         code = fsck_failure_code(status, output, started=started)
         if code == ErrorCode.FSCK_ALREADY_RUNNING:
+            if any(line.strip() == FSCK_PROCESS_LIST_UNREADABLE_LINE for line in output.splitlines()):
+                return FSCK_PROCESS_LIST_UNREADABLE_MESSAGE
             return FSCK_ALREADY_RUNNING_MESSAGE
         if code == ErrorCode.FSCK_SESSION_DROPPED:
             return FSCK_SESSION_DROPPED_MESSAGE

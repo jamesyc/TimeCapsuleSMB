@@ -143,7 +143,7 @@ _POLICIES.update({
     ("wipe-disk", "load_config"): StagePolicy(LOCAL_READ, True, "Read Wipe Internal Disk configuration."),
     ("wipe-disk", "resolve_connection"): StagePolicy(REMOTE_READ, True, "Resolve the configured SSH connection."),
     ("wipe-disk", "read_disks"): StagePolicy(REMOTE_READ, True, "Read the device's disks from MaSt."),
-    ("wipe-disk", "check_disk_jobs"): StagePolicy(REMOTE_READ, True, "Check that no erase or format is running."),
+    ("wipe-disk", "check_disk_jobs"): StagePolicy(REMOTE_READ, True, "Check that no disk check, erase or format is running."),
     ("wipe-disk", "read_disk_geometry"): StagePolicy(REMOTE_READ, True, "Read the disk's sector size and count."),
     ("wipe-disk", "check_other_disks"): StagePolicy(REMOTE_READ, True, "Read the other disks' partition names."),
     ("wipe-disk", "read_partition_table"): StagePolicy(REMOTE_READ, True, "Read the disk's partition table."),

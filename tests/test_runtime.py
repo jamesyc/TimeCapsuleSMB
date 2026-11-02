@@ -1173,6 +1173,63 @@ class RequireAcpdReadyDiskCheckTests(unittest.TestCase):
         processes.assert_not_called()
 
 
+class StrictDiskCheckTests(unittest.TestCase):
+    """The strict check, for work that writes the disk itself (Wipe Internal
+    Disk): diskd's erase, format and mount steps count too, and a process list
+    that cannot be read refuses."""
+
+    CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+    DISKD_ROW = "  379 1 379 S 0 - 0:01.00 diskd"
+    FORMAT_ROW = "  501 379 379 D 2 biowait 0:03.00 newfs_hfs"
+    listing = staticmethod(RequireAcpdReadyDiskCheckTests.listing)
+
+    def check(self, *listings: str, strict: bool = True):
+        self.messages: list[str] = []
+        self.measurements: list[tuple[str, dict[str, object]]] = []
+        callbacks = OperationCallbacks(
+            log=self.messages.append,
+            record_execution_measurement=lambda kind, **fields: self.measurements.append((kind, fields)),
+        )
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", side_effect=list(listings)) as processes, \
+                mock.patch("timecapsulesmb.device.acpd.pause") as pause:
+            try:
+                service_runtime.require_no_disk_check(self.CONNECTION, callbacks, strict=strict)
+                error = None
+            except service_runtime.DiskCheckRunningError as exc:
+                error = exc
+        return error, processes, pause
+
+    def test_a_lasting_format_by_diskd_refuses_only_the_strict_check(self) -> None:
+        busy = self.listing(self.DISKD_ROW, self.FORMAT_ROW)
+        error, processes, _pause = self.check(busy, busy)
+        self.assertIsNotNone(error)
+        self.assertEqual([check.describe() for check in error.checks], ["newfs_hfs (pid 501)"])
+        self.assertEqual(
+            self.messages, ["A disk job (newfs_hfs) is running on the device. Checking again in 10 seconds..."],
+        )
+        self.assertEqual(self.measurements[0][1]["strict"], True)
+        # A restart does not wait for diskd: nothing showed one cut a format off.
+        error, processes, _pause = self.check(busy, strict=False)
+        self.assertIsNone(error)
+        self.assertEqual(processes.call_count, 1)
+
+    def test_an_unreadable_first_list_refuses_only_the_strict_check(self) -> None:
+        from timecapsulesmb.device.disk_errors import PROCESS_LIST_UNREADABLE_MESSAGE
+        for unreadable in ("", "  379 1 379 S 0 - 0:01.00 diskd"):
+            with self.subTest(unreadable=unreadable):
+                error, processes, pause = self.check(unreadable)
+                self.assertTrue(error.unreadable)
+                self.assertEqual(error.message, f"{PROCESS_LIST_UNREADABLE_MESSAGE} Nothing was changed.")
+                self.assertIsNone(error.detail)
+                self.assertEqual(processes.call_count, 1)
+                pause.assert_not_called()
+                self.assertEqual(self.measurements, [("disk_check_wait", {
+                    "result": "unreadable", "looks": ["unreadable"], "duration_sec": 0.0, "strict": True,
+                })])
+                error, _processes, _pause = self.check(unreadable, strict=False)
+                self.assertIsNone(error)
+
+
 class ConfirmDeviceAddressTests(unittest.TestCase):
     """The saved address checked against the AirPort MAC the app saved."""
 

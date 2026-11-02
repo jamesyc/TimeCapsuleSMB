@@ -5,7 +5,7 @@ import unittest
 from tests.device_ps import ps_row
 from timecapsulesmb.device.processes import (
     StuckProcess,
-    disk_checks_running,
+    disk_jobs_running,
     disk_io_stalls,
     manager_unnamed_stuck_count,
     stuck_processes,
@@ -187,7 +187,7 @@ class DiskIoStallTests(unittest.TestCase):
                 self.assertEqual(disk_io_stalls(listing), [])
 
 
-class DiskChecksRunningTests(unittest.TestCase):
+class DiskJobsRunningTests(unittest.TestCase):
     """Apple's disk checkers, matched by name alone: the listing reads no
     command line for them."""
 
@@ -196,7 +196,7 @@ class DiskChecksRunningTests(unittest.TestCase):
         for name, stat in (("fsck_hfs", "D"), ("fsck_hfs", "R"), ("fsck_msdos", "S"), ("fsck_exfat", "S"), ("fsck", "I")):
             with self.subTest(name=name, stat=stat):
                 listing = ps_row(4211, name, ppid=4200, stat=stat, sl=2, wchan="biowait" if stat == "D" else "-")
-                self.assertEqual([(p.pid, p.ucomm) for p in disk_checks_running(listing)], [(4211, name)])
+                self.assertEqual([(p.pid, p.ucomm) for p in disk_jobs_running(listing)], [(4211, name)])
 
     def test_only_the_checkers_in_a_listing_are_returned(self) -> None:
         listing = "\n".join([
@@ -205,7 +205,7 @@ class DiskChecksRunningTests(unittest.TestCase):
             ps_row(4211, "fsck_hfs", ppid=4200, stat="R"),
             ps_row(379, "diskd", "/usr/libexec/diskd -i lo0 -d local.", stat="S"),
         ])
-        self.assertEqual([p.describe() for p in disk_checks_running(listing)], ["fsck_hfs (pid 4211)"])
+        self.assertEqual([p.describe() for p in disk_jobs_running(listing)], ["fsck_hfs (pid 4211)"])
 
     def test_a_reaped_checker_or_another_program_is_not_a_disk_check(self) -> None:
         for listing in (
@@ -216,7 +216,24 @@ class DiskChecksRunningTests(unittest.TestCase):
             "",
         ):
             with self.subTest(listing=listing):
-                self.assertEqual(disk_checks_running(listing), [])
+                self.assertEqual(disk_jobs_running(listing), [])
+
+    def test_diskds_erase_format_and_mount_steps_count_when_asked(self) -> None:
+        # Wipe Internal Disk asks: it would cut them off. Only diskd's own
+        # count, through its sh too, so our own gpt never looks like an erase.
+        listing = "\n".join([
+            ps_row(379, "diskd", "/usr/libexec/diskd -i lo0 -d local.", stat="S"),
+            ps_row(500, "sh", ppid=379, stat="S"),
+            ps_row(501, "newfs_hfs", ppid=500, stat="D", wchan="biowait"),
+            ps_row(502, "mount_hfs", ppid=379, stat="S"),
+            ps_row(503, "umount", ppid=379, stat="Z"),
+            ps_row(600, "sh", stat="S"),
+            ps_row(601, "gpt", ppid=600, stat="S"),
+            ps_row(602, "fsck_hfs", ppid=600, stat="R"),
+        ])
+        self.assertEqual([p.describe() for p in disk_jobs_running(listing, diskd_jobs=True)],
+                         ["newfs_hfs (pid 501)", "mount_hfs (pid 502)", "fsck_hfs (pid 602)"])
+        self.assertEqual([p.describe() for p in disk_jobs_running(listing)], ["fsck_hfs (pid 602)"])
 
 
 class ListedWithoutCommandLinesTests(unittest.TestCase):

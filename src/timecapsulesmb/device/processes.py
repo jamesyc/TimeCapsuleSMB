@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import shlex
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 
@@ -367,7 +368,9 @@ def disk_io_stalls(ps_output: str) -> list[StuckProcess]:
 # Apple's disk checkers: fsck_hfs, and fsck_msdos or fsck_exfat for a USB disk
 # in another format. Disk Repair's fsck_hfs goes on after the SSH session that
 # started it ends, and diskd checks a volume before it mounts it; while one
-# runs, its volume is unmounted or not mounted yet.
+# runs, its volume is unmounted or not mounted yet. Matched by fnmatch here and
+# as a sh case pattern in Disk Repair's script, so it uses only what both
+# read the same way.
 DISK_CHECK_UCOMM = "fsck*"
 
 
@@ -376,9 +379,30 @@ def is_disk_check(ucomm: str) -> bool:
     return fnmatch.fnmatchcase(ucomm, DISK_CHECK_UCOMM)
 
 
-def disk_checks_running(ps_output: str) -> list[Process]:
-    """The live disk checkers in a listing."""
-    return [p for p in parse_ps_rows(ps_output) if not p.zombie and is_disk_check(p.ucomm)]
+# The processes diskd runs (through sh -c) to erase a disk and mount the new
+# volume: the teardown's umount, gpt, newfs_hfs, then fsck_hfs and mount_hfs.
+DISK_JOB_COMMANDS = frozenset({"umount", "gpt", "newfs_hfs", "fsck_hfs", "mount_hfs"})
+
+
+def diskd_job_pids(rows: Iterable[tuple[int, int, str, str]]) -> list[int]:
+    """The PIDs of the DISK_JOB_COMMANDS whose parent or grandparent is a
+    diskd, from (pid, ppid, stat, ucomm) rows. Only diskd's own count, so our
+    `gpt show` never looks like an erase. Zombies do not count."""
+    by_pid = {pid: (ppid, stat, ucomm) for pid, ppid, stat, ucomm in rows}
+    diskds = {pid for pid, (_ppid, _stat, ucomm) in by_pid.items() if ucomm == "diskd"}
+    return [
+        pid for pid, (ppid, stat, ucomm) in sorted(by_pid.items())
+        if ucomm in DISK_JOB_COMMANDS and not stat.startswith("Z")
+        and (ppid in diskds or by_pid.get(ppid, (None,))[0] in diskds)
+    ]
+
+
+def disk_jobs_running(ps_output: str, *, diskd_jobs: bool = False) -> list[Process]:
+    """The live disk checkers in a listing, and with `diskd_jobs` diskd's
+    erase, format and mount steps too (diskd_job_pids)."""
+    processes = parse_ps_rows(ps_output)
+    diskd = set(diskd_job_pids((p.pid, p.ppid, p.stat, p.ucomm) for p in processes)) if diskd_jobs else set()
+    return [p for p in processes if not p.zombie and (is_disk_check(p.ucomm) or p.pid in diskd)]
 
 
 # ps's wait channel for a process waiting for a lock another holds: an
@@ -722,16 +746,22 @@ def _ucomm_pkill_pattern(name: str) -> str:
     return f"^{name}$"
 
 
-def render_process_present_by_ucomm(name: str) -> str:
-    """Exits 0 while a live process has ucomm NAME, and when ps fails."""
+def render_process_present(case_pattern: str, *, when_ps_fails: int = 0) -> str:
+    """Exits 0 while a live process's ucomm matches CASE_PATTERN (a sh case
+    pattern), 1 when none does, and `when_ps_fails` when ps fails."""
     return (
-        "ps_out=$(/bin/ps ax -o stat= -o ucomm= 2>/dev/null) || exit 0; "
+        f"ps_out=$(/bin/ps ax -o stat= -o ucomm= 2>/dev/null) || exit {when_ps_fails}; "
         "printf '%s\\n' \"$ps_out\" | { "
         "while read -r state comm; do "
         'case "$state" in Z*) continue ;; esac; '
-        f'[ "$comm" != {shlex.quote(name)} ] || exit 0; '
+        f'case "$comm" in {case_pattern}) exit 0 ;; esac; '
         "done; exit 1; }"
     )
+
+
+def render_process_present_by_ucomm(name: str) -> str:
+    """Exits 0 while a live process has ucomm NAME, and when ps fails."""
+    return render_process_present(shlex.quote(name))
 
 
 def render_wait_for_process_absent(present_command: str, *, attempts: int) -> str:

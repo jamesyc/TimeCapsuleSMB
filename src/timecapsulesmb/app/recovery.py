@@ -585,7 +585,8 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
     ),
     # diskd is formatting a disk, or checking or mounting a volume, before the
-    # wipe (services.wipe_disk.require_no_disk_jobs): its jobs name no disk.
+    # wipe (services.wipe_disk.require_no_disk_jobs), or the process list did
+    # not answer: diskd's jobs name no disk.
     ErrorCode.WIPE_DISK_JOB_RUNNING: RecoveryInfo(
         "The device is busy with a disk",
         "The device is formatting a disk, or checking or mounting a volume. Wiping a disk now could interrupt it.",

@@ -33,12 +33,15 @@ from timecapsulesmb.device import probe as device_probe
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device.disk_errors import (
     DISK_NOT_RESPONDING_MESSAGE,
+    PROCESS_LIST_UNREADABLE_MESSAGE,
     disk_check_facts,
     disk_check_running_message,
     disk_stall_code,
     disk_stall_facts,
 )
-from timecapsulesmb.device.processes import Process, StuckProcess, disk_checks_running, disk_io_stalls, listing_complete
+from timecapsulesmb.device.processes import (
+    Process, StuckProcess, disk_io_stalls, disk_jobs_running, is_disk_check, listing_complete,
+)
 from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
@@ -156,11 +159,12 @@ def acpd_problems_and_disk_stalls(
 
 
 class DiskCheckRunningError(DeviceAccessError):
-    """A disk checker kept running (require_no_disk_check). `prefix` and
-    `suffix` frame the message for the command that stopped, as
-    disk_errors.DiskNotRespondingError's do. It is a DeviceAccessError, not
-    that error's sibling in device.disk_errors, because the app and CLI
-    preflights catch DeviceAccessError for every refusal."""
+    """A disk job kept running (require_no_disk_check): `checks`, disk
+    checkers and, for a strict check, diskd's steps; or, `unreadable`, a strict
+    check got no process list. `prefix` and `suffix` frame the message for the
+    command that stopped, as disk_errors.DiskNotRespondingError's do. It is a
+    DeviceAccessError, not that error's sibling in device.disk_errors, because
+    the app and CLI preflights catch DeviceAccessError for every refusal."""
 
     code = ErrorCode.FSCK_ALREADY_RUNNING
 
@@ -169,14 +173,19 @@ class DiskCheckRunningError(DeviceAccessError):
         checks: Iterable[Process],
         *,
         unanswered: bool = False,
+        unreadable: bool = False,
         prefix: str = "",
         suffix: str = "Nothing was changed.",
     ) -> None:
         self.checks = tuple(checks)
         self.unanswered = unanswered
-        running = disk_check_running_message(self.checks, unanswered=unanswered)
+        self.unreadable = unreadable
+        if unreadable:
+            running, detail = PROCESS_LIST_UNREADABLE_MESSAGE, None
+        else:
+            running, detail = disk_check_running_message(self.checks, unanswered=unanswered), disk_check_facts(self.checks)
         message = " ".join(part for part in (prefix, running, suffix) if part)
-        super().__init__(message, detail=disk_check_facts(self.checks))
+        super().__init__(message, detail=detail)
 
 
 # Apple's diskd checks a volume with fsck_hfs for a few seconds before it
@@ -189,11 +198,14 @@ DISK_CHECK_RECHECK_SECONDS = 10.0
 DISK_CHECK_RECHECKS = 3
 
 
-def require_no_disk_check(connection: SshConnection, callbacks: OperationCallbacks) -> str:
+def require_no_disk_check(connection: SshConnection, callbacks: OperationCallbacks, *, strict: bool = False) -> str:
     """The process listing (acpd.read_processes), once no disk checker
-    (processes.disk_checks_running) runs in it; raises DiskCheckRunningError
+    (processes.disk_jobs_running) runs in it; raises DiskCheckRunningError
     for one that keeps running: its volume is unmounted until it ends, and a
-    restart or an unplug would interrupt it.
+    restart or an unplug would interrupt it. `strict`, for work that writes the
+    disk itself (Wipe Internal Disk), counts diskd's erase, format and mount
+    steps too, and refuses a first listing that cannot be read: going on
+    there could write a disk that another job is changing.
 
     A checker stuck on the disk itself does not count: the caller reports it
     as the disk (processes.disk_io_stalls). Another process stuck on the disk
@@ -210,9 +222,12 @@ def require_no_disk_check(connection: SshConnection, callbacks: OperationCallbac
 
     def live_checks(ps_output: str) -> list[Process]:
         stuck = {stall.pid for stall in disk_io_stalls(ps_output)}
-        return [check for check in disk_checks_running(ps_output) if check.pid not in stuck]
+        return [check for check in disk_jobs_running(ps_output, diskd_jobs=strict) if check.pid not in stuck]
 
     listing = acpd.read_processes(connection)
+    if strict and not listing_complete(listing):
+        callbacks.measurement("disk_check_wait", result="unreadable", looks=["unreadable"], duration_sec=0.0, strict=True)
+        raise DiskCheckRunningError((), unreadable=True)
     checks = live_checks(listing)
     if not checks:
         return listing
@@ -223,8 +238,9 @@ def require_no_disk_check(connection: SshConnection, callbacks: OperationCallbac
     ended = False
     for _recheck in range(DISK_CHECK_RECHECKS):
         programs = ", ".join(sorted({check.ucomm for check in checks}))
+        kind = "disk check" if all(is_disk_check(check.ucomm) for check in checks) else "disk job"
         callbacks.message(
-            f"A disk check ({programs}) is running on the device. "
+            f"A {kind} ({programs}) is running on the device. "
             f"Checking again in {DISK_CHECK_RECHECK_SECONDS:.0f} seconds..."
         )
         acpd.pause(DISK_CHECK_RECHECK_SECONDS)
@@ -248,6 +264,7 @@ def require_no_disk_check(connection: SshConnection, callbacks: OperationCallbac
         result="ended" if ended else "refused",
         looks=looks,
         duration_sec=round(time.monotonic() - started, 3),
+        strict=strict,
     )
     if ended:
         return listing

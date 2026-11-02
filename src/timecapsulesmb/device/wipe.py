@@ -18,6 +18,7 @@ import shlex
 from typing import TYPE_CHECKING
 import unicodedata
 
+from timecapsulesmb.device.processes import diskd_job_pids
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
@@ -33,9 +34,6 @@ SUPPORTED_SECTOR_SIZES = (512, 4096)
 WIPE_LINE_PREFIX = "tcapsule-wipe: "
 WIPE_GEOMETRY_CHANGED_LINE = f"{WIPE_LINE_PREFIX}the disk changed"
 WIPE_DONE_LINE = f"{WIPE_LINE_PREFIX}done"
-# The processes diskd runs (through sh -c) to erase a disk and mount the new
-# volume: the teardown's umount, gpt, newfs_hfs, then fsck_hfs and mount_hfs.
-DISK_JOB_COMMANDS = frozenset({"umount", "gpt", "newfs_hfs", "fsck_hfs", "mount_hfs"})
 # ps without a command-line column, so it never waits on a process's map lock.
 PS_DISK_JOBS_COMMAND = "/bin/ps ax -o pid= -o ppid= -o stat= -o ucomm="
 # A gpt show that hangs on a failing disk is killed after this long, so it
@@ -252,25 +250,15 @@ def gpt_partition_names(data: bytes, geometry: DiskGeometry) -> tuple[str, ...] 
 
 
 def disk_jobs_in(ps_output: str) -> tuple[str, ...]:
-    """The erase and mount steps running under a diskd (DISK_JOB_COMMANDS
-    whose parent or grandparent is a diskd), from PS_DISK_JOBS_COMMAND's
-    rows. Only diskd's own count, so our `gpt show` never looks like an
-    erase. Zombies do not count."""
-    rows: dict[int, tuple[int, str, str]] = {}
-    for line in ps_output.splitlines():
-        fields = line.split()
-        if len(fields) < 4 or not fields[0].isdigit() or not fields[1].isdigit():
-            continue
-        rows[int(fields[0])] = (int(fields[1]), fields[2], fields[3])
-    diskds = {pid for pid, (_parent, _state, command) in rows.items() if command == "diskd"}
-    jobs = []
-    for pid, (parent, state, command) in sorted(rows.items()):
-        if command not in DISK_JOB_COMMANDS or state.startswith("Z"):
-            continue
-        grandparent = rows.get(parent, (None,))[0]
-        if parent in diskds or grandparent in diskds:
-            jobs.append(command)
-    return tuple(jobs)
+    """The erase and mount steps running under a diskd
+    (processes.diskd_job_pids), from PS_DISK_JOBS_COMMAND's rows."""
+    rows = [
+        (int(fields[0]), int(fields[1]), fields[2], fields[3])
+        for fields in (line.split() for line in ps_output.splitlines())
+        if len(fields) >= 4 and fields[0].isdigit() and fields[1].isdigit()
+    ]
+    commands = {pid: ucomm for pid, _ppid, _stat, ucomm in rows}
+    return tuple(commands[pid] for pid in diskd_job_pids(rows))
 
 
 def gpt_show_command(disk: str) -> str:

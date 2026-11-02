@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.device_ps import ps_row
 from timecapsulesmb.app.confirmations import build_confirmation
 from timecapsulesmb.app.ops import OPERATION_PARAMS
 from timecapsulesmb.core.error_codes import ErrorCode
@@ -805,6 +806,25 @@ class InMemoryVolumeTests(unittest.TestCase):
                               " ".join(cli_steps(operation, ErrorCode.DISK_VOLUMES_IN_MEMORY)))
 
 
+def ps_listing(jobs: tuple[str, ...] | None, *, under: str = "diskd", first_pid: int = 400, stuck: bool = False) -> str:
+    """A process listing (acpd.read_processes) with `jobs` running under
+    `under`, or asleep on the disk for minutes with `stuck`; empty, as when ps
+    does not answer, for None."""
+    if jobs is None:
+        return ""
+    from timecapsulesmb.device.processes import PS_LISTING_END
+    rows = [
+        ps_row(1, "init", ppid=0, stat="Is"),
+        ps_row(339, "diskd", stat="Ss"),
+        ps_row(777, "sshd", stat="Ss"),
+        ps_row(780, "sh", ppid=777, stat="Ss"),
+    ]
+    parent = 339 if under == "diskd" else 780
+    state = {"stat": "D", "sl": 127, "wchan": "biowait"} if stuck else {}
+    rows += [ps_row(first_pid + index, job, ppid=parent, **state) for index, job in enumerate(jobs)]
+    return "\n".join((*rows, PS_LISTING_END))
+
+
 class FakeDevice:
     """MaSt, diskd's jobs and RPC answers, the wipe script and the read-back,
     as one device the flow talks to. Each list is consumed in order; the last
@@ -815,6 +835,8 @@ class FakeDevice:
         self.after = (disk(partitions=(MaStPartitionSnapshot("dk2", "Data", "hfs", uuid=NEW_VOLUME_UUID),)),)
         self.disks_reads: list[tuple[MaStDiskSnapshot, ...]] = []
         self.jobs: list[tuple[str, ...] | None] = [()]
+        # Whether those jobs are asleep on the disk for minutes.
+        self.jobs_stuck = False
         self.wait_jobs: list[tuple[str, ...] | None] = [()]
         self.probe = DiskdRpcReply(0, -6705, None)
         self.erase = DiskdRpcReply(0, 0, None)
@@ -850,6 +872,11 @@ class FakeDevice:
     def disk_jobs(self, _connection):
         self.calls.append("jobs")
         return self._next(self.wait_jobs if self.erased else self.jobs)
+
+    def processes(self, _connection):
+        """The process listing the disk-job check reads before the wipe."""
+        self.calls.append("jobs")
+        return ps_listing(self._next(self.jobs), stuck=self.jobs_stuck)
 
     def rpc(self, _connection, name, *arguments, timeout=30):
         method = arguments[-1]
@@ -906,6 +933,8 @@ class FakeDevice:
         return (
             mock.patch.object(wipe_disk, "read_disks_conn", side_effect=self.read_disks),
             mock.patch.object(wipe_disk, "disk_jobs_conn", side_effect=self.disk_jobs),
+            mock.patch("timecapsulesmb.device.acpd.read_processes", side_effect=self.processes),
+            mock.patch("timecapsulesmb.device.acpd.pause"),
             mock.patch.object(wipe_disk, "diskd_rpc_conn", side_effect=self.rpc),
             mock.patch.object(wipe_disk, "run_ssh", side_effect=self.run_ssh),
             mock.patch.object(wipe_disk, "run_ssh_capture_bytes", side_effect=self.capture),
@@ -1011,6 +1040,24 @@ class RunWipeTests(unittest.TestCase):
                     device.run()
                 self.assertEqual(raised.exception.code, code)
                 self.assertNotIn("wipe", device.calls)
+
+    def test_a_format_stuck_on_the_disk_after_the_prompts_stops_the_wipe(self) -> None:
+        # The CLI's prompts can take minutes, and no preflight runs after
+        # them: the disk is reported here, not left out as the preflight's
+        # caller would report it.
+        from timecapsulesmb.device.disk_errors import DISK_NOT_RESPONDING_MESSAGE
+        for job, code in (("newfs_hfs", ErrorCode.DISK_NOT_RESPONDING), ("fsck_hfs", ErrorCode.DISK_CHECK_NOT_RESPONDING)):
+            with self.subTest(job=job):
+                device = FakeDevice()
+                device.jobs, device.jobs_stuck = [(job,)], True
+                with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+                    device.run()
+                error = raised.exception
+                self.assertEqual((error.code, error.reason), (code, "disk_stalled"))
+                self.assertTrue(error.message.startswith(DISK_NOT_RESPONDING_MESSAGE))
+                self.assertEqual(error.detail, f"Waiting for the disk: {job} (pid 400) waiting on biowait for 127+ s.")
+                self.assertNotIn("wipe", device.calls)
+                self.assertNotIn("rpc eraseDisk method:i:9", device.calls)
 
     def test_a_probe_that_started_an_erase_is_reported_as_not_accepted(self) -> None:
         # A diskd that skipped the method check would answer 0; nothing of
@@ -1233,7 +1280,8 @@ class PrepareWipeTests(unittest.TestCase):
 
         with (
             mock.patch.object(wipe_disk, "read_mast_volumes_with_output_conn", return_value=MaStReadResult((), raw)),
-            mock.patch.object(wipe_disk, "disk_jobs_conn", return_value=jobs),
+            mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=ps_listing(jobs)),
+            mock.patch("timecapsulesmb.device.acpd.pause"),
             mock.patch.object(wipe_disk, "run_ssh", side_effect=run_ssh),
             mock.patch.object(wipe_disk, "read_gpt_verdict_conn", return_value=wipe.GptVerdict("apple_hfs", ("apple_hfs",))),
             mock.patch.object(wipe_disk, "disks_with_apple_labels",
@@ -1331,21 +1379,57 @@ class PrepareWipeTests(unittest.TestCase):
                          (ErrorCode.WIPE_DISK_RESTART_NEEDED, "geometry_unreadable"))
 
     def test_a_running_disk_job_refuses_the_wipe(self) -> None:
-        # A job, or a process list that could not be read. diskd's jobs name
-        # no disk, so the message claims none: a check of another disk's
-        # volume after a boot refuses too.
+        # diskd's jobs name no disk, so the message claims none: a format of
+        # another disk refuses too. diskd's own fsck_hfs is a disk check.
         from timecapsulesmb.app.recovery import recovery_for
-        for jobs in (("fsck_hfs",), None):
+        from timecapsulesmb.device.disk_errors import PROCESS_LIST_UNREADABLE_MESSAGE
+        cases = (
+            (("newfs_hfs",), ErrorCode.WIPE_DISK_JOB_RUNNING, "disk_job_running",
+             "The device is formatting a disk, or checking or mounting a volume.", "Running: newfs_hfs (pid 400)."),
+            (("fsck_hfs",), ErrorCode.FSCK_ALREADY_RUNNING, "disk_check_running",
+             "A disk check (fsck_hfs) is still running on the device.", "Running: fsck_hfs (pid 400)."),
+            # A list that never finished could hide either: refused, and said so.
+            (None, ErrorCode.WIPE_DISK_JOB_RUNNING, "process_list_unreadable", PROCESS_LIST_UNREADABLE_MESSAGE, None),
+        )
+        for jobs, code, reason, message, detail in cases:
             with self.subTest(jobs=jobs):
                 with self.assertRaises(wipe_disk.WipeDiskError) as raised:
                     self.prepare(disk(), jobs=jobs)
                 error = raised.exception
-                self.assertEqual((error.code, error.reason), (ErrorCode.WIPE_DISK_JOB_RUNNING, "disk_job_running"))
-                self.assertTrue(str(error).startswith("The device is formatting a disk, or checking or mounting a volume."))
-                self.assertEqual(error.detail, "running: fsck_hfs" if jobs else "the process list could not be read")
-                recovery = recovery_for("wipe-disk", error.code)
-                self.assertNotIn("this disk", recovery["message"])
-                self.assertEqual(recovery["actions"], ["Wait until it finishes.", "Then run “Wipe Internal Disk” again."])
+                self.assertEqual((error.code, error.reason), (code, reason))
+                self.assertTrue(str(error).startswith(message), str(error))
+                self.assertEqual(error.detail, detail)
+                if code == ErrorCode.FSCK_ALREADY_RUNNING:
+                    # What the wipe would do to it, not a restart.
+                    self.assertIn("Wiping the disk now would interrupt it.", str(error))
+                # Nothing past the check ran.
+                self.label_check.assert_not_called()
+        recovery = recovery_for("wipe-disk", ErrorCode.WIPE_DISK_JOB_RUNNING)
+        self.assertNotIn("this disk", recovery["message"])
+        self.assertEqual(recovery["actions"], ["Wait until it finishes.", "Then run “Wipe Internal Disk” again."])
+
+    def test_diskds_short_checks_are_waited_out(self) -> None:
+        # diskd checks one volume after another before it mounts it: another
+        # PID at each look is not a lasting job, and the wipe goes on once
+        # they end.
+        listings = [ps_listing(("fsck_hfs",), first_pid=400), ps_listing(("fsck_hfs",), first_pid=410), ps_listing(())]
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", side_effect=listings) as processes, \
+                mock.patch("timecapsulesmb.device.acpd.pause") as pause:
+            wipe_disk.require_no_disk_jobs(CONNECTION, OperationCallbacks())
+        self.assertEqual(processes.call_count, 3)
+        self.assertEqual(pause.call_count, 2)
+
+    def test_an_earlier_disk_repair_refuses_the_wipe_and_our_own_gpt_does_not(self) -> None:
+        # A Disk Repair's fsck_hfs runs under sh, not diskd, and goes on after
+        # its session ended; a gpt of our own (under sh) is no erase.
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=ps_listing(("fsck_hfs",), under="sh")), \
+                mock.patch("timecapsulesmb.device.acpd.pause"):
+            with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+                wipe_disk.require_no_disk_jobs(CONNECTION, OperationCallbacks())
+        self.assertEqual(raised.exception.code, ErrorCode.FSCK_ALREADY_RUNNING)
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=ps_listing(("gpt",), under="sh")):
+            wipe_disk.require_no_disk_jobs(CONNECTION, OperationCallbacks())
+
 
 
 class ConfirmationTests(unittest.TestCase):

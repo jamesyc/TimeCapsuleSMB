@@ -8150,16 +8150,26 @@ MaSt = (
                 self.assertIn("fsck did not run", error["message"])
 
     def test_fsck_while_an_earlier_repair_still_runs_says_so_and_offers_disk_repair_later(self) -> None:
-        rc, collector, reboot = self._run_confirmed_fsck(
-            "tcapsule-fsck: fsck_hfs already running\n", ssh_returncode=1,
+        # Also when the script could not tell: its wait-and-retry way out fits
+        # both, and the message says which.
+        from timecapsulesmb.services.maintenance import (
+            FSCK_ALREADY_RUNNING_LINE,
+            FSCK_ALREADY_RUNNING_MESSAGE,
+            FSCK_PROCESS_LIST_UNREADABLE_LINE,
+            FSCK_PROCESS_LIST_UNREADABLE_MESSAGE,
         )
+        for line, message in ((FSCK_ALREADY_RUNNING_LINE, FSCK_ALREADY_RUNNING_MESSAGE),
+                              (FSCK_PROCESS_LIST_UNREADABLE_LINE, FSCK_PROCESS_LIST_UNREADABLE_MESSAGE)):
+            with self.subTest(line=line):
+                rc, collector, reboot = self._run_confirmed_fsck(f"{line}\n", ssh_returncode=1)
 
-        self.assertEqual(rc, 1)
-        self.assertNotIn("request", reboot.calls)
-        error = self.assert_single_terminal_event(collector, "error")
-        self.assertEqual(error["code"], "fsck_already_running")
-        self.assertEqual(error["recovery"]["localization_key"], "fsck.fsck_already_running")
-        self.assertEqual(error["recovery"]["action_ids"], ["disk_repair"])
+                self.assertEqual(rc, 1)
+                self.assertNotIn("request", reboot.calls)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "fsck_already_running")
+                self.assertIn(message, error["message"])
+                self.assertEqual(error["recovery"]["localization_key"], "fsck.fsck_already_running")
+                self.assertEqual(error["recovery"]["action_ids"], ["disk_repair"])
 
     def test_fsck_whose_session_ends_mid_repair_says_the_repair_goes_on(self) -> None:
         rc, collector, reboot = self._run_confirmed_fsck(

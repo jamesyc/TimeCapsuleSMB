@@ -126,22 +126,28 @@ def disk_stall_code(stalls: Iterable[StuckProcess]) -> ErrorCode:
     return ErrorCode.DISK_NOT_RESPONDING
 
 
-def disk_check_running_message(checks: Iterable[Process], *, unanswered: bool = False) -> str:
-    """The error for a disk checker still running (processes.disk_checks_running).
+# A strict check (services.runtime.require_no_disk_check) refuses a process
+# list that did not finish: nothing in it shows a disk job, nor rules one out.
+PROCESS_LIST_UNREADABLE_MESSAGE = (
+    "The device did not list its processes, so TimeCapsuleSMB cannot tell whether a disk job is running."
+)
+
+
+def disk_check_running_message(
+    checks: Iterable[Process], *, unanswered: bool = False, interrupted_by: str = "Restarting or unplugging the device",
+) -> str:
+    """The error for a disk checker still running (processes.disk_jobs_running).
     A Disk Repair's fsck_hfs goes on after the connection that started it ends,
     and its volume stays unmounted until it finishes. `unanswered`: the device
     stopped answering after the checker was seen, so it was running then and
-    may be still."""
+    may be still. `interrupted_by`: what the refused work would do to it."""
     programs = ", ".join(sorted({check.ucomm for check in checks}))
     if unanswered:
         return (
             f"A disk check ({programs}) was running on the device, and the device stopped answering while "
-            "TimeCapsuleSMB waited for it. Restarting or unplugging the device now could interrupt it."
+            f"TimeCapsuleSMB waited for it. {interrupted_by} now could interrupt it."
         )
-    return (
-        f"A disk check ({programs}) is still running on the device. Restarting or unplugging the device now "
-        "would interrupt it."
-    )
+    return f"A disk check ({programs}) is still running on the device. {interrupted_by} now would interrupt it."
 
 
 def disk_check_facts(checks: Iterable[Process]) -> str:
