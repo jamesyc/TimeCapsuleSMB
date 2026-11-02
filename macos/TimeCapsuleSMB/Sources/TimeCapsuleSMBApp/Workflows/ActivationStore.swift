@@ -76,8 +76,7 @@ final class ActivationStore: ObservableObject {
 
     @discardableResult
     func rejectAlreadyRunning() -> OperationStartResult {
-        rejectRun(.operationAlreadyRunning)
-        return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
+        operation.refuseAlreadyRunning { rejectRun(.operationAlreadyRunning) }
     }
 
     private func startRun(
@@ -89,7 +88,6 @@ final class ActivationStore: ObservableObject {
             params: params,
             profile: profile,
             password: password,
-            rejectAlreadyRunning: { rejectRun(.operationAlreadyRunning) },
             resetRunState: resetRunState,
             rejectRun: rejectRun(message:)
         )

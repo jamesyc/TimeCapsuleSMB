@@ -284,8 +284,7 @@ final class SSHAccessMaintenanceStore: ObservableObject {
 
     @discardableResult
     func rejectAlreadyRunning() -> OperationStartResult {
-        rejectRun(.operationAlreadyRunning)
-        return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
+        operation.refuseAlreadyRunning { rejectRun(.operationAlreadyRunning) }
     }
 
     private func startRun(
@@ -298,7 +297,6 @@ final class SSHAccessMaintenanceStore: ObservableObject {
             params: params,
             profile: profile,
             password: password,
-            rejectAlreadyRunning: { rejectRun(.operationAlreadyRunning) },
             resetRunState: resetRunState,
             rejectRun: rejectRun(message:)
         )

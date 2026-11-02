@@ -144,21 +144,13 @@ final class MaintenanceStore: ObservableObject {
         })
     }
 
+    /// Each workflow gets a lane of its own, so a store whose lane is busy is
+    /// running its own job; a refused second start relies on that.
     private static func laneKeysByWorkflow(from laneKey: OperationLaneKey) -> [MaintenanceWorkflow: OperationLaneKey] {
-        switch laneKey {
-        case .app:
-            return Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
-                (workflow, .appWorkflow(workflow.deviceWorkflowLane))
-            })
-        case .device(let profileID), .deviceWorkflow(let profileID, .maintenance):
-            return Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
-                (workflow, .deviceWorkflow(profileID, workflow.deviceWorkflowLane))
-            })
-        default:
-            return Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
-                (workflow, laneKey)
-            })
-        }
+        Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
+            let lane = workflow.deviceWorkflowLane
+            return (workflow, laneKey.deviceProfileID.map { .deviceWorkflow($0, lane) } ?? .appWorkflow(lane))
+        })
     }
 
     private func observeWorkflowStores() {

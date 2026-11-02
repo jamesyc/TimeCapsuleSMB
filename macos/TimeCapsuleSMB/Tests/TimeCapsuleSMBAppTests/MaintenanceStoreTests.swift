@@ -484,33 +484,36 @@ final class MaintenanceStoreTests: XCTestCase {
     }
 
     func testCoordinatorMaintenanceWorkflowsUseSeparateLanes() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
+        // Whatever key the store gets, each workflow runs on a lane of its own:
+        // a device's own lanes for a device key, the app's otherwise.
+        let cases: [(laneKey: OperationLaneKey, activate: OperationLaneKey, uninstall: OperationLaneKey)] = [
+            (.deviceWorkflow("device-one", .maintenance), .deviceWorkflow("device-one", .activate), .deviceWorkflow("device-one", .uninstall)),
+            (.device("device-one"), .deviceWorkflow("device-one", .activate), .deviceWorkflow("device-one", .uninstall)),
+            (.candidateHost("10.0.0.2"), .appWorkflow(.activate), .appWorkflow(.uninstall)),
+        ]
+        for (laneKey, activateLane, uninstallLane) in cases {
+            let runner = StoreTestRunner(responses: [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true))
+                ]),
+                .init(events: [
+                    BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
+                ])
             ])
-        ])
-        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
-        let store = MaintenanceStore(
-            coordinator: coordinator,
-            laneKey: .deviceWorkflow("device-one", .maintenance)
-        )
+            let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+            let store = MaintenanceStore(coordinator: coordinator, laneKey: laneKey)
 
-        store.runActivation(password: "pw")
-        try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
-        store.runUninstall(password: "pw")
-        try await waitUntilStoreState { store.uninstallState == .succeeded && !store.isRunning }
+            store.runActivation(password: "pw")
+            try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
+            store.runUninstall(password: "pw")
+            try await waitUntilStoreState { store.uninstallState == .succeeded && !store.isRunning }
 
-        let activateLane = OperationLaneKey.deviceWorkflow("device-one", .activate)
-        let uninstallLane = OperationLaneKey.deviceWorkflow("device-one", .uninstall)
-        let legacyMaintenanceLane = OperationLaneKey.deviceWorkflow("device-one", .maintenance)
-        XCTAssertEqual(coordinator.lane(for: activateLane).backend.events.last?.operation, "activate")
-        XCTAssertEqual(coordinator.lane(for: uninstallLane).backend.events.last?.operation, "uninstall")
-        XCTAssertTrue(coordinator.lane(for: legacyMaintenanceLane).backend.events.isEmpty)
-        XCTAssertEqual(store.timelineEvents(for: .activate).last?.operation, "activate")
-        XCTAssertEqual(store.timelineEvents(for: .uninstall).last?.operation, "uninstall")
+            XCTAssertEqual(coordinator.lane(for: activateLane).backend.events.map(\.operation), ["activate"], "\(laneKey)")
+            XCTAssertEqual(coordinator.lane(for: uninstallLane).backend.events.map(\.operation), ["uninstall"], "\(laneKey)")
+            XCTAssertTrue(coordinator.lane(for: laneKey).backend.events.isEmpty, "\(laneKey)")
+            XCTAssertEqual(store.timelineEvents(for: .activate).last?.operation, "activate")
+            XCTAssertEqual(store.timelineEvents(for: .uninstall).last?.operation, "uninstall")
+        }
     }
 
     func testMaintenanceWorkflowErrorsDoNotBleedBetweenPages() async throws {
@@ -648,6 +651,60 @@ final class MaintenanceStoreTests: XCTestCase {
         try await waitUntilStoreState { store.wipeDiskState == .failed && !store.isBusy }
         XCTAssertEqual(store.error(for: .wipeDisk)?.code, "wipe_disk_other_disk")
         XCTAssertTrue(MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk).isEnabled(.runWipeDisk))
+    }
+
+    func testASecondStartLeavesTheRunningJobAlone() async throws {
+        let cases: [(workflow: MaintenanceWorkflow, result: BackendEvent, finalState: MaintenanceOperationState,
+                     start: (MaintenanceStore) -> OperationStartResult)] = [
+            (.activate, BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true)),
+             .succeeded, { $0.runActivation(password: "pw") }),
+            (.uninstall, BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true)),
+             .succeeded, { $0.runUninstall(password: "pw") }),
+            (.fsck, BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckListPayload(targets: [testFsckTargetPayload(name: "Data")])),
+             .listReady, { $0.refreshFsckTargets(password: "pw") }),
+            (.wipeDisk, BackendEvent(type: "result", operation: "wipe-disk", ok: true, payload: wipeDiskResultPayload(offerInstall: false)),
+             .succeeded, { $0.runWipeDisk(password: "pw") }),
+            (.sshAccess, BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload()),
+             .succeeded, { $0.checkSSHAccess() }),
+        ]
+        for (workflow, result, finalState, start) in cases {
+            let runner = PausingStoreTestRunner(responses: [.init(events: [result], pauseBeforeEvents: true)])
+            defer { runner.finishAll() }
+            let store = MaintenanceStore(backend: BackendClient(runner: runner))
+            XCTAssertNotNil(start(store).operation, "\(workflow)")
+            try await waitUntilStoreState { runner.calls.count == 1 }
+            let running = store.state(for: workflow)
+
+            XCTAssertEqual(start(store).rejectionMessage, WorkflowLocalError.operationAlreadyRunning.message, "\(workflow)")
+            XCTAssertEqual(store.state(for: workflow), running, "\(workflow)")
+            XCTAssertNil(store.error(for: workflow), "\(workflow)")
+
+            // The store still follows its own job to the end.
+            runner.finishAll()
+            try await waitUntilStoreState { store.state(for: workflow) == finalState && !store.isRunning }
+            XCTAssertNil(store.error(for: workflow), "\(workflow)")
+            XCTAssertEqual(runner.calls.count, 1, "\(workflow)")
+        }
+    }
+
+    func testAnIdleWorkflowSaysWhyItDidNotStartWhileAnotherRuns() async throws {
+        let runner = PausingStoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true))
+            ], pauseBeforeEvents: true)
+        ])
+        defer { runner.finishAll() }
+        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        store.runActivation(password: "pw")
+        try await waitUntilStoreState { runner.calls.count == 1 }
+
+        XCTAssertEqual(store.runUninstall(password: "pw").rejectionMessage, WorkflowLocalError.operationAlreadyRunning.message)
+        XCTAssertEqual(store.uninstallState, .failed)
+        XCTAssertEqual(store.error(for: .uninstall)?.code, WorkflowLocalError.operationAlreadyRunning.code)
+        XCTAssertNil(store.error(for: .activate))
+
+        runner.finishAll()
+        try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
     }
 
     func testWipeDiskIsRejectedWhileAnotherOperationRunsOnTheDevice() async throws {

@@ -77,17 +77,25 @@ final class MaintenanceWorkflowOperation {
         operationObserver.finish()
     }
 
+    /// Refuses a start because a job is already running. A store whose own job
+    /// runs keeps that job's state and keeps following it; only an idle store
+    /// records the refusal.
+    func refuseAlreadyRunning(record: () -> Void) -> OperationStartResult {
+        if !isBusy {
+            record()
+        }
+        return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
+    }
+
     @discardableResult
     func start(
         params: [String: JSONValue],
         profile: DeviceProfile?,
         password: String?,
-        rejectAlreadyRunning: () -> Void,
         resetRunState: () -> Void,
         rejectRun: (String) -> Void
     ) -> OperationStartResult {
         guard !isBusy else {
-            rejectAlreadyRunning()
             return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         resetRunState()
