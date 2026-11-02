@@ -847,16 +847,12 @@ static char *tc_apple_native_name(TALLOC_CTX *mem_ctx,
 				  const char *anchor_name)
 {
 	const char *raw = anchor_name + strlen(TC_STREAM_PREFIX);
-	size_t raw_len = strlen(raw);
-	size_t suffix_len = strlen(TC_STREAM_SUFFIX);
+	size_t native_len = tc_apple_stream_native_len(raw);
 
-	if (raw_len <= suffix_len ||
-	    strncmp(raw, "com.apple.", strlen("com.apple.")) != 0 ||
-	    strcmp(raw + raw_len - suffix_len, TC_STREAM_SUFFIX) != 0)
-	{
+	if (native_len == 0) {
 		return NULL;
 	}
-	return talloc_strndup(mem_ctx, raw, raw_len - suffix_len);
+	return talloc_strndup(mem_ctx, raw, native_len);
 }
 
 /* TDB values are authoritative during the deploy migration. Stream extents

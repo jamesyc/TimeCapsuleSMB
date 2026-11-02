@@ -1,26 +1,19 @@
 diff --git a/source3/lib/xattr_tdb.c b/source3/lib/xattr_tdb.c
 --- a/source3/lib/xattr_tdb.c
 +++ b/source3/lib/xattr_tdb.c
-@@ -116,7 +116,21 @@ static NTSTATUS xattr_tdb_load_attrs(TALLOC_CTX *mem_ctx,
- 			      &data);
+@@ -188,6 +188,15 @@ ssize_t xattr_tdb_getattr(struct db_context *db_ctx,
+ 
+ 	status = xattr_tdb_load_attrs(frame, db_ctx, id, &attribs);
+ 
++	if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {
++		/*
++		 * A file without a row has no xattrs yet: the attribute is
++		 * missing, as for a row without it.
++		 */
++		TALLOC_FREE(frame);
++		errno = ENOATTR;
++		return -1;
++	}
  	if (!NT_STATUS_IS_OK(status)) {
- 		if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {
--			return status;
-+			/*
-+			 * Untouched files and directories legitimately have no
-+			 * xattr.tdb row yet. Treat a missing row as an empty
-+			 * xattr set, so every caller of this library sees the
-+			 * attribute as missing (ENOATTR) instead of EINVAL.
-+			 * vfs_xattr_tdb's fgetxattr already mapped its errors to
-+			 * ENOATTR; EINVAL escaped through getxattrat (async
-+			 * dosmode) and to direct callers such as the metadata
-+			 * migrator.
-+			 */
-+			*presult = talloc_zero(mem_ctx, struct tdb_xattrs);
-+			if (*presult == NULL) {
-+				return NT_STATUS_NO_MEMORY;
-+			}
-+			return NT_STATUS_OK;
- 		}
- 		return NT_STATUS_INTERNAL_DB_CORRUPTION;
- 	}
+ 		DEBUG(10, ("xattr_tdb_fetch_attrs failed: %s\n",
+ 			   nt_errstr(status)));

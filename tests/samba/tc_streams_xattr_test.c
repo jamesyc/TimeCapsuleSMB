@@ -134,7 +134,7 @@ int main(int argc, char **argv)
 		CHECK(strstr_m(immutable, "ph") == immutable + 2);
 	} else if (strcmp(argv[1], "root_delete") == 0 || strcmp(argv[1], "nested_delete") == 0) {
 		if (argv[1][0] == 'n') expected_parent = &sub;
-		config.max_extents = 1; /* shipped max xattrs per stream = 2 */
+		config.max_extents = 1; /* a stream of at most two xattrs */
 		CHECK(fsetxattr_multi(&config, &file, "test:$DATA", "abc", 4, 0) == 0);
 		CHECK(streams_xattr_unlinkat(&handle, expected_parent, &name, 0) == 0);
 		CHECK(find_attr("user.DosStream.test:$DATA") == NULL && removes == 2);
