@@ -1817,18 +1817,19 @@ final class DashboardPresentationTests: XCTestCase {
     }
 
     func testMaintenanceActionPolicyUsesStableWorkflowActionGroups() {
-        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .sshAccess), [.checkSSHAccess, .enableSSHAccess])
-        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .activate), [.runActivation])
-        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .uninstall), [.runUninstall])
-        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .fsck), [.findVolumes, .planFsck, .runFsck])
+        XCTAssertEqual(MaintenanceActionPolicy.actionRows(for: .sshAccess), [[.checkSSHAccess, .enableSSHAccess]])
+        XCTAssertEqual(MaintenanceActionPolicy.actionRows(for: .activate), [[.runActivation]])
+        XCTAssertEqual(MaintenanceActionPolicy.actionRows(for: .uninstall), [[.runUninstall]])
+        XCTAssertEqual(MaintenanceActionPolicy.actionRows(for: .fsck), [[.findVolumes, .planFsck, .runFsck]])
+        XCTAssertEqual(MaintenanceActionPolicy.actionRows(for: .wipeDisk), [[.runWipeDisk]])
         XCTAssertEqual(MaintenanceUserAction.checkSSHAccess.title, "Check SSH")
         XCTAssertFalse(MaintenanceUserAction.checkSSHAccess.isCommitAction)
         XCTAssertTrue(MaintenanceUserAction.enableSSHAccess.isCommitAction)
         XCTAssertEqual(MaintenanceUserAction.runActivation.title, "Activate")
         XCTAssertTrue(MaintenanceUserAction.runActivation.isCommitAction)
-        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .bootHook), [
-            .backUpAndInspectFirmware, .planPatch, .planRestore, .writePatch, .writeRestore,
-            .checkAppleFirmware, .validateAppleFirmware
+        XCTAssertEqual(MaintenanceActionPolicy.actionRows(for: .bootHook), [
+            [.backUpAndInspectFirmware, .planPatch, .planRestore, .writePatch, .writeRestore],
+            [.checkAppleFirmware, .validateAppleFirmware]
         ])
         // Only the two writes change the firmware.
         for action: MaintenanceUserAction in [
@@ -1921,16 +1922,23 @@ final class DashboardPresentationTests: XCTestCase {
     func testTheOtherPanelsKeepTheirSubtitleAndOneRowOfButtons() throws {
         let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
 
+        let rows: [MaintenanceWorkflow: [MaintenanceUserAction]] = [
+            .sshAccess: [.checkSSHAccess, .enableSSHAccess],
+            .activate: [.runActivation],
+            .uninstall: [.runUninstall],
+            .fsck: [.findVolumes, .planFsck, .runFsck],
+            .wipeDisk: [.runWipeDisk],
+        ]
         for workflow in MaintenanceWorkflow.allCases where workflow != .bootHook {
             let detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: workflow)
 
             XCTAssertEqual(detail.subtitle, workflow.presentationSubtitle, "\(workflow)")
-            XCTAssertEqual(detail.actionRows, [MaintenanceActionPolicy.actions(for: workflow)], "\(workflow)")
+            XCTAssertEqual(detail.actionRows, [try XCTUnwrap(rows[workflow])], "\(workflow)")
             XCTAssertEqual(detail.warnings, [], "\(workflow)")
             XCTAssertEqual(detail.bootHookRows, [], "\(workflow)")
             XCTAssertFalse(detail.isRunning, "\(workflow)")
             XCTAssertNil(detail.error, "\(workflow)")
-            for action in MaintenanceActionPolicy.actions(for: workflow) {
+            for action in try XCTUnwrap(rows[workflow]) {
                 XCTAssertEqual(detail.title(for: action), action.title, "\(action)")
             }
         }

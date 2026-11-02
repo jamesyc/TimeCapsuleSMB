@@ -196,7 +196,7 @@ final class BootHookStoreTests: XCTestCase {
     }
 
     func testBootHookActionSymbolsResolveToSFSymbols() {
-        for action in MaintenanceActionPolicy.actions(for: .bootHook) {
+        for action in MaintenanceActionPolicy.actionRows(for: .bootHook).joined() {
             XCTAssertNotNil(NSImage(systemSymbolName: action.systemImage, accessibilityDescription: nil), action.systemImage)
         }
     }

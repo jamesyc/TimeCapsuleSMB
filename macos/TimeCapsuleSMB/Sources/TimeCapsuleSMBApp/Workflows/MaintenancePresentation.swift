@@ -202,43 +202,38 @@ struct MaintenanceTimelinePresentation: Equatable {
 }
 
 enum MaintenanceActionPolicy {
-    static func actions(for workflow: MaintenanceWorkflow) -> [MaintenanceUserAction] {
+    /// Each workflow's buttons, a row each. The boot hook has two rows: the
+    /// steps of a patch or a restore, then the Apple firmware checks.
+    static func actionRows(for workflow: MaintenanceWorkflow) -> [[MaintenanceUserAction]] {
         switch workflow {
         case .sshAccess:
-            return [.checkSSHAccess, .enableSSHAccess]
+            return [[.checkSSHAccess, .enableSSHAccess]]
         case .activate:
-            return [.runActivation]
+            return [[.runActivation]]
         case .uninstall:
-            return [.runUninstall]
+            return [[.runUninstall]]
         case .fsck:
-            return [.findVolumes, .planFsck, .runFsck]
+            return [[.findVolumes, .planFsck, .runFsck]]
         case .wipeDisk:
-            return [.runWipeDisk]
+            return [[.runWipeDisk]]
         case .bootHook:
-            return bootHookActionRows.flatMap { $0 }
+            return [
+                [.backUpAndInspectFirmware, .planPatch, .planRestore, .writePatch, .writeRestore],
+                [.checkAppleFirmware, .validateAppleFirmware]
+            ]
         }
     }
 
-    /// The boot hook's buttons in their two rows: the steps of a patch or a
-    /// restore, then the Apple firmware checks.
-    private static let bootHookActionRows: [[MaintenanceUserAction]] = [
-        [.backUpAndInspectFirmware, .planPatch, .planRestore, .writePatch, .writeRestore],
-        [.checkAppleFirmware, .validateAppleFirmware]
-    ]
-
-    /// The workflow's buttons now, a row each: the boot hook has two rows, and
-    /// Wipe Internal Disk adds Install / Update Samba once it wiped the disk
-    /// that held the Samba files (or no disk held them).
+    /// The workflow's buttons now: Wipe Internal Disk adds Install / Update
+    /// Samba once it wiped the disk that held the Samba files (or no disk held
+    /// them).
     @MainActor
     static func actionRows(for workflow: MaintenanceWorkflow, store: MaintenanceStore) -> [[MaintenanceUserAction]] {
-        if workflow == .bootHook {
-            return bootHookActionRows
-        }
-        let actions = actions(for: workflow)
+        let rows = actionRows(for: workflow)
         if workflow == .wipeDisk, store.wipeDiskState == .succeeded, store.wipeDiskResult?.offerInstall == true {
-            return [actions + [.installSMB]]
+            return [rows[0] + [.installSMB]]
         }
-        return [actions]
+        return rows
     }
 
     @MainActor

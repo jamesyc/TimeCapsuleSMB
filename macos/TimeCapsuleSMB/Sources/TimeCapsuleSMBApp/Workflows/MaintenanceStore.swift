@@ -62,7 +62,7 @@ final class MaintenanceStore: ObservableObject {
     let bootHookStore: BootHookStore
 
     private let coordinator: OperationCoordinator
-    private let laneKeysByWorkflow: [MaintenanceWorkflow: OperationLaneKey]
+    private let laneKey: OperationLaneKey
     private var cancellables: Set<AnyCancellable> = []
 
     convenience init() {
@@ -78,64 +78,52 @@ final class MaintenanceStore: ObservableObject {
     }
 
     init(coordinator: OperationCoordinator, laneKey: OperationLaneKey) {
-        let laneKeysByWorkflow = Self.laneKeysByWorkflow(from: laneKey)
-        let backendsByWorkflow = Self.coordinatedBackends(
-            coordinator: coordinator,
-            laneKeysByWorkflow: laneKeysByWorkflow
-        )
-        self.backend = backendsByWorkflow[.activate] ?? coordinator.lane(for: laneKey).backend
+        // Each store runs on its own lane, with that lane's backend.
+        func lane(_ workflow: MaintenanceWorkflow) -> (backend: BackendClient, key: OperationLaneKey) {
+            let key = Self.workflowLaneKey(workflow, in: laneKey)
+            return (coordinator.lane(for: key).backend, key)
+        }
+        self.backend = lane(.activate).backend
         self.coordinator = coordinator
-        self.laneKeysByWorkflow = laneKeysByWorkflow
+        self.laneKey = laneKey
         self.activationStore = ActivationStore(
-            backend: backendsByWorkflow[.activate] ?? coordinator.lane(for: laneKey).backend,
+            backend: lane(.activate).backend,
             coordinator: coordinator,
-            laneKey: laneKeysByWorkflow[.activate]
+            laneKey: lane(.activate).key
         )
         self.uninstallStore = UninstallStore(
-            backend: backendsByWorkflow[.uninstall] ?? coordinator.lane(for: laneKey).backend,
+            backend: lane(.uninstall).backend,
             coordinator: coordinator,
-            laneKey: laneKeysByWorkflow[.uninstall]
+            laneKey: lane(.uninstall).key
         )
         self.fsckStore = FsckStore(
-            backend: backendsByWorkflow[.fsck] ?? coordinator.lane(for: laneKey).backend,
+            backend: lane(.fsck).backend,
             coordinator: coordinator,
-            laneKey: laneKeysByWorkflow[.fsck]
+            laneKey: lane(.fsck).key
         )
         self.wipeDiskStore = WipeDiskStore(
-            backend: backendsByWorkflow[.wipeDisk] ?? coordinator.lane(for: laneKey).backend,
+            backend: lane(.wipeDisk).backend,
             coordinator: coordinator,
-            laneKey: laneKeysByWorkflow[.wipeDisk]
+            laneKey: lane(.wipeDisk).key
         )
         self.sshAccessStore = SSHAccessMaintenanceStore(
-            backend: backendsByWorkflow[.sshAccess] ?? coordinator.lane(for: laneKey).backend,
+            backend: lane(.sshAccess).backend,
             coordinator: coordinator,
-            laneKey: laneKeysByWorkflow[.sshAccess]
+            laneKey: lane(.sshAccess).key
         )
         self.bootHookStore = BootHookStore(
-            backend: backendsByWorkflow[.bootHook] ?? coordinator.lane(for: laneKey).backend,
+            backend: lane(.bootHook).backend,
             coordinator: coordinator,
-            laneKey: laneKeysByWorkflow[.bootHook]
+            laneKey: lane(.bootHook).key
         )
         observeWorkflowStores()
     }
 
-    private static func coordinatedBackends(
-        coordinator: OperationCoordinator,
-        laneKeysByWorkflow: [MaintenanceWorkflow: OperationLaneKey]
-    ) -> [MaintenanceWorkflow: BackendClient] {
-        Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
-            let laneKey = laneKeysByWorkflow[workflow] ?? .app
-            return (workflow, coordinator.lane(for: laneKey).backend)
-        })
-    }
-
     /// Each workflow gets a lane of its own, so a store whose lane is busy is
     /// running its own job; a refused second start relies on that.
-    private static func laneKeysByWorkflow(from laneKey: OperationLaneKey) -> [MaintenanceWorkflow: OperationLaneKey] {
-        Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
-            let lane = workflow.deviceWorkflowLane
-            return (workflow, laneKey.deviceProfileID.map { .deviceWorkflow($0, lane) } ?? .appWorkflow(lane))
-        })
+    private static func workflowLaneKey(_ workflow: MaintenanceWorkflow, in laneKey: OperationLaneKey) -> OperationLaneKey {
+        let lane = workflow.deviceWorkflowLane
+        return laneKey.deviceProfileID.map { .deviceWorkflow($0, lane) } ?? .appWorkflow(lane)
     }
 
     private func observeWorkflowStores() {
@@ -407,7 +395,7 @@ final class MaintenanceStore: ObservableObject {
     }
 
     private var deviceProfileID: DeviceProfile.ID? {
-        laneKeysByWorkflow.values.lazy.compactMap(\.deviceProfileID).first
+        laneKey.deviceProfileID
     }
 
     private func workflowStore(for workflow: MaintenanceWorkflow) -> any MaintenanceWorkflowStore {
