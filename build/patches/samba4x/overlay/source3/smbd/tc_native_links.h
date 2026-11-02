@@ -9,7 +9,6 @@ struct tc_xsym_candidate {
 	char *target;
 	SMB_DEV_T dev;
 	SMB_INO_T ino;
-	off_t size;
 	char *aside;	/* taken aside; removed by close_finish */
 };
 
@@ -36,6 +35,7 @@ bool tc_native_links_close_commit(struct files_struct *fsp,
 void tc_native_links_close_finish(struct files_struct *fsp,
 				  struct tc_xsym_candidate *cand);
 uint32_t tc_native_links_dos_mode(struct files_struct *fsp, uint32_t dosmode);
+bool tc_native_links_reparse_tag(struct files_struct *fsp, uint32_t *_tag);
 uint32_t tc_native_links_fs_capabilities(const struct connection_struct *conn);
 NTSTATUS tc_native_links_map_target(struct connection_struct *conn,
 				    TALLOC_CTX *mem_ctx,

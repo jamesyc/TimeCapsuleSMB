@@ -25,6 +25,10 @@ static bool name_mapping = true;
 static NTSTATUS fail_translate;
 static unsigned translate_calls;
 static int fail_symlink, fail_rename, fail_readlink, fail_setxattr, fail_ntimes, fail_unlink_aside;
+static int fail_unlink_link;
+/* Stats of a name after fail_unlink_link refused to remove it. */
+static bool link_unlink_failed;
+static unsigned stats_after_failed_unlink;
 /* errno for SMB_VFS_FSTATAT of a symlink under its public name: the new link's check. */
 static int fail_stat_link;
 static unsigned notifies;
@@ -35,6 +39,7 @@ static struct timespec ntimes_mtime;
 /* The SET_REPARSE_POINT payload upstream stores on a placeholder. */
 static uint8_t stored_reparse[512];
 static size_t stored_reparse_len;
+static unsigned reparse_point_reads;
 static off_t resource_fork_size;
 static char workdir[PATH_MAX];
 /* Something another client does while a conversion is between two steps. */
@@ -98,6 +103,7 @@ static bool is_aside(const char *name)
 static int test_vfs_fstatat(const struct smb_filename *name, SMB_STRUCT_STAT *out)
 {
 	struct stat st;
+	if (link_unlink_failed && !is_aside(name->base_name)) stats_after_failed_unlink++;
 	if (fail_stat_link && !is_aside(name->base_name) && lstat(name->base_name, &st) == 0 &&
 	    S_ISLNK(st.st_mode)) {
 		errno = fail_stat_link;
@@ -121,6 +127,11 @@ static int test_unlinkat(const struct smb_filename *name)
 {
 	int ret;
 	if (fail_unlink_aside && is_aside(name->base_name)) { errno = fail_unlink_aside; return -1; }
+	if (fail_unlink_link && !is_aside(name->base_name)) {
+		link_unlink_failed = true;
+		errno = fail_unlink_link;
+		return -1;
+	}
 	ret = unlink(name->base_name);
 	if (ret == 0 && !is_aside(name->base_name) && after_unlink_link != NULL) after_unlink_link();
 	return ret;
@@ -172,25 +183,45 @@ static int close_pathref(struct files_struct *fsp)
 	return 0;
 }
 
-/* An internal pathref without O_PATH: an O_RDONLY fd, whatever the client's access. */
+/* An internal pathref without O_PATH: an O_RDONLY fd, whatever the client's access.
+ * A link is followed as smbd follows one, only to a target inside the share,
+ * here the working directory. */
 static NTSTATUS test_openat_pathref(const struct files_struct *dirfsp, struct smb_filename *name)
 {
 	struct files_struct *fsp = NULL;
+	bool link;
 	(void)dirfsp;
 	CHECK(name->fsp == NULL && strchr(name->base_name, '/') == NULL);
 	if (test_fstatat(name, &name->st) != 0) return map_nt_error_from_unix(errno);
+	link = S_ISLNK(name->st.st_ex_mode);
+	if (link) {
+		/* NetBSD 4's realpath() has no NULL buffer form. */
+		char here[PATH_MAX], real[PATH_MAX];
+		struct stat st;
+		size_t n;
+		CHECK(getcwd(here, sizeof(here)) != NULL);
+		n = strlen(here);
+		if (realpath(name->base_name, real) == NULL || strncmp(real, here, n) != 0 ||
+		    (real[n] != '/' && real[n] != '\0')) {
+			return NT_STATUS_OBJECT_PATH_NOT_FOUND;
+		}
+		CHECK(stat(name->base_name, &st) == 0);
+		to_stat_ex(&st, &name->st);
+	}
 	fsp = talloc_zero(name, struct files_struct);
 	CHECK(fsp != NULL);
 	fsp->fh = fd_handle_create(fsp);
 	CHECK(fsp->fh != NULL);
 	fsp->fsp_flags.is_pathref = true;
-	fsp_set_fd(fsp, open(name->base_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK));
+	fsp_set_fd(fsp, open(name->base_name, O_RDONLY | O_NONBLOCK | (link ? 0 : O_NOFOLLOW)));
 	CHECK(fsp_get_pathref_fd(fsp) != -1);
 	talloc_set_destructor(fsp, close_pathref);
 	fsp->fsp_name = name;
 	name->fsp = fsp;
-	CHECK(num_pathref_reads < ARRAY_SIZE(pathref_reads));
-	strlcpy(pathref_reads[num_pathref_reads++], name->base_name, sizeof(pathref_reads[0]));
+	if (!link) {
+		CHECK(num_pathref_reads < ARRAY_SIZE(pathref_reads));
+		strlcpy(pathref_reads[num_pathref_reads++], name->base_name, sizeof(pathref_reads[0]));
+	}
 	return NT_STATUS_OK;
 }
 
@@ -225,6 +256,7 @@ static NTSTATUS test_get_reparse_point(struct files_struct *fsp, TALLOC_CTX *ctx
 	uint32_t *tag, uint8_t **data, uint32_t max_len, uint32_t *len)
 {
 	(void)fsp; (void)max_len;
+	reparse_point_reads++;
 	if (stored_reparse_len == 0) return NT_STATUS_NOT_A_REPARSE_POINT;
 	*tag = PULL_LE_U32(stored_reparse, 0);
 	*data = talloc_memdup(ctx, stored_reparse, stored_reparse_len);
@@ -441,9 +473,15 @@ static bool test_stale(struct share_mode_entry *e)
 #define tc_native_links_check_set t_check_set
 #define tc_native_links_fs_capabilities t_fs_capabilities
 #define tc_native_links_dos_mode t_dos_mode
+#define tc_native_links_reparse_tag t_reparse_tag
 #define tc_native_links_stream_base t_stream_base
 #define tc_native_links_map_target t_map_target
 #include "smbd/tc_native_links.c"
+/* The production fsctl_get_reparse_tag(), which asks the hook above first. */
+NTSTATUS t_get_reparse_tag(struct files_struct *fsp, uint32_t *_reparse_tag);
+#define fsctl_get_reparse_tag t_get_reparse_tag
+#include "tc_reparse_tag.inc"
+#undef fsctl_get_reparse_tag
 
 /* Digests the macOS client wrote on a Time Capsule share (2026-09-23 captures). */
 static const struct { const char *target, *md5; } apple_vectors[] = {
@@ -586,9 +624,13 @@ static void reset_hooks(void)
 	before_grab = after_grab = after_symlink = NULL;
 	during_sync = on_symlink_fail = after_unlink_link = NULL;
 	fail_symlink = fail_rename = fail_readlink = fail_setxattr = fail_ntimes = fail_unlink_aside = 0;
+	fail_unlink_link = 0;
+	link_unlink_failed = false;
+	stats_after_failed_unlink = 0;
 	fail_stat_link = 0;
 	resource_fork_size = 0;
 	stored_reparse_len = 0;
+	reparse_point_reads = 0;
 	name_mapping = true;
 	fail_translate = NT_STATUS_OK;
 	translate_calls = 0;
@@ -1134,6 +1176,17 @@ int main(int argc, char **argv)
 		fail_stat_link = 0;
 		CHECK(is_link_to("undo_unchecked", "t.txt") && original_aside(ino, body) && syncs == 1);
 		CHECK(system("rm -f .tc-xsym.*") == 0);
+		/* The link cannot be removed: it stays, and so does the original, aside. */
+		reset_hooks();
+		ino = put_undo_file("undo_unremoved", body);
+		fail_setxattr = ENOSPC;
+		fail_unlink_link = EACCES;
+		CHECK(!convert(frame, "undo_unremoved", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(is_link_to("undo_unremoved", "t.txt") && original_aside(ino, body) && syncs == 1);
+		/* Nothing is restored over the link either: its name is not even
+		 * checked again. */
+		CHECK(link_unlink_failed && stats_after_failed_unlink == 0);
+		CHECK(system("rm -f .tc-xsym.*") == 0);
 		/* A new file takes the name the undo just freed: the original stays aside rather than
 		 * replace it. */
 		reset_hooks();
@@ -1431,8 +1484,10 @@ int main(int argc, char **argv)
 		struct connection_struct conn = {.sconn = &sconn};
 		struct files_struct fsp = {.conn = &conn};
 		struct stat st;
+		uint32_t tag = 0;
 		CHECK(mkdir("dirtarget", 0755) == 0 && symlink("dirtarget", "dirlink") == 0);
 		CHECK(symlink("missing", "danglink") == 0);
+		CHECK(symlink("/", "outlink") == 0);
 		fsp.fsp_name = synthetic_smb_fname(frame, "dirlink", NULL, NULL, 0, 0);
 		CHECK(lstat("dirlink", &st) == 0);
 		to_stat_ex(&st, &fsp.fsp_name->st);
@@ -1448,16 +1503,39 @@ int main(int argc, char **argv)
 		CHECK(lstat("danglink", &st) == 0);
 		to_stat_ex(&st, &fsp.fsp_name->st);
 		CHECK(t_dos_mode(&fsp, 0) == FILE_ATTRIBUTE_REPARSE_POINT);
+		/* A directory outside the share is followed no more than smbd follows
+		 * links: no DIRECTORY bit. */
+		fsp.fsp_name->base_name = discard_const_p(char, "outlink");
+		CHECK(lstat("outlink", &st) == 0);
+		to_stat_ex(&st, &fsp.fsp_name->st);
+		CHECK(t_dos_mode(&fsp, 0) == FILE_ATTRIBUTE_REPARSE_POINT);
+		/* Every native link is a symlink reparse point: the tag comes without
+		 * reading the link, even one that cannot be read. */
+		fail_readlink = 1;
+		CHECK(t_reparse_tag(&fsp, &tag) && tag == IO_REPARSE_TAG_SYMLINK);
+		/* FSCTL_GET_REPARSE_POINT's tag lookup takes it from there, without
+		 * reading a reparse point. */
+		tag = 0;
+		reparse_point_reads = 0;
+		CHECK(NT_STATUS_IS_OK(t_get_reparse_tag(&fsp, &tag)) && tag == IO_REPARSE_TAG_SYMLINK);
+		CHECK(reparse_point_reads == 0);
+		fail_readlink = 0;
 		/* Regular files and disabled shares are untouched. */
 		fsp.fsp_name->base_name = discard_const_p(char, "dirtarget");
 		CHECK(lstat("dirtarget", &st) == 0);
 		to_stat_ex(&st, &fsp.fsp_name->st);
 		CHECK(t_dos_mode(&fsp, FILE_ATTRIBUTE_DIRECTORY) == FILE_ATTRIBUTE_DIRECTORY);
+		tag = 0;
+		CHECK(!t_reparse_tag(&fsp, &tag) && tag == 0);
+		/* Anything else reads its stored reparse point, as stock does. */
+		CHECK(NT_STATUS_EQUAL(t_get_reparse_tag(&fsp, &tag), NT_STATUS_NOT_A_REPARSE_POINT));
+		CHECK(reparse_point_reads == 1);
 		fsp.fsp_name->base_name = discard_const_p(char, "dirlink");
 		CHECK(lstat("dirlink", &st) == 0);
 		to_stat_ex(&st, &fsp.fsp_name->st);
 		feature_enabled = false;
 		CHECK(t_dos_mode(&fsp, FILE_ATTRIBUTE_NORMAL) == FILE_ATTRIBUTE_NORMAL);
+		CHECK(!t_reparse_tag(&fsp, &tag) && tag == 0);
 		feature_enabled = true;
 	}
 	if (all || strcmp(c, "nofollow_errno") == 0) {

@@ -52,21 +52,19 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_xattr_name = NULL;
  	ssize_t result;
  	int ret;
-@@ -1216,9 +1246,23 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
+@@ -1216,9 +1246,21 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
 +	/*
-+	 * A native link opened as itself has no fd; the backend reaches it
-+	 * by path, so it needs the mapped name as well (patch 0059). Handles
-+	 * with an fd keep upstream behaviour.
++	 * Map the handle's name too, as the other fsp calls do: a native
++	 * link opened as itself has no fd, and the backend reaches it by
++	 * name.
 +	 */
-+	if (fsp_get_pathref_fd(fsp) == -1) {
-+		ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
-+		if (ret != 0) {
-+			TALLOC_FREE(mapped_xattr_name);
-+			return -1;
-+		}
++	ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++	if (ret != 0) {
++		TALLOC_FREE(mapped_xattr_name);
++		return -1;
 +	}
 +
  	result = SMB_VFS_NEXT_FGETXATTR(handle, fsp, mapped_xattr_name,
@@ -76,7 +74,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	TALLOC_FREE(mapped_xattr_name);
  
  	return result;
-@@ -1249,6 +1293,7 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
+@@ -1249,6 +1291,7 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
  			      struct files_struct *fsp,
  			      const char *name)
  {
@@ -84,16 +82,14 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_name = NULL;
  	int ret;
  
-@@ -1261,8 +1306,17 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
+@@ -1261,8 +1304,15 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
-+	if (fsp_get_pathref_fd(fsp) == -1) {
-+		ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
-+		if (ret != 0) {
-+			TALLOC_FREE(mapped_name);
-+			return -1;
-+		}
++	ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++	if (ret != 0) {
++		TALLOC_FREE(mapped_name);
++		return -1;
 +	}
 +
  	ret = SMB_VFS_NEXT_FREMOVEXATTR(handle, fsp, mapped_name);
@@ -102,7 +98,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	TALLOC_FREE(mapped_name);
  
  	return ret;
-@@ -1275,6 +1329,7 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
+@@ -1275,6 +1325,7 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
  			   size_t size,
  			   int flags)
  {
@@ -110,16 +106,14 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_xattr_name = NULL;
  	int ret;
  
-@@ -1287,9 +1342,18 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
+@@ -1287,9 +1338,16 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
-+	if (fsp_get_pathref_fd(fsp) == -1) {
-+		ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
-+		if (ret != 0) {
-+			TALLOC_FREE(mapped_xattr_name);
-+			return -1;
-+		}
++	ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++	if (ret != 0) {
++		TALLOC_FREE(mapped_xattr_name);
++		return -1;
 +	}
 +
  	ret = SMB_VFS_NEXT_FSETXATTR(handle, fsp, mapped_xattr_name,

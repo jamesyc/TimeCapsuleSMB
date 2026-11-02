@@ -143,6 +143,9 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                        "static void rename_open_files(void)\n{\n}\n\n"
                        "NTSTATUS rename_open_files_below(void)\n{\n}\n")
         self.make_file(src_dir / "source3/smbd/open.c", "void msg_file_was_renamed(void)\n{\n}\n")
+        # The links driver compiles the reparse tag lookup with its hook.
+        self.make_file(src_dir / "source3/modules/util_reparse.c",
+                       "NTSTATUS fsctl_get_reparse_tag(void)\n{\n}\n")
         # And the durable reconnect's byte-range lock steps with the record
         # parse and store they run under.
         self.make_file(src_dir / "source3/locking/brlock.c",
