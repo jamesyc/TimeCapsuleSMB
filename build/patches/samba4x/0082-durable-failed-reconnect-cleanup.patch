@@ -135,3 +135,21 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  			TALLOC_FREE(state->op);
  			tevent_req_nterror(req, return_status);
  			return tevent_req_post(req, state->ev);
+@@ -1936,6 +1956,17 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
+ 
+ 	if (state->update_open) {
+ 		state->op->global->create_guid = state->_create_guid;
++		/*
++		 * fsp_bind_smb() stored the open before a new file had an
++		 * id. Store the file's, so that the record alone leads to
++		 * its share mode entry: a failed durable reconnect hands
++		 * the record's id to the scavenger, and cleanup_ph() looks
++		 * the entry up by it. An open that stores nothing here (no
++		 * durable handle, create GUID or replay) keeps a new file's
++		 * zero id; storing every open would cost a write per open.
++		 */
++		state->op->global->file_id = state->result->file_id;
++		state->op->global->name_hash = state->result->name_hash;
+ 		if (state->need_replay_cache) {
+ 			state->op->flags |= SMBXSRV_OPEN_NEED_REPLAY_CACHE;
+ 		}

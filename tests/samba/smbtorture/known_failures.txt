@@ -32,13 +32,11 @@ smb2.oplock.stream1
 flaky smb2.lease.two-leases
 
 # Lease, durable and oplock tests that fail for this server's settings.
-# Patch 0024 defers a durable reconnect of a handle that is still open for up
-# to 90 s before it answers OBJECT_NAME_NOT_FOUND; smbtorture gives up after
-# 60 s with IO_TIMEOUT. durable_device.py checks that the reconnect is refused
-# after the full wait.
-smb2.durable-open.reopen1
+# Patch 0024 defers a durable reconnect of a handle another smbd still holds
+# open for up to 90 s before it answers OBJECT_NAME_NOT_FOUND; smbtorture gives
+# up after 60 s with IO_TIMEOUT. durable_device.py checks that the reconnect is
+# refused after the full wait.
 smb2.durable-open.reopen5
-smb2.durable-v2-open.reopen1
 # Multichannel is off, so a second connection with the same client GUID gets
 # its own smbd, which sends the lease break on its own connection.
 smb2.lease.v2_complex1

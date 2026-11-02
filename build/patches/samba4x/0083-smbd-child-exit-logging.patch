@@ -1,27 +1,24 @@
 diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -1250,12 +1250,23 @@ static void smbd_sig_chld_handler(struct tevent_context *ev,
- 			ignore = (exitcode ==
- 				  SMB_SUICIDE_EXIT_STATUS_BYPASS_CLEANUP);
- #endif
-+			if (unclean_shutdown) {
-+				DBG_ERR("child %d exited with status %d\n",
-+					(int)pid, exitcode);
-+			}
- 		}
- 		/* If the child terminated due to a signal
- 		   we always assume it was unclean.
- 		*/
+@@ -1257,6 +1257,20 @@ static void smbd_sig_chld_handler(struct tevent_context *ev,
  		if (WIFSIGNALED(status)) {
  			unclean_shutdown = True;
-+			/*
-+			 * Upstream logs nothing here; a child that dies leaves
-+			 * its opens to the scavenger's rescan, and this line
-+			 * says which one died and why.
-+			 */
-+			DBG_ERR("child %d ended by signal %d\n",
-+				(int)pid, WTERMSIG(status));
  		}
++		/*
++		 * Upstream logs nothing here; a child that ends uncleanly
++		 * leaves its opens to the scavenger's rescan, and this line
++		 * says which one and how.
++		 */
++		if (unclean_shutdown) {
++			DBG_ERR("child %d %s %d%s\n",
++				(int)pid,
++				WIFSIGNALED(status) ? "ended by signal" :
++						      "exited with status",
++				WIFSIGNALED(status) ? WTERMSIG(status) :
++						      WEXITSTATUS(status),
++				WCOREDUMP(status) ? ", core dumped" : "");
++		}
  		remove_child_pid(parent, pid, unclean_shutdown, ignore);
  	}
+ }

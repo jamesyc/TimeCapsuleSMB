@@ -83,7 +83,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  
  	if ((durable_v2_flags & SMB2_DHANDLE_FLAG_PERSISTENT) &&
  	    (server_caps & SMB2_CAP_PERSISTENT_HANDLES) &&
-@@ -2021,7 +2058,7 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
+@@ -2020,7 +2057,7 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
  			durable_v2_response_flags = SMB2_DHANDLE_FLAG_PERSISTENT;
  		}
  
@@ -117,21 +117,23 @@ diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
  		DBG_WARNING("smbXsrv_open_global_verify_record for %s "
  			    "failed: %s\n",
  			    tdb_data_dbg(key),
-@@ -1349,6 +1359,21 @@ static void smb2srv_open_recreate_fn(
+@@ -1349,6 +1359,23 @@ static void smb2srv_open_recreate_fn(
  		goto not_found;
  	}
  
 +	if (live) {
 +		/*
++		 * Waiting helps only while another smbd tears the open down; an
++		 * open this smbd holds gets OBJECT_NAME_NOT_FOUND at once.
++		 */
++		if (server_id_equal(&global->server_id, &state->me)) {
++			goto not_found;
++		}
++		/*
 +		 * NT_STATUS_FILE_NOT_AVAILABLE is only the caller's "still
 +		 * busy, retry" signal; the client never sees it (see
 +		 * smbd_smb2_create_send).
 +		 */
-+		DBG_DEBUG("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
-+			  "open %s is still attached to a live smbd; "
-+			  "treating matching durable reconnect as transiently "
-+			  "unavailable\n",
-+			  tdb_data_dbg(key));
 +		state->status = NT_STATUS_FILE_NOT_AVAILABLE;
 +		return;
 +	}
