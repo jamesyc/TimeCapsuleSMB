@@ -241,7 +241,8 @@
 
 # 3. Build and toolchain.
 # Samba marks some generated tools as hostcc but still lets waf inherit
-# target compiler/linker settings. Keep those host tools on the VM compiler.
+# target compiler/linker settings. Keep those host tools on the VM compiler,
+# with the host's flags and none of the target's link markers.
 0001-waf-hostcc-target-flags.patch|waf hostcc isolation from target flags
 # Apply static link flags only to the static binaries we build: the deployed
 # smbd (with its link map), the other shipped binary, the metadata migrator,
@@ -288,32 +289,24 @@
 # none, and NetBSD 6's ignores the call when atime is UTIME_OMIT and sets the
 # mtime to -1 when mtime is. NetBSD 4 also lacks fdopendir (emulated there by
 # opening "." from inside the directory and reading the whole directory up
-# front, because NetBSD 4's HFS loses a listing's place whenever a descriptor
-# on the directory is closed; rewinddir reads it again). On NetBSD 6, whose HFS
-# keeps a listing's place but repeats its last entries when read again after
-# the end, readdir keeps reporting the end until rewinddir. NetBSD 4 also lacks
-# arc4random_buf and getline (overlay lib/replace/tc_netbsd4_compat.c), and the
-# O_DIRECTORY and AT_* constants. system/filesys.h maps each name onto the
-# emulation, and build/_samba4x.sh refuses a binary that still links libc's *at
-# stubs.
+# front, because NetBSD 4's HFS loses a listing's place whenever a descriptor on
+# the directory is closed; rewinddir reads it again). On NetBSD 6, whose HFS
+# keeps a listing's place but repeats its last entries when read again after the
+# end, readdir keeps reporting the end until rewinddir. NetBSD 4 also lacks
+# arc4random_buf (for Heimdal's libtommath) and getline (overlay
+# lib/replace/tc_netbsd4_compat.c), and the O_DIRECTORY and AT_* constants.
+# system/filesys.h maps each name onto the emulation, and build/_samba4x.sh
+# refuses a binary that still links libc's *at stubs.
 0002-replace-appliance-at-emulation.patch|*at emulation for the appliance kernels and NetBSD 4 libc gaps
-# vfswrap_fstreaminfo() refreshes the file's stat before it lists the default
-# ::$DATA stream, and stock fails the whole listing when that refresh fails.
-# Under the *at emulation (0002; the code is built only with
-# TC_SAMBA4X_AT_EMULATION) the refresh of a pathref handle can fail although
-# the open or path walk left a valid stat on the file's name, and macOS's
-# delete and share checks then fail on a file the open found. Keep that cached
-# stat when it is valid.
-0050-vfs-default-streaminfo-cached-stat.patch|keep the default stream when the pathref stat refresh fails
-# NetBSD 4 has no posix_spawn (no spawn.h), so its lanes
-# (TC_SAMBA4X_NETBSD4_COMPAT) fork and execve instead. Samba's configure never
-# defines HAVE_POSIX_SPAWN, so gate on the lane, not on that. Apple's NetBSD
-# 6.0 kernel has posix_spawn(2), and the NetBSD 6 lane uses it. local_np.c is
-# live: every pipe but srvsvc (served inside smbd, 0005) tries to start
-# samba-dcerpcd, which the appliance does not ship; posix_spawn fails with
-# ENOENT and no child, the fallback after a fork. queue_process.c only has to
-# compile, as printing is disabled.
-0015-spawn-fork-exec-fallback.patch|posix_spawn fallback on NetBSD 4
+# NetBSD 4 has no posix_spawn (no spawn.h). Samba's configure never defines
+# HAVE_POSIX_SPAWN, so gate on the lane (TC_SAMBA4X_NETBSD4_COMPAT), not on
+# that; Apple's NetBSD 6.0 kernel has posix_spawn(2), and the NetBSD 6 lane
+# uses it. Both callers only start helpers the appliance does not ship, so on
+# NetBSD 4 a stub fails without forking. local_np.c is live: every pipe but
+# srvsvc (served inside smbd, 0005) tries to start samba-dcerpcd, and the stub
+# fails with ENOENT, as posix_spawn does on NetBSD 6. queue_process.c only has
+# to compile, as printing is disabled; its stub returns -1, the caller's check.
+0015-spawn-netbsd4-missing-helper.patch|no helper start on NetBSD 4, which has no posix_spawn
 # NetBSD 4 lacks O_CLOEXEC, which tdb_wrap passes to tdb_open; define it as 0
 # in tdb_wrap.c only (tdb_open_ex() sets FD_CLOEXEC itself). A global define
 # would make other code skip its fcntl(FD_CLOEXEC) fallback.
@@ -323,20 +316,21 @@
 # lib/socket/tc_netbsd_iflist.c). libc getifaddrs() misparses Apple's NetBSD 4
 # if_msghdr (152 bytes against the SDK's 144), and Samba's SIOCGIFCONF
 # replacement assumes fixed-size ifreq rows, which that kernel does not return.
-# Only Heimdal's krb5 address lookup still calls getifaddrs(), for Kerberos
-# client logins a standalone smbd never makes, so _samba4x.sh leaves
-# configure's interface probe results as detected.
+# A netmask is read as its address's family: the kernel trims its trailing zero
+# bytes and can leave its own family unset. Only Heimdal's krb5 address lookup
+# still calls getifaddrs(), for Kerberos client logins a standalone smbd never
+# makes, so _samba4x.sh leaves configure's interface probe results as detected.
 0043-interfaces-netbsd-route-iflist.patch|parse Time Capsule interfaces from routing messages
 # 4b. No-pthread build.
 # No Time Capsule kernel has pthreads. 0051 lets tevent and pthreadpool_tevent
-# build without them, 0013 adds --disable-pthread, and 0022 and 0064 fix
-# talloc_stack's exit handling in such a build.
+# build without them, 0013 adds --disable-pthread, and 0022 drops
+# talloc_stack's exit check in such a build.
 #
-# Without HAVE_PTHREAD, pthreadpool_tevent still used pthread mutexes for its
-# per-event-context glue, and tevent_threads.c's context destructor still
-# locked a mutex.
-# Guard those on HAVE_PTHREAD. The poll_mt backend needs no pthread and stays
-# registered; nothing here selects it. Pthread builds are unchanged.
+# Without HAVE_PTHREAD, pthreadpool_tevent still uses pthread mutexes for its
+# per-event-context glue, and tevent_threads.c's context destructor, which only
+# a pthread build installs, locks a mutex. Guard those on HAVE_PTHREAD. The
+# poll_mt backend needs no pthread and stays registered; nothing here selects
+# it. Pthread builds are unchanged.
 0051-tevent-no-pthread-build.patch|build tevent and pthreadpool_tevent without pthread
 # Disable pthread before libreplace constructs the dependency graph and define
 # __thread away. --disable-pthread alone already selects the synchronous
@@ -349,18 +343,14 @@
 # such a variable, so without this smbd aborts at startup. The NetBSD 4
 # compilers do not enable __thread; only the NetBSD 6 lane's compiler does.
 0013-configure-disable-pthread.patch|configure --disable-pthread; __thread defined away
-# Without pthread, talloc_stack's atexit handler read a NULL tracker when
-# talloc_stackframe_exists() had registered it before any frame existed, and
-# left the pointer to the freed tracker for exit handlers that run after it.
-0022-talloc-stack-atexit-null-tracker.patch|atexit handler without a tracker, and no freed tracker left behind
-# Without pthread, the atexit handler reported every stackframe still open at
-# exit() at level 0 (and panicked in DEVELOPER builds): about three lines for
-# each exiting smbd connection child, plus smbd -V and -b. Those are the
-# frames of the code that called exit(), not leaks; builds with pthread never
-# check them, since key destructors do not run at exit(). Report them at
-# debug level, without the panic; a thread exiting with open frames still
-# reports at level 0.
-0064-talloc-stack-exit-report-debug.patch|report stackframes open at exit only at debug level
+# Without pthread, talloc_stack registers an atexit handler that reports every
+# stackframe still open at exit() at level 0 (and panics in DEVELOPER builds):
+# about three lines for each exiting smbd connection child, plus smbd -V and
+# -b. Those are the frames of the code that called exit(), not leaks; builds
+# with pthread never check them, since key destructors do not run at exit().
+# The handler also reads a NULL tracker when talloc_stackframe_exists()
+# registered it before any frame existed. Register no handler.
+0022-talloc-stack-no-exit-handler.patch|no stackframe check at exit without pthread
 # 4c. HFS file growth.
 # HFS has no sparse files, so growing a file allocates every block up to its
 # new end. smbtorture's smb2.rw.invalid writes one byte just below MAXFILESIZE

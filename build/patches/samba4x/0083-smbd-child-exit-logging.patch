@@ -1,7 +1,7 @@
 diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -1257,6 +1257,20 @@ static void smbd_sig_chld_handler(struct tevent_context *ev,
+@@ -1237,6 +1237,20 @@ static void smbd_sig_chld_handler(struct tevent_context *ev,
  		if (WIFSIGNALED(status)) {
  			unclean_shutdown = True;
  		}

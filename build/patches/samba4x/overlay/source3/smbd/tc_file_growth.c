@@ -7,7 +7,7 @@
  * MAXFILESIZE (16 TiB) and accepts success (a sparse file, as on Samba's
  * usual filesystems) or STATUS_DISK_FULL (Windows, where a file that is not
  * sparse cannot outgrow the free space). On the Time Capsules that write
- * never finished (2026-09-28): the NetBSD 6 smbd child ran in the kernel for
+ * never finished: the NetBSD 6 smbd child ran in the kernel for
  * over 45 minutes while other processes on the disk waited, and the NetBSD 4
  * device rebooted. Answer as Windows does. smbd grows files through writes
  * (synchronous and asynchronous), SET_INFO end-of-file and server-side copies;

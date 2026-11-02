@@ -500,8 +500,8 @@ static void test_cleanup(struct vfs_handle_struct *h)
  * talloc_magic at startup (on NetBSD, derived from its own address) and
  * checks every chunk header against it, so a reverted talloc_magic made the
  * next talloc call abort with "Bad talloc magic value - unknown value". Here
- * the since-removed fork_stack and listener_handoff cases (for the old Samba
- * patch 0022 and for 0044) failed only on the devices, in forked children; later
+ * the since-removed fork_stack and listener_handoff cases (for a since-removed
+ * talloc stack patch and for 0044) failed only on the devices, in forked children; later
  * tc_native_links_test's convert_created aborted the same way in a single
  * process. The allocator corruption seen in create_aio_child()
  * (issue #295) fits too: jemalloc's own state lives in .data. Which global
@@ -510,20 +510,11 @@ static void test_cleanup(struct vfs_handle_struct *h)
  * binary but comes and goes with unrelated code changes, while padding .data,
  * padding the environment or junk-filling the heap changes nothing.
  *
- * How it was found (2026-09-25). Source edits hid it, so the failing
- * executable itself was binary-patched (layout unchanged): abort() replaced
- * with _exit(<byte of lr>) to find the caller, talloc_abort() replaced with a
- * write of its message and 1 KB of stack to stderr (a backtrace without a
- * debugger), then a dump of the chunk header next to talloc_magic. The header
- * held the randomized magic and the global held its file value: the whole
- * page matched the executable. Logging trampolines on all 107 syscall stubs
- * showed the value was intact at chdir() and gone by the next open(). What
- * ran in between was one user-space store to a global two pages away,
- * the first write to its page. Removing that single store fixed the run;
- * removing a different store did not. A 60-line static C program (a
- * page-aligned initialized array: change page 8, make the first write at
- * distance d, re-read page 8) then showed pages -4..+3 reverting on both
- * kernels, in one process and across fork(), with nothing but libc.
+ * What goes wrong. A store to a global makes the first write to its page,
+ * and fault-ahead maps that page's neighbours back to the executable's file
+ * contents: a static program with one page-aligned initialized array shows
+ * pages -4..+3 reverting on both kernels, in one process and across fork(),
+ * with nothing but libc.
  *
  * The mitigation. madvise(MADV_RANDOM) on the writable segment turns
  * fault-ahead off there, and fork() children inherit it. Touching every page
@@ -619,10 +610,10 @@ static void test_data_page_writes(void)
 }
 
 /* A process that exits with talloc frames still open, as every forked smbd
- * child does, reports them only at debug level (Samba patch 0064). pthread
- * builds never run that report at exit(); upstream's no-pthread atexit
- * handler logged "Dangling frame" lines at level 0 for each of them. With
- * debug set, the report is still made: 0064 lowers it, it does not drop it. */
+ * child does, reports nothing about them, at any debug level (Samba patch
+ * 0022): pthread builds never check frames at exit(), and upstream's
+ * no-pthread atexit handler logged "Dangling frame" lines at level 0 for
+ * each of them. */
 static void test_exit_frames(bool debug)
 {
 	char out[4096];
@@ -653,17 +644,17 @@ static void test_exit_frames(bool debug)
 	out[used] = '\0';
 	close(fds[0]);
 	CHECK(waitpid(pid, &status, 0) == pid);
-	if ((strstr(out, "Dangling frame") != NULL) != debug) {
+	if (strstr(out, "Dangling frame") != NULL) {
 		fprintf(stderr, "%s", out);
 	}
 	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-	CHECK((strstr(out, "Dangling frame") != NULL) == debug);
+	CHECK(strstr(out, "Dangling frame") == NULL);
 }
 
-/* Registered before the talloc stack is first used, so it runs after the
- * talloc stack's handler has freed the tracker (atexit handlers run in reverse order). With a
- * dangling tracker pointer this would be a use-after-free, which the host
- * run's AddressSanitizer reports. */
+/* Registered before the talloc stack is first used. Upstream's talloc stack
+ * handler, registered after it, ran first (atexit handlers run in reverse
+ * order) and freed the tracker, so this frame was a use-after-free, which the
+ * host run's AddressSanitizer reports. With no handler (0022) it just works. */
 static void late_stackframe(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
@@ -679,9 +670,9 @@ static void late_stackframe(void)
 static bool test_exit_handlers(const char *scenario)
 {
 	if (!strcmp(scenario, "exit_no_frames")) {
-		/* talloc_stackframe_exists() registers the atexit handler
-		 * before any frame exists; upstream's handler then
-		 * dereferenced the NULL tracker (fixed by Samba patch 0022). */
+		/* Upstream's talloc_stackframe_exists() registers its atexit
+		 * handler before any frame exists, and the handler then
+		 * dereferences the NULL tracker; 0022 registers none. */
 		CHECK(!talloc_stackframe_exists());
 		return true;
 	}

@@ -1,7 +1,7 @@
 diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
 --- a/buildtools/wafsamba/wafsamba.py
 +++ b/buildtools/wafsamba/wafsamba.py
-@@ -446,6 +446,37 @@ Build.BuildContext.SAMBA_LIBRARY = SAMBA_LIBRARY
+@@ -445,6 +445,36 @@ Build.BuildContext.SAMBA_LIBRARY = SAMBA_LIBRARY
  
  
  #################################################################
@@ -32,14 +32,13 @@ diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
 +    taskgen.env = taskgen.env.derive()
 +    taskgen.env.LINKFLAGS = static_linkflags
 +    taskgen.env.LDFLAGS = static_ldflags
-+    taskgen.env.LIBPATH = TO_LIST(getattr(bld.env, 'SMBD_STATIC_LIBPATH', []))
-+    taskgen.env.SHLIB_MARKER = getattr(bld.env, 'SMBD_STATIC_SHLIB_MARKER', '')
-+    taskgen.env.FULLSTATIC_MARKER = getattr(bld.env, 'SMBD_STATIC_FULLSTATIC_MARKER', '-static')
++    taskgen.env.LIBPATH = []
++    taskgen.env.SHLIB_MARKER = ''
 +
  def SAMBA_BINARY(bld, binname, source,
                   deps='',
                   includes='',
-@@ -570,6 +601,7 @@ def SAMBA_BINARY(bld, binname, source,
+@@ -569,6 +599,7 @@ def SAMBA_BINARY(bld, binname, source,
          samba_use_hostcc = use_hostcc
          )
      APPLY_HOSTCC_ENV(bld, t)

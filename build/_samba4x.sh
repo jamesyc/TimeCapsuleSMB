@@ -117,13 +117,9 @@ apply_samba4x_static_waf_cache() {
     set_waf_cache_value "$cache_file" "LDFLAGS" "[$SAMBA4X_SHARED_LDFLAGS_LIST]"
     set_waf_cache_value "$cache_file" "SMBD_STATIC_LINKFLAGS" "[$SAMBA4X_FINAL_LINKFLAGS]"
     set_waf_cache_value "$cache_file" "SMBD_STATIC_LDFLAGS" "[$SAMBA4X_FINAL_LDFLAGS_LIST]"
-    set_waf_cache_value "$cache_file" "SMBD_STATIC_LIBPATH" "[]"
-    set_waf_cache_value "$cache_file" "SMBD_STATIC_SHLIB_MARKER" "''"
-    set_waf_cache_value "$cache_file" "SMBD_STATIC_FULLSTATIC_MARKER" "'-static'"
     set_waf_cache_value "$cache_file" "TC_STATIC_LINKFLAGS" "[$TC_STATIC_LINKFLAGS]"
     set_waf_cache_value "$cache_file" "TC_STATIC_LDFLAGS" "[$TC_STATIC_LDFLAGS]"
     set_waf_cache_value "$cache_file" "TC_SAMBA4X_EMBEDDED_SRVSVC" "True"
-    set_waf_cache_value "$cache_file" "FULLSTATIC" "True"
 }
 
 apply_samba4x_runtime_waf_cache() {
@@ -924,12 +920,19 @@ rewrite_samba4x_gnutls_pc() {
 
 build_samba4x_gnutls() {
     gnutls_stamp_suffix="system-nettle-oaep-no-thread-local"
-    stamp="$SAMBA4X_DEPS/.stamp-gnutls-$SAMBA4X_GNUTLS_VERSION-$SAMBA4X_GNUTLS_SHA256-$gnutls_stamp_suffix"
+    # The library is built with patches/gnutls applied, so the stamp names
+    # their checksum: an edited patch rebuilds GnuTLS rather than reusing one
+    # built without it. cksum only has to tell patch versions apart.
+    gnutls_patch_sum="$(cd "$GNUTLS_PATCH_DIR" && cat series $(sed -n 's/|.*//p' series) | cksum | sed 's/ /-/')"
+    stamp="$SAMBA4X_DEPS/.stamp-gnutls-$SAMBA4X_GNUTLS_VERSION-$SAMBA4X_GNUTLS_SHA256-$gnutls_stamp_suffix-$gnutls_patch_sum"
     if [ -f "$stamp" ] && [ -f "$SAMBA4X_DEPS/lib/libgnutls.a" ]; then
         echo "GnuTLS $SAMBA4X_GNUTLS_VERSION already built."
         rewrite_samba4x_gnutls_pc
         return 0
     fi
+
+    # Another stamp no longer describes the library this build replaces.
+    rm -f "$SAMBA4X_DEPS"/.stamp-gnutls-*
 
     archive="$(download_samba4x_archive "$SAMBA4X_GNUTLS_URL" "gnutls-$SAMBA4X_GNUTLS_VERSION.tar.xz" "$SAMBA4X_GNUTLS_SHA256")"
     extract_samba4x_archive "$archive" "gnutls-$SAMBA4X_GNUTLS_VERSION"

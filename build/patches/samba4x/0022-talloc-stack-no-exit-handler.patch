@@ -1,0 +1,45 @@
+diff --git a/lib/util/talloc_stack.c b/lib/util/talloc_stack.c
+--- a/lib/util/talloc_stack.c
++++ b/lib/util/talloc_stack.c
+@@ -58,6 +58,7 @@ static pthread_key_t ts_key;
+ static struct talloc_stackframe *global_ts;
+ #endif
+ 
++#ifdef HAVE_PTHREAD
+ static void talloc_stackframe_destructor(void *ptr)
+ {
+ 	struct talloc_stackframe *ts =
+@@ -78,7 +79,6 @@ static void talloc_stackframe_destructor(void *ptr)
+ 	free(ts);
+ }
+ 
+-#ifdef HAVE_PTHREAD
+ static void talloc_stackframe_init_once(void)
+ {
+ 	int ret = pthread_key_create(&ts_key, talloc_stackframe_destructor);
+@@ -90,19 +90,14 @@ static void talloc_stackframe_init(void)
+ 	pthread_once(&ts_initialized, talloc_stackframe_init_once);
+ }
+ #else /* ! HAVE_PTHREAD */
+-static void talloc_stackframe_atexit(void)
+-{
+-	talloc_stackframe_destructor(global_ts);
+-}
+-
++/*
++ * No exit handler: the stackframes still open at exit() are those of the
++ * code that called it (smbd exiting from inside a request, or a forked
++ * child's copy of its parent's frames), not leaks, and builds with pthread
++ * never check them either, since key destructors do not run at exit().
++ */
+ static void talloc_stackframe_init(void)
+ {
+-	static bool done;
+-
+-	if (!done) {
+-		atexit(talloc_stackframe_atexit);
+-		done = true;
+-	}
+ }
+ #endif
+ 

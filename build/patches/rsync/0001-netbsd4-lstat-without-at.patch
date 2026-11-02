@@ -1,21 +1,3 @@
-diff --git a/rsync.h b/rsync.h
-index 0301ec4..dd25f8d 100644
---- a/rsync.h
-+++ b/rsync.h
-@@ -403,6 +403,13 @@
- #endif
- #endif
- 
-+#ifndef O_DIRECTORY
-+/* NetBSD 4 headers do not define O_DIRECTORY. rsync still verifies directory
-+ * opens through its existing fchdir/openat failure paths, so a zero fallback
-+ * preserves static appliance builds without weakening newer targets. */
-+#define O_DIRECTORY 0
-+#endif
-+
- #ifdef HAVE_SYS_IOCTL_H
- #include <sys/ioctl.h>
- #endif
 diff --git a/syscall.c b/syscall.c
 index 0a9d462..2e70eee 100644
 --- a/syscall.c

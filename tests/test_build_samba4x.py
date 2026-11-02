@@ -288,6 +288,19 @@ class Samba4XBuildScriptTests(unittest.TestCase):
     _dependency_pins: dict[str, str] | None = None
 
     @classmethod
+    def gnutls_stamp_name(cls) -> str:
+        """The GnuTLS stamp of a build from the pinned source with this
+        checkout's patches/gnutls: their cksum, as _samba4x.sh computes it."""
+        pins = cls.dependency_pins()
+        patches = REPO_ROOT / "build/patches/gnutls"
+        series = (patches / "series").read_bytes()
+        names = [line.split("|", 1)[0] for line in series.decode().splitlines() if "|" in line]
+        data = series + b"".join((patches / name).read_bytes() for name in names)
+        crc, size = subprocess.run(["cksum"], input=data, capture_output=True, check=True).stdout.split()
+        return (f".stamp-gnutls-{pins['GNUTLS_VERSION']}-{pins['GNUTLS_SHA256']}"
+                f"-system-nettle-oaep-no-thread-local-{crc.decode()}-{size.decode()}")
+
+    @classmethod
     def dependency_pins(cls) -> dict[str, str]:
         """The dependency versions and source hashes build/env.sh pins."""
         if cls._dependency_pins is None:
@@ -349,10 +362,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         self.make_file(deps / "lib" / "libhogweed.a")
         self.make_file(deps / f".stamp-libtasn1-{pins['LIBTASN1_VERSION']}-{pins['LIBTASN1_SHA256']}")
         self.make_file(deps / "lib" / "libtasn1.a")
-        self.make_file(
-            deps / f".stamp-gnutls-{pins['GNUTLS_VERSION']}-{pins['GNUTLS_SHA256']}"
-            "-system-nettle-oaep-no-thread-local"
-        )
+        self.make_file(deps / self.gnutls_stamp_name())
         self.make_file(deps / "lib" / "libgnutls.a")
         self.make_file(deps / "lib" / "pkgconfig" / "gnutls.pc", "Libs: -L${libdir} -lgnutls\n")
 
@@ -514,6 +524,35 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertIn(f"libtasn1-{pins['LIBTASN1_VERSION']}.tar.gz", calls[0])
             self.assertFalse(capture.exists())
+
+    def test_gnutls_built_with_other_patches_is_rebuilt(self) -> None:
+        # A library built before a patch changed, or without the patches'
+        # checksum in its stamp, is not reused: the build fetches the source.
+        pins = self.dependency_pins()
+        for case, stamp in (
+            ("stamp without the patch checksum",
+             f".stamp-gnutls-{pins['GNUTLS_VERSION']}-{pins['GNUTLS_SHA256']}-system-nettle-oaep-no-thread-local"),
+            ("other patches", self.gnutls_stamp_name().rsplit("-", 2)[0] + "-1-1"),
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                curl_capture = root / "curl-args.txt"
+                env = self.env_for_lane(root, "netbsd7", root / "configure-args.txt")
+                env["TEST_CURL_ARGS"] = str(curl_capture)
+                deps = root / "samba-build-netbsd7" / "deps"
+                (deps / self.gnutls_stamp_name()).unlink()
+                self.make_file(deps / stamp)
+
+                result = self.run_wrapper("samba4x.sh", env)
+
+                self.assertNotEqual(result.returncode, 0)
+                output = result.stdout + result.stderr + Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+                self.assertNotIn(f"GnuTLS {pins['GNUTLS_VERSION']} already built.", output)
+                calls = curl_capture.read_text().splitlines()
+                self.assertEqual(len(calls), 1)
+                self.assertIn(f"gnutls-{pins['GNUTLS_VERSION']}.tar.xz", calls[0])
+                # The stale stamp went with the library it described.
+                self.assertFalse((deps / stamp).exists())
 
     def test_appliance_lanes_enable_private_kernel_workarounds(self) -> None:
         for wrapper, lane, log_name in (
