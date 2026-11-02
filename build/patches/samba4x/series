@@ -30,8 +30,10 @@
 # open(2) allows. smbd then held a file handle on a directory (is_directory
 # false, so a later QUERY_DIRECTORY failed). Return
 # NT_STATUS_FILE_IS_A_DIRECTORY instead, so the caller opens it as a directory,
-# as for one found at lookup time. A file replaced by a directory was already
-# refused by the dev/ino check before it.
+# as for one found at lookup time; the descriptor stays as a path reference for
+# open_directory() to reopen, as mkdir_internal() leaves its new directory. A
+# file replaced by a directory is already refused by the dev/ino check before
+# it.
 0063-smbd-open-file-created-directory.patch|open a name that became a directory as a directory
 # smbd_calculate_maximum_allowed_access_fsp() returned full access for root
 # (a share with "force user = root", as on the appliance) before taking write
@@ -69,23 +71,30 @@
 # Machine's rename of the sparsebundle it has just attached included (upstream
 # bug 15926, which its fix left broken from 4.23 on). Skip POSIX opens below
 # whatever the directory handle is, as 4.22 did and "strict rename" does;
-# other opens below still refuse the rename, as on Windows. Refresh this
-# client's descendant names and their share/lease records after the parent
-# lock is released: durable disconnect closes their fds and stats by name.
-# Compare complete UTF-8 parent names, and broadcast directory renames so
-# clients holding descendants also refresh them when another client renames.
+# other opens below still refuse the rename, as on Windows. The same check
+# decides SMB1 and trans2 renames and, with strict rename off, whether a
+# directory with only hidden entries left can be deleted; 4.22 skipped POSIX
+# opens there too. The opens below keep their old names, which a durable
+# disconnect writes into the cookie its reconnect looks the file up by, and
+# which delete on close unlinks: after the parent's share mode lock is released,
+# rename this smbd's opens below with the bookkeeping of a file rename, comparing
+# whole UTF-8 parent names, and broadcast the rename (MSG_SMB_FILE_RENAME with
+# old_base_name) so other smbds rename theirs, from their share root. The rename
+# is done on disk by then, so a failure there only logs.
 0076-smbd-dir-rename-posix-opens-below.patch|a directory rename skips POSIX opens below it
 # delay_for_oplock_fn() waits for a lease break already under way before it
 # asks whether the open holding the lease is stale. An open that conflicted
 # with a live durable open sends the break and defers; the holder's smbd marks
 # the lease breaking, finds its client gone and disconnects the durable open,
 # which wakes the deferred open. The retry no longer conflicts, so nothing is
-# left to break, but the lease is still breaking: it deferred again and waited
+# left to break, but the lease is still breaking: it defers again and waits
 # out the 70-second timeout, though the stale entry was dropped in the same
 # traverse and no one could acknowledge the break (smbtorture
 # smb2.durable-open.open2-lease, when the open arrives before the old smbd has
-# seen its client leave). Skip the wait for a stale entry, as the code below
-# it does.
+# seen its client leave). Ask whether the entry is stale before that wait, as
+# the code after it does. Disconnected durable entries are unaffected: their pid
+# sorts them first, where the lease and write-lease checks above already ask
+# whether they are stale, as stock does.
 0078-smbd-open-stale-breaking-lease.patch|no wait on a breaking lease whose open is stale
 # A file with no xattr_tdb row has an empty attribute set: report ENOATTR for
 # it, not EINVAL, to every caller of the library. Stock vfs_xattr_tdb's
@@ -119,15 +128,15 @@
 # A helper's failed pread returned -1, which the parent cast to an oversized
 # read and turned into EIO; return the helper's errno instead.
 0052-aio-fork-read-errno.patch|keep the helper's errno for a failed read
-# A shutdown close (a dropped connection, a bare SMB2 LOGOFF, a tree
-# disconnect) runs from whatever working directory the last request left, which
-# is "/" after any tree disconnect (close_cnum) or another share's root. Delete
-# on close then finds no parent directory and leaves the file (upstream's
-# wide-links check stops it resolving anywhere else), and 0029's by-name stat
-# refuses the durable cookie. Change into the file's own share root first. A
-# disk 0041 finds revoked stays safe even when Apple remounted it at the same
-# path: both steps fstat the old descriptor before any lookup by name, and that
-# fails on a revoked vnode.
+# A shutdown close from a dropped connection or a bare SMB2 LOGOFF runs from
+# whatever working directory the last request left, which is "/" after any tree
+# disconnect (close_cnum) or another share's root; a tree disconnect itself
+# changes into its share first. Delete on close then finds no parent directory
+# and leaves the file (upstream's wide-links check stops it resolving anywhere
+# else), and 0029's by-name stat refuses the durable cookie. Change into the
+# file's own share root first. A disk 0041 finds revoked stays safe even when
+# Apple remounted it at the same path: both steps fstat the old descriptor
+# before any lookup by name, and that fails on a revoked vnode.
 0062-smbd-shutdown-close-share-root.patch|shutdown closes resolve names from the file's share root
 # The parent waits for a new scavenger's hello with no time limit, and serves
 # nothing meanwhile (no new connections, no reaping): a child that never says
@@ -147,9 +156,7 @@
 # into a buffer allocated on the request, ignores it, and reuses the request
 # for the next read. The request is freed only after the next SMB2 request
 # completes, so every ignored frame's buffer stays allocated until then. Free
-# each one when its frame is ignored. The patch's comment says the buffers
-# stayed until the connection ended; they stay until the next SMB2 request
-# completes.
+# each one when its frame is ignored.
 0079-smbd-ignored-frame-free-buffer.patch|free each ignored frame's buffer
 # brl_reconnect_disconnected() frees br_lck on each of its four failure
 # returns, but its caller, share_mode_do_locked_brl_fn(), owns br_lck: after a

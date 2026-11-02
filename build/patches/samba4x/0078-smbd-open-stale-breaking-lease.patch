@@ -7,11 +7,11 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  	if ((e_lease_type & ~break_to) == 0) {
 -		if (lease_is_breaking) {
 +		/*
-+		 * Wait for a break already under way, unless its open is
-+		 * stale: a dead smbd or a disconnected durable open never
-+		 * acknowledges the break, and the stale entry goes with
-+		 * this traverse, so nothing would wake the deferred open
-+		 * before its timeout.
++		 * A stale open is not waited for, not even for a break
++		 * already under way: a dead smbd or a disconnected durable
++		 * open never acknowledges the break, and the stale entry
++		 * goes with this traverse, so nothing would wake the
++		 * deferred open before its timeout.
 +		 */
 +		if (lease_is_breaking && !share_entry_stale_pid(e)) {
  			state->delay = true;

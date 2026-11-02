@@ -1,7 +1,7 @@
 diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 --- a/source3/smbd/open.c
 +++ b/source3/smbd/open.c
-@@ -4323,6 +4323,21 @@ static NTSTATUS open_file_ntcreate(
+@@ -4323,6 +4323,23 @@ static NTSTATUS open_file_ntcreate(
  		return NT_STATUS_ACCESS_DENIED;
  	}
  
@@ -12,9 +12,11 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 +		 * failed with EEXIST, and its retry without O_CREAT opened
 +		 * the directory, which open(2) allows for reading. Return it
 +		 * as a directory, as for one that existed at lookup time,
-+		 * rather than a file handle on a directory.
++		 * rather than a file handle on a directory: keep the
++		 * descriptor as a path reference, as mkdir_internal() does,
++		 * for open_directory() to reopen.
 +		 */
-+		fd_close(fsp);
++		fsp->fsp_flags.is_pathref = true;
 +		DBG_NOTICE("%s became a directory during the open\n",
 +			   smb_fname_str_dbg(smb_fname));
 +		return NT_STATUS_FILE_IS_A_DIRECTORY;

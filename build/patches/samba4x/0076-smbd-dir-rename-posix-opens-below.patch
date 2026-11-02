@@ -26,8 +26,8 @@ diff --git a/source3/smbd/files.c b/source3/smbd/files.c
 +		 * attributes, delete and synchronize access, which
 +		 * open_directory() serves without reopening it, so that
 +		 * handle keeps the non-POSIX flag of the path lookup.
-+		 * Requiring it to be POSIX refused every rename of a folder
-+		 * with a Mac's files open inside, such as Time Machine
++		 * Requiring both to be POSIX would refuse every rename of a
++		 * folder with a Mac's files open inside, such as Time Machine
 +		 * renaming the sparsebundle it has just attached. With
 +		 * "strict rename", delay_for_handle_lease_break_below_fn()
 +		 * skips POSIX opens below in the same way.
@@ -39,29 +39,52 @@ diff --git a/source3/smbd/files.c b/source3/smbd/files.c
 diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 --- a/source3/smbd/open.c
 +++ b/source3/smbd/open.c
-@@ -5605,6 +5605,29 @@ void msg_file_was_renamed(struct messaging_context *msg_ctx,
+@@ -5607,6 +5607,52 @@ void msg_file_was_renamed(struct messaging_context *msg_ctx,
  		NDR_PRINT_DEBUG(file_rename_message, msg);
  	}
  
 +	if (msg->old_base_name != NULL) {
-+		connection_struct *conn;
-+		/* NDR owns these strings; the rename helper only reads them. */
-+		struct smb_filename old_name = {.base_name = discard_const_p(char, msg->old_base_name)};
-+		struct smb_filename new_name = {.base_name = discard_const_p(char, msg->base_name)};
++		/*
++		 * Another smbd renamed a directory (rename_opens_below()):
++		 * rename this smbd's opens below it. That sends only
++		 * per-file messages, so a case-only rename cannot loop. NDR
++		 * owns the strings; the helper only reads them.
++		 */
++		struct smb_filename old_name = {
++			.base_name = discard_const_p(char, msg->old_base_name),
++		};
++		struct smb_filename new_name = {
++			.base_name = discard_const_p(char, msg->base_name),
++		};
++		connection_struct *conn = NULL;
++		NTSTATUS status;
 +
-+		/* A different client may own every open below this directory.
-+		 * Update its names before durable disconnect stats them by name.
-+		 * The helper sends ordinary per-file notifications, not another
-+		 * directory broadcast, so case-only renames cannot loop. */
 +		for (conn = sconn->connections; conn != NULL; conn = conn->next) {
-+			NTSTATUS status;
-+			if (strcmp(conn->connectpath, msg->servicepath) != 0) continue;
-+			status = rename_open_files_below(conn, &old_name, &new_name);
-+			if (!NT_STATUS_IS_OK(status)) {
-+				DBG_ERR("Updating renamed descendants failed: %s\n",
-+					nt_errstr(status));
++			if (strcmp(conn->connectpath, msg->servicepath) == 0) {
++				break;
 +			}
-+			break; /* The helper visits all trees with this share root. */
++		}
++		if (conn == NULL) {
++			goto out;
++		}
++
++		/*
++		 * The names are relative to the share root, and a message
++		 * runs wherever the last request left the working directory.
++		 */
++		if (vfs_ChDir_shareroot(conn) != 0) {
++			DBG_WARNING("vfs_ChDir_shareroot(%s) failed: %s\n",
++				    conn->connectpath,
++				    strerror(errno));
++			goto out;
++		}
++
++		/* This renames the opens of every tree on this share root. */
++		status = rename_open_files_below(conn, &old_name, &new_name);
++		if (!NT_STATUS_IS_OK(status)) {
++			DBG_WARNING("Renaming the opens below %s failed: %s\n",
++				    msg->old_base_name,
++				    nt_errstr(status));
 +		}
 +		goto out;
 +	}
@@ -95,167 +118,250 @@ diff --git a/source3/smbd/smb2_reply.c b/source3/smbd/smb2_reply.c
  #include "libcli/smb/smb2_posix.h"
  #include "lib/util/string_wrappers.h"
  #include "source3/printing/rap_jobid.h"
-@@ -1214,6 +1215,119 @@ static void rename_open_files(connection_struct *conn,
+@@ -1214,6 +1215,233 @@ static void rename_open_files(connection_struct *conn,
  
  }
  
 +/*
-+ * POSIX directory renames leave the client's open descendants usable through
-+ * their descriptors. Keep their names usable too: durable disconnect closes
-+ * the descriptor and stats that name before saving its reconnect cookie.
-+ * Reuse ordinary file rename bookkeeping for share modes, leases and other
-+ * processes with the same file open. This walks this client's opens, just as
-+ * file_find_subpath() does with strict rename disabled. Directory broadcasts
-+ * run the same repair in other clients; no filesystem scan is needed. The caller must release the directory's share lock first: Samba can
-+ * hold only one share-mode lock at a time.
++ * A directory rename leaves the opens below it usable through their
++ * descriptors, but their names still lead to the old path, and a durable
++ * disconnect closes the descriptor and stats the name before it saves the
++ * reconnect cookie. Give this smbd's opens below src the same path below
++ * dst, with the bookkeeping a file rename does: share modes, leases, and
++ * other smbds with the same file open. This walks this smbd's opens, as
++ * file_find_subpath() does when "strict rename" is off; other smbds do the
++ * same when the rename message reaches them (msg_file_was_renamed()). The
++ * names are relative to the share root, which must be the working
++ * directory. The caller must not hold a share mode lock: smbd holds only
++ * one at a time.
 + */
 +NTSTATUS rename_open_files_below(connection_struct *conn,
-+                                      const struct smb_filename *src,
-+                                      const struct smb_filename *dst)
++				 const struct smb_filename *src,
++				 const struct smb_filename *dst)
 +{
-+	files_struct *fsp;
-+	const char *old = src->base_name;
-+	const char *new = dst->base_name;
++	const char *src_name = src->base_name;
++	const char *dst_name = dst->base_name;
 +	size_t components = 1;
-+	const char *p;
++	files_struct *fsp = NULL;
++	const char *p = NULL;
 +
-+	if (strncmp(old, "./", 2) == 0) old += 2;
-+	if (strncmp(new, "./", 2) == 0) new += 2;
-+	for (p = old; *p != '\0'; p++) {
-+		if (*p == '/') components++;
++	if (strncmp(src_name, "./", 2) == 0) {
++		src_name += 2;
++	}
++	if (strncmp(dst_name, "./", 2) == 0) {
++		dst_name += 2;
++	}
++	for (p = src_name; *p != '\0'; p++) {
++		if (*p == '/') {
++			components++;
++		}
 +	}
 +
 +	for (fsp = conn->sconn->files; fsp != NULL; fsp = fsp->next) {
 +		const char *name = fsp->fsp_name->base_name;
-+		const char *suffix;
-+		char *parent;
-+		size_t i;
 +		struct smb_filename *renamed = NULL;
 +		struct share_mode_lock *lck = NULL;
++		files_struct *base = NULL;
++		const char *suffix = NULL;
++		char *parent = NULL;
++		char *stream = NULL;
++		SMB_STRUCT_STAT st;
++		struct file_id id;
++		size_t i;
++		int flags;
++		int ret;
 +		bool ok;
 +
 +		if (strcmp(fsp->conn->connectpath, conn->connectpath) != 0) {
 +			continue;
 +		}
-+		if (strncmp(name, "./", 2) == 0) name += 2;
-+		/* Compare whole parent strings: strnequal() counts characters,
-+		 * not UTF-8 bytes, and case-equivalent spellings can have different
-+		 * byte lengths. Component boundaries also locate the right suffix. */
++		if (strncmp(name, "./", 2) == 0) {
++			name += 2;
++		}
++
++		/*
++		 * Compare the name's first "components" components with src
++		 * as a whole string: strnequal() counts characters, not
++		 * UTF-8 bytes, and case-equivalent spellings can differ in
++		 * byte length. The rest of the name is the suffix to keep.
++		 */
 +		suffix = name;
 +		for (i = 0; i < components; i++) {
 +			suffix = strchr(suffix, '/');
-+			if (suffix == NULL) break;
-+			if (i + 1 < components) suffix++;
++			if (suffix == NULL) {
++				break;
++			}
++			if (i + 1 < components) {
++				suffix++;
++			}
 +		}
-+		if (suffix == NULL) continue;
++		if (suffix == NULL) {
++			continue;
++		}
 +		parent = talloc_strndup(talloc_tos(), name, suffix - name);
-+		if (parent == NULL) return NT_STATUS_NO_MEMORY;
-+		ok = conn->case_sensitive ? strcmp(parent, old) == 0 : strequal(parent, old);
++		if (parent == NULL) {
++			return NT_STATUS_NO_MEMORY;
++		}
++		if (conn->case_sensitive) {
++			ok = (strcmp(parent, src_name) == 0);
++		} else {
++			ok = strequal(parent, src_name);
++		}
 +		TALLOC_FREE(parent);
-+		if (!ok) continue;
++		if (!ok) {
++			continue;
++		}
++
 +		renamed = cp_smb_filename(talloc_tos(), fsp->fsp_name);
-+		if (renamed == NULL) return NT_STATUS_NO_MEMORY;
++		if (renamed == NULL) {
++			return NT_STATUS_NO_MEMORY;
++		}
 +		TALLOC_FREE(renamed->base_name);
-+		renamed->base_name = talloc_asprintf(renamed, "%s%s", new, suffix);
++		renamed->base_name = talloc_asprintf(renamed,
++						     "%s%s",
++						     dst_name,
++						     suffix);
 +		if (renamed->base_name == NULL) {
 +			TALLOC_FREE(renamed);
 +			return NT_STATUS_NO_MEMORY;
 +		}
-+		/* A previous handle or notification may have already updated this
-+		 * name, especially when only the parent's case changed. */
++
++		/*
++		 * Another handle of the same file, or an earlier message,
++		 * may have renamed this open already, as a case-only rename
++		 * does.
++		 */
 +		if (strcmp(fsp->fsp_name->base_name, renamed->base_name) == 0) {
 +			TALLOC_FREE(renamed);
 +			continue;
 +		}
-+		/* A directory notification can arrive after its old name was
-+		 * reused. Do not retarget a newly opened replacement: the new
-+		 * path must still identify this open file (or a stream's base).
-+		 * Use the share-root descriptor, not the callback's current cwd. */
-+		{
-+			files_struct *base = fsp->base_fsp != NULL ? fsp->base_fsp : fsp;
-+			SMB_STRUCT_STAT st;
-+			struct file_id id;
-+			char *stream = renamed->stream_name;
-+			int flags = S_ISLNK(base->fsp_name->st.st_ex_mode)
-+				? AT_SYMLINK_NOFOLLOW : 0;
-+			int ret;
 +
-+			renamed->stream_name = NULL;
-+			ret = SMB_VFS_FSTATAT(fsp->conn, fsp->conn->cwd_fsp,
-+					      renamed, &st, flags);
-+			renamed->stream_name = stream;
-+			if (ret != 0) {
-+				DBG_WARNING("Cannot verify renamed descendant %s: %s\n",
-+					    smb_fname_str_dbg(renamed), strerror(errno));
-+				TALLOC_FREE(renamed);
-+				continue;
-+			}
-+			id = vfs_file_id_from_sbuf(fsp->conn, &st);
-+			if (!file_id_equal(&id, &base->file_id)) {
-+				TALLOC_FREE(renamed);
-+				continue;
-+			}
++		/*
++		 * A message can arrive after the new name was taken again.
++		 * Rename only an open the new name still leads to (for a
++		 * stream, its base file).
++		 */
++		base = (fsp->base_fsp != NULL) ? fsp->base_fsp : fsp;
++		flags = S_ISLNK(base->fsp_name->st.st_ex_mode) ?
++			AT_SYMLINK_NOFOLLOW : 0;
++		stream = renamed->stream_name;
++		renamed->stream_name = NULL;
++		ret = SMB_VFS_FSTATAT(fsp->conn,
++				      fsp->conn->cwd_fsp,
++				      renamed,
++				      &st,
++				      flags);
++		renamed->stream_name = stream;
++		if (ret != 0) {
++			DBG_WARNING("Cannot stat renamed %s: %s\n",
++				    smb_fname_str_dbg(renamed),
++				    strerror(errno));
++			TALLOC_FREE(renamed);
++			continue;
 +		}
++		id = vfs_file_id_from_sbuf(fsp->conn, &st);
++		if (!file_id_equal(&id, &base->file_id)) {
++			TALLOC_FREE(renamed);
++			continue;
++		}
++
 +		lck = get_existing_share_mode_lock(talloc_tos(), fsp->file_id);
 +		if (lck != NULL) {
-+			rename_open_files(conn, lck, fsp->file_id,
-+					  fsp->name_hash, renamed);
++			rename_open_files(conn,
++					  lck,
++					  fsp->file_id,
++					  fsp->name_hash,
++					  renamed);
 +			TALLOC_FREE(lck);
-+			ok = strcmp(fsp->fsp_name->base_name, renamed->base_name) == 0;
++			ok = (strcmp(fsp->fsp_name->base_name,
++				     renamed->base_name) == 0);
 +		} else {
-+			/* Internal path references have no share-mode record. */
++			/* An internal path reference has no share mode entry. */
 +			ok = fsp_set_smb_fname(fsp, renamed);
 +		}
 +		TALLOC_FREE(renamed);
-+		if (!ok) return NT_STATUS_NO_MEMORY;
++		if (!ok) {
++			return NT_STATUS_NO_MEMORY;
++		}
 +	}
 +	return NT_STATUS_OK;
++}
++
++/*
++ * After a directory rename on disk, rename the opens below it in this smbd
++ * and, with a MSG_SMB_FILE_RENAME that carries old_base_name, in every
++ * other smbd: their clients may hold opens below the directory without
++ * holding the directory itself. The rename is done, so a failure here
++ * only logs.
++ */
++static void rename_opens_below(connection_struct *conn,
++			       files_struct *fsp,
++			       const struct smb_filename *old_fname,
++			       struct files_struct *dst_dirfsp,
++			       const struct smb_filename *smb_fname_dst_rel)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	struct file_rename_message msg = {
++		.id = fsp->file_id,
++		.servicepath = conn->connectpath,
++		.old_base_name = old_fname->base_name,
++	};
++	struct smb_filename *dst = NULL;
++	DATA_BLOB blob = data_blob_null;
++	enum ndr_err_code ndr_err;
++	NTSTATUS status;
++
++	/*
++	 * The destination lookup returns an existing name in its stored
++	 * case; the opens take the spelling the rename used.
++	 */
++	dst = full_path_from_dirfsp_atname(frame,
++					   dst_dirfsp,
++					   smb_fname_dst_rel);
++	if (dst == NULL) {
++		DBG_WARNING("full_path_from_dirfsp_atname failed\n");
++		goto done;
++	}
++	msg.base_name = dst->base_name;
++
++	status = rename_open_files_below(conn, old_fname, dst);
++	if (!NT_STATUS_IS_OK(status)) {
++		DBG_WARNING("Renaming the opens below %s failed: %s\n",
++			    old_fname->base_name,
++			    nt_errstr(status));
++	}
++
++	ndr_err = ndr_push_struct_blob(
++		&blob,
++		frame,
++		&msg,
++		(ndr_push_flags_fn_t)ndr_push_file_rename_message);
++	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
++		DBG_WARNING("ndr_push_file_rename_message failed: %s\n",
++			    ndr_errstr(ndr_err));
++		goto done;
++	}
++	messaging_send_all(conn->sconn->msg_ctx,
++			   MSG_SMB_FILE_RENAME,
++			   blob.data,
++			   blob.length);
++done:
++	TALLOC_FREE(frame);
 +}
 +
  /****************************************************************************
   We need to check if the source path is a parent directory of the destination
   (ie. a rename of /foo/bar/baz -> /foo/bar/baz/bibble/bobble. If so we must
-@@ -1606,6 +1720,45 @@ inform_others:
+@@ -1606,6 +1834,14 @@ inform_others:
  
  		TALLOC_FREE(lck);
  
 +		if (fsp->fsp_flags.is_directory) {
-+			struct smb_filename *descendant_dst = NULL;
-+			struct file_rename_message msg = {
-+				.id = fsp->file_id,
-+				.servicepath = conn->connectpath,
-+				.old_base_name = old_fname->base_name,
-+			};
-+			DATA_BLOB blob = data_blob_null;
-+			enum ndr_err_code err;
-+
-+			/* Destination lookup canonicalizes an existing name's case.
-+			 * Use the spelling passed to renameat, not that old spelling. */
-+			descendant_dst = full_path_from_dirfsp_atname(
-+				ctx, dst_dirfsp, smb_fname_dst_rel);
-+			if (descendant_dst == NULL) {
-+				status = NT_STATUS_NO_MEMORY;
-+				TALLOC_FREE(old_fname);
-+				goto out;
-+			}
-+			msg.base_name = descendant_dst->base_name;
-+			status = rename_open_files_below(conn, old_fname, descendant_dst);
-+			if (!NT_STATUS_IS_OK(status)) {
-+				TALLOC_FREE(old_fname);
-+				goto out;
-+			}
-+			/* The renaming connection need not have any descendants open:
-+			 * notify all clients, not only holders of the directory inode. */
-+			err = ndr_push_struct_blob(&blob, ctx, &msg,
-+				(ndr_push_flags_fn_t)ndr_push_file_rename_message);
-+			if (!NDR_ERR_CODE_IS_SUCCESS(err)) {
-+				status = ndr_map_error2ntstatus(err);
-+				TALLOC_FREE(old_fname);
-+				goto out;
-+			}
-+			messaging_send_all(conn->sconn->msg_ctx, MSG_SMB_FILE_RENAME,
-+					   blob.data, blob.length);
-+			data_blob_free(&blob);
++			rename_opens_below(conn,
++					   fsp,
++					   old_fname,
++					   dst_dirfsp,
++					   smb_fname_dst_rel);
 +		}
 +
  		notify_rename(conn,

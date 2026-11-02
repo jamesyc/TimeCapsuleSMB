@@ -1,13 +1,14 @@
 diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
 --- a/source3/smbd/smb2_server.c
 +++ b/source3/smbd/smb2_server.c
-@@ -5171,6 +5171,11 @@ got_full:
+@@ -5171,6 +5171,12 @@ got_full:
  			 state->hdr.nbt[0]));
  
  		req = state->req;
 +		/*
-+		 * Samba bug: upstream keeps every ignored frame's buffer until
-+		 * the request is freed, which is when the connection ends.
++		 * The buffer is allocated on the request, which is reused
++		 * for the next read and freed only after the next SMB2
++		 * request completes: free each ignored frame's buffer now.
 +		 */
 +		TALLOC_FREE(state->pktbuf);
  		*state = (struct smbd_smb2_request_read_state) {

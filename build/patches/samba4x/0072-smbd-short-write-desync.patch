@@ -628,7 +628,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  
  		req = state->req;
  		/*
-@@ -5234,6 +5788,9 @@ got_full:
+@@ -5235,6 +5789,9 @@ got_full:
  		return status;
  	}
  
@@ -638,7 +638,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  	status = smbd_smb2_request_dispatch(req);
  	if (!NT_STATUS_IS_OK(status)) {
  		return status;
-@@ -5312,6 +5869,22 @@ static NTSTATUS smbd_smb2_io_handler(struct smbXsrv_connection *xconn,
+@@ -5313,6 +5870,22 @@ static NTSTATUS smbd_smb2_io_handler(struct smbXsrv_connection *xconn,
  
  again:
  
@@ -661,7 +661,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  	state->msg = (struct msghdr) {
  		.msg_iov = state->vector,
  		.msg_iovlen = state->count,
-@@ -5326,6 +5899,15 @@ again:
+@@ -5327,6 +5900,15 @@ again:
  
  	ret = recvmsg(xconn->transport.sock, &state->msg, recvmsg_flags);
  	if (ret == 0) {
@@ -677,7 +677,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  		/* propagate end of file */
  		status = NT_STATUS_END_OF_FILE;
  		smbXsrv_connection_disconnect_transport(xconn,
-@@ -5344,7 +5926,11 @@ again:
+@@ -5345,7 +5927,11 @@ again:
  							status);
  		return status;
  	}
