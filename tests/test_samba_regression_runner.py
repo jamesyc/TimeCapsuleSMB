@@ -476,3 +476,71 @@ def test_host_cli_keeps_build_errors_fatal_and_tests_strict_by_default(
     assert fake.runs == ([] if build_only or failure == "build" else [source])
     if cached:
         assert (cache / "build-key").exists() == (failure != "build")
+
+
+# Sections 1 and 2 of the series go upstream, so build_host() checks that they
+# apply in order to the pristine clone, before the overlay or any later patch.
+
+def _repo_with_patches(tmp_path, series_text, patches):
+    repo = tmp_path / "samba"
+    repo.mkdir()
+    (repo / "file.txt").write_text("one\ntwo\nthree\n")
+    for args in (["init", "-q"], ["add", "file.txt"],
+                 ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "pristine"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    pdir = tmp_path / "patches"
+    pdir.mkdir()
+    (pdir / "series").write_text(series_text)
+    for name, (old, new) in patches.items():
+        (pdir / name).write_text(
+            "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n"
+            f"@@ -1,3 +1,3 @@\n one\n-{old}\n+{new}\n three\n")
+    return repo, pdir
+
+
+SERIES = """# header
+#
+# 1. Fixes to stock Samba.
+# a note
+0001-first.patch|first
+0002-second.patch|second
+# 2. Upstream proposals.
+0003-third.patch|third
+# 3. Build and toolchain.
+0004-needs-overlay.patch|not for upstream
+"""
+
+
+def test_stock_sections_are_sections_1_and_2_in_order(tmp_path):
+    series = tmp_path / "series"
+    series.write_text(SERIES)
+    assert run.stock_sections(series) == ["0001-first.patch", "0002-second.patch", "0003-third.patch"]
+
+
+def test_stock_sections_of_this_series():
+    names = run.stock_sections(run.ROOT / "build/patches/samba4x/series")
+    assert names[0].startswith("0063-") and names[-1].startswith("0031-")
+    assert any(n.startswith("0084-") for n in names) and any(n.startswith("0085-") for n in names)
+    assert not any(n.startswith(("0001-", "0038-", "0072-")) for n in names)
+
+
+def test_check_stock_sections_applies_them_in_order_and_resets(tmp_path):
+    # 0002 changes what 0001 wrote; 0004, in section 3, applies to nothing.
+    repo, pdir = _repo_with_patches(tmp_path, SERIES, {
+        "0001-first.patch": ("two", "2"), "0002-second.patch": ("2", "deux"),
+        "0003-third.patch": ("deux", "zwei"), "0004-needs-overlay.patch": ("missing", "x")})
+    run.check_stock_sections(repo, pdir)
+    staged = subprocess.run(["git", "-C", str(repo), "diff", "--cached", "--name-only"],
+                            capture_output=True, text=True, check=True).stdout
+    assert staged == "" and (repo / "file.txt").read_text() == "one\ntwo\nthree\n"
+
+
+def test_check_stock_sections_refuses_one_that_needs_a_later_patch(tmp_path):
+    repo, pdir = _repo_with_patches(tmp_path, SERIES, {
+        "0001-first.patch": ("two", "2"), "0002-second.patch": ("missing", "x"),
+        "0003-third.patch": ("2", "3"), "0004-needs-overlay.patch": ("two", "x")})
+    with pytest.raises(SystemExit, match="0002-second.patch"):
+        run.check_stock_sections(repo, pdir)
+    staged = subprocess.run(["git", "-C", str(repo), "diff", "--cached", "--name-only"],
+                            capture_output=True, text=True, check=True).stdout
+    assert staged == ""

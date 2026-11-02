@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
@@ -355,9 +356,38 @@ def run_host_tests(source: Path, env: dict[str, str]) -> None:
                    cwd=ROOT, env=env, check=True)
 
 
+def stock_sections(series: Path) -> list[str]:
+    """The patches in the series' sections 1 and 2 (fixes to stock Samba and
+    upstream proposals), in series order."""
+    names, section = [], 0
+    for line in series.read_text().splitlines():
+        heading = re.match(r"# (\d+)\. ", line)
+        if heading:
+            section = int(heading.group(1))
+        elif line and not line.startswith("#") and section in (1, 2):
+            names.append(line.split("|", 1)[0])
+    return names
+
+
+def check_stock_sections(source: Path, patches: Path = ROOT / "build/patches/samba4x") -> None:
+    """Sections 1 and 2 must apply, in order, to pristine Samba without the
+    overlay or any later patch: they are what goes upstream (AGENTS.md).
+    Applied to source's index only, which is reset afterwards."""
+    try:
+        for name in stock_sections(patches / "series"):
+            result = subprocess.run(["git", "-C", str(source), "apply", "--cached", str(patches / name)],
+                                    capture_output=True, text=True)
+            if result.returncode != 0:
+                raise SystemExit(f"{name} (section 1 or 2) does not apply to pristine Samba after the "
+                                 "patches before it:\n" + result.stderr.strip())
+    finally:
+        subprocess.run(["git", "-C", str(source), "reset", "-q"], check=True)
+
+
 def build_host(url: str, ref: str, source: Path, jobs: int, env: dict[str, str]) -> None:
     subprocess.run(["git", "clone", "--depth", "1", "--branch", ref,
                     url, str(source)], check=True)
+    check_stock_sections(source)
     subprocess.run(["sh", "-c", '. "$1"; patch_apply_series Samba "$2" "$3"', "sh",
                     str(ROOT / "build/_patch_helpers.sh"),
                     str(ROOT / "build/patches/samba4x/series"), str(source)], check=True)
