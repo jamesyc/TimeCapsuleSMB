@@ -29,8 +29,9 @@ void arc4random_buf(void *buf, size_t n)
 	}
 
 	/*
-	 * Samba/GnuTLS may use this for security-sensitive randomness. A weak
-	 * random() fallback would hide a serious platform failure, so fail hard.
+	 * Heimdal's bundled libtommath (bn_s_mp_rand_platform.c) draws its
+	 * random numbers from this. A weak random() fallback would hide a
+	 * serious platform failure, so fail hard.
 	 */
 	abort();
 }

@@ -1,54 +1,34 @@
 diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -480,6 +480,23 @@ static bool smbd_notifyd_init(struct messaging_context *msg, bool interactive,
- 		return (req != NULL);
- 	}
+@@ -475,6 +475,16 @@ static bool smbd_notifyd_init(struct messaging_context *msg, bool interactive,
+ 	NTSTATUS status;
+ 	bool ok;
  
 +#ifdef TC_SAMBA4X_APPLIANCE
 +	/*
 +	 * The appliance smbd forks no resident notifyd or cleanupd, to save
-+	 * memory: run notifyd in the parent's event loop, as interactive smbd
-+	 * does above. The scavenger is still forked: its expiry waits for
-+	 * share-mode, byte-range and open-record locks that a stuck client smbd
-+	 * can hold, and the parent must keep accepting connections meanwhile.
++	 * memory: they run in the parent's event loop, as for interactive
++	 * smbd. The scavenger is still forked: its expiry waits for
++	 * share-mode, byte-range and open-record locks that a stuck client
++	 * smbd can hold, and the parent must keep accepting connections.
 +	 */
-+	req = notifyd_req(msg, ev);
-+	if (req == NULL) {
-+		return false;
-+	}
-+	*ppid = messaging_server_id(msg);
-+	DBG_NOTICE("Running notifyd in the smbd parent\n");
-+	return true;
++	interactive = true;
 +#endif
-+
- 	pid = fork();
- 	if (pid == -1) {
- 		DEBUG(1, ("%s: fork failed: %s\n", __func__,
-@@ -661,6 +678,22 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
+ 	if (interactive) {
+ 		req = notifyd_req(msg, ev);
+ 		return (req != NULL);
+@@ -661,6 +671,9 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
  	char c;
  	int up_pipe[2];
  
 +#ifdef TC_SAMBA4X_APPLIANCE
-+	/*
-+	 * No resident helper daemons (see smbd_notifyd_init): run cleanupd's request
-+	 * in the parent's event loop, as interactive smbd does below. It still
-+	 * cleans up after each exited child: its messaging socket, its profile
-+	 * slot and, after an unclean exit, persistent handles.
-+	 */
-+	req = smbd_cleanupd_send(msg, ev, msg, parent_id.pid);
-+	if (req == NULL) {
-+		return false;
-+	}
-+	*ppid = messaging_server_id(msg);
-+	DBG_NOTICE("Running cleanupd in the smbd parent\n");
-+	return true;
++	interactive = true;	/* see smbd_notifyd_init() */
 +#endif
-+
  	if (interactive) {
  		req = smbd_cleanupd_send(msg, ev, msg, parent_id.pid);
  		*ppid = messaging_server_id(msg);
-@@ -2654,9 +2687,18 @@ quic_disabled:
+@@ -2654,9 +2667,18 @@ quic_disabled:
  		exit_daemon("Samba cannot init notification", EACCES);
  	}
  

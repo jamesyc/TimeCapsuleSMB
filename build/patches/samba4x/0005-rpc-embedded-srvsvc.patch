@@ -34,7 +34,7 @@ diff --git a/source3/rpc_server/srv_pipe_hnd.c b/source3/rpc_server/srv_pipe_hnd
 +		session_info,
 +		ev_ctx,
 +		msg_ctx,
-+		global_dcesrv_context(), /* np_open() no longer receives this */
++		global_dcesrv_context(),
 +		npa);
 +	if (NT_STATUS_IS_OK(status)) {
 +		*phandle = handle;

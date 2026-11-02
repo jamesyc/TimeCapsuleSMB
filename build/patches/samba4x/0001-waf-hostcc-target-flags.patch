@@ -15,7 +15,7 @@ diff --git a/buildtools/wafsamba/samba_autoconf.py b/buildtools/wafsamba/samba_a
 diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
 --- a/buildtools/wafsamba/wafsamba.py
 +++ b/buildtools/wafsamba/wafsamba.py
-@@ -40,6 +40,28 @@ LIB_PATH="shared"
+@@ -40,6 +40,27 @@ LIB_PATH="shared"
  
  os.environ['PYTHONUNBUFFERED'] = '1'
  
@@ -34,17 +34,16 @@ diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
 +    taskgen.env.CPPFLAGS = TO_LIST(bld.env.HOST_CPPFLAGS)
 +    taskgen.env.LDFLAGS = []
 +    taskgen.env.LINKFLAGS = []
++    # library_flags() adds this to every link: configure's target-only flags.
++    taskgen.env.EXTRA_LDFLAGS = []
 +    taskgen.env.STLIB_MARKER = []
 +    taskgen.env.SHLIB_MARKER = []
-+    taskgen.env.FULLSTATIC_MARKER = []
-+    taskgen.env.EXTRA_CFLAGS = host_cflags
-+    taskgen.env.EXTRA_LDFLAGS = []
 +
 +
  if Context.HEXVERSION not in (0x2010600,):
      Logs.error('''
  Please use the version of waf that comes with Samba, not
-@@ -544,8 +566,10 @@ def SAMBA_BINARY(bld, binname, source,
+@@ -544,8 +565,10 @@ def SAMBA_BINARY(bld, binname, source,
          install_path   = None,
          samba_inst_path= install_path,
          samba_install  = install,
@@ -56,7 +55,7 @@ diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
  
      if manpages is not None and 'XSLTPROC_MANPAGES' in bld.env and bld.env['XSLTPROC_MANPAGES']:
          bld.MANPAGES(manpages, install)
-@@ -861,6 +885,8 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
+@@ -861,6 +884,8 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
          samba_builtin_subsystem = None,
          )
  

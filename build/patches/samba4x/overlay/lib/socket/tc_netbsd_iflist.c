@@ -165,10 +165,11 @@ static int tc_netbsd_parse_newaddr(const uint8_t *msg,
 	unsigned int rta = tc_netbsd_read_u32(msg + 4);
 	struct tc_netbsd_link *link = tc_netbsd_find_link(links, link_count, index);
 	struct sockaddr_storage address;
-	unsigned int prefix = 0;
+	const uint8_t *mask = NULL;
+	size_t mask_len = 0;
+	unsigned int prefix;
 	size_t p = layout->ifa_header;
 	bool have_address = false;
-	bool have_mask = false;
 	int bit;
 
 	if (link == NULL || link->name[0] == '\0' || !(link->flags & IFF_UP)) {
@@ -195,22 +196,8 @@ static int tc_netbsd_parse_newaddr(const uint8_t *msg,
 			return -1;
 		}
 		if (bit == TC_NETBSD_RTA_NETMASK) {
-			if (family == TC_NETBSD_AF_INET6 && sa_len >= 24) {
-				prefix = tc_netbsd_prefix_from_mask(msg + p + 8, 16);
-			} else if (sa_len > 4 && sa_len <= 8) {
-				prefix = tc_netbsd_prefix_from_mask(msg + p + 4,
-							     sa_len - 4);
-			} else if (sa_len > 8) {
-				size_t mask_len = sa_len - 8;
-				if (mask_len > 16) {
-					mask_len = 16;
-				}
-				prefix = tc_netbsd_prefix_from_mask(msg + p + 8,
-							     mask_len);
-			} else {
-				prefix = 0;
-			}
-			have_mask = true;
+			mask = msg + p;
+			mask_len = sa_len;
 		} else if (bit == TC_NETBSD_RTA_IFA) {
 			if (family == TC_NETBSD_AF_INET && sa_len >= 8) {
 				struct sockaddr_in *sin =
@@ -246,13 +233,28 @@ static int tc_netbsd_parse_newaddr(const uint8_t *msg,
 		}
 	}
 
+	/*
+	 * The kernel trims a netmask's trailing zero bytes and can leave its
+	 * family unset, so its length does not tell its family: read it as
+	 * the address's (an AF_INET mask's bytes start at 4, an AF_INET6
+	 * one's at 8). No netmask means a host address.
+	 */
+	if (mask == NULL) {
+		prefix = address.ss_family == AF_INET ? 32 : 128;
+	} else {
+		size_t offset = address.ss_family == AF_INET ? 4 : 8;
+		size_t max = address.ss_family == AF_INET ? 4 : 16;
+		size_t bytes = mask_len > offset ? MIN(mask_len - offset, max) : 0;
+
+		prefix = tc_netbsd_prefix_from_mask(mask + offset, bytes);
+	}
+
 	ZERO_STRUCT(ifaces[*count]);
 	ifaces[*count].flags = link->flags;
 	ifaces[*count].ip = address;
 	if (!make_netmask(&ifaces[*count].netmask,
 			  &ifaces[*count].ip,
-			  have_mask ? prefix :
-			  (address.ss_family == AF_INET ? 32 : 128))) {
+			  prefix)) {
 		return -1;
 	}
 	if (address.ss_family == AF_INET6) {

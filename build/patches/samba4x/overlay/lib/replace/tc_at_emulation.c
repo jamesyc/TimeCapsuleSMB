@@ -5,7 +5,7 @@
  *
  * Neither kernel has any of them: NetBSD 4 and NetBSD 6 both return ENOSYS
  * for openat, fstatat, mkdirat, unlinkat, readlinkat, renameat, linkat,
- * symlinkat, mknodat and utimensat (probed on both devices 2026-09-28), even
+ * symlinkat, mknodat and utimensat (probed on both devices), even
  * though the NetBSD 7 SDK that builds the NetBSD 6 lane declares them.
  * NetBSD 4 has no futimens() either, and NetBSD 6's mishandles UTIME_OMIT
  * (an omitted atime makes it change nothing; an omitted mtime sets the mtime
@@ -465,14 +465,14 @@ static bool rep_at_times_omit(const struct timespec times[2])
  * kernels convert without a range check: they store the time plus
  * 2082844800 modulo 2^32, so a time past 2040-02-06 06:28:15 or before 1904
  * lands decades away once the kernel drops its cached copy (2040-02-06
- * 06:28:16 becomes 1970, 1903 becomes 2039; probed on both devices
- * 2026-09-29). Clamp to the nearest time HFS keeps instead. NetBSD 4's
- * time_t is 32 bits: its last is 2038-01-19 03:14:06, one second before
- * INT32_MAX, which Samba reads back as "never" (lib/util/time.h).
- * Apple's own afpserver keeps only
- * 1970 to 2038-01-19 03:14:07 and stores 0 for the rest; keeping every
- * time HFS can hold is deliberately better than that. Times before 1970
- * are stored, but both kernels read them back as 1970 once uncached.
+ * 06:28:16 becomes 1970, 1903 becomes 2039; probed on both devices).
+ * Clamp to the nearest time HFS keeps instead. NetBSD 4's time_t is 32
+ * bits: its last is 2038-01-19 03:14:06, one second before INT32_MAX, which
+ * Samba reads back as "never" (lib/util/time.h). Apple's own afpserver
+ * keeps only 1970 to 2038-01-19 03:14:07 and stores 0 for the rest;
+ * keeping every time HFS can hold is deliberately better than that. Times
+ * before 1970 are stored, but both kernels read them back as 1970 once
+ * uncached.
  */
 static void rep_at_hfs_range(struct timeval *tv)
 {
@@ -585,7 +585,7 @@ int rep_futimens(int fd, const struct timespec times[2])
  * closed: hfs_reldirhints() means to release hints older than 45 seconds,
  * but it subtracts the hint's wall-clock time from microuptime() and compares
  * the result as an unsigned 32-bit number, so every hint looks stale
- * (disassembled from the running kernel, 2026-09-28; NetBSD 6 makes the same
+ * (disassembled from the running kernel; NetBSD 6 makes the same
  * subtraction in signed 64 bits and keeps the hints). Without a hint the next
  * getdents() resumes by counting entries from the start, which skips entries
  * after deletions before the listing's position and repeats them after
@@ -767,7 +767,7 @@ void rep_rewinddir(DIR *dir)
  * more entries releases the hint on purpose (as Apple's source does), and
  * the stream's offset still counts entries, so the next getdents() resumes
  * by counting and returns the last entries again when files were created
- * before the listing's position (probed on both kernels, 2026-09-28).
+ * before the listing's position (probed on both kernels).
  * libc's readdir() calls getdents() again after the end, and smbd reads
  * again for the client's next QUERY_DIRECTORY. So once readdir() has
  * reported the end, rep_readdir() keeps reporting it until rep_rewinddir().
