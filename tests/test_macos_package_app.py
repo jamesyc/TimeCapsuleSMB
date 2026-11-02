@@ -203,6 +203,42 @@ def test_smoke_request_rejects_failed_result_event(monkeypatch: pytest.MonkeyPat
         package_app.smoke_request(tmp_path / "tcapsule", "validate-install", tmp_path)
 
 
+def test_smoke_request_kills_a_helper_that_never_answers_and_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # A helper stuck in an import used to keep packaging waiting forever.
+    package_app = load_package_app_module()
+    # The helper writes its pid and line at once; 2 s leaves a loaded runner
+    # time to start it.
+    monkeypatch.setattr(package_app, "PYTHON_LAUNCH_TIMEOUT", 2)
+    helper = tmp_path / "tcapsule"
+    helper.write_text('#!/bin/sh\necho $$ > "$TCAPSULE_STATE_DIR/pid"\necho "importing ctypes" >&2\nexec sleep 60\n')
+    helper.chmod(0o755)
+
+    # What the helper printed before it stopped answering is kept.
+    with pytest.raises(RuntimeError, match=r"^capabilities smoke test did not finish within 2 s:\nstdout:\n\nstderr:\nimporting ctypes\n$"):
+        package_app.smoke_request(helper, "capabilities", tmp_path)
+
+    # subprocess.run killed and reaped the helper before the error.
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((tmp_path / "pid").read_text()), 0)
+
+
+def test_python_import_check_kills_a_python_that_never_finishes_and_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(package_app, "PYTHON_LAUNCH_TIMEOUT", 2)
+    app = tmp_path / "TimeCapsuleSMB.app"
+    python = package_app.bundled_python_executable(app)
+    python.parent.mkdir(parents=True)
+    python.write_text('#!/bin/sh\necho $$ > "$PYTHONHOME/pid"\necho "importing ifaddr" >&2\nexec sleep 60\n')
+    python.chmod(0o755)
+
+    with pytest.raises(RuntimeError, match=r"^Bundled Python imports did not finish within 2 s:\nstdout:\n\nstderr:\nimporting ifaddr\n$"):
+        package_app.assert_python_dependencies_are_bundled(app)
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((package_app.bundled_python_home(app) / "pid").read_text()), 0)
+
+
 def make_valid_layout_bundle(package_app, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """A bundle assert_bundle_layout accepts, with the Mach-O checks stubbed."""
     app = tmp_path / "TimeCapsuleSMB.app"
@@ -222,6 +258,7 @@ def make_valid_layout_bundle(package_app, monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
     monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_python_entitlements", lambda app: None)
     monkeypatch.setattr(package_app, "validate_app_resources", lambda app: None)
     create_fake_certifi_package(python_packages)
     return app
@@ -287,6 +324,7 @@ def test_assert_bundle_layout_checks_helper_python_and_artifacts(
     monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
     monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_python_entitlements", lambda app: None)
     monkeypatch.setattr(package_app, "validate_app_resources", lambda app: None)
     create_fake_certifi_package(python_packages)
     (distribution / "bin" / "payloads" / "one").write_text("one", encoding="utf-8")
@@ -402,6 +440,7 @@ def test_assert_bundle_layout_accepts_the_swift_build_resource_bundle(
     monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
     monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_python_entitlements", lambda app: None)
     monkeypatch.setattr(package_app, "validate_app_resources", lambda app: None)
 
     package_app.assert_bundle_layout(app)
@@ -419,6 +458,7 @@ def test_assert_bundle_layout_rejects_resource_bundles_the_app_does_not_use(
     monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
     monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_python_entitlements", lambda app: None)
     monkeypatch.setattr(package_app, "validate_app_resources", lambda app: None)
 
     with pytest.raises(RuntimeError, match=f"the app does not use:\n  - {re.escape(extra_bundle)}$"):
@@ -1095,6 +1135,96 @@ def test_developer_id_signature_cache_keeps_a_few_builds_of_signatures(monkeypat
         "helper 2 signed by CERT1 as tcapsule", "helper 3 signed by CERT1 as tcapsule",
     ]
     assert len(signed) == 4 * 3
+
+
+@pytest.mark.parametrize(
+    ("relative", "entitled"),
+    [
+        # The helper embeds Python, and bin/python3 execs Python.app.
+        ("Helpers/tcapsule", True),
+        ("Resources/Python/Runtime/Python.framework/Versions/3.15/Resources/Python.app/Contents/MacOS/Python", True),
+        # bin/python3 only execs Python.app; the module that needs the memory is not an executable.
+        ("Resources/Python/Runtime/Python.framework/Versions/3.15/bin/python3.15", False),
+        ("Resources/Python/Runtime/Python.framework/Versions/3.15/lib/python3.15/lib-dynload/_ctypes.cpython-315-darwin.so", False),
+    ],
+)
+def test_both_signers_give_only_the_executables_that_run_python_python_entitlements(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, relative: str, entitled: bool,
+) -> None:
+    package_app = load_package_app_module()
+    commands: list[list[str]] = []
+    monkeypatch.setattr(package_app, "run_quiet", lambda cmd: commands.append(cmd))
+    path = tmp_path / "TimeCapsuleSMB.app" / "Contents" / relative
+
+    package_app.developer_id_codesign(path, "identity")
+    package_app.ad_hoc_codesign(path)
+
+    entitlements = ["--entitlements", str(package_app.PYTHON_ENTITLEMENTS)] if entitled else []
+    assert commands == [
+        ["codesign", "--force", "--timestamp", "--options", "runtime", *entitlements, "--sign", "identity", str(path)],
+        ["codesign", "--force", *entitlements, "--sign", "-", str(path)],
+    ]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="needs Apple's codesign")
+@pytest.mark.parametrize(
+    ("helper_signing", "python_app_signing", "problem"),
+    [
+        # Ad-hoc and Developer ID builds alike: CI checks every push's ad-hoc build.
+        (["--entitlements", "python"], ["--entitlements", "python"], None),
+        (["--options", "runtime", "--entitlements", "python"], ["--options", "runtime", "--entitlements", "python"], None),
+        ([], ["--entitlements", "python"], r"Helpers/tcapsule: missing com\.apple\.security\.cs\.allow-unsigned-executable-memory"),
+        (["--options", "runtime"], ["--options", "runtime", "--entitlements", "python"], r"Helpers/tcapsule: missing com\.apple\.security\.cs\.allow-unsigned-executable-memory"),
+        # allow-jit is not what libffi needs.
+        (["--options", "runtime", "--entitlements", "python"], ["--options", "runtime", "--entitlements", "jit"], r"MacOS/Python: missing com\.apple\.security\.cs\.allow-unsigned-executable-memory"),
+        (None, [], r"Helpers/tcapsule: cannot read its signature"),
+    ],
+)
+def test_python_entitlements_are_required_however_the_app_is_signed(
+    tmp_path: Path, helper_signing: list[str] | None, python_app_signing: list[str], problem: str | None,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    jit = tmp_path / "jit.entitlements"
+    jit.write_bytes(plistlib.dumps({"com.apple.security.cs.allow-jit": True}))
+    entitlements = {"python": str(package_app.PYTHON_ENTITLEMENTS), "jit": str(jit)}
+    helper, python_app = package_app.python_entitled_executables(app)
+    for path, signing in ((helper, helper_signing), (python_app, python_app_signing)):
+        path.parent.mkdir(parents=True)
+        shutil.copyfile("/usr/bin/true", path)
+        if signing is None:
+            subprocess.run(["codesign", "--remove-signature", str(path)], check=True)
+        else:
+            options = [entitlements.get(option, option) for option in signing]
+            subprocess.run(["codesign", "--force", "--sign", "-", *options, str(path)], check=True, capture_output=True)
+
+    if problem is None:
+        package_app.assert_python_entitlements(app)
+    else:
+        with pytest.raises(RuntimeError, match=problem):
+            package_app.assert_python_entitlements(app)
+
+
+def test_developer_id_signatures_with_entitlements_are_reused_only_for_the_same_entitlements(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    entitlements = tmp_path / "python.entitlements"
+    entitlements.write_text("first")
+    monkeypatch.setattr(package_app, "PYTHON_ENTITLEMENTS", entitlements)
+    identity = "Developer ID Application: Example (TEAMID)"
+    leaves = {"Helpers/tcapsule": "helper", "Frameworks/libexample.dylib": "example"}
+    signed = fake_developer_id_signing(package_app, monkeypatch, "CERT1")
+    app, _ = signature_cache_app(package_app, tmp_path / "first", leaves)
+    package_app.developer_id_codesign_app_bundle(app, identity, use_cache=True)
+
+    # Other entitlements sign the helper again; the library's signature is reused.
+    entitlements.write_text("second")
+    signed.clear()
+    app, (helper, _) = signature_cache_app(package_app, tmp_path / "second", leaves)
+    package_app.developer_id_codesign_app_bundle(app, identity, use_cache=True)
+    assert signed == [helper, package_app.bundled_python_framework(app), app]
 
 
 def test_remove_optional_zeroconf_extensions_keeps_pure_python_package(tmp_path: Path) -> None:
@@ -1924,6 +2054,7 @@ def test_assert_bundle_layout_uses_full_macho_validation_only_when_requested(
     monkeypatch.setattr(package_app, "assert_macho_minimum_macos", lambda paths: calls.append("minimum-macos"))
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: calls.append("codesign"))
     monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: calls.append("app-codesign"))
+    monkeypatch.setattr(package_app, "assert_python_entitlements", lambda app: calls.append("entitlements"))
 
     package_app.assert_bundle_layout(app, architectures=("arm64",))
     assert architecture_labels == [
@@ -1933,12 +2064,13 @@ def test_assert_bundle_layout_uses_full_macho_validation_only_when_requested(
         "Bundled Python framework",
         "Sparkle framework",
     ]
-    assert calls == ["codesign", "app-codesign"]
+    # Like the signatures, the entitlements are checked either way.
+    assert calls == ["codesign", "app-codesign", "entitlements"]
 
     architecture_labels.clear()
     calls.clear()
     package_app.assert_bundle_layout(app, architectures=("arm64",), full_validation=True)
-    assert calls == ["runtime", "external", "minimum-macos", "codesign", "app-codesign"]
+    assert calls == ["runtime", "external", "minimum-macos", "codesign", "app-codesign", "entitlements"]
 
 
 VTOOL_FAT = """{path} (architecture x86_64):
@@ -2379,6 +2511,7 @@ def test_validate_app_zip_rejects_root_appledouble_sidecar(
 
     monkeypatch.setattr(package_app, "run", fake_run)
     monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_python_entitlements", lambda app: None)
 
     with pytest.raises(RuntimeError, match="AppleDouble metadata files"):
         package_app.validate_app_zip(zip_path, "TimeCapsuleSMB.app")
@@ -2733,6 +2866,7 @@ def test_package_app_result_includes_zip_and_notarization_archive(
     monkeypatch.setattr(package_app, "assert_no_appledouble_files", lambda app: None)
     monkeypatch.setattr(package_app, "ad_hoc_codesign_app_bundle", lambda app: None)
     monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_python_entitlements", lambda app: None)
     monkeypatch.setattr(package_app, "assert_bundle_layout", lambda app, **kwargs: None)
     monkeypatch.setattr(package_app, "developer_id_codesign_app_bundle", lambda app, identity, *, use_cache: None)
     monkeypatch.setattr(package_app, "notarize_app", lambda app, output_dir, **kwargs: "submission-id")
@@ -3873,6 +4007,7 @@ def test_check_app_launches_the_apps_code_without_building(
     package_app = load_package_app_module()
     app = tmp_path / "TimeCapsuleSMB.app"
     calls: list[tuple[str, Path]] = []
+    monkeypatch.setattr(package_app, "assert_python_entitlements", lambda path: calls.append(("entitlements", path)))
     monkeypatch.setattr(package_app, "validate_app_resources", lambda path: calls.append(("app", path)))
     monkeypatch.setattr(package_app, "assert_python_dependencies_are_bundled", lambda path: calls.append(("python", path)))
     monkeypatch.setattr(package_app, "smoke_test", lambda path, architectures: calls.append(("helper", path, architectures)))
@@ -3881,7 +4016,10 @@ def test_check_app_launches_the_apps_code_without_building(
 
     assert package_app.main(["--check-app", str(app)]) == 0
 
-    assert calls == [("app", app.resolve()), ("python", app.resolve()), ("helper", app.resolve(), ("arm64", "x86_64"))]
+    # The entitlements first: without them, only some Macs hang in the launches after.
+    assert calls == [
+        ("entitlements", app.resolve()), ("app", app.resolve()), ("python", app.resolve()), ("helper", app.resolve(), ("arm64", "x86_64")),
+    ]
     assert capsys.readouterr().out == f"Checked {app}\n"
 
 
@@ -3895,6 +4033,7 @@ def test_check_app_fails_when_the_app_does_not_launch(
     def crashed(path: Path) -> None:
         raise RuntimeError("App executable resource validation failed: dyld: Library not loaded")
 
+    monkeypatch.setattr(package_app, "assert_python_entitlements", lambda path: None)
     monkeypatch.setattr(package_app, "validate_app_resources", crashed)
     monkeypatch.setattr(package_app, "smoke_test", lambda path, architectures: pytest.fail("the helper ran after the app failed"))
 

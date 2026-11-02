@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Signed into the executables that run Python under the hardened runtime: the
+helper, which embeds it, and Python.app, which bin/python3 execs. On x86_64,
+macOS's libffi puts each ctypes closure in memory that is both writable and
+executable, and Python 3.15's _ctypes allocates one as it loads. The hardened
+runtime refuses that memory without this entitlement. libffi then falls back
+to mapping a temporary file as executable, and where macOS refuses that too
+(an Apple silicon Mac under Rosetta), it retries forever. GitHub's macOS
+runners allow one of the two, so only some Macs hang. allow-jit does not
+help: libffi does not map with MAP_JIT.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>

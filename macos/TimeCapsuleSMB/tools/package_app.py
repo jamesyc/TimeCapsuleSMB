@@ -63,6 +63,8 @@ PYTHON_RUNTIME_INDEX = "https://www.python.org/ftp/python/"
 # the Python Software Foundation's team ID.
 PYTHON_RUNTIME_SIGNER = "Developer ID Installer: Python Software Foundation (BMM5U3QVKW)"
 PYTHON_FRAMEWORK_NAME = "Python.framework"
+# Developer ID signs these into the executables that run Python; the file says why.
+PYTHON_ENTITLEMENTS = PACKAGE_ROOT / "tools" / "python.entitlements"
 # The bundled Python's version and the app's Python packages, resolved at
 # build time; CI audits this file and keys its package cache on it.
 BUNDLED_PYTHON_PACKAGES_FILE = "python-packages.txt"
@@ -278,6 +280,7 @@ def run(
     env: dict[str, str] | None = None,
     input_text: str | None = None,
     capture: bool = False,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
@@ -288,6 +291,7 @@ def run(
         check=True,
         stdout=subprocess.PIPE if input_text is not None or capture else None,
         stderr=subprocess.PIPE if input_text is not None else None,
+        timeout=timeout,
     )
 
 
@@ -1337,16 +1341,37 @@ def macho_validation_roots(app: Path) -> list[Path]:
 
 
 def ad_hoc_codesign(path: Path) -> None:
-    run_quiet(["codesign", "--force", "--sign", "-", str(path)])
+    entitlements = codesign_entitlements(path)
+    run_quiet(["codesign", "--force", *(["--entitlements", str(entitlements)] if entitlements else []), "--sign", "-", str(path)])
+
+
+def python_entitled_executables(app: Path) -> list[Path]:
+    """The executables codesign_entitlements gives PYTHON_ENTITLEMENTS."""
+    return [
+        app / "Contents" / "Helpers" / HELPER_PRODUCT_NAME,
+        bundled_python_home(app) / "Resources" / "Python.app" / "Contents" / "MacOS" / "Python",
+    ]
+
+
+def codesign_entitlements(path: Path) -> Path | None:
+    """The entitlements file for path: PYTHON_ENTITLEMENTS for the helper and
+    for Python.app's executable, which bin/python3 execs; None otherwise."""
+    if path.parts[-3:] == ("Contents", "Helpers", HELPER_PRODUCT_NAME):
+        return PYTHON_ENTITLEMENTS
+    if path.parts[-4:] == ("Python.app", "Contents", "MacOS", "Python"):
+        return PYTHON_ENTITLEMENTS
+    return None
 
 
 def developer_id_codesign(path: Path, identity: str) -> None:
+    entitlements = codesign_entitlements(path)
     run_quiet([
         "codesign",
         "--force",
         "--timestamp",
         "--options",
         "runtime",
+        *(["--entitlements", str(entitlements)] if entitlements else []),
         "--sign",
         identity,
         str(path),
@@ -1386,12 +1411,16 @@ class DeveloperIdSignatureCache:
         self.certificate = certificate
 
     def entry(self, path: Path, sha256: str) -> Path:
+        entitlements = codesign_entitlements(path)
         return self.root / cache_key({
             "kind": "developer-id-signature",
             "version": DEVELOPER_ID_SIGNATURE_CACHE_VERSION,
             "certificate": self.certificate,
             "name": path.name,
             "sha256": sha256,
+            # Only in the few keys that have entitlements, so every other
+            # file keeps the key, and the signature, it had before.
+            **({"entitlements": sha256_file(entitlements)} if entitlements else {}),
         })
 
     def sign(self, path: Path, identity: str) -> bool:
@@ -1562,6 +1591,28 @@ def assert_macho_code_signatures_valid_for_roots(roots: list[Path]) -> None:
     assert_macho_code_signatures_valid_for_paths(macho_files_under(roots))
 
 
+@timed_step("Checking Python entitlements")
+def assert_python_entitlements(app: Path) -> None:
+    """The executables that run Python must have PYTHON_ENTITLEMENTS, however
+    they are signed. Without them only some Macs hang (GitHub's runners do
+    not), so the launch checks cannot be trusted to notice."""
+    with PYTHON_ENTITLEMENTS.open("rb") as handle:
+        expected = plistlib.load(handle)
+    failures: list[str] = []
+    for path in python_entitled_executables(app):
+        dumped = subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", str(path)], capture_output=True, check=False)
+        if dumped.returncode != 0:
+            failures.append(f"{path}: cannot read its signature: {dumped.stderr.decode(errors='replace').strip()}")
+            continue
+        granted = plistlib.loads(dumped.stdout) if dumped.stdout.strip() else {}
+        missing = sorted(key for key, value in expected.items() if granted.get(key) != value)
+        if missing:
+            failures.append(f"{path}: missing {', '.join(missing)}")
+    if failures:
+        joined = "\n  - ".join(failures)
+        raise RuntimeError(f"Executables that run Python lack their entitlements:\n  - {joined}")
+
+
 @timed_step("Verifying bundled Mach-O signatures")
 def assert_macho_code_signatures_valid(app: Path) -> None:
     paths = [
@@ -1694,6 +1745,18 @@ def assert_no_build_machine_paths(app: Path) -> None:
         raise RuntimeError(f"Bundled file(s) name this checkout {checkout.decode()}:\n  - {joined}{extra}")
 
 
+# A helper request or the import check takes a few seconds, the first x86_64
+# one longer while Rosetta translates the bundled Python. On some Macs a
+# missing python.entitlements makes either hang instead: fail then.
+PYTHON_LAUNCH_TIMEOUT = 120
+
+
+def timed_out_output(error: subprocess.TimeoutExpired) -> str:
+    """What a killed process printed before its time ran out: subprocess
+    keeps it as bytes even for a text-mode run."""
+    return f"stdout:\n{(error.stdout or b'').decode(errors='replace')}\nstderr:\n{(error.stderr or b'').decode(errors='replace')}"
+
+
 @timed_step("Checking bundled Python imports")
 def assert_python_dependencies_are_bundled(app: Path, *, architecture: str | None = None) -> None:
     """Import the bundled packages with the bundled Python, under
@@ -1718,16 +1781,22 @@ def assert_python_dependencies_are_bundled(app: Path, *, architecture: str | Non
         "raise SystemExit('\\n'.join(bad) if bad else 0)\n"
     )
     prefix = ["arch", f"-{architecture}"] if architecture else []
-    completed = subprocess.run(
-        [*prefix, str(bundled_python_executable(app)), "-c", code],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    label = f" ({architecture})" if architecture else ""
+    try:
+        completed = subprocess.run(
+            [*prefix, str(bundled_python_executable(app)), "-c", code],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=PYTHON_LAUNCH_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"Bundled Python imports did not finish within {PYTHON_LAUNCH_TIMEOUT} s{label}:\n{timed_out_output(error)}"
+        ) from None
     if completed.returncode != 0:
-        label = f" ({architecture})" if architecture else ""
         raise RuntimeError(
             f"Bundled Python dependencies are not importable from the app package{label}:\n"
             f"stdout:\n{completed.stdout}\n"
@@ -1898,7 +1967,14 @@ def smoke_request(helper: Path, operation: str, state_dir: Path, *, architecture
     request = json.dumps({"operation": operation, "params": {}})
     prefix = ["arch", f"-{architecture}"] if architecture else []
     operation_label = f"{operation} ({architecture})" if architecture else operation
-    completed = run([*prefix, str(helper), "api"], input_text=request, env=env)
+    try:
+        completed = run([*prefix, str(helper), "api"], input_text=request, env=env, timeout=PYTHON_LAUNCH_TIMEOUT)
+    except subprocess.TimeoutExpired as error:
+        # subprocess.run has killed the helper; without a limit a hung helper
+        # left packaging waiting forever.
+        raise RuntimeError(
+            f"{operation_label} smoke test did not finish within {PYTHON_LAUNCH_TIMEOUT} s:\n{timed_out_output(error)}"
+        ) from None
     result_event = next(
         (
             event
@@ -1986,6 +2062,7 @@ def assert_bundle_layout(
     # is disabled. ZIP extraction still gets its own independent verification.
     assert_macho_code_signatures_valid(app)
     assert_app_bundle_signature_valid(app)
+    assert_python_entitlements(app)
     validate_app_resources(app)
 
 
@@ -2032,6 +2109,7 @@ def check_packaged_app(app: Path) -> None:
     """Run what launches bundled code, against an app built elsewhere: on an
     Intel Mac this runs the x86_64 half of a universal app, which packaging
     on Apple silicon only checks is there."""
+    assert_python_entitlements(app)
     validate_app_resources(app)
     assert_python_dependencies_are_bundled(app)
     # The app's own architectures: on Apple silicon with Rosetta, a universal

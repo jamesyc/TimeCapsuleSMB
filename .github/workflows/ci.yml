@@ -311,6 +311,7 @@ jobs:
     # Intel image; remove this job when GitHub retires it (fall 2027).
     name: Check App on Intel (macOS 15)
     runs-on: macos-15-intel
+    timeout-minutes: 20
     needs:
       - package-app
 
