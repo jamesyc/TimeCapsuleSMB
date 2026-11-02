@@ -540,6 +540,27 @@ static void case_arriving(void)
 	CHECK(check_arriving(&pdu, 1, false, &resume, &seen) == TC_WRITE_WHOLE);
 }
 
+/*
+ * After a short WRITE, what is left to read is the rest of its PDU, then
+ * whatever an earlier short WRITE left unread: a WRITE read from that feed
+ * was cut too, and the requests in its data came after it.
+ */
+static void case_feed_merge(void)
+{
+	TALLOC_CTX *ctx = talloc_new(NULL);
+	static const uint8_t tail[] = "next requests", left[] = "older rest";
+	uint8_t *feed;
+
+	CHECK(ctx != NULL);
+	feed = tc_desync_feed_merge(ctx, tail, 13, left, 10);
+	CHECK(feed != NULL && talloc_get_size(feed) == 23);
+	CHECK(memcmp(feed, "next requests", 13) == 0 && memcmp(feed + 13, "older rest", 10) == 0);
+	/* Nothing left from before: the tail alone. */
+	feed = tc_desync_feed_merge(ctx, tail, 13, NULL, 0);
+	CHECK(feed != NULL && talloc_get_size(feed) == 13 && memcmp(feed, tail, 13) == 0);
+	TALLOC_FREE(ctx);
+}
+
 int main(int argc, const char **argv)
 {
 	static const struct {
@@ -558,6 +579,7 @@ int main(int argc, const char **argv)
 		{ "compound", case_compound },
 		{ "cap", case_cap },
 		{ "read_idle", case_read_idle },
+		{ "feed_merge", case_feed_merge },
 	};
 	size_t i;
 
