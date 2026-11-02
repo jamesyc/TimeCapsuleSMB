@@ -99,9 +99,12 @@ from timecapsulesmb.device.disk_errors import (
     disk_errors_explain,
     disk_errors_in,
     DISK_FAILING_WAY_OUT,
+    DISK_CHECK_STALL_WAIT,
     DISK_NOT_RESPONDING_MESSAGE,
     DISK_NOT_RESPONDING_WAY_OUT,
+    disk_check_running_message,
     disk_failing_message,
+    disk_stall_code,
     read_disk_errors_conn,
 )
 from timecapsulesmb.device.wipe import (
@@ -127,6 +130,7 @@ from timecapsulesmb.device.processes import (
     STUCK_SLEEP_SECONDS,
     StuckProcess,
     disk_io_stalls,
+    disk_jobs_running,
     manager_unnamed_stuck_count,
     parse_ps_rows,
     read_lock_waits,
@@ -293,6 +297,10 @@ DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
 # on a disk that stopped answering, which a restart clears; a damaged volume
 # diskd will not mount needs Disk Repair.
 DOCTOR_CODE_DISK_NOT_MOUNTING = "disk_not_mounting"
+# A disk checker is running (processes.disk_jobs_running), as a Disk Repair
+# that went on after its session ended: the volume it checks stays unmounted
+# until it finishes, which explains a missing volume in the same Checkup.
+DOCTOR_CODE_DISK_CHECK_RUNNING = "disk_check_running"
 DISK_NOT_MOUNTING_MESSAGE = (
     "a disk on the device will not mount, so file sharing and Time Machine are off; restart the device, "
     "unplugging it for 10 seconds if it does not come back. If the disk still does not mount, run "
@@ -2327,7 +2335,7 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
         if disk_stalls:
             # One of them waits for the disk itself, which explains the rest
             # and the ACPd check's silence too (_doctor_check_apple_acpd).
-            sink.add(_disk_not_responding_result(stuck, details, more=more))
+            sink.add(_disk_not_responding_result(stuck, details, stalls=disk_stalls, more=more))
         else:
             sink.add(CheckResult(
                 "FAIL",
@@ -2351,6 +2359,17 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
                 {"smbd_lock_waits": waiting},
             )
         )
+    # A disk check still running explains a volume that is missing meanwhile;
+    # a stuck one is the disk verdict above.
+    stuck_pids = {process.pid for process in stuck}
+    running = [process for process in disk_jobs_running(snapshot) if process.pid not in stuck_pids]
+    if running:
+        sink.add(CheckResult(
+            "INFO",
+            disk_check_running_message(running),
+            {"code": DOCTOR_CODE_DISK_CHECK_RUNNING, "programs": ", ".join(sorted({p.ucomm for p in running})),
+             "disk_checks_running": [process.describe() for process in running]},
+        ))
     return ProcessSnapshotState(stuck=stuck, snapshot=snapshot, disk_stalls=disk_stalls)
 
 
@@ -2365,13 +2384,22 @@ def _stuck_list(stuck: Iterable[StuckProcess], more: str = "") -> str:
 
 
 def _disk_not_responding_result(
-    stuck: Iterable[StuckProcess], details: dict[str, object], *, more: str = "",
+    stuck: Iterable[StuckProcess], details: dict[str, object], *, stalls: Iterable[StuckProcess] | None = None,
+    more: str = "",
 ) -> CheckResult:
-    """The verdict for processes stuck on the disk (processes.disk_io_stalls)."""
+    """The verdict for processes stuck on the disk (processes.disk_io_stalls,
+    `stalls`, all of `stuck` unless given). A stuck disk checker gives a
+    running repair a few more minutes before the unplug, by the preflight's
+    rule (disk_stall_code); the code stays, as the dashboard and the
+    disk-not-mounting step go by it, and `disk_check` says which way out the
+    app shows."""
+    stuck = tuple(stuck)
+    disk_check = disk_stall_code(stuck if stalls is None else stalls) == ErrorCode.DISK_CHECK_NOT_RESPONDING
+    way_out = f"{DISK_CHECK_STALL_WAIT} {DISK_NOT_RESPONDING_WAY_OUT}" if disk_check else DISK_NOT_RESPONDING_WAY_OUT
     return CheckResult(
         "FAIL",
-        f"{DISK_NOT_RESPONDING_MESSAGE} Stuck: {_stuck_list(stuck, more)}. {DISK_NOT_RESPONDING_WAY_OUT}",
-        {**details, "code": ErrorCode.DISK_NOT_RESPONDING},
+        f"{DISK_NOT_RESPONDING_MESSAGE} Stuck: {_stuck_list(stuck, more)}. {way_out}",
+        {**details, "code": ErrorCode.DISK_NOT_RESPONDING, **({"disk_check": True} if disk_check else {})},
     )
 
 

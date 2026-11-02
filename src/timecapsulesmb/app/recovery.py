@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass, replace
 
 from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.device.disk_errors import DISK_CHECK_STALL_WAIT
 from timecapsulesmb.transport.errors import LOCAL_NETWORK_FILTERED_MESSAGE, SSH_TIMEOUT_SLOW_DEVICE_MESSAGE
 from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
 
@@ -491,7 +492,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
             "over the network. On a failing disk, a repair can wait that long on one read and still finish."
         ),
         (
-            "If a disk repair is running, give it a few more minutes first: unplugging the device stops it.",
+            DISK_CHECK_STALL_WAIT,
             *_DISK_NOT_RESPONDING_STEPS,
         ),
         retryable=True,

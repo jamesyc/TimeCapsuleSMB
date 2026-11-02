@@ -597,11 +597,14 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             )
         case .unhealthy where runtimeState.errorCode == DoctorSummary.diskFailingResultCode:
             return diskFailingRow(action: .viewCheckup)
-        case .unhealthy where runtimeState.errorCode == DoctorSummary.diskNotRespondingResultCode:
+        // A stuck disk check gives a running repair a few more minutes first.
+        case .unhealthy where runtimeState.errorCode == DoctorSummary.diskNotRespondingResultCode
+            || runtimeState.errorCode == DoctorSummary.diskCheckNotRespondingResultCode:
             return DashboardHealthRow(
                 id: "runtime-disk-not-responding",
                 title: DashboardHealthDomain.runtime.title,
-                detail: L10n.string("doctor.check.disk_not_responding"),
+                detail: L10n.string(runtimeState.errorCode == DoctorSummary.diskCheckNotRespondingResultCode
+                    ? "doctor.check.disk_check_not_responding" : "doctor.check.disk_not_responding"),
                 status: .failed,
                 action: .viewCheckup
             )

@@ -169,9 +169,16 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
                                        domain: "device", code: DoctorSummary.diskNotMountingResultCode)
         let failing = testDoctorCheck(status: "FAIL", message: "the disk is failing",
                                       domain: "device", code: DoctorSummary.diskFailingResultCode)
+        // A stuck disk check is the same verdict with the repair's way out.
+        let stalledCheck = testDoctorCheck(status: "FAIL", message: "The device's disk has stopped responding",
+                                           domain: "device", code: DoctorSummary.diskNotRespondingResultCode,
+                                           extraDetails: ["disk_check": .bool(true)])
         let cases: [([JSONValue], String)] = [
             ([stalled], DoctorSummary.diskNotRespondingResultCode),
             ([stalled, acpd, mounting], DoctorSummary.diskNotRespondingResultCode),
+            ([stalledCheck], DoctorSummary.diskCheckNotRespondingResultCode),
+            ([stalledCheck, acpd, mounting], DoctorSummary.diskCheckNotRespondingResultCode),
+            ([stalledCheck, failing], DoctorSummary.diskFailingResultCode),
             ([stalled, failing], DoctorSummary.diskFailingResultCode),
             ([mounting], DoctorSummary.diskNotMountingResultCode),
         ]
@@ -179,7 +186,8 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
             let summary = try makeDoctorSummary(checks: checks)
             let state = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
                 profile: profile, skipSSH: false, state: .failed, summary: summary)
-            XCTAssertEqual(summary.diskNotResponding, checks.contains(stalled))
+            XCTAssertEqual(summary.diskNotResponding, checks.contains(stalled) || checks.contains(stalledCheck))
+            XCTAssertEqual(summary.diskCheckNotResponding, checks.contains(stalledCheck))
             XCTAssertEqual(state?.state, .unhealthy)
             XCTAssertEqual(state?.errorCode, code)
         }

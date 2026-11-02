@@ -263,9 +263,17 @@ extension DoctorCheckPayload {
         case "disk_failing":
             return L10n.string("doctor.check.disk_failing")
         // The helper's line names the stuck processes; the catalog's says
-        // what it means and what to do.
+        // what it means and what to do. A stuck disk check gives a running
+        // repair a few more minutes before the unplug.
         case "disk_not_responding":
+            if case .object(let values) = details, values["disk_check"] == .bool(true) {
+                return L10n.string("doctor.check.disk_check_not_responding")
+            }
             return L10n.string("doctor.check.disk_not_responding")
+        // A disk check still running, which explains a volume missing meanwhile.
+        case "disk_check_running":
+            guard let programs = details.stringValue(for: "programs") else { return message }
+            return L10n.format("doctor.check.disk_check_running", programs)
         case "client_on_unshared_network":
             return L10n.string("doctor.check.client_on_unshared_network")
         // The helper's text names ports and the connect error; the dashboard

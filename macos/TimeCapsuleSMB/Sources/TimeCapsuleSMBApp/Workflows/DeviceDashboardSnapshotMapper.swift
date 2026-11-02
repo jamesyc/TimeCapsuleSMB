@@ -114,6 +114,7 @@ enum DeviceDashboardSnapshotMapper {
                 // takes diskd with it, so it explains a disk that will not mount,
                 // and a disk that stopped responding holds up diskd, so it does too.
                 errorCode: summary.diskFailing ? DoctorSummary.diskFailingResultCode
+                    : summary.diskCheckNotResponding ? DoctorSummary.diskCheckNotRespondingResultCode
                     : summary.diskNotResponding ? DoctorSummary.diskNotRespondingResultCode
                     : summary.acpdGone ? DoctorSummary.acpdBrokenResultCode
                     : summary.diskNotMounting ? DoctorSummary.diskNotMountingResultCode

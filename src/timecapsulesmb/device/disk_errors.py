@@ -111,6 +111,11 @@ DISK_NOT_RESPONDING_WAY_OUT = (
 )
 
 
+# A stuck disk checker's first step, before the unplug: a repair on a failing
+# disk can wait minutes on one read and still finish.
+DISK_CHECK_STALL_WAIT = "If a disk repair is running, give it a few more minutes first: unplugging the device stops it."
+
+
 def disk_stall_facts(stalls: Iterable[StuckProcess]) -> str:
     """The stuck disk processes, as an error's detail."""
     return f"Waiting for the disk: {'; '.join(stall.describe() for stall in stalls)}."

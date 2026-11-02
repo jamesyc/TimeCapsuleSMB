@@ -3697,6 +3697,44 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(len([r for r in run.results if r.details.get("code") == "disk_not_responding"]), 1)
         run.mocks.probe_managed_smbd_conn.assert_called()
 
+    STUCK_REPAIR_ROW = "  4211 4200 4200 D 127 biowait 1:12.04 fsck_hfs"
+    RUNNING_REPAIR_ROW = "  4211 4200 4200 R 0 - 1:12.04 fsck_hfs"
+
+    def test_a_stuck_disk_check_gives_a_running_repair_more_minutes_before_the_unplug(self) -> None:
+        # As the disk_check_not_responding card does: a repair on a failing
+        # disk can wait that long on one read and still finish. The code stays,
+        # for the dashboard and the disk-not-mounting step.
+        from timecapsulesmb.device.disk_errors import DISK_CHECK_STALL_WAIT
+        run = self.run_doctor_with_process_snapshot(self.finished_listing(self.STUCK_REPAIR_ROW, self.HEALTHY_SMBD_ROW))
+
+        disk = [result for result in run.results if result.details.get("code") == "disk_not_responding"]
+        self.assertEqual(len(disk), 1)
+        self.assertIs(disk[0].details["disk_check"], True)
+        self.assertLess(disk[0].message.index(DISK_CHECK_STALL_WAIT), disk[0].message.index("Unplug the device"))
+        # Stuck, it is the disk verdict, not a check still running.
+        self.assertFalse(any(result.details.get("code") == "disk_check_running" for result in run.results))
+
+        plain = self.run_doctor_with_process_snapshot(self.finished_listing(self.STALLED_DISK_ROWS, self.HEALTHY_SMBD_ROW))
+        disk = [result for result in plain.results if result.details.get("code") == "disk_not_responding"]
+        self.assertNotIn("disk_check", disk[0].details)
+        self.assertNotIn(DISK_CHECK_STALL_WAIT, disk[0].message)
+
+    def test_a_disk_check_still_running_is_reported_as_what_keeps_its_volume_away(self) -> None:
+        # A Disk Repair that went on after its session ended: its volume is
+        # unmounted meanwhile, which the other checks would only call missing.
+        run = self.run_doctor_with_process_snapshot(self.finished_listing(self.RUNNING_REPAIR_ROW, self.HEALTHY_SMBD_ROW))
+
+        info = [result for result in run.results if result.details.get("code") == "disk_check_running"]
+        self.assertEqual(len(info), 1)
+        self.assertEqual(info[0].status, "INFO")
+        self.assertEqual(info[0].details["programs"], "fsck_hfs")
+        self.assertEqual(info[0].details["disk_checks_running"], ["fsck_hfs (pid 4211)"])
+        self.assertTrue(info[0].message.startswith("A disk check (fsck_hfs) is still running on the device."))
+        self.assertEqual(info[0].domain, "device")
+
+        idle = self.run_doctor_with_process_snapshot(self.finished_listing(self.HEALTHY_SMBD_ROW))
+        self.assertFalse(any(result.details.get("code") == "disk_check_running" for result in idle.results))
+
     def test_run_doctor_checks_adds_the_disk_line_when_the_second_listing_finds_the_disk(self) -> None:
         # The first listing showed only a stuck name lookup; the second shows
         # mount_hfs stuck too. The first line stays, and the disk's line names
