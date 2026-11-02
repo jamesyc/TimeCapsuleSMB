@@ -612,6 +612,9 @@ class AirportAcpReading:
     `password_matches` is None when ACP did not answer either read.
     `airport_mac` is None when the device answered but could not read waMA;
     the names are None when the device has none or could not read them.
+    `listed_by_bonjour`: a lookup by the saved MAC after this read failed
+    found the device's record still listing this address
+    (services.runtime.confirm_device_address).
     """
 
     password_matches: bool | None
@@ -619,6 +622,7 @@ class AirportAcpReading:
     error: str | None = None
     airport_name: str | None = None
     airport_dns_name: str | None = None
+    listed_by_bonjour: bool = False
 
 
 # Every read asks for the names that identify a device as well: one request,

@@ -9,9 +9,13 @@ from timecapsulesmb.checks.network import (
     SSH_PORT,
     ClosedSshPort,
     IpNetwork,
+    LinkLocalInterfaceGone,
+    LocalNetworkBlock,
     classify_network_link,
     host_networks,
+    link_local_interface_gone,
     local_lan_networks,
+    local_network_block,
     reportable_network,
 )
 from timecapsulesmb.core.net import endpoint_host
@@ -46,12 +50,35 @@ class ACPDeviceOffNetworkError(ACPConnectionError):
 
 
 class ACPNoRouteError(ACPConnectionError):
-    """Every ACP connect was refused with "No route to host", and the address
-    is not known to be off this computer's networks. A device that stops
-    answering times out or reports "Host is down" first. The macOS app reads
-    this as its Local Network access being blocked."""
+    """macOS refuses this program's ACP connects to a device that is up
+    (checks.network.local_network_block): every one got "No route to host",
+    and Bonjour shows the device at this address. The macOS app reads this
+    as its Local Network access being blocked."""
 
     code = ErrorCode.ACP_NO_ROUTE
+
+
+class ACPNoRouteUnprovenError(ACPConnectionError):
+    """Every ACP connect got "No route to host", but nothing has shown the
+    device is up yet: a device that is off or gone gets no route too. The
+    command's earlier lookup by the saved MAC finding its record still
+    listing this address is the proof (enable_ssh_with_port_preflight).
+    `errors` are the connects'."""
+
+    def __init__(self, message: str, *, detail: str, errors: tuple[str, ...]) -> None:
+        super().__init__(message, detail=detail)
+        self.errors = errors
+
+
+class ACPLinkLocalInterfaceGoneError(ACPConnectionError):
+    """The saved address is a link-local one on an interface this computer
+    no longer has (checks.network.link_local_interface_gone): its connects
+    get No route to host, as a Local Network block's do. Being an
+    ACPConnectionError, it is looked for by its Bonjour record's AirPort MAC
+    first; a saved device was looked for before set-ssh started
+    (services.runtime.follow_saved_device)."""
+
+    code = ErrorCode.LINK_LOCAL_INTERFACE_GONE
 
 
 class ACPStuckError(ACPConnectionError):
@@ -194,8 +221,16 @@ def _probe_acp_port(
     if client_networks:
         message, facts = device_off_network(host, client_networks)
         raise ACPDeviceOffNetworkError(f"{failure} {message}", detail=f"{unanswered} {facts}")
+    if (interface := link_local_interface_gone(host)) is not None:
+        gone = LinkLocalInterfaceGone(host, interface)
+        raise ACPLinkLocalInterfaceGoneError(f"{failure} {gone.message}", detail=f"{unanswered} {gone.detail}")
     if all(entry["kind"] == "no_route" for entry in errors):
-        raise ACPNoRouteError(failure, detail=unanswered)
+        connect_errors = tuple(str(entry["error"]) for entry in errors)
+        # The Bonjour record this address came from shows the device is up.
+        block = _local_network_block(host, connect_errors, "bonjour" if record is not None else None, tcp_connect_error_func)
+        if block is not None:
+            raise ACPNoRouteError(failure, detail=f"{unanswered} {block.detail}")
+        raise ACPNoRouteUnprovenError(failure, detail=unanswered, errors=connect_errors)
     if all(connect_unanswered(entry["error"]) for entry in errors):
         # A device that is off or gone drops connects to every port; one that
         # is up answers SSH's port, connecting or refusing while SSH is off.
@@ -209,6 +244,21 @@ def _probe_acp_port(
             stuck = ClosedSshPort(host, errors[-1]["error"], acp_stuck=True, ssh_accepted=ssh_error is None)
             raise ACPStuckError(f"{failure} {stuck.message}", detail=stuck.detail)
     raise ACPConnectionError(failure, detail=unanswered)
+
+
+def _local_network_block(
+    host: str,
+    errors: tuple[str, ...],
+    proof: str | None,
+    tcp_connect_error_func: Callable[[str, int], str | None],
+) -> LocalNetworkBlock | None:
+    """checks.network.local_network_block with this probe's connect function
+    and this computer's networks as the off-network check above reads them."""
+    return local_network_block(
+        host, errors, proof=proof,
+        connect_error=lambda address, port, _timeout: tcp_connect_error_func(address, port),
+        networks=local_lan_networks(),
+    )
 
 
 def _follow(
@@ -254,6 +304,7 @@ def enable_ssh_with_port_preflight(
     timeout: float = 25.0,
     callbacks: OperationCallbacks | None = None,
     record: BonjourResolvedService | None = None,
+    listed_by_bonjour: bool = False,
     tcp_connect_error_func: Callable[[str, int], str | None] | None = None,
     sleep_func: Callable[[float], None] | None = None,
     before_enable: Callable[[str], None] | None = None,
@@ -263,8 +314,12 @@ def enable_ssh_with_port_preflight(
     Returns the address that was used. With `record`, the Bonjour record
     `host` came from, a device no longer at `host` is looked for by the
     record's AirPort MAC, and an AirPort with another MAC at `host` is never
-    changed. `before_enable` gets that address once ACP answers there and
-    before anything is changed, so a confirmation names the device that will
+    changed. `listed_by_bonjour`: the command's earlier lookup by the
+    saved MAC found its record still listing `host`
+    (AirportAcpReading.listed_by_bonjour), so every connect getting no
+    route is macOS blocking this program's connections (ACPNoRouteError).
+    `before_enable` gets the address once ACP answers there and before
+    anything is changed, so a confirmation names the device that will
     reboot and a device that does not answer is never offered a reboot.
     """
     callbacks = callbacks or OperationCallbacks()
@@ -276,9 +331,13 @@ def enable_ssh_with_port_preflight(
     callbacks.stage("acp_port_probe")
     try:
         _probe_acp_port(host, record, callbacks, tcp_connect_error_func, sleep_func)
-    except ACPConnectionError:
+    except ACPConnectionError as exc:
         found = _follow(airport_mac, password, host, trigger="acp_unreachable", callbacks=callbacks) if airport_mac else None
         if found is None:
+            if isinstance(exc, ACPNoRouteUnprovenError) and listed_by_bonjour:
+                block = _local_network_block(host, exc.errors, "bonjour", tcp_connect_error_func)
+                if block is not None:
+                    raise ACPNoRouteError(exc.message, detail=f"{exc.detail} {block.detail}") from exc
             raise
         host = found
     else:

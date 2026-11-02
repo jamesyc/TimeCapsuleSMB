@@ -473,10 +473,14 @@ class ConfigureServiceTests(unittest.TestCase):
         *,
         ssh_error: str | None = "timed out",
         lan: str = "10.0.0.0/24",
+        record: BonjourResolvedService | None = None,
+        platform: str = "darwin",
     ) -> SimpleNamespace:
         """One failed port probe of 10.0.0.2, with each ACP attempt's connect
-        error, `ssh_error` for SSH's port and this computer on `lan`: the
-        error, the ports connected to in order, and the fields updated."""
+        error, `ssh_error` for SSH's port, this computer on `lan`, `record`
+        the Bonjour record the address came from and this computer's
+        `platform`: the error, the ports connected to in order, and the fields
+        updated. A lookup by the record's MAC finds nothing elsewhere."""
         networks = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network(lan)),)
         callbacks, _stages, _logs, _debug_fields, update_fields = self.callbacks()
         acp_errors = iter(errors)
@@ -489,12 +493,15 @@ class ConfigureServiceTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=networks), \
                 mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.locate_airport", return_value=LocateResult("not_found")), \
+                mock.patch("timecapsulesmb.checks.network.sys.platform", platform), \
                 mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
             with self.assertRaises(ACPConnectionError) as raised:
                 enable_ssh_with_port_preflight(
                     "10.0.0.2",
                     "pw",
                     callbacks=callbacks,
+                    record=record,
                     tcp_connect_error_func=connect,
                     sleep_func=mock.Mock(),
                 )
@@ -505,16 +512,36 @@ class ConfigureServiceTests(unittest.TestCase):
         """The error one failed port probe of 10.0.0.2 raises (probe_run)."""
         return self.probe_run(errors, **kwargs).error
 
-    def test_port_probe_with_no_route_on_every_attempt_says_so(self) -> None:
-        # The macOS app reads this as Local Network access being blocked.
-        for errors in (["[Errno 65] No route to host"] * 3, ["[Errno 113] No route to host"] * 3):
-            with self.subTest(errors[0]):
-                error = self.probe_failure(errors)
+    def test_port_probe_with_no_route_to_a_device_bonjour_just_found_is_a_local_network_block(self) -> None:
+        # The macOS app reads this as Local Network access being blocked. SSH's
+        # port, tried once more, gets no route too.
+        no_route = "[Errno 65] No route to host"
+        run = self.probe_run([no_route] * 3, ssh_error=no_route, record=self.record_at("10.0.0.2"))
 
-                self.assertIsInstance(error, ACPNoRouteError)
-                self.assertEqual(
-                    str(error), "Could not connect to ACP.\nNo answer from 10.0.0.2:5009.",
-                )
+        self.assertIsInstance(run.error, ACPNoRouteError)
+        self.assertEqual(run.error.message, "Could not connect to ACP.")
+        self.assertTrue(run.error.detail.startswith("No answer from 10.0.0.2:5009. No route to 10.0.0.2"))
+        self.assertTrue(run.error.detail.endswith("while Bonjour finds it."))
+        self.assertEqual(run.ports, [5009, 5009, 5009, 22])
+
+    def test_port_probe_with_no_route_and_nothing_showing_the_device_is_up_stays_generic(self) -> None:
+        # A device that is off or gone gets no route too; only macOS has the
+        # block; and a port 22 that answers on the last try was a passing fault.
+        no_route = "[Errno 65] No route to host"
+        for name, kwargs in {
+            "typed host": {"ssh_error": no_route},
+            "Linux": {"ssh_error": no_route, "record": self.record_at("10.0.0.2"), "platform": "linux"},
+            "port 22 answers": {"ssh_error": "[Errno 61] Connection refused", "record": self.record_at("10.0.0.2")},
+        }.items():
+            with self.subTest(name):
+                error = self.probe_failure([no_route] * 3, **kwargs)
+                self.assertNotIsInstance(error, ACPNoRouteError)
+                self.assertIsNone(error.code)
+                self.assertEqual(str(error), "Could not connect to ACP.\nNo answer from 10.0.0.2:5009.")
+
+    @staticmethod
+    def record_at(address: str) -> BonjourResolvedService:
+        return replace(RECORD_WITH_MAC, ipv4=[address])
 
     def test_port_probe_failures_that_are_not_all_no_route_stay_generic(self) -> None:
         # A device that stops answering times out or is "down" before its

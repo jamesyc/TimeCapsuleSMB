@@ -9,12 +9,13 @@ from unittest import mock
 import timecapsulesmb.cli.main as cli_main_module
 from timecapsulesmb.checks.network import LocalInterfaceNetwork
 from timecapsulesmb.cli import set_ssh
+from timecapsulesmb.services.locate import LocateResult
 from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 
 from tests.cli_support import AUTH_FAILED_CLI_STEPS, CliTestCase
-from tests.reboot_support import acp_password_answer, acp_reading
+from tests.reboot_support import DEVICE_AIRPORT_MAC, acp_password_answer, acp_reading
 
 
 class CliSetSshTests(CliTestCase):
@@ -78,6 +79,29 @@ class CliSetSshTests(CliTestCase):
         self.assertEqual(finished["set_ssh_action"], "enable_ssh")
         self.assertEqual(finished["ssh_initially_reachable"], False)
         self.assertEqual(finished["ssh_final_reachable"], True)
+
+    def test_set_ssh_enable_hands_the_saved_device_lookup_to_the_port_probe(self) -> None:
+        # The command's lookup by the saved MAC ran when ACP did not answer;
+        # the port probe takes its record listing this address as the proof
+        # of a Local Network block instead of looking again.
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_AIRPORT_MAC": DEVICE_AIRPORT_MAC}
+        for located, listed in (
+            (LocateResult("not_moved", listed=True), True),
+            (LocateResult("not_moved", listed=False), False),
+            (LocateResult("not_found"), False),
+        ):
+            with self.subTest(located=located):
+                with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)), \
+                        mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(None)), \
+                        mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=located), \
+                        mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False), \
+                        mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight",
+                                   side_effect=lambda host, *_args, **_kwargs: host) as enable_ssh_mock, \
+                        mock.patch.object(self.device, "ssh_open", False), \
+                        redirect_stdout(io.StringIO()):
+                    rc = set_ssh.main([])
+                self.assertEqual(rc, 0)
+                self.assertIs(enable_ssh_mock.call_args.kwargs["listed_by_bonjour"], listed)
 
     def test_set_ssh_status_requires_only_host(self) -> None:
         output = io.StringIO()

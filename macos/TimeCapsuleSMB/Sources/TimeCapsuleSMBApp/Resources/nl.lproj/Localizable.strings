@@ -333,6 +333,8 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ schakelt SMB 3 uit voor de server [%2$@]. Als dat dit apparaat is, verwijder dan die regel, verwijder daarna de schijf in de Time Machine-instellingen en voeg hem opnieuw toe.";
 "doctor.check.ssh_disabled" = "SSH is uitgeschakeld op dit apparaat.";
 "doctor.check.device_unreachable" = "Het apparaat reageert niet via SSH of AirPort ACP.";
+"doctor.check.acp_no_route" = "macOS weigert de verbindingen van deze Mac met het apparaat, hoewel SSH het bereikt. Schakel TimeCapsuleSMB bij ‘Systeeminstellingen’ > ‘Privacy en beveiliging’ > ‘Lokaal netwerk’ uit en weer in, stop TimeCapsuleSMB en open het opnieuw.";
+"doctor.check.link_local_interface_gone" = "Het opgeslagen adres van het apparaat is een link-lokaal adres op een netwerkverbinding die deze Mac niet meer heeft, zoals een losgekoppelde USB-ethernetadapter. Sluit die opnieuw aan, of vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
 "doctor.domain.this_mac" = "Deze Mac";
 "doctor.domain.device" = "Apparaat";
 "event.summary.check" = "%@ %@";
@@ -682,6 +684,7 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.2" = "Controleer of het IP-adres het Time Capsule- of AirPort-adres is.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.3" = "Bevestig dat u zich op hetzelfde netwerk als het apparaat bevindt.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Zoek naar apparaten of voer het huidige LAN-IP-adres in.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.5" = "Ziet het AirPort-configuratieprogramma het apparaat wel en TimeCapsuleSMB niet, dan blokkeert macOS TimeCapsuleSMB: open ‘Systeeminstellingen’ > ‘Privacy en beveiliging’ > ‘Lokaal netwerk’ en schakel TimeCapsuleSMB uit en weer in.";
 "backend.recovery.auth_failed.title" = "Authenticatie mislukt";
 "backend.recovery.auth_failed.message" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
 "backend.recovery.auth_failed.action.1" = "Voer het AirPort-beheerderswachtwoord opnieuw in.";
@@ -694,6 +697,10 @@
 "backend.recovery.configure.acpd_quit.message" = "De AirPort-dienst van Apple (ACPd) op het apparaat is gestopt, dus het apparaat kan pas worden geïdentificeerd nadat het opnieuw is opgestart. Dit is een fout in de firmware van Apple, niet in TimeCapsuleSMB.";
 "backend.recovery.configure.acpd_quit.action.1" = "Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
 "backend.recovery.configure.acpd_quit.action.2" = "Wacht 2 minuten tot het apparaat is opgestart en probeer het opnieuw.";
+"backend.recovery.configure.link_local_interface_gone.title" = "Dit adres werkt niet meer";
+"backend.recovery.configure.link_local_interface_gone.message" = "Het adres van het apparaat is een link-lokaal IPv6-adres op een netwerkverbinding die deze Mac niet meer heeft, zoals een losgekoppelde USB-ethernetadapter.";
+"backend.recovery.configure.link_local_interface_gone.action.1" = "Sluit de adapter of kabel waarmee deze Mac het apparaat bereikte opnieuw aan en probeer het daarna opnieuw.";
+"backend.recovery.configure.link_local_interface_gone.action.2" = "Vernieuw de zoekopdracht en kies het apparaat opnieuw.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.title" = "Apparaat reageert erg langzaam";
 "backend.recovery.remote_error.ssh_timeout_slow_device.message" = "%@ reageert erg langzaam. Herstart het apparaat, wacht tot SSH weer bereikbaar is en probeer het opnieuw.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.1" = "Start het apparaat opnieuw op.";
@@ -744,6 +751,11 @@
 "backend.recovery.device_unreachable.message" = "SSH en AirPort ACP reageerden geen van beide op het opgeslagen adres van het apparaat.";
 "backend.recovery.device_unreachable.action.1" = "Zorg ervoor dat het apparaat is ingeschakeld en verbonden met hetzelfde netwerk of Wi-Fi als deze Mac.";
 "backend.recovery.device_unreachable.action.2" = "Als het apparaat opnieuw opstart, wacht dan een paar minuten en probeer het opnieuw.";
+"backend.recovery.device_unreachable.action.3" = "Ziet het AirPort-configuratieprogramma het apparaat wel en TimeCapsuleSMB niet, dan blokkeert macOS TimeCapsuleSMB: open ‘Systeeminstellingen’ > ‘Privacy en beveiliging’ > ‘Lokaal netwerk’ en schakel TimeCapsuleSMB uit en weer in.";
+"backend.recovery.link_local_interface_gone.title" = "Het opgeslagen adres werkt niet meer";
+"backend.recovery.link_local_interface_gone.message" = "Het opgeslagen adres van het apparaat is een link-lokaal IPv6-adres op een netwerkverbinding die deze Mac niet meer heeft, zoals een losgekoppelde USB-ethernetadapter.";
+"backend.recovery.link_local_interface_gone.action.1" = "Sluit de adapter of kabel waarmee deze Mac het apparaat bereikte opnieuw aan en probeer het daarna opnieuw.";
+"backend.recovery.link_local_interface_gone.action.2" = "Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
 "backend.recovery.ssh_transport_failed.title" = "SSH-verbinding verbroken";
 "backend.recovery.ssh_transport_failed.message" = "Het apparaat accepteerde de SSH-verbinding en sloot deze vóór het inloggen. Dit kan gebeuren terwijl het apparaat opstart of bezet is.";
 "backend.recovery.ssh_transport_failed.action.1" = "Wacht een minuut en probeer het opnieuw.";

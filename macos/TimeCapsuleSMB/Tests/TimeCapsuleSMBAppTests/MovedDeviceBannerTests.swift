@@ -224,8 +224,30 @@ final class MovedDeviceBannerTests: XCTestCase {
         XCTAssertEqual(editor.draft.host, "10.0.0.80")
     }
 
+    func testAnErrorAboutTheSavedAddressLooksForTheDeviceAgain() async throws {
+        // A saved link-local address on an adapter this Mac no longer has needs
+        // the device's current address as much as a device that moved does.
+        for code in ["device_unreachable", "link_local_interface_gone"] {
+            let fixture = try await makeFixture([
+                .init(events: [BackendEvent(type: "error", operation: "deploy", code: code, message: "failed")]),
+                .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
+                    payload: testDiscoverPayload(records: []))]),
+            ])
+            let profile = try await saveOldProfile(fixture)
+            let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+
+            _ = fixture.coordinator.run(operation: "deploy", context: profile.runtimeContext, activeDeviceID: profile.id,
+                laneKey: .deviceWorkflow(profile.id, .deploy))
+
+            try await waitUntilStoreState { fixture.runner.calls.map(\.operation) == ["deploy", "discover"] }
+            _ = session
+        }
+    }
+
     func testCheckupResultsShowTheAddressAndSSHBanners() async throws {
-        for (code, follow) in [("device_unreachable", "discover"), ("ssh_disabled", "set-ssh")] {
+        for (code, follow) in [
+            ("device_unreachable", "discover"), ("link_local_interface_gone", "discover"), ("ssh_disabled", "set-ssh"),
+        ] {
             let check: JSONValue = .object([
                 "status": .string("FAIL"), "message": .string("failed"),
                 "details": .object(["code": .string(code), "domain": .string("computer")]),

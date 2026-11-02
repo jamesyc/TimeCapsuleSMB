@@ -273,6 +273,10 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.ssh_disabled")
         case "device_unreachable":
             return L10n.string("doctor.check.device_unreachable")
+        case "acp_no_route":
+            return L10n.string("doctor.check.acp_no_route")
+        case "link_local_interface_gone":
+            return L10n.string("doctor.check.link_local_interface_gone")
         case "mac_smb3_disabled":
             guard let path = details.stringValue(for: "path") else { return message }
             return L10n.format("doctor.check.mac_smb3_disabled", path)

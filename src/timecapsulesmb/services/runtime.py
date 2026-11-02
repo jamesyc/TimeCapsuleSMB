@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import time
 
-from timecapsulesmb.checks.network import closed_ssh_port_error
+from timecapsulesmb.checks.network import (
+    LinkLocalInterfaceGone,
+    closed_ssh_port_error,
+    link_local_interface_gone,
+    local_network_block,
+    local_network_block_possible,
+    ssh_reached_device,
+)
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
@@ -20,6 +27,7 @@ from timecapsulesmb.device.probe import (
     password_check_fields,
     read_admin_password,
     probe_connection_state,
+    probe_ssh_command_conn,
 )
 from timecapsulesmb.device import probe as device_probe
 from timecapsulesmb.device import acpd
@@ -34,8 +42,8 @@ from timecapsulesmb.device.processes import Process, StuckProcess, disk_checks_r
 from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
-from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.transport.local import tcp_open
+from timecapsulesmb.transport.ssh import SshConnection
 
 PasswordProvider = Callable[[str], str]
 
@@ -305,6 +313,12 @@ def require_acpd_ready(
         if client_networks is not None:
             message, facts = device_off_network(host, client_networks)
             raise DeviceAccessError(message, code=ErrorCode.DEVICE_OFF_NETWORK, detail=facts)
+        # SSH reached the device for the checks above: a read refused with no
+        # route is macOS refusing this program's connections, when a connect
+        # to port 22 gets no route too.
+        block = local_network_block(host, (reading.error,), proof="ssh")
+        if block is not None:
+            raise DeviceAccessError(block.message, code=block.code, detail=block.detail)
         raise DeviceAccessError(ACP_UNREACHABLE_MESSAGE, code=ErrorCode.ACP_UNREACHABLE, detail=f"Device address {host}.")
 
 
@@ -358,7 +372,7 @@ def confirm_device_address(
             code=ErrorCode.DEVICE_IDENTITY_MISMATCH,
             detail=f"Saved address {endpoint_host(host)}.",
         )
-    return host, reading
+    return host, replace(reading, listed_by_bonjour=located.listed)
 
 
 def follow_saved_device(
@@ -389,12 +403,39 @@ def follow_saved_device(
     return moved, device_reading
 
 
-def probe_failure_error(probe_result: ProbeResult, host: str) -> DeviceAccessError:
-    """The error for a probe that did not log in; a closed SSH port says why
-    (checks.network.closed_ssh_port_error)."""
+# Apple's ssh, asked whether the device is up when this program's own
+# connections get no route: a reachable device answers within seconds.
+SSH_PROOF_TIMEOUT_SECONDS = 15
+
+
+def probe_failure_error(probe_result: ProbeResult, connection: SshConnection) -> DeviceAccessError:
+    """The error for a probe that did not log in. A closed SSH port says why
+    (checks.network.closed_ssh_port_error), after two causes that look the
+    same from here: a saved link-local address on an interface this computer
+    no longer has (checks.network.link_local_interface_gone), and macOS
+    refusing this program's connections to a device that ssh reaches
+    (checks.network.local_network_block). ssh is asked only when that block
+    is possible (checks.network.local_network_block_possible: macOS, an ACP
+    connect with no route, an address not on another network), so other
+    failures cost nothing more."""
     if probe_result.ssh_status == SshAccessStatus.CLOSED:
-        closed = closed_ssh_port_error(endpoint_host(host))
-        return DeviceAccessError(closed.message, code=closed.code, detail=closed.detail)
+        host = endpoint_host(connection.host)
+        if (interface := link_local_interface_gone(host)) is not None:
+            gone = LinkLocalInterfaceGone(host, interface)
+            return DeviceAccessError(gone.message, code=gone.code, detail=gone.detail)
+        closed = closed_ssh_port_error(host)
+        detail = closed.detail
+        if closed.code == ErrorCode.DEVICE_UNREACHABLE and local_network_block_possible(host, (closed.acp_error,)):
+            ssh = probe_ssh_command_conn(connection, "/bin/echo ok", timeout=SSH_PROOF_TIMEOUT_SECONDS)
+            reached = ssh_reached_device(ssh)
+            block = local_network_block(host, (closed.acp_error,), proof="ssh" if reached else None)
+            if block is not None:
+                return DeviceAccessError(block.message, code=block.code, detail=block.detail)
+            if not reached:
+                # Telemetry then says whether /usr/bin/ssh is held by the same
+                # block (no route) or the device is gone (a timeout).
+                detail = f"{detail} SSH from this computer did not reach it either ({ssh.detail})."
+        return DeviceAccessError(closed.message, code=closed.code, detail=detail)
     return DeviceAccessError(
         probe_result.error or "Failed to probe device compatibility.",
         code=PROBE_STATUS_ERROR_CODES.get(probe_result.ssh_status, ErrorCode.REMOTE_ERROR),
@@ -527,5 +568,5 @@ def resolve_validated_managed_target(
 def require_connection_compatibility(connection: SshConnection) -> DeviceCompatibility:
     state = probe_managed_connection_state(connection)
     if state.compatibility is None:
-        raise probe_failure_error(state.probe_result, connection.host)
+        raise probe_failure_error(state.probe_result, connection)
     return state.compatibility

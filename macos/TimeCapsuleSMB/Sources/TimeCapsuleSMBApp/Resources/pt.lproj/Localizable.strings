@@ -333,6 +333,8 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ desativa o SMB 3 para o servidor [%2$@]. Se for este dispositivo, apague essa linha, depois remova o disco nos ajustes do Time Machine e adicione-o novamente.";
 "doctor.check.ssh_disabled" = "O SSH está desativado neste dispositivo.";
 "doctor.check.device_unreachable" = "O dispositivo não responde por SSH nem por AirPort ACP.";
+"doctor.check.acp_no_route" = "O macOS recusa as conexões deste Mac com o dispositivo, embora o SSH o alcance. Em “Ajustes do Sistema” > “Privacidade e Segurança” > “Rede Local”, desative e ative novamente o TimeCapsuleSMB e depois saia do TimeCapsuleSMB e abra-o novamente.";
+"doctor.check.link_local_interface_gone" = "O endereço salvo do dispositivo é um endereço de link local em uma conexão de rede que este Mac não tem mais, como um adaptador USB Ethernet desconectado. Reconecte-o, ou atualize a busca e reconecte o dispositivo salvo.";
 "doctor.domain.this_mac" = "Este Mac";
 "doctor.domain.device" = "Dispositivo";
 "event.summary.check" = "%@ %@";
@@ -682,6 +684,7 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.2" = "Verifique se o endereço IP é o endereço do Time Capsule ou AirPort.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.3" = "Confirme que você está na mesma rede que o dispositivo.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Use a descoberta ou insira o endereço IP LAN atual.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.5" = "Se o Utilitário AirPort vê o dispositivo, mas o TimeCapsuleSMB não, o macOS está bloqueando o TimeCapsuleSMB: abra “Ajustes do Sistema” > “Privacidade e Segurança” > “Rede Local” e desative e ative novamente o TimeCapsuleSMB.";
 "backend.recovery.auth_failed.title" = "Falha na autenticação";
 "backend.recovery.auth_failed.message" = "O dispositivo rejeitou a senha ou as credenciais SSH fornecidas.";
 "backend.recovery.auth_failed.action.1" = "Digite novamente a senha de administrador do AirPort.";
@@ -694,6 +697,10 @@
 "backend.recovery.configure.acpd_quit.message" = "O serviço AirPort da Apple (ACPd) parou no dispositivo, então o dispositivo não pode ser identificado até reiniciar. Este é um erro no firmware da Apple, não no TimeCapsuleSMB.";
 "backend.recovery.configure.acpd_quit.action.1" = "Desconecte o dispositivo, aguarde 10 segundos e conecte-o novamente.";
 "backend.recovery.configure.acpd_quit.action.2" = "Aguarde 2 minutos até o dispositivo iniciar e tente novamente.";
+"backend.recovery.configure.link_local_interface_gone.title" = "Este endereço não funciona mais";
+"backend.recovery.configure.link_local_interface_gone.message" = "O endereço do dispositivo é um endereço IPv6 de link local em uma conexão de rede que este Mac não tem mais, como um adaptador USB Ethernet desconectado.";
+"backend.recovery.configure.link_local_interface_gone.action.1" = "Reconecte o adaptador ou o cabo pelo qual este Mac alcançava o dispositivo e tente novamente.";
+"backend.recovery.configure.link_local_interface_gone.action.2" = "Atualize a busca e escolha o dispositivo novamente.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.title" = "O dispositivo está respondendo muito lentamente";
 "backend.recovery.remote_error.ssh_timeout_slow_device.message" = "%@ responde muito lentamente. Reinicie o dispositivo, aguarde SSH ficar disponível e tente novamente.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.1" = "Reinicie o dispositivo.";
@@ -744,6 +751,11 @@
 "backend.recovery.device_unreachable.message" = "Nem SSH nem AirPort ACP responderam no endereço salvo do dispositivo.";
 "backend.recovery.device_unreachable.action.1" = "Verifique se o dispositivo está ligado e conectado à mesma rede ou Wi-Fi deste Mac.";
 "backend.recovery.device_unreachable.action.2" = "Se o dispositivo estiver reiniciando, aguarde alguns minutos e tente novamente.";
+"backend.recovery.device_unreachable.action.3" = "Se o Utilitário AirPort vê o dispositivo, mas o TimeCapsuleSMB não, o macOS está bloqueando o TimeCapsuleSMB: abra “Ajustes do Sistema” > “Privacidade e Segurança” > “Rede Local” e desative e ative novamente o TimeCapsuleSMB.";
+"backend.recovery.link_local_interface_gone.title" = "O endereço salvo não funciona mais";
+"backend.recovery.link_local_interface_gone.message" = "O endereço salvo do dispositivo é um endereço IPv6 de link local em uma conexão de rede que este Mac não tem mais, como um adaptador USB Ethernet desconectado.";
+"backend.recovery.link_local_interface_gone.action.1" = "Reconecte o adaptador ou o cabo pelo qual este Mac alcançava o dispositivo e tente novamente.";
+"backend.recovery.link_local_interface_gone.action.2" = "Atualize a busca e reconecte o dispositivo salvo.";
 "backend.recovery.ssh_transport_failed.title" = "Conexão SSH interrompida";
 "backend.recovery.ssh_transport_failed.message" = "O dispositivo aceitou a conexão SSH e a fechou antes do login. Isso pode acontecer enquanto o dispositivo está iniciando ou ocupado.";
 "backend.recovery.ssh_transport_failed.action.1" = "Aguarde um minuto e tente novamente.";

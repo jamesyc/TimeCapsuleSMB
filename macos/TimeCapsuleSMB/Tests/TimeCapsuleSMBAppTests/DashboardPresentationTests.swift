@@ -106,6 +106,29 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertFalse(row.message.contains("managed runtime payload directory"))
     }
 
+    func testCheckupPresentationLocalizesTheLinesThatReplaceNotAnswering() throws {
+        // A Local Network block and a stale link-local address take the place of
+        // "not answering" for these users, so they are localized like it.
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        for (code, english, german) in [
+            ("acp_no_route", "macOS is refusing this Mac's connections to the device, although SSH reaches it.",
+             "macOS verweigert die Verbindungen dieses Mac zum Gerät"),
+            ("link_local_interface_gone", "The device's saved address is a link-local address",
+             "Die gespeicherte Adresse des Geräts ist eine link-lokale Adresse"),
+        ] {
+            let payload = try testDoctorPayload(checks: [
+                testDoctorCheck(status: "FAIL", message: "the helper's English line", domain: "computer", code: code)
+            ]).decode(DoctorPayload.self)
+            for (language, expected) in [(AppLanguage.english, english), (AppLanguage.german, german)] {
+                L10n.apply(language: language)
+                let row = try XCTUnwrap(CheckupPresentation(summary: DoctorSummary(payload: payload), state: .failed)
+                    .domains.first?.rows.first)
+                XCTAssertTrue(row.message.hasPrefix(expected), "\(code) in \(language): \(row.message)")
+            }
+        }
+    }
+
     func testCheckupPresentationLocalizesPayloadMissingFromDiskCheck() throws {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

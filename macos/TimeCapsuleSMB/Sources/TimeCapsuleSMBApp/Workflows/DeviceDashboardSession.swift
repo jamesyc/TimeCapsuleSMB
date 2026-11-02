@@ -504,8 +504,13 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         Task { @MainActor [weak self] in self?.runPendingSSHRefresh() }
     }
 
-    /// Error codes after which the device may be at another DHCP address.
-    static let addressOutcomeCodes: Set<String> = ["device_unreachable", "device_identity_mismatch", "reboot_not_finished"]
+    /// Error codes after which the device may be at another DHCP address, or
+    /// its saved link-local address is on an interface this Mac no longer has.
+    static let addressOutcomeCodes: Set<String> = [
+        "device_unreachable", "device_identity_mismatch", "reboot_not_finished", "link_local_interface_gone",
+    ]
+    /// Checkup's failed checks that mean the same.
+    static let addressOutcomeCheckCodes: Set<String> = ["device_unreachable", "link_local_interface_gone"]
 
     /// The helper found the device at another address (`current_host`), or
     /// could not find it where it was saved: look again, so the stale-address
@@ -519,7 +524,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             let movedTo = event.payload?.stringValue(for: "current_host") ?? event.debug?.stringValue(for: "current_host")
             // Checkup reports a failed check in its result, not as an error.
             let checkCodes = Self.checkCodes(in: event)
-            if movedTo != nil || Self.addressOutcomeCodes.contains(event.code ?? "") || checkCodes.contains("device_unreachable") {
+            if movedTo != nil || Self.addressOutcomeCodes.contains(event.code ?? "")
+                || !checkCodes.isDisjoint(with: Self.addressOutcomeCheckCodes) {
                 refresh = true
             }
             refreshSSH = refreshSSH || checkCodes.contains("ssh_disabled")

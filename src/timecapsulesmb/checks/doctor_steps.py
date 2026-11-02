@@ -55,6 +55,7 @@ from timecapsulesmb.checks.network import (
     local_interface_addresses,
     local_interface_networks,
     local_lan_networks,
+    local_network_block,
     network_display,
     reportable_network,
 )
@@ -2220,13 +2221,29 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
         # this problem in its place.
         sink.debug_fields["acpd_problems"] = [ssh_result.details["acpd_problem"]]
     ssh_ok = ssh_result.status == "PASS"
+    code = ssh_result.details.get("code")
+    if code == ErrorCode.ACP_NO_ROUTE:
+        sink.local_network_blocked = True
     return RemoteAccess(
         ssh_checked=True,
         ssh_ok=ssh_ok,
         remote_checks_enabled=ssh_ok,
         active_smb_conf_reason="SSH check not run" if ssh_ok else "SSH login failed",
-        device_unreachable=ssh_result.details.get("code") == "device_unreachable",
+        # A saved link-local address on an interface this computer no longer
+        # has answers nothing either, and the AirPorts it sees show the one to use.
+        device_unreachable=code in ("device_unreachable", ErrorCode.LINK_LOCAL_INTERFACE_GONE),
     )
+
+
+def _doctor_report_blocked_network(target: DoctorTarget, sink: DoctorSink) -> None:
+    """macOS refuses this computer's connections to the device
+    (sink.local_network_blocked), so Bonjour, SMB and NBNS checks of it would
+    only fail the same way."""
+    sink.add(CheckResult(
+        "SKIP",
+        f"Bonjour, SMB and NBNS checks skipped: macOS refuses this Mac's connections to {target.host}",
+        {"code": DOCTOR_CODE_NETWORK_NOT_CHECKED},
+    ))
 
 
 def _doctor_report_unanswered_device(inputs: DoctorInputs, target: DoctorTarget, sink: DoctorSink) -> None:
@@ -3009,6 +3026,14 @@ def _add_admin_password_result(connection: SshConnection, sink: DoctorSink, read
     match = reading.password_matches
     if sink.debug_fields is not None:
         sink.debug_fields.update(password_check_fields(reading))
+    if match is None and reading.error and (
+        block := local_network_block(endpoint_host(connection.host), (reading.error,), proof="ssh")
+    ) is not None:
+        # SSH logged in for this check: the ACP read refused with no route is
+        # macOS refusing this program's connections.
+        sink.add(CheckResult("FAIL", block.line, block.details))
+        sink.local_network_blocked = True
+        return None
     if match is True:
         sink.add(CheckResult("PASS", "the saved password is the AirPort admin password"))
     elif match is False:
@@ -3682,7 +3707,10 @@ def _doctor_check_local_network_permission(inputs: DoctorInputs, sink: DoctorSin
     if permission is None:
         return
     if permission == "allowed":
-        sink.add(CheckResult("PASS", "TimeCapsuleSMB has Local Network permission on this Mac"))
+        # The app's check browses Bonjour, which macOS can allow while it
+        # refuses this program's own connections to the device
+        # (network.local_network_block): it says only what it saw.
+        sink.add(CheckResult("PASS", "macOS lets TimeCapsuleSMB browse the local network"))
     elif permission == "denied":
         sink.add(CheckResult(
             "FAIL",

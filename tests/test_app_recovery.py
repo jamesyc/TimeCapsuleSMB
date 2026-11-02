@@ -24,8 +24,16 @@ class AppRecoveryTests(unittest.TestCase):
                 "Check that the IP address is the Time Capsule or AirPort address.",
                 "Confirm you are on the same network as the device.",
                 "Use discovery or enter the current LAN IP address.",
+                # A typed address has nothing that could prove a Local Network block.
+                "If AirPort Utility can see the device but TimeCapsuleSMB cannot, macOS is blocking TimeCapsuleSMB: "
+                "open “System Settings” > “Privacy & Security” > “Local Network”, then turn TimeCapsuleSMB off and on.",
             ],
         )
+        # The CLI names the app it runs in, and leaves the step out on Linux.
+        mac = cli_steps("configure", ErrorCode.REMOTE_ERROR, stage="acp_port_probe", platform="darwin")
+        self.assertIn("macOS is blocking the app it runs in, such as Terminal", mac[-1])
+        linux = cli_steps("configure", ErrorCode.REMOTE_ERROR, stage="acp_port_probe", platform="linux")
+        self.assertEqual(linux, mac[:-1])
 
     def test_an_unreadable_folder_offers_disk_repair_then_uninstall_and_no_plain_retry(self) -> None:
         recovery = recovery_for("deploy", "xattr_migration_unreadable_folder", stage="migrate_xattrs_copy")
@@ -219,6 +227,26 @@ class AppRecoveryTests(unittest.TestCase):
         self.assertTrue(recovery["retryable"])
         self.assertEqual(recovery["suggested_operation"], "configure")
 
+    def test_a_stale_link_local_address_in_add_device_is_not_called_saved(self) -> None:
+        # Add Device's address comes from discovery or is typed: nothing is saved yet.
+        recovery = recovery_for("configure", "link_local_interface_gone")
+        self.assertEqual(recovery["localization_key"], "configure.link_local_interface_gone")
+        self.assertEqual(recovery["title"], "This address no longer works")
+        self.assertNotIn("saved", " ".join((recovery["message"], *recovery["actions"])))
+        self.assertEqual(recovery["actions"][1], "Refresh discovery and choose the device again.")
+        self.assertTrue(recovery["retryable"])
+        self.assertEqual(recovery["suggested_operation"], "configure")
+        self.assertEqual(
+            cli_steps("configure", ErrorCode.LINK_LOCAL_INTERFACE_GONE)[1],
+            "Run `tcapsule configure` again and choose the device it finds.",
+        )
+        # Every command after Add Device uses the saved address.
+        for operation in ("deploy", "set-ssh", "doctor"):
+            with self.subTest(operation=operation):
+                recovery = recovery_for(operation, "link_local_interface_gone")
+                self.assertEqual(recovery["localization_key"], "link_local_interface_gone")
+                self.assertEqual(recovery["title"], "The saved address no longer works")
+
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
         recovery = recovery_for("deploy", "reboot_not_finished", stage="wait_for_reboot_up")
 
@@ -326,12 +354,25 @@ class CliStepsTests(unittest.TestCase):
 
     def test_an_entry_adds_its_cli_only_steps_after_the_app_s(self) -> None:
         self.assertEqual(
-            cli_steps("deploy", ErrorCode.DEVICE_UNREACHABLE),
+            cli_steps("deploy", ErrorCode.DEVICE_UNREACHABLE, platform="darwin"),
             (
                 "Make sure the device is turned on and connected to the same network or Wi-Fi as this computer.",
                 "If the device is restarting, wait a few minutes, then try again.",
+                # macOS asks Local Network access of the app a command runs in.
+                "If AirPort Utility can see the device but this command cannot, macOS is blocking the app it runs in, "
+                "such as Terminal: turn that app off and on in System Settings > Privacy & Security > Local Network.",
                 "Run `tcapsule doctor` to see which AirPorts answer on this network.",
             ),
+        )
+        # The CLI also runs on Linux, where a step about macOS has no use.
+        linux = cli_steps("deploy", ErrorCode.DEVICE_UNREACHABLE, platform="linux")
+        self.assertFalse(any("macOS" in step for step in linux))
+        self.assertEqual(len(linux), 3)
+        # A stale link-local address: the CLI finds the device again with configure.
+        self.assertEqual(
+            cli_steps("deploy", ErrorCode.LINK_LOCAL_INTERFACE_GONE),
+            ("Reconnect the adapter or cable this computer used to reach the device, then try again.",
+             "Run `tcapsule configure` to find the device again."),
         )
         # An app step with no words of its own for the CLI never reaches it.
         self.assertEqual(cli_steps("deploy", ErrorCode.INSTALL_INTERRUPTED), ("Run `tcapsule deploy` again to complete the install.",))

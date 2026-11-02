@@ -853,7 +853,7 @@ def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: 
         raise DeviceError("Failed to determine remote device OS compatibility.")
     compatibility = probe_state.compatibility
     if compatibility is None:
-        raise probe_failure_error(probe_state.probe_result, target.connection.host)
+        raise probe_failure_error(probe_state.probe_result, target.connection)
     if not compatibility.supported and not allow_unsupported:
         raise DeployDeviceError(render_compatibility_message(compatibility), code=ErrorCode.UNSUPPORTED_DEVICE)
     if not compatibility.payload_family:

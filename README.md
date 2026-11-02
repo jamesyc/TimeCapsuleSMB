@@ -52,7 +52,7 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 1. Download the latest release of the app from here: https://github.com/jamesyc/TimeCapsuleSMB/releases
 2. Download `TimeCapsuleSMB.dmg`, open it, drag TimeCapsuleSMB to Applications, and open it from there. The app offers new versions itself; the CLI prints a line when a newer release exists.
     - With Homebrew, `brew install --cask jamesyc/tap/timecapsulesmb` does the same.
-3. Make sure *Local Network* permissions is granted (System Settings → Privacy & Security → Local Network → make sure TimeCapsuleSMB is allowed, then quit/reopen the app). Close and re-open the app after granting permissions.
+3. Give TimeCapsuleSMB *Local Network* access: in System Settings → Privacy & Security → Local Network, turn TimeCapsuleSMB on. If it is already on, turn it off and on again. Then quit and reopen the app.
 4. Click "Add Device" on the left sidebar, and select your device. 
 5. Enter your device password, and click "Save Device". 
 6. Wait for the app to enable SSH for your Time Capsule.

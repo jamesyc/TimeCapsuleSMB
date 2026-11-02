@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import ipaddress
-from collections.abc import Iterable
+import socket
+import sys
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal, Union
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.error_codes import ErrorCode
-from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, resolve_host_ips
+from timecapsulesmb.core.net import (
+    endpoint_host,
+    ipv4_literal,
+    ipv6_literal,
+    ipv6_scope_index,
+    is_link_local_ipv6,
+    resolve_host_ips,
+)
 from timecapsulesmb.device import acpd
-from timecapsulesmb.device.probe import probe_ssh_command_conn
+from timecapsulesmb.device.probe import SshCommandProbeResult, probe_ssh_command_conn
 from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
@@ -19,7 +28,7 @@ from timecapsulesmb.transport.errors import (
     TransportError,
     local_network_filtered_message,
 )
-from timecapsulesmb.transport.local import connect_answered, connect_unanswered, tcp_connect_error
+from timecapsulesmb.transport.local import connect_answered, connect_error_kind, connect_unanswered, tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -323,6 +332,170 @@ def closed_ssh_port_error(host: str, *, ssh_error: str | None = None) -> ClosedS
     return ClosedSshPort(host, acp_error, acp_stuck=connect_answered(ssh_error), ssh_accepted=ssh_error is None)
 
 
+def link_local_interface_gone(host: str, addresses: Iterable[str] | None = None) -> str | None:
+    """The interface a link-local IPv6 address names, when this computer no
+    longer has it or it has no IPv6 link-local address of its own: a USB
+    Ethernet adapter unplugged since the device was added, say. Connects to
+    such an address fail with No route to host, as a Local Network block's
+    do. None for any other address, or when the interfaces cannot be read.
+    `addresses` is local_interface_addresses()."""
+    base, _, scope = endpoint_host(host).strip("[]").partition("%")
+    if not scope or not is_link_local_ipv6(base):
+        return None
+    if scope.isdigit():
+        try:
+            scope = socket.if_indextoname(int(scope))
+        except (OSError, ValueError, OverflowError):
+            return scope
+    if ipv6_scope_index(scope) is None:
+        return scope
+    addresses = local_interface_addresses() if addresses is None else tuple(addresses)
+    if not addresses:
+        return None
+    for address in addresses:
+        local_base, _, local_scope = address.partition("%")
+        if local_scope == scope and is_link_local_ipv6(local_base):
+            return None
+    return scope
+
+
+@dataclass(frozen=True)
+class LinkLocalInterfaceGone:
+    """A link-local address on an interface this computer no longer
+    has (link_local_interface_gone)."""
+
+    host: str
+    interface: str
+    platform: str | None = None
+    code = ErrorCode.LINK_LOCAL_INTERFACE_GONE
+
+    @property
+    def _computer(self) -> str:
+        return "this Mac" if (self.platform or sys.platform) == "darwin" else "this computer"
+
+    @property
+    def message(self) -> str:
+        return f"The address {self.host} is on a network connection {self._computer} no longer has ({self.interface})."
+
+    @property
+    def detail(self) -> str:
+        return f"{self.interface} is not one of {self._computer}'s network interfaces with an IPv6 link-local address."
+
+    @property
+    def line(self) -> str:
+        """Checkup's result line."""
+        return (
+            f"{self.message[:-1]}: reconnect the adapter or cable used when the device was added, or add the "
+            "device again so its current address is saved"
+        )
+
+
+def ssh_reached_device(result: SshCommandProbeResult) -> bool:
+    """Whether ssh reached the device's TCP stack: it logged in (the command
+    may still have failed), the device rejected the login or offered no
+    algorithm both ends accept, or it refused the port (SSH off). In
+    telemetry, /usr/bin/ssh reached devices that this program's own
+    connections could not (Errno 65), so it is independent evidence that the
+    device is up."""
+    if result.ok or result.error is None:
+        return True
+    if isinstance(result.error, (SshAuthenticationError, SshAlgorithmNegotiationError)):
+        return True
+    return "refused" in (connect_error_kind(str(result.error)) or "").split("+")
+
+
+# What shows the device is up when this program's own connections get no route.
+LOCAL_NETWORK_BLOCK_PROOFS = {
+    "ssh": "SSH reaches it",
+    "bonjour": "Bonjour finds it",
+}
+
+
+@dataclass(frozen=True)
+class LocalNetworkBlock:
+    """This computer refuses this program's own connections to the device
+    while something else shows the device is up (local_network_block)."""
+
+    host: str
+    proof: str
+    errors: tuple[str, ...]
+    code = ErrorCode.ACP_NO_ROUTE
+
+    @property
+    def message(self) -> str:
+        return (
+            "macOS refuses TimeCapsuleSMB's connections to the device, although the device is on the network "
+            f"({LOCAL_NETWORK_BLOCK_PROOFS[self.proof]})."
+        )
+
+    @property
+    def detail(self) -> str:
+        return f"No route to {self.host} from this Mac ({'; '.join(self.errors)}), while {LOCAL_NETWORK_BLOCK_PROOFS[self.proof]}."
+
+    @property
+    def line(self) -> str:
+        """Checkup's result line."""
+        return (
+            f"macOS refuses this Mac's connections to {self.host} ([Errno 65] No route to host), although "
+            f"{LOCAL_NETWORK_BLOCK_PROOFS[self.proof]}: Local Network access is blocked for TimeCapsuleSMB, or for "
+            "the app tcapsule runs in. Turn it off and on in System Settings > Privacy & Security > Local Network, "
+            "then quit and reopen that app"
+        )
+
+    @property
+    def details(self) -> dict[str, object]:
+        return {"code": self.code, "local_network_block_proof": self.proof, "connect_errors": list(self.errors)}
+
+
+def local_network_block_possible(
+    host: str,
+    errors: Iterable[str],
+    *,
+    platform: str | None = None,
+    networks: Iterable[LocalInterfaceNetwork] | None = None,
+) -> bool:
+    """Whether local_network_block could find a block behind these connects,
+    before any proof or retry: on macOS, every connect got no route, and the
+    address is not on a separate network. A proof that costs time (ssh) is
+    asked only when this is True."""
+    errors = [error for error in errors if error]
+    if (platform or sys.platform) != "darwin" or not errors:
+        return False
+    if any(connect_error_kind(error) != "no_route" for error in errors):
+        return False
+    local = [item.network for item in (local_lan_networks() if networks is None else networks)]
+    return classify_network_link(host_networks(host), local, source="local_network_block").verdict != "separate"
+
+
+def local_network_block(
+    host: str,
+    errors: Iterable[str],
+    *,
+    proof: str | None,
+    platform: str | None = None,
+    connect_error: Callable[[str, int, float], str | None] | None = None,
+    networks: Iterable[LocalInterfaceNetwork] | None = None,
+) -> LocalNetworkBlock | None:
+    """The block, when macOS refuses this program's connections to a device
+    that is up: on macOS, every connect this work made to the device got No
+    route to host (Errno 65), `proof` (LOCAL_NETWORK_BLOCK_PROOFS) shows the
+    device is up, and one more connect to port 22 gets no route too.
+
+    No route alone never decides it: a device that is off or gone gives it
+    too, and Linux reports a failed address lookup on the link the same way
+    (and has no Local Network privacy). A connect that gets through on the
+    last try was a fault that has passed. An address on none of this
+    computer's networks is never a block: its route goes through a router.
+    `networks` is local_lan_networks()."""
+    errors = tuple(dict.fromkeys(error for error in errors if error))
+    if proof is None or not local_network_block_possible(host, errors, platform=platform, networks=networks):
+        return None
+    retry = (connect_error or tcp_connect_error)(host, SSH_PORT, PORT_CHECK_TIMEOUT_SECONDS)
+    if connect_error_kind(retry) != "no_route":
+        return None
+    return LocalNetworkBlock(host, proof, tuple(dict.fromkeys((*errors, retry))))
+
+
 def check_ssh_login(connection: SshConnection) -> CheckResult:
     result = probe_ssh_command_conn(
         connection,
@@ -333,25 +506,38 @@ def check_ssh_login(connection: SshConnection) -> CheckResult:
     if result.ok:
         return CheckResult("PASS", f"SSH command works for {connection.host}")
     details = {"code": ssh_login_failure_code(result.error)}
-    if details["code"] == "ssh_unreachable" and (unanswered := _unanswered_ssh_port(connection.host)) is not None:
+    if details["code"] == "ssh_unreachable" and (
+        unanswered := _unanswered_ssh_port(connection.host, ssh_reached=ssh_reached_device(result))
+    ) is not None:
         return unanswered
     if result.detail.startswith(("Connecting to the device failed, SSH error:", local_network_filtered_message())):
         return CheckResult("FAIL", result.detail, details)
     return CheckResult("FAIL", f"SSH command failed for {connection.host}: {result.detail}", details)
 
 
-def _unanswered_ssh_port(target: str) -> CheckResult | None:
+def _unanswered_ssh_port(target: str, *, ssh_reached: bool = False) -> CheckResult | None:
     """Why SSH did not get through, when its port does not answer.
 
     ssh waits out its own connect timeout, so an address nothing answers at
     otherwise looks like a command that timed out. None when port 22 answers:
-    the session itself is what hung.
+    the session itself is what hung. A saved link-local address on an
+    interface this computer no longer has is said as such. `ssh_reached`:
+    ssh itself reached the device (ssh_reached_device), as when SSH is off
+    and the device refuses the port, which shows a Local Network block when
+    this program's own connects get no route.
     """
     host = endpoint_host(target)
+    if (interface := link_local_interface_gone(host)) is not None:
+        gone = LinkLocalInterfaceGone(host, interface)
+        return CheckResult("FAIL", gone.line, {"code": gone.code})
     ssh_error = tcp_connect_error(host, SSH_PORT, PORT_CHECK_TIMEOUT_SECONDS)
     if ssh_error is None:
         return None
     closed = closed_ssh_port_error(host, ssh_error=ssh_error)
+    if closed.code == ErrorCode.DEVICE_UNREACHABLE and (
+        block := local_network_block(host, (ssh_error, closed.acp_error), proof="ssh" if ssh_reached else None)
+    ) is not None:
+        return CheckResult("FAIL", block.line, block.details)
     # A stuck ACPd gets the ACPd step's own code, which needs SSH and does not run.
     code = acpd.APPLE_ACPD_BROKEN_CODE if closed.acp_stuck else closed.code
     return CheckResult("FAIL", closed.line, {"code": code, "ssh_port_error": ssh_error, **closed.details})

@@ -333,6 +333,8 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ išjungia SMB 3 serveriui [%2$@]. Jei tai šis įrenginys, ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
 "doctor.check.ssh_disabled" = "Šiame įrenginyje SSH išjungta.";
 "doctor.check.device_unreachable" = "Įrenginys neatsako nei per SSH, nei per AirPort ACP.";
+"doctor.check.acp_no_route" = "macOS atmeta šio Mac jungtis su įrenginiu, nors SSH jį pasiekia. Sistemos nustatymuose, skiltyje Privacy & Security > Local Network, išjunkite ir vėl įjunkite TimeCapsuleSMB, tada uždarykite ir vėl atidarykite TimeCapsuleSMB.";
+"doctor.check.link_local_interface_gone" = "Išsaugotas įrenginio adresas yra ryšio vietinis adresas tinklo jungtyje, kurios šis Mac nebeturi, pavyzdžiui, ištrauktame USB Ethernet adapteryje. Vėl jį prijunkite arba atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
 "doctor.domain.this_mac" = "Šis Mac";
 "doctor.domain.device" = "Įrenginys";
 "event.summary.check" = "%@ %@";
@@ -682,6 +684,7 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.2" = "Patikrinkite, ar IP adresas yra Time Capsule arba AirPort adresas.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.3" = "Patvirtinkite, kad esate tame pačiame tinkle kaip įrenginys.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Naudokite aptikimą arba įveskite dabartinį LAN IP adresą.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.5" = "Jei AirPort Utility mato įrenginį, o TimeCapsuleSMB nemato, macOS blokuoja TimeCapsuleSMB: atidarykite sistemos nustatymus, eikite į Privacy & Security > Local Network ir išjunkite bei vėl įjunkite TimeCapsuleSMB.";
 "backend.recovery.auth_failed.title" = "Autentifikacija nepavyko";
 "backend.recovery.auth_failed.message" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
 "backend.recovery.auth_failed.action.1" = "Pakartotinai įveskite AirPort administratoriaus slaptažodį.";
@@ -694,6 +697,10 @@
 "backend.recovery.configure.acpd_quit.message" = "Apple AirPort tarnyba (ACPd) įrenginyje sustojo, todėl įrenginio negalima atpažinti, kol jis nebus paleistas iš naujo. Tai Apple programinės įrangos klaida, o ne TimeCapsuleSMB.";
 "backend.recovery.configure.acpd_quit.action.1" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
 "backend.recovery.configure.acpd_quit.action.2" = "Palaukite 2 minutes, kol įrenginys pasileis, tada bandykite dar kartą.";
+"backend.recovery.configure.link_local_interface_gone.title" = "Šis adresas nebeveikia";
+"backend.recovery.configure.link_local_interface_gone.message" = "Įrenginio adresas yra ryšio vietinis IPv6 adresas tinklo jungtyje, kurios šis Mac nebeturi, pavyzdžiui, ištrauktame USB Ethernet adapteryje.";
+"backend.recovery.configure.link_local_interface_gone.action.1" = "Vėl prijunkite adapterį ar kabelį, per kurį šis Mac pasiekdavo įrenginį, tada bandykite dar kartą.";
+"backend.recovery.configure.link_local_interface_gone.action.2" = "Atnaujinkite paiešką ir vėl pasirinkite įrenginį.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.title" = "Įrenginys reaguoja labai lėtai";
 "backend.recovery.remote_error.ssh_timeout_slow_device.message" = "%@ reaguoja labai lėtai. Paleiskite įrenginį iš naujo. Tada palaukite, kol SSH grįš, ir bandykite dar kartą.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.1" = "Paleiskite įrenginį iš naujo.";
@@ -744,6 +751,11 @@
 "backend.recovery.device_unreachable.message" = "Nei SSH, nei AirPort ACP neatsakė išsaugotu įrenginio adresu.";
 "backend.recovery.device_unreachable.action.1" = "Įsitikinkite, kad įrenginys įjungtas ir prijungtas prie to paties tinklo ar Wi-Fi kaip šis Mac.";
 "backend.recovery.device_unreachable.action.2" = "Jei įrenginys paleidžiamas iš naujo, palaukite kelias minutes ir bandykite dar kartą.";
+"backend.recovery.device_unreachable.action.3" = "Jei AirPort Utility mato įrenginį, o TimeCapsuleSMB nemato, macOS blokuoja TimeCapsuleSMB: atidarykite sistemos nustatymus, eikite į Privacy & Security > Local Network ir išjunkite bei vėl įjunkite TimeCapsuleSMB.";
+"backend.recovery.link_local_interface_gone.title" = "Išsaugotas adresas nebeveikia";
+"backend.recovery.link_local_interface_gone.message" = "Išsaugotas įrenginio adresas yra ryšio vietinis IPv6 adresas tinklo jungtyje, kurios šis Mac nebeturi, pavyzdžiui, ištrauktame USB Ethernet adapteryje.";
+"backend.recovery.link_local_interface_gone.action.1" = "Vėl prijunkite adapterį ar kabelį, per kurį šis Mac pasiekdavo įrenginį, tada bandykite dar kartą.";
+"backend.recovery.link_local_interface_gone.action.2" = "Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
 "backend.recovery.ssh_transport_failed.title" = "SSH ryšys nutrūko";
 "backend.recovery.ssh_transport_failed.message" = "Įrenginys priėmė SSH ryšį, bet jį uždarė prieš prisijungimą. Taip gali nutikti, kol įrenginys paleidžiamas arba yra užimtas.";
 "backend.recovery.ssh_transport_failed.action.1" = "Palaukite minutę ir bandykite dar kartą.";

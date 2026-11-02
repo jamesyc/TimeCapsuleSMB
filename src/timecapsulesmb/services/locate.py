@@ -45,13 +45,18 @@ class LocateResult:
 
     `found`: it answered at `host` with the password. `not_moved`: its record
     still lists the current address, which is only slow (ACPd busy, or still
-    booting). `password_rejected`: it answered at `address` but refused the
-    password, as a reset device does.
+    booting), or the current host is a name, which is taken as current
+    without a browse. `password_rejected`: it answered at `address` but
+    refused the password, as a reset device does. `listed`: a record with
+    this MAC listed the current address, which shows the device is up there
+    when this program's own connects get no route (network.local_network_block);
+    a name never is.
     """
 
     outcome: LocateOutcome
     host: str | None = None
     address: str | None = None
+    listed: bool = False
 
     @property
     def rejected_note(self) -> str:
@@ -141,7 +146,7 @@ def _first_answer(candidates, mac: str | None, password: str, current: str, atte
             elif reading.password_matches and reading.airport_mac == mac:
                 return LocateResult("found", host=f"root@{normalize_endpoint_host(address)}", address=address)
     if lists_current:
-        return LocateResult("not_moved")
+        return LocateResult("not_moved", listed=True)
     if rejected is not None:
         return LocateResult("password_rejected", address=rejected)
     return LocateResult("not_found")

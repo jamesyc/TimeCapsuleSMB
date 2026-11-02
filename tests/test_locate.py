@@ -75,7 +75,8 @@ class LocateAirportTests(unittest.TestCase):
         # device is where it was.
         result, reads, follow = self.locate([airport_record("192.168.1.218", "fe80::82ea:96ff:fee6:5868%en0")])
 
-        self.assertEqual(result, LocateResult("not_moved"))
+        # The record listing it shows the device is up there.
+        self.assertEqual(result, LocateResult("not_moved", listed=True))
         self.assertEqual(reads, [])
         self.assertEqual(follow["result"], "not_moved")
 
@@ -94,7 +95,7 @@ class LocateAirportTests(unittest.TestCase):
             [airport_record("192.168.1.218", "192.168.1.40")], {"192.168.1.40": acp_reading(None)},
         )
 
-        self.assertEqual(result, LocateResult("not_moved"))
+        self.assertEqual(result, LocateResult("not_moved", listed=True))
         self.assertEqual(reads, ["192.168.1.40"])
 
     def test_a_saved_hostname_is_taken_as_current_without_a_browse(self) -> None:
@@ -111,7 +112,8 @@ class LocateAirportTests(unittest.TestCase):
                 browse=browse,
             )
 
-        self.assertEqual(result, LocateResult("not_moved"))
+        # Nothing was browsed, so nothing lists the device there.
+        self.assertEqual(result, LocateResult("not_moved", listed=False))
         browse.assert_not_called()
         read.assert_not_called()
         self.assertEqual(

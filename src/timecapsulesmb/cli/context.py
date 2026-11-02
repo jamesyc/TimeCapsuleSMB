@@ -435,7 +435,7 @@ class CommandContext:
         if self.probe_state.compatibility is None:
             # Say why SSH did not log in (SSH off, device unreachable, password
             # rejected) rather than leave it to look like an unsupported device.
-            raise service_runtime.probe_failure_error(self.probe_state.probe_result, self.connection.host)
+            raise service_runtime.probe_failure_error(self.probe_state.probe_result, self.connection)
         self.compatibility = self.probe_state.compatibility
         self.operation_context.apply_probe_state(self.probe_state)
         return self.compatibility

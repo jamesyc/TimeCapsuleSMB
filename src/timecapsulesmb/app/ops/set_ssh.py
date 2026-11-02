@@ -54,6 +54,7 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 callbacks=context.to_operation_callbacks(),
                 initial=initial,
                 before_enable=confirm_enable_ssh,
+                reading=context.reading_at(connection),
             )
         except AppOperationError:
             raise

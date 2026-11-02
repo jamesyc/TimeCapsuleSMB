@@ -19,6 +19,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_add_bonjour_naming_info,
     _doctor_check_active_smb_conf,
     _doctor_check_admin_password,
+    _doctor_report_blocked_network,
     _doctor_check_authenticated_smb,
     _doctor_check_local_smbclient,
     _doctor_check_deployed_config,
@@ -167,6 +168,8 @@ def run_doctor_checks(
         _doctor_check_local_smbclient(inputs, sink)
         if remote.device_unreachable:
             _doctor_report_unanswered_device(inputs, target, sink)
+        elif sink.local_network_blocked:
+            _doctor_report_blocked_network(target, sink)
         elif not _doctor_check_unshared_network(remote, link_plan, sink):
             network = DoctorNetworkProbe(target, remote, sink.debug_fields)
             bonjour_result = _add_bonjour_results(

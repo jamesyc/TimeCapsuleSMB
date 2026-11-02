@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -342,8 +343,10 @@ class ProbeFailureErrorTests(unittest.TestCase):
 
     @staticmethod
     def probe_failure_with(args, connect):
+        """probe_failure_error for (probe, saved host)."""
+        probe, host = args
         with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", connect):
-            return service_runtime.probe_failure_error(*args)
+            return service_runtime.probe_failure_error(probe, SshConnection(host, "pw", ""))
 
     def test_closed_ssh_with_acp_answering_means_ssh_is_turned_off(self) -> None:
         acp_probe = mock.Mock(return_value=None)
@@ -1243,6 +1246,15 @@ class ConfirmDeviceAddressTests(unittest.TestCase):
             "there": (acp_reading(True), None, ("root@10.0.0.2", acp_reading(True))),
             "moved": (acp_reading(None), self.MOVED, ("root@10.0.0.9", acp_reading(True))),
             "unanswered": (acp_reading(None), None, ("root@10.0.0.2", acp_reading(None))),
+            # The record still listing this address shows the device is up there.
+            "unanswered, listed": (
+                acp_reading(None), LocateResult("not_moved", listed=True),
+                ("root@10.0.0.2", replace(acp_reading(None), listed_by_bonjour=True)),
+            ),
+            # A saved hostname is taken as current without a browse: nothing listed it.
+            "unanswered, hostname": (
+                acp_reading(None), LocateResult("not_moved", listed=False), ("root@10.0.0.2", acp_reading(None)),
+            ),
         }
         for case, (reading, located, expected) in cases.items():
             with self.subTest(case=case):

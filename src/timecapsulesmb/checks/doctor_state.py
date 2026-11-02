@@ -60,6 +60,10 @@ class DoctorSink:
     # Called with a stage name and, when the stage starts a wait, a line for
     # people watching (the CLI prints it; the app shows the stage).
     on_stage: Callable[[str, str | None], None] | None = None
+    # macOS refuses this computer's connections to the device although SSH
+    # reaches it (network.local_network_block): the checks of the device over
+    # the network would only fail the same way.
+    local_network_blocked: bool = False
 
     def stage(self, stage: str, detail: str | None = None) -> None:
         if self.on_stage is not None:

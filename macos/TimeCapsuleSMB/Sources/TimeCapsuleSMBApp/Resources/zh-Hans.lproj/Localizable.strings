@@ -333,6 +333,8 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ 为服务器 [%2$@] 关闭了 SMB 3。如果它就是此设备，请删除该行，然后在时间机器设置中移除该磁盘并重新添加。";
 "doctor.check.ssh_disabled" = "此设备上的 SSH 已禁用。";
 "doctor.check.device_unreachable" = "设备在 SSH 和 AirPort ACP 上都没有响应。";
+"doctor.check.acp_no_route" = "macOS 拒绝了此 Mac 到该设备的连接，但 SSH 能连接到该设备。请在“系统设置”>“隐私与安全”>“本地网络”中将 TimeCapsuleSMB 禁用后再重新启用，然后退出并重新打开 TimeCapsuleSMB。";
+"doctor.check.link_local_interface_gone" = "设备保存的地址是一个链路本地地址，所在的网络连接此 Mac 已经没有了，例如已拔下的 USB 以太网转接器。请重新连接它，或刷新搜索并重新连接已保存的设备。";
 "doctor.domain.this_mac" = "此 Mac";
 "doctor.domain.device" = "设备";
 "event.summary.check" = "%@ %@";
@@ -682,6 +684,7 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.2" = "检查 IP 地址是否为 Time Capsule 或 AirPort 地址。";
 "backend.recovery.configure.remote_error.acp_port_probe.action.3" = "确认你连接在与设备相同的网络上。";
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "使用发现功能，或输入当前 LAN IP 地址。";
+"backend.recovery.configure.remote_error.acp_port_probe.action.5" = "如果 AirPort 实用工具能看到该设备而 TimeCapsuleSMB 不能，说明 macOS 正在阻止 TimeCapsuleSMB：打开“系统设置”>“隐私与安全”>“本地网络”，然后将 TimeCapsuleSMB 禁用后再重新启用。";
 "backend.recovery.auth_failed.title" = "身份验证失败";
 "backend.recovery.auth_failed.message" = "设备拒绝了提供的密码或 SSH 凭据。";
 "backend.recovery.auth_failed.action.1" = "重新输入 AirPort 管理员密码。";
@@ -694,6 +697,10 @@
 "backend.recovery.configure.acpd_quit.message" = "设备上的苹果 AirPort 服务（ACPd）已停止运行，因此在设备重启之前无法识别该设备。这是苹果固件的缺陷，不是 TimeCapsuleSMB 的问题。";
 "backend.recovery.configure.acpd_quit.action.1" = "拔掉设备电源，等待 10 秒，然后重新插上。";
 "backend.recovery.configure.acpd_quit.action.2" = "等待 2 分钟让设备完成启动，然后重试。";
+"backend.recovery.configure.link_local_interface_gone.title" = "此地址已失效";
+"backend.recovery.configure.link_local_interface_gone.message" = "设备的地址是一个链路本地 IPv6 地址，所在的网络连接此 Mac 已经没有了，例如已拔下的 USB 以太网转接器。";
+"backend.recovery.configure.link_local_interface_gone.action.1" = "重新连接此 Mac 之前用来连接该设备的转接器或线缆，然后再试一次。";
+"backend.recovery.configure.link_local_interface_gone.action.2" = "请刷新搜索并重新选择该设备。";
 "backend.recovery.remote_error.ssh_timeout_slow_device.title" = "设备响应非常慢";
 "backend.recovery.remote_error.ssh_timeout_slow_device.message" = "%@ 响应非常慢。请重启设备。然后等待 SSH 恢复，再重试。";
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.1" = "重启设备。";
@@ -744,6 +751,11 @@
 "backend.recovery.device_unreachable.message" = "在设备已保存的地址上，SSH 和 AirPort ACP 都没有响应。";
 "backend.recovery.device_unreachable.action.1" = "确认设备已开机，并与这台 Mac 连接在同一网络或 Wi-Fi 上。";
 "backend.recovery.device_unreachable.action.2" = "如果设备正在重启，请等待几分钟后重试。";
+"backend.recovery.device_unreachable.action.3" = "如果 AirPort 实用工具能看到该设备而 TimeCapsuleSMB 不能，说明 macOS 正在阻止 TimeCapsuleSMB：打开“系统设置”>“隐私与安全”>“本地网络”，然后将 TimeCapsuleSMB 禁用后再重新启用。";
+"backend.recovery.link_local_interface_gone.title" = "保存的地址已失效";
+"backend.recovery.link_local_interface_gone.message" = "设备保存的地址是一个链路本地 IPv6 地址，所在的网络连接此 Mac 已经没有了，例如已拔下的 USB 以太网转接器。";
+"backend.recovery.link_local_interface_gone.action.1" = "重新连接此 Mac 之前用来连接该设备的转接器或线缆，然后再试一次。";
+"backend.recovery.link_local_interface_gone.action.2" = "请刷新搜索并重新连接已保存的设备。";
 "backend.recovery.ssh_transport_failed.title" = "SSH 连接中断";
 "backend.recovery.ssh_transport_failed.message" = "设备接受了 SSH 连接，但在登录前将其关闭。设备正在启动或繁忙时可能会出现这种情况。";
 "backend.recovery.ssh_transport_failed.action.1" = "等待一分钟后重试。";

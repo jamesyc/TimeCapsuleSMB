@@ -47,6 +47,7 @@ class ErrorCode(str, Enum):
     DEVICE_PROBE_FAILED = "device_probe_failed"
     ACP_UNREACHABLE = "acp_unreachable"
     ACP_NO_ROUTE = "acp_no_route"
+    LINK_LOCAL_INTERFACE_GONE = "link_local_interface_gone"
     ACPD_BROKEN = "acpd_broken"
     ACPD_QUIT = "acpd_quit"
     LOCAL_NETWORK_FILTERED = "local_network_filtered"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from dataclasses import dataclass, replace
 
 from timecapsulesmb.core.error_codes import ErrorCode
@@ -57,6 +59,13 @@ _DISK_NOT_RESPONDING_STEPS = (
     "disk to a Mac; if file sharing is off, take an internal disk out and connect it to a Mac with a "
     "SATA-to-USB adapter.",
     *_DISK_FAILING_STEPS[1:],
+)
+
+# AirPort Utility has its own Local Network access, so it can see a device that
+# macOS keeps TimeCapsuleSMB from reaching: a check the user can run and the helper cannot.
+_BLOCKED_IF_AIRPORT_UTILITY_SEES_IT = (
+    "If AirPort Utility can see the device but TimeCapsuleSMB cannot, macOS is blocking TimeCapsuleSMB: open "
+    "“System Settings” > “Privacy & Security” > “Local Network”, then turn TimeCapsuleSMB off and on."
 )
 
 # The app and its helper from different releases send requests the other does not know.
@@ -120,8 +129,8 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
             "If TimeCapsuleSMB is already on, turn it off and on again. If that doesn't help, "
             "delete other copies of TimeCapsuleSMB and restart the Mac.",
         ),
-        # No suggested operation: Add Device and SSH Access both show this
-        # card, and each retries its own operation.
+        # No suggested operation: Add Device, SSH Access and every command that
+        # reaches the device show this card, and each retries its own operation.
         retryable=True,
         action_ids=("open_system_settings", "retry"),
     ),
@@ -185,15 +194,34 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
         action_ids=("open_ssh_access",),
     ),
+    # Nothing showed the device is up (services.runtime.probe_failure_error):
+    # a device that is off or gone, or a block nothing could prove.
     ErrorCode.DEVICE_UNREACHABLE: RecoveryInfo(
         "Device not reachable",
         "Neither SSH nor AirPort ACP answered at the device's saved address.",
         (
             "Make sure the device is turned on and connected to the same network or Wi-Fi as this Mac.",
             "If the device is restarting, wait a few minutes, then try again.",
+            _BLOCKED_IF_AIRPORT_UTILITY_SEES_IT,
         ),
         retryable=True,
         cli_extra=("Run `tcapsule doctor` to see which AirPorts answer on this network.",),
+    ),
+    # The saved address is a link-local one on an interface this Mac no longer
+    # has (checks.network.link_local_interface_gone): its connects get no route.
+    ErrorCode.LINK_LOCAL_INTERFACE_GONE: RecoveryInfo(
+        "The saved address no longer works",
+        (
+            "The device's saved address is a link-local IPv6 address on a network connection this Mac no longer "
+            "has, such as a USB Ethernet adapter that was unplugged."
+        ),
+        (
+            "Reconnect the adapter or cable this Mac used to reach the device, then try again.",
+            "Refresh discovery and reconnect the saved device.",
+        ),
+        retryable=True,
+        # The same way out as a device whose identity could not be confirmed.
+        suggested_operation="configure",
     ),
     ErrorCode.SSH_CLIENT_FAILED: RecoveryInfo(
         "SSH on this Mac failed",
@@ -804,6 +832,20 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
     ),
+    # Add Device's address comes from discovery or is typed: nothing is saved yet.
+    ("configure", ErrorCode.LINK_LOCAL_INTERFACE_GONE): RecoveryInfo(
+        "This address no longer works",
+        (
+            "The device's address is a link-local IPv6 address on a network connection this Mac no longer has, "
+            "such as a USB Ethernet adapter that was unplugged."
+        ),
+        (
+            "Reconnect the adapter or cable this Mac used to reach the device, then try again.",
+            "Refresh discovery and choose the device again.",
+        ),
+        retryable=True,
+        suggested_operation="configure",
+    ),
     ("configure", ErrorCode.SSH_COMPATIBILITY_FAILED): RecoveryInfo(
         "SSH connection could not be set up",
         "The device offers only older SSH security methods, and this Mac's SSH program did not "
@@ -1122,6 +1164,9 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
             "Check that the IP address is the Time Capsule or AirPort address.",
             "Confirm you are on the same network as the device.",
             "Use discovery or enter the current LAN IP address.",
+            # A typed address comes with nothing that could prove a block
+            # (checks.network.local_network_block), so the user checks.
+            _BLOCKED_IF_AIRPORT_UTILITY_SEES_IT,
         ),
         retryable=True,
         suggested_operation="configure",
@@ -1318,8 +1363,8 @@ _SSH_TIMEOUT_SLOW_DEVICE_RECOVERY = RecoveryInfo(
 
 def _entry(operation: str, code: ErrorCode, stage: str | None) -> RecoveryInfo:
     if code == ErrorCode.ACP_NO_ROUTE:
-        # Every ACP attempt refused at once with no route is, on this Mac, Local
-        # Network access.
+        # No route while something showed the device is up is, on this Mac,
+        # Local Network access (checks.network.local_network_block).
         code = ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED
     if stage:
         policy = _STAGE_RECOVERY.get((operation, code, stage))
@@ -1348,6 +1393,9 @@ _CLI_WORDS = (
     ("Quit and reopen TimeCapsuleSMB, then try again.", "Then run the command again."),
     ("If TimeCapsuleSMB is already on, turn it off and on again. If that doesn't help, delete other copies of "
      "TimeCapsuleSMB and restart the Mac.", "If it is already on, turn it off and on again."),
+    (_BLOCKED_IF_AIRPORT_UTILITY_SEES_IT,
+     "If AirPort Utility can see the device but this command cannot, macOS is blocking the app it runs in, such as "
+     "Terminal: turn that app off and on in System Settings > Privacy & Security > Local Network."),
     ("Open “SSH Access” and choose “Enable SSH”", "Run `tcapsule set-ssh --enable`"),
     ("Disable SSH again in “SSH Access”.", "Run `tcapsule set-ssh --disable` again."),
     ("Re-enter the AirPort admin password.", "Run `tcapsule configure` again and enter the AirPort admin password."),
@@ -1358,6 +1406,7 @@ _CLI_WORDS = (
     # Each CLI flash run saves a new backup before it plans.
     ("Choose “Back Up and Inspect Again”, then plan again.", "Run the same `tcapsule flash` command again: it backs up the banks first."),
     ("Refresh discovery and reconnect the saved device.", "Run `tcapsule configure` to find the device again."),
+    ("Refresh discovery and choose the device again.", "Run `tcapsule configure` again and choose the device it finds."),
     ("Forget this device, then add your Time Capsule or AirPort Extreme.",
      "Run `tcapsule configure` and choose your Time Capsule or AirPort Extreme."),
     ("Add your Time Capsule or AirPort Extreme instead.",
@@ -1388,19 +1437,25 @@ _CLI_WORDS = (
 # App steps about a setting only the app has; the CLI leaves them out. Any
 # other step reaches the CLI, so one naming an app control the table above does
 # not cover fails tests/test_app_recovery.py instead of vanishing.
+# Steps that only a Mac has a use for: the CLI also runs on Linux.
+_MACOS_ONLY_STEPS = frozenset({_BLOCKED_IF_AIRPORT_UTILITY_SEES_IT})
 _APP_ONLY_STEPS = frozenset({
     "If “Helper path” is set in “Settings”, clear it.",
     "Refresh the volume list, then try again.",
 })
 
 
-def cli_steps(operation: str, code: ErrorCode, *, stage: str | None = None) -> tuple[str, ...]:
+def cli_steps(
+    operation: str, code: ErrorCode, *, stage: str | None = None, platform: str | None = None,
+) -> tuple[str, ...]:
     """The next steps the CLI prints for an error: the app's, in the CLI's
-    words, then the entry's CLI-only steps."""
+    words, then the entry's CLI-only steps. A step about macOS is left out
+    on another `platform` (this computer's by default)."""
     entry = _entry(operation, code, stage)
+    on_macos = (platform or sys.platform) == "darwin"
     steps = []
     for step in entry.actions:
-        if step in _APP_ONLY_STEPS:
+        if step in _APP_ONLY_STEPS or (step in _MACOS_ONLY_STEPS and not on_macos):
             continue
         for app_words, cli_words in _CLI_WORDS:
             step = step.replace(app_words, cli_words)

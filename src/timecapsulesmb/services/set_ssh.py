@@ -8,6 +8,7 @@ from timecapsulesmb.checks.network import SSH_PORT
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.summaries import Summary
+from timecapsulesmb.device.probe import AirportAcpReading
 from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_ssh_with_port_preflight
@@ -105,10 +106,14 @@ def enable_set_ssh(
     initial: SetSshStatusResult | None = None,
     probe: Callable[[str], SetSshStatusResult] | None = None,
     before_enable: Callable[[str], None] | None = None,
+    reading: AirportAcpReading | None = None,
 ) -> SetSshResult:
     """Turn SSH on through ACP and reboot, unless it is already open.
     `before_enable` gets the address once its ACP answers, before anything
-    changes (enable_ssh_with_port_preflight)."""
+    changes. `reading` is this command's earlier network read of the device
+    at this address (confirm_device_address): a failed one whose lookup
+    found the device still listed there shows a Local Network block
+    (enable_ssh_with_port_preflight)."""
     callbacks = callbacks or OperationCallbacks()
     target_host = endpoint_host(connection.host)
     initial_status = initial or (probe or probe_set_ssh_status)(connection.host)
@@ -133,6 +138,7 @@ def enable_set_ssh(
 
     target_host = enable_ssh_with_port_preflight(
         target_host, connection.password, callbacks=callbacks, before_enable=before_enable,
+        listed_by_bonjour=reading is not None and reading.listed_by_bonjour,
     )
     try:
         moved = reboot_device(

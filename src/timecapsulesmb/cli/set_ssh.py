@@ -122,6 +122,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     no_wait=args.no_wait,
                     callbacks=command_context.to_operation_callbacks(),
                     initial=status,
+                    reading=command_context.reading_at(connection),
                 )
             except Exception as e:
                 error_text = str(e)
