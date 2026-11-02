@@ -484,6 +484,17 @@ static int brlock_reconnect(const char *name)
  * preservation use Samba's own fsp_set_smb_fname(). */
 static bool rename_lock_held, fail_rename_copy, fail_rename_stat;
 static unsigned renamed_records;
+/* A rename message runs wherever the last request left the working directory;
+ * msg_file_was_renamed() must change into the share root before the helper
+ * stats names relative to it. */
+static bool rename_by_message, fail_rename_chdir;
+static const connection_struct *rename_cwd;
+static int rename_chdir(connection_struct *conn)
+{
+	if (fail_rename_chdir) { errno = EACCES; return -1; }
+	rename_cwd = conn;
+	return 0;
+}
 static const char *renamed_prefix = "dest space/";
 static int rename_unlock(void *p)
 {
@@ -521,6 +532,7 @@ static int rename_stat(connection_struct *conn, const files_struct *dir,
 {
 	const char *suffix = name->base_name + strlen(renamed_prefix);
 	CHECK(dir == conn->cwd_fsp && name->stream_name == NULL && flags == 0);
+	CHECK(!rename_by_message || rename_cwd == conn);
 	if (fail_rename_stat) { errno = EIO; return -1; }
 	ZERO_STRUCTP(st);
 	if (!strcmp(suffix, "sub/band")) st->st_ex_ino = 1;
@@ -539,8 +551,10 @@ static struct file_id rename_stat_id(connection_struct *conn, const SMB_STRUCT_S
 #define get_existing_share_mode_lock rename_lock
 #define rename_share_filename rename_record
 #define cp_smb_filename rename_copy
+#define vfs_ChDir_shareroot rename_chdir
 #include "tc_rename_open_files.inc"
 #include "tc_rename_message.inc"
+#undef vfs_ChDir_shareroot
 #undef get_existing_share_mode_lock
 #undef rename_share_filename
 #undef cp_smb_filename
@@ -573,7 +587,8 @@ static int rename_descendants(const char *which)
 	const char *prefix = "source", *destination = "dest space";
 	char *band_name, *folder_name, *ref_name, *new_band, *new_folder, *new_ref;
 	bool no_change = !strcmp(which, "rename_case_sensitive") ||
-		!strcmp(which, "rename_message_other_share") || !strcmp(which, "rename_stat_failure");
+		!strcmp(which, "rename_message_other_share") || !strcmp(which, "rename_stat_failure") ||
+		!strcmp(which, "rename_message_chdir_failure");
 	char work[] = "tc-rename-XXXXXX", data[5] = {0};
 	int here = open(".", O_RDONLY), fd;
 	struct stat st;
@@ -619,13 +634,17 @@ static int rename_descendants(const char *which)
 	fail_rename_copy = !strcmp(which, "rename_allocation_failure");
 	if (!strncmp(which, "rename_message", 14)) {
 		struct file_rename_message msg = {
-			.servicepath = no_change ? "/missing" : conn->connectpath,
+			.servicepath = !strcmp(which, "rename_message_other_share") ? "/missing" : conn->connectpath,
 			.base_name = dst.base_name,
 			.old_base_name = src.base_name,
 		};
 		DATA_BLOB blob = data_blob_null;
 		CHECK(NDR_ERR_CODE_IS_SUCCESS(ndr_push_struct_blob(&blob, frame, &msg,
 			(ndr_push_flags_fn_t)ndr_push_file_rename_message)));
+		rename_by_message = true;
+		fail_rename_chdir = !strcmp(which, "rename_message_chdir_failure");
+		/* The last request left the working directory on another share. */
+		rename_cwd = other;
 		msg_file_was_renamed(NULL, sconn, MSG_SMB_FILE_RENAME,
 			(struct server_id){.pid = 999}, &blob);
 		status = NT_STATUS_OK;

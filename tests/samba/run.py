@@ -43,7 +43,7 @@ DURABLE_CASES = (
     "create_mismatch", "owner_mismatch", "not_durable", "database_failure", "v1_reconnect",
     "v1_transition", "rename_open_descendants", "rename_allocation_failure",
     "rename_case_sensitive", "rename_case_sensitive_match", "rename_unicode", "rename_emoji",
-    "rename_message", "rename_message_other_share", "rename_case_only",
+    "rename_message", "rename_message_other_share", "rename_message_chdir_failure", "rename_case_only",
     "rename_message_reused_path", "rename_stat_failure",
     "scavenger_hello_sent", "scavenger_hello_exited", "scavenger_hello_half", "scavenger_hello_silent",
     "rescan_dead_owners", "rescan_nothing_dead", "cleanup_dead_owner", "cleanup_live_owner",

@@ -6,10 +6,10 @@ diff --git a/source3/smbd/close.c b/source3/smbd/close.c
  	SMB_ASSERT(fsp->stream_fsp == NULL);
  
 +	/*
-+	 * A shutdown close (a dropped connection, an SMB2 LOGOFF, a tree
-+	 * disconnect) is not a request on this file's tree, so nothing has
-+	 * changed into its share: the working directory can be "/" after
-+	 * another tree's close_cnum(), or another share's root. Closing a
++	 * A shutdown close from a dropped connection or an SMB2 LOGOFF is
++	 * not a request on this file's tree, so nothing has changed into
++	 * its share: the working directory can be "/" after another tree's
++	 * close_cnum(), or another share's root. Closing a
 +	 * file or directory resolves fsp_name from the working directory
 +	 * (delete on close, durable disconnect), so start from this file's
 +	 * share root. Named pipes and print files have no name to resolve.
