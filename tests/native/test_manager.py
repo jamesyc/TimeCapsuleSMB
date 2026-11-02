@@ -69,10 +69,10 @@ import json,os,signal,sys,time,select
 from pathlib import Path
 role=sys.argv[1] if Path(sys.argv[0]).name=='roles' else Path(sys.argv[0]).name
 log=Path(os.environ['TC_TEST_ROOT'])/'events'
-def event(kind):
+def event(kind,**extra):
     # Events from different children need one clock origin; macOS Python 3.9's
     # time.monotonic() starts separately in each process.
-    row=dict(kind=kind,role=role,pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),args=sys.argv[1:],at=time.clock_gettime(time.CLOCK_MONOTONIC))
+    row=dict(kind=kind,role=role,pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),args=sys.argv[1:],at=time.clock_gettime(time.CLOCK_MONOTONIC),**extra)
     if role=='smbd' and kind=='start':
         # What smbd's own-name lookups would have found when it started.
         hosts=Path(os.environ['TC_TEST_ROOT'])/'hosts'
@@ -127,7 +127,7 @@ if role=='telemetry' and '--report' in sys.argv and not stuck:
     root=Path(os.environ['TC_TEST_ROOT'])
     while (root/'report-hold').exists():time.sleep(.05)
     status=int((root/'report-exit').read_text()) if (root/'report-exit').exists() else 0
-    event('report-done')
+    event('report-done',status=status)
     sys.exit(status)
 if role=='diskd' and (Path(os.environ['TC_TEST_ROOT'])/'diskd-fail').exists():sys.exit(7)
 while True:
@@ -439,17 +439,21 @@ LOCKS_FULL=4864*1024
 LOCKS_RESET_LOG='restarting smbd with it empty'
 
 
-def seconds_of_day():
-    """Now on the clock the manager's log lines carry."""
-    now=time.localtime()
-    return now.tm_hour*3600+now.tm_min*60+now.tm_sec
-
-
 def locks_resets(root):
-    """(seconds of the day, KiB) of each reset the manager logged."""
-    return [(int(h)*3600+int(m)*60+int(s),int(kib)) for h,m,s,kib in
-            re.findall(r'(\d\d):(\d\d):(\d\d) manager: \S* holds (\d+) KiB; restarting smbd with it empty',
+    """(epoch seconds, KiB) of each reset the manager logged. The whole local
+    date and time, so that a run across midnight still orders them."""
+    return [(int(time.mktime(time.strptime(stamp,'%Y-%m-%d %H:%M:%S'))),int(kib)) for stamp,kib in
+            re.findall(r'(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) manager: \S* holds (\d+) KiB; restarting smbd with it empty',
                        runtime_log(root))]
+
+
+def test_lock_resets_keep_their_order_across_midnight(tmp_path):
+    (tmp_path/'stderr').write_text(
+        '2026-11-01 23:59:59 manager: /x/locks holds 4864 KiB; restarting smbd with it empty\n'
+        '2026-11-01 23:59:59 manager: smbd started\n'
+        '2026-11-02 00:00:14 manager: /x/locks holds 4160 KiB; restarting smbd with it empty\n')
+    (before,before_kib),(after,after_kib)=locks_resets(tmp_path)
+    assert after-before==15 and (before_kib,after_kib)==(4864,4160)
 
 
 def fill(path,size):
@@ -503,7 +507,7 @@ def test_a_refill_soon_after_a_reset_restarts_smbd_only_when_nearly_full(manager
     time.sleep(2)
     [(reset_at,_)]=locks_resets(root)
     # The window ran inside the gap on the manager's clock (its log's).
-    assert seconds_of_day()-reset_at<gap-1
+    assert int(time.time())-reset_at<gap-1
     assert len(smbd_starts(events()))==2
     # Nearly full: it restarts at once, gap or not.
     fill(locks/'leases.tdb',LOCKS_FULL-LOCKS_RESET)
@@ -1400,6 +1404,12 @@ def verdict_reports(events):
     return [reason for reason in reports(events) if reason.startswith(('payload:','rsync:'))]
 
 
+def verdict_outcomes(events):
+    """Exit status of each finished verdict report, in order."""
+    return [e['status'] for e in events() if e['role']=='telemetry' and e['kind']=='report-done'
+            and e['args'][2].startswith(('payload:','rsync:'))]
+
+
 def test_a_verdict_that_changes_is_reported_again(manager,monkeypatch,tmp_path):
     # Other bytes first (payload:damaged), then the disk stops returning them
     # at all: the title's new verdict is a report of its own, each once.
@@ -1516,15 +1526,15 @@ def test_a_failed_verdict_report_is_sent_again_until_delivered(manager,monkeypat
     monkeypatch.setenv('TC_TEST_EIO',str(root/'dk2/.samba4/rsync'))
     start()
     # Each failed send is retried TC_BUFSTALL_REPORT_RETRY_MS later.
-    wait(lambda rows:len(verdict_reports(events))>=2,30)
+    wait(lambda rows:verdict_outcomes(events)[:2]==[1,1],30)
     assert set(verdict_reports(events))=={'rsync:unreadable'}
     (root/'report-exit').unlink()
-    sent=len(verdict_reports(events))
-    wait(lambda rows:len(verdict_reports(events))>sent,30)
+    wait(lambda rows:0 in verdict_outcomes(events),30)
     # Delivered: never sent again, though the verdict stays in the title.
-    final=len(verdict_reports(events))
     time.sleep(5*TIMINGS['TC_BUFSTALL_REPORT_RETRY_MS']/1000)
-    assert len(verdict_reports(events))==final
+    outcomes=verdict_outcomes(events)
+    assert outcomes==[1]*(len(outcomes)-1)+[0]
+    assert len(verdict_reports(events))==len(outcomes)
     assert verdicts(root)==(probe.RSYNC_UNREADABLE,)
 
 
