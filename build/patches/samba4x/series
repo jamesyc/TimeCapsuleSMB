@@ -400,13 +400,13 @@
 #
 # Apple's NetBSD 4 and NetBSD 6 kernels lose writes to a static binary's
 # initialized data: handling the first write to a .data page, UVM fault-ahead
-# maps the neighbouring pages (4 below, 3 above) from the executable again,
-# dropping this process's (or its parent's) changes to them. Globals silently
-# returned to their initial values; talloc_magic did, so talloc aborted with
-# "Bad talloc magic value" in forked children and elsewhere, depending only on
-# code layout. A first-priority constructor in talloc, linked into every Samba
-# binary, turns fault-ahead off for the writable segment with MADV_RANDOM, and
-# talloc_lib_init repeats it where NetBSD 4's GCC has no constructor priorities.
+# maps the neighbouring pages from the executable again, dropping this process's
+# (or its parent's) changes to them. Globals silently return to their initial
+# values; talloc_magic does, so talloc aborts with "Bad talloc magic value" in
+# forked children and elsewhere, depending only on code layout. A first-priority
+# constructor in talloc, linked into every Samba binary, turns fault-ahead off
+# for the writable segment with MADV_RANDOM, and talloc_lib_init repeats it
+# where NetBSD 4's GCC has no constructor priorities.
 0046-talloc-data-faultahead.patch|keep static-data writes: no UVM fault-ahead on the writable segment
 # Apple's NetBSD 6 kernel shows a child the writes its parent makes after
 # fork() to pages whose reference bit was cleared before it: its ARM
@@ -419,10 +419,12 @@
 # mappings, and right before each fork() every private mapping, the stack too,
 # is protected PROT_NONE and back (dropping the stale page state). Touching a
 # page is not enough: one left writable that way stays shared at every later
-# fork(). The native service and rsync link the same file.
+# fork(). The registry records read-only and PROT_NONE private ranges too, so
+# that one mprotect() later makes writable is repaired from then on. The native
+# service and rsync link the same file.
 0070-replace-fork-repair.patch|fork() repair for Apple's NetBSD 6 kernel
-# Time Capsule HFS can report file and directory owner/group as 4294967295.
-# Normalize only that sentinel at Samba's stat_ex boundary so ACL, stream, and
+# HFS on the device can report file and directory owner/group as 4294967295.
+# Normalize only that sentinel in init_stat_ex_from_stat(), so ACL, stream and
 # security descriptor paths see the forced root/wheel appliance identity. The
 # core-file directory setup calls lstat() directly, bypassing that
 # normalization, so on appliance builds it uses the non-strict create, which

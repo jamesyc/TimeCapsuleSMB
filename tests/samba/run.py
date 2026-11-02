@@ -79,7 +79,7 @@ FILE_GROWTH_CASES = ("unchecked", "stale_size", "fits", "exceeds", "boundary", "
 # unless a plain fork() still leaks there, so the other cases test something.
 # Skipped where the build does not link it.
 FORK_REPAIR_CASES = ("kernel", "bounds", "registry", "regions", "read_after_repair", "nested", "fallback",
-                     "stack_below", "stack_deep", "needscopy")
+                     "free_then_fork", "stack_below", "stack_deep", "needscopy")
 # Patch 0072's check for a short macOS WRITE, its frame walk and end decision.
 SHORT_WRITE_CASES = ("whole", "short", "several", "keepalive", "false_match", "ids_and_offset",
                      "partial_tail", "end_now", "arriving", "compound", "cap", "read_idle")

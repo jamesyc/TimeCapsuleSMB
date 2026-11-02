@@ -448,13 +448,42 @@ static void case_fallback(void)
 	char *many = mmap(NULL, count * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 
 	CHECK(many != MAP_FAILED);
-	/* Every other page PROT_NONE: 600 separate private ranges. */
+	/* Every other page PROT_NONE: 1,200 recorded ranges (600 of them
+	 * writable), more than the registry's 512 slots. */
 	for (i = 1; i < (int)count; i += 2) {
 		CHECK(mprotect(many + i * pg, pg, PROT_NONE) == 0);
 	}
 	n = regions(r, stack);
 	CHECK(leaked(r, n, fork) == 0);
 	CHECK(tc_fork_repair_fallbacks == 1 && tc_fork_repair_lock_failures == 0);
+}
+
+/* libc's jemalloc unmaps a freed block bigger than its 1 MiB chunk and maps
+ * a new one for the next. The registry must drop the unmapped ranges (a
+ * stale one would make the repair fail and fall back to locking memory) and
+ * record the new one, so a block allocated after free() is repaired like any
+ * other. */
+static void case_free_then_fork(void)
+{
+	char stack[(PAGES + 1) * 16384];
+	struct region r[8];
+	char *blocks[8], *reused;
+	int n, i;
+
+	for (i = 0; i < 8; i++) {
+		blocks[i] = malloc(2 << 20);
+		CHECK(blocks[i] != NULL);
+		memset(blocks[i], 'x', 2 << 20);
+	}
+	for (i = 0; i < 8; i++) {
+		free(blocks[i]);
+	}
+	n = regions(r, stack);
+	reused = malloc(2 << 20);
+	CHECK(reused != NULL);
+	r[n++] = (struct region){ "reused", align(reused) };
+	CHECK(leaked(r, n, fork) == 0);
+	CHECK(tc_fork_repair_fallbacks == 0);
 }
 #endif
 
@@ -477,6 +506,7 @@ int main(int argc, char **argv)
 	else if (strcmp(name, "bounds") == 0) case_bounds();
 	else if (strcmp(name, "registry") == 0) case_registry();
 	else if (strcmp(name, "fallback") == 0) case_fallback();
+	else if (strcmp(name, "free_then_fork") == 0) case_free_then_fork();
 	else if (strcmp(name, "stack_below") == 0) case_stack_below();
 	else if (strcmp(name, "stack_deep") == 0) case_stack_deep();
 	else if (strcmp(name, "needscopy") == 0) case_needscopy();

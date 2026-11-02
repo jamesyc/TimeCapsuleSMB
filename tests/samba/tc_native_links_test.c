@@ -483,7 +483,7 @@ NTSTATUS t_get_reparse_tag(struct files_struct *fsp, uint32_t *_reparse_tag);
 #include "tc_reparse_tag.inc"
 #undef fsctl_get_reparse_tag
 
-/* Digests the macOS client wrote on a Time Capsule share (2026-09-23 captures). */
+/* Digests the macOS client wrote on a Time Capsule share (captures). */
 static const struct { const char *target, *md5; } apple_vectors[] = {
 	{ "t.txt", "8454272a4276bc0a45ff46f8bf22a15f" },
 	{ "../nowhere", "722d95a43646533268865ae62a41059c" },

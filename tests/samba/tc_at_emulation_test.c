@@ -949,8 +949,8 @@ static void test_times(void)
 	CHECK(file_time(&st, 1).tv_sec >= now - 1 && file_time(&st, 1).tv_sec <= now + 5);
 
 	/* A link's own times, never its target's. Apple's HFS accepts lutimes()
-	 * on a symlink but keeps the link's times (probed on both kernels
-	 * 2026-09-28); other filesystems set them. */
+	 * on a symlink but keeps the link's times (probed on both kernels);
+	 * other filesystems set them. */
 	set[0].tv_sec = 981173106; set[0].tv_nsec = 0;
 	set[1].tv_sec = 981173106; set[1].tv_nsec = 0;
 	CHECK(utimensat(d, "f", set, 0) == 0);
@@ -994,9 +994,8 @@ static bool on_hfs(const char *path)
 }
 
 /* Make the kernel drop its cached vnodes of earlier files: create twice as
- * many files as it caches (kern.maxvnodes) and look each up twice, as the
- * probe of 2026-09-29 did; its next stat of an earlier file reads HFS's
- * catalog. */
+ * many files as it caches (kern.maxvnodes) and look each up twice; its next
+ * stat of an earlier file reads HFS's catalog. */
 static void churn_vnodes(void)
 {
 	int mib[2] = { CTL_KERN, KERN_MAXVNODES }, maxvnodes, i, n, pass;
@@ -1033,7 +1032,7 @@ static void churn_vnodes(void)
  * nearest time it keeps; -1 in both times, which the kernels take as "leave
  * both alone", goes one second earlier, and a single -1 is kept. On HFS the stored times are read back from the catalog too:
  * both kernels store the clamped time, and read a time before 1970 back as
- * 1970 (probed on both devices 2026-09-29).
+ * 1970 (probed on both devices).
  */
 static void test_time_range(void)
 {
@@ -1068,7 +1067,7 @@ static void test_time_range(void)
 			continue;	/* not a time_t here (NetBSD 4) */
 		}
 		/* Empty: a vnode that caches file pages sits on the kernel's
-		 * hold list and outlives the churn below (probed 2026-09-29). */
+		 * hold list and outlives the churn below (probed). */
 		make_file(d, cases[i].name, "");
 		set[0].tv_sec = set[1].tv_sec = (time_t)cases[i].set;
 		set[0].tv_nsec = set[1].tv_nsec = 500000000;

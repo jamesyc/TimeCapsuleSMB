@@ -96,7 +96,7 @@ static long test_migrate_syscall_377(int fd,
 	}
 	/* Apple's kernels keep no all-zero FinderInfo: the write succeeds and
 	 * removes the attribute, so a read reports it missing (NetBSD 6 and
-	 * NetBSD 4 LE, 2026-09-30; the hfs case checks it on the device). */
+	 * NetBSD 4 LE; the hfs case checks it on the device). */
 	if (strcmp(name, "com.apple.FinderInfo") == 0 && size == 32 &&
 	    all_zero(value, size))
 	{

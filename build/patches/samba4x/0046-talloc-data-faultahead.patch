@@ -1,7 +1,7 @@
 diff --git a/lib/talloc/talloc.c b/lib/talloc/talloc.c
 --- a/lib/talloc/talloc.c
 +++ b/lib/talloc/talloc.c
-@@ -392,11 +392,61 @@ _PUBLIC_ void talloc_set_log_fn(void (*log_fn)(const char *message))
+@@ -392,11 +392,60 @@ _PUBLIC_ void talloc_set_log_fn(void (*log_fn)(const char *message))
  #define CONSTRUCTOR
  #pragma init (talloc_lib_init)
  #endif
@@ -11,12 +11,11 @@ diff --git a/lib/talloc/talloc.c b/lib/talloc/talloc.c
 + * Time Capsule appliance builds (patch 0046). Apple's NetBSD 4 and NetBSD 6
 + * kernels lose writes to a static binary's initialized data: handling the
 + * first write to a .data page, UVM fault-ahead also maps the neighbouring
-+ * pages (4 below, 3 above) straight from the executable, even the ones this
-+ * process already modified, so their globals silently return to their
-+ * initial values. A forked child is hit the same way by its own first
-+ * writes. talloc_magic, set below, was the first casualty seen: a later
-+ * talloc call aborted with "Bad talloc magic value" depending only on code
-+ * layout (tc_aio_fork_test, and tc_native_links_test once cases were added).
++ * pages straight from the executable, even the ones this process already
++ * modified, so their globals silently return to their initial values. A
++ * forked child is hit the same way by its own first writes. talloc_magic,
++ * set below, is one: a later talloc call then aborts with "Bad talloc magic
++ * value", depending only on code layout.
 + *
 + * MADV_RANDOM turns fault-ahead off for the writable segment, and a forked
 + * child inherits that. Every Samba binary links talloc, so it lives here,

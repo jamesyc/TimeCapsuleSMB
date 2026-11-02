@@ -2,7 +2,7 @@
   "artifacts": {
     "rsync": {
       "path": "bin/rsync/rsync",
-      "sha256": "649f04087c9b34e8ce67c364ab34464c542ab2137ef2c2b848a7b0f1913e9c3b"
+      "sha256": "98aacb33223fa51cf282a540ea552d7d76b1e36414253cb9d173f74062d21b1f"
     },
     "rsync-netbsd4le": {
       "path": "bin/rsync-netbsd4le/rsync",
@@ -14,31 +14,31 @@
     },
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "52080c52c17f8fd3bfb18b0fbe34b8668f8504b354c7fb57cf57e6594f73fd81"
+      "sha256": "74648f2b09e88b10848b62398859034181814509dd81378dfa56144bb6e6f078"
     },
     "smbd-netbsd4le": {
       "path": "bin/samba4-netbsd4le/smbd",
-      "sha256": "e61b8ab1a011cc8bca316e9d16d047dc730e5ca31231b6be23a94feb5024dea9"
+      "sha256": "c3f40b967751f1025ef25b5343baa633151a5ba01a7377b1412e8e613a14d343"
     },
     "smbd-netbsd4be": {
       "path": "bin/samba4-netbsd4be/smbd",
-      "sha256": "3cc9dda73e018f85b37e90efcdfd96368a723d1481dd250235752d6321f46286"
+      "sha256": "cbed1e014704658fee0ba85e96fe49cfcf1225bb845ba2740bc2c42966ea10d7"
     },
     "xattr-migrator": {
       "path": "bin/xattr-migrate/xattr-hfs-migrate",
-      "sha256": "1f1d747014bbb79d3a94c326bab6374a3bc117a1b3ad75359affd8b4c8a62bf9"
+      "sha256": "7a7285c446086adc47ec26f5f4d4531b9d2f9adc2888d7bd9ac3c09d8f7b2e98"
     },
     "xattr-migrator-netbsd4le": {
       "path": "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",
-      "sha256": "98f4ddbf06fe18497138d7ca91e61fff91fb5c7ee6a63c18793dd6a673c0073c"
+      "sha256": "1a142076bfbc98cf750e27e22124b964c47f0a7f8fed9de02797d88573e7fb1a"
     },
     "xattr-migrator-netbsd4be": {
       "path": "bin/xattr-migrate-netbsd4be/xattr-hfs-migrate",
-      "sha256": "d29bfb3c21c1cb124a136ad733929d815ab933c00d9b4de61565417642d484b7"
+      "sha256": "78ac1c196fad4d31d4958924d288f4802807f15aab0beb124f4d2bfd16293a52"
     },
     "service": {
       "path": "bin/service/service",
-      "sha256": "c5d2e6282041a44af7d419ba54c673f908ead81915f812fa3d1704654249020f"
+      "sha256": "5867abecba4642a760b23cbf480f1672efc64f17caec5232556ed99a1e406b14"
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",
