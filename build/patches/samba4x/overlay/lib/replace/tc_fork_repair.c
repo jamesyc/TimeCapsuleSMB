@@ -12,9 +12,9 @@
  * pmap's "modified" emulation, which makes the page writable again without a
  * copy-on-write fault, and the parent writes into the page it now shares with
  * the child. NetBSD 4's pmap_protect() treats any non-zero PTE as present and
- * is not affected. Proven on the device (2026-09-29):
- * a connection child spun forever freeing an smbd parent context whose child
- * list came half from before and half from after the fork.
+ * is not affected. On the device a connection child spun forever freeing an
+ * smbd parent context whose child list came half from before and half from
+ * after the fork.
  *
  * Right before each fork() this file removes the parent's mappings of its own
  * private memory, so the kernel's stale page state goes with them: every
@@ -30,15 +30,19 @@
  * copy-on-write fault (seen on the device in the smbd parent's stack). The
  * process cannot list its own mappings (this kernel has no vm.proc.map sysctl),
  * so linker wrappers (--wrap=mmap,_mmap,munmap,mremap,mprotect) keep a registry
- * of the private ones, read-only ones too: the parent cannot write to those
- * after fork(), so the repair skips them, but mprotect() can make one writable
- * and only a recorded range follows that. The data segment runs from
- * __preinit_array_start to sbrk(0), and the stack's writable part is the
- * RLIMIT_STACK below __ps_strings (the kernel keeps the rest of the stack's
- * reserve PROT_NONE). The repaired ranges also get MADV_RANDOM: libc's fork() runs
- * its atfork handlers (jemalloc writes its locks) between the repair and the
- * system call, and UVM fault-ahead would enter the faulting page's neighbours
- * unreferenced, which is the leaking state again (seen on the device in .bss).
+ * of the private ones, read-only and PROT_NONE ones too: the parent cannot
+ * write to those after fork(), so the repair skips them, but mprotect() can
+ * make one writable and only a recorded range follows that. Nothing smbd, the
+ * service or rsync link calls mprotect() or maps PROT_NONE (libc's jemalloc
+ * maps its chunks read-write and unmaps them), so there the linker drops the
+ * mprotect() wrapper; recording those ranges covers code that might. The data
+ * segment runs from __preinit_array_start to sbrk(0), and the stack's
+ * writable part is the RLIMIT_STACK below __ps_strings (the kernel keeps the
+ * rest of the stack's reserve PROT_NONE). The repaired ranges also get
+ * MADV_RANDOM: libc's fork() runs its atfork handlers (jemalloc writes its
+ * locks) between the repair and the system call, and UVM fault-ahead would
+ * enter the faulting page's neighbours unreferenced, which is the leaking
+ * state again (seen on the device in .bss).
  * Only that window needs it: once fork() has write-protected the pages,
  * whatever fault-ahead enters later is removed by the next fork()'s repair
  * before it matters. So the parent and the child put normal advice back as soon
@@ -66,14 +70,11 @@
 
 #ifdef TC_FORK_REPAIR
 
-#include <sys/types.h>
-#include <sys/mman.h>
 #include <sys/resource.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
-#include <unistd.h>
 #if defined(__NetBSD__) && !defined(TC_FORK_REPAIR_TEST)
 #include <sys/exec.h>
 /*
@@ -191,7 +192,7 @@ static void tc_fork_repair_insert(uintptr_t start, uintptr_t end, int prot)
 	unsigned i = 0;
 	struct tc_fork_repair_range *r;
 
-	if (start >= end || prot == PROT_NONE) {
+	if (start >= end) {
 		return;
 	}
 	while (i < tc_fork_repair_count && tc_fork_repair_map[i].start < start) {
@@ -602,7 +603,9 @@ int tc_fork_repair_prepare(void)
 	int have_data;
 	unsigned i;
 
-	/* Every precondition first: a fallback never follows a partial repair. */
+	/* Every precondition first, so that these fallbacks never follow a
+	 * partial repair. A cycle that fails below can still; the fallback
+	 * then covers the rest. */
 	if (tc_fork_repair_overflow) {
 		return -1;
 	}
