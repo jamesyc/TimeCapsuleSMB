@@ -342,6 +342,7 @@ Rules that apply to one language. The vocabulary tables above cover single terms
 - The catalog never settled a gender for Time Capsule, so a sentence puts it after *dispositivo* (*il dispositivo Time Capsule*).
 - Waking a sleeping disk is *risvegliare il disco*, never *riattivare* (Activate).
 - A sentence about what an operation does names it as the subject (`Al termine, la riparazione riavvia il dispositivo.`): with *tu* commands, a bare `Riavvia il dispositivo` reads as an instruction.
+- A confirmation title asks with the infinitive (`Disinstallare e riavviare?`, `Eseguire la riparazione del disco?`), not with the button's *tu* command; a label's own words keep its slash spacing (`Installare/aggiornare Samba e riavviare?` beside the button `Installa/aggiorna Samba e riavvia`).
 
 ### Portuguese
 
