@@ -250,7 +250,7 @@ final class DashboardPresentationTests: XCTestCase {
             let check = testDoctorCheck(status: "FAIL", message: "the helper's English", domain: "device", code: problem.code)
             let summary = DoctorSummary(payload: try testDoctorPayload(checks: [check]).decode(DoctorPayload.self))
             XCTAssertEqual(summary.payloadProblemCode, problem.code)
-            XCTAssertEqual(summary.checks.first?.localizedMessage, detail)
+            XCTAssertEqual(summary.checks.first?.localizedMessage(), detail)
             var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
             profile.runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
                 profile: profile, skipSSH: false, state: .failed, summary: summary)
@@ -289,7 +289,7 @@ final class DashboardPresentationTests: XCTestCase {
         let detail = L10n.string("doctor.check.disk_failing")
         XCTAssertNotEqual(detail, "doctor.check.disk_failing")
         XCTAssertTrue(summary.diskFailing)
-        XCTAssertEqual(summary.checks.first?.localizedMessage, detail)
+        XCTAssertEqual(summary.checks.first?.localizedMessage(), detail)
         var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
         profile.runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
             profile: profile, skipSSH: false, state: .failed, summary: summary)

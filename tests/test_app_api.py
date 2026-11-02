@@ -3858,6 +3858,43 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0, collector.events)
         disable_ssh.assert_called_once()
 
+    def test_a_confirmation_holds_when_what_the_app_sees_about_itself_changes(self) -> None:
+        # The app works its facts out again for the confirmed request: the user
+        # may have ejected the disk image while the confirmation was showing.
+        result = SetSshResult(
+            host="10.0.0.2", action="disable_ssh", ssh_initially_reachable=True, ssh_final_reachable=False,
+            acp_port_reachable=True, reboot_requested=True, waited=True,
+            summary=Summary("ssh.disabled", "SSH disabled."),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            params: dict[str, object] = {"config": str(config_path), "action": "disable", "password": "secret"}
+            with mock.patch(
+                "timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status",
+                return_value=SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=True),
+            ), mock.patch("timecapsulesmb.app.ops.set_ssh.disable_set_ssh", return_value=result) as disable_ssh:
+                asking = CollectingSink()
+                service.run_api_request({"operation": "set-ssh", "params": {
+                    **params, "macos_app_other_copies": 1, "macos_app_just_updated": True,
+                }}, asking.sink)
+                confirmation_id = self.assert_confirmation(asking, "ssh_access.disable_reboot")["confirmation_id"]
+
+                collector = CollectingSink()
+                rc = service.run_api_request({"operation": "set-ssh", "params": {
+                    **params, "macos_app_other_copies": 0, "macos_app_just_updated": False,
+                    "confirmation_id": confirmation_id,
+                }}, collector.sink)
+
+        self.assertEqual(rc, 0, collector.events)
+        disable_ssh.assert_called_once()
+        # What is confirmed still binds it.
+        context = {"host": "10.0.0.2"}
+        self.assertNotEqual(
+            self.confirmation_id_for("set-ssh", {"action": "disable"}, context),
+            self.confirmation_id_for("set-ssh", {"action": "enable"}, context),
+        )
+
     def test_set_ssh_disable_with_ssh_already_off_does_not_compare_the_password(self) -> None:
         _collector, _rc, compare, _disable_ssh = self.run_set_ssh_disable_with_password_answer(False, ssh_open=False)
 
@@ -4045,6 +4082,129 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(started.kwargs["options"]["action"], "enable")
         self.assertEqual(finished.args, ("set_ssh_finished",))
         self.assertEqual(finished.kwargs["result"], "confirmation_required")
+
+    def test_set_ssh_enable_stops_when_macos_denies_local_network_access(self) -> None:
+        # With SSH off, nothing else could show that macOS blocks the ACP connect.
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status") as probe, \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
+                rc = service.run_api_request(
+                    {
+                        "operation": "set-ssh",
+                        "params": {
+                            "config": str(config_path),
+                            "action": "enable",
+                            "password": "secret",
+                            "macos_local_network_preflight_result": "denied",
+                            "macos_local_network_preflight_duration_ms": 4,
+                            "macos_local_network_preflight_service": "_airport._tcp",
+                        },
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        probe.assert_not_called()
+        enable_ssh.assert_not_called()
+        self.assertEqual(collector.events_of_type("stage")[-1]["stage"], "local_network_preflight")
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "local_network_permission_denied")
+        self.assertIn("open_system_settings", error["recovery"]["action_ids"])
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["stage"], "local_network_preflight")
+        self.assertEqual(finished["options"]["macos_local_network_preflight_result"], "denied")
+
+    def test_every_operation_records_what_the_app_sees_about_itself(self) -> None:
+        # The app sends it with every request, so telemetry shows whether other
+        # copies or an update explain a block on operations with no preflight.
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch(
+                "timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status",
+                return_value=SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=False),
+            ):
+                rc = service.run_api_request(
+                    {
+                        "operation": "set-ssh",
+                        "params": {
+                            "config": str(config_path),
+                            "action": "disable",
+                            "password": "secret",
+                            "macos_app_other_copies": 2,
+                            "macos_app_just_updated": True,
+                        },
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 0)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["options"]["macos_app_other_copies"], 2)
+        self.assertIs(finished["options"]["macos_app_just_updated"], True)
+
+    def test_set_ssh_status_and_disable_go_on_whatever_macos_answered(self) -> None:
+        # Only enabling needs the app's own ACP connect; a status check and
+        # disabling show a block themselves.
+        for action in ("status", "disable"):
+            with self.subTest(action=action):
+                collector = CollectingSink()
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / ".env"
+                    config_path.write_text("TC_HOST=root@10.0.0.2\n")
+                    with mock.patch(
+                        "timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status",
+                        return_value=SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=False),
+                    ) as probe:
+                        rc = service.run_api_request(
+                            {
+                                "operation": "set-ssh",
+                                "params": {
+                                    "config": str(config_path),
+                                    "action": action,
+                                    "password": "secret",
+                                    "macos_local_network_preflight_result": "denied",
+                                },
+                            },
+                            collector.sink,
+                        )
+                self.assertEqual(rc, 0)
+                probe.assert_called_once()
+                self.assertNotIn("local_network_preflight", [event["stage"] for event in collector.events_of_type("stage")])
+                self.assertEqual(collector.events_of_type("error"), [])
+
+    def test_set_ssh_enable_goes_on_when_macos_allows_local_network_access(self) -> None:
+        for result in ("allowed", "unknown"):
+            with self.subTest(result=result):
+                collector = CollectingSink()
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / ".env"
+                    config_path.write_text("TC_HOST=root@10.0.0.2\n")
+                    with mock.patch(
+                        "timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status",
+                        return_value=SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=False),
+                    ), mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
+                            mock.patch("timecapsulesmb.services.acp_ssh.set_dbug"):
+                        service.run_api_request(
+                            {
+                                "operation": "set-ssh",
+                                "params": {
+                                    "config": str(config_path),
+                                    "action": "enable",
+                                    "password": "secret",
+                                    "macos_local_network_preflight_result": result,
+                                },
+                            },
+                            collector.sink,
+                        )
+                # It reaches the reboot confirmation as without a preflight.
+                self.assert_confirmation(collector, "ssh_access.enable_reboot", {
+                    "host": "10.0.0.2", "device_name": "10.0.0.2", "requires_reboot": True,
+                })
 
     def test_set_ssh_enable_never_offers_a_reboot_to_a_device_whose_acp_does_not_answer(self) -> None:
         collector = CollectingSink()
@@ -4361,7 +4521,8 @@ class AppApiTests(unittest.TestCase):
                         password_matches=None, error="Could not connect to ACP on 10.0.0.2:5009: [Errno 65] No route to host",
                     )), \
                     mock.patch("timecapsulesmb.services.runtime.locate_airport", locate), \
-                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device", return_value=None) as reboot:
+                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device", return_value=None) as reboot, \
+                    mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": "macos_gui"}):
                 rc = service.run_api_request({"operation": "set-ssh", "params": params}, collector.sink)
         self.assertEqual(rc, 1)
         reboot.assert_not_called()
@@ -4375,7 +4536,9 @@ class AppApiTests(unittest.TestCase):
         locate.assert_called_once()
         self.assertEqual(locate.call_args.args[0], "24:a0:74:74:79:08")
         self.assertEqual(error["code"], "acp_no_route")
-        self.assertNotIn("Local Network", error["message"])
+        # The app's helper names the app, not a terminal.
+        self.assertIn("macOS refuses TimeCapsuleSMB's connections to the device", error["message"])
+        self.assertNotIn("Terminal", error["message"])
         self.assertIn("Bonjour finds it", error["message"])
         self.assertEqual(error["recovery"]["localization_key"], "local_network_permission_denied")
         self.assertEqual(error["recovery"]["action_ids"], ["open_system_settings", "retry"])

@@ -732,6 +732,11 @@
 "backend.recovery.local_network_permission_denied.action.2" = "Enable TimeCapsuleSMB in “Local Network”.";
 "backend.recovery.local_network_permission_denied.action.3" = "Quit and reopen TimeCapsuleSMB, then try again.";
 "backend.recovery.local_network_permission_denied.action.4" = "If TimeCapsuleSMB is already on, turn it off and on again. If that doesn't help, delete other copies of TimeCapsuleSMB and restart the Mac.";
+"recovery.local_network.just_updated" = "TimeCapsuleSMB was updated a few minutes ago, and macOS can block a new version for a few minutes. Wait 2 minutes, then try again.";
+"recovery.local_network.other_copies" = "Other copies of TimeCapsuleSMB are on this Mac (%@). Delete them, empty the Trash, then restart the Mac.";
+"recovery.local_network.disk_image_copies" = "TimeCapsuleSMB is also on a mounted disk image (%@). Eject it in Finder, then restart the Mac.";
+"recovery.local_network.if_blocked.other_copies" = "If macOS still blocks TimeCapsuleSMB, other copies of it on this Mac may be why (%@): delete them, empty the Trash, then restart the Mac.";
+"recovery.local_network.if_blocked.disk_image_copies" = "If macOS still blocks TimeCapsuleSMB, its copy on a mounted disk image may be why (%@): eject the disk image in Finder, then restart the Mac.";
 "backend.recovery.local_network_filtered.title" = "Connection blocked on this Mac";
 "backend.recovery.local_network_filtered.message" = "This Mac dropped the connection before it reached the device. A VPN, firewall or security app is filtering local network traffic.";
 "backend.recovery.device_off_network.title" = "Device not on this Mac's network";

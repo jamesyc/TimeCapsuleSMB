@@ -108,6 +108,13 @@ enum L10n {
         return String(format: string(key, language: language), locale: language.locale, arguments: arguments)
     }
 
+    /// Sentences run together as the language writes them: Chinese puts no
+    /// space after its full stop.
+    static func sentences(_ sentences: [String]) -> String {
+        let language = currentLanguage == .system ? systemTranslation : currentLanguage
+        return sentences.joined(separator: language == .simplifiedChinese ? "" : " ")
+    }
+
     static func string(_ key: String, language: AppLanguage) -> String {
         let fallback = bundle(for: .english)?.localizedString(forKey: key, value: key, table: nil) ?? key
         guard let bundle = bundle(for: language) else {

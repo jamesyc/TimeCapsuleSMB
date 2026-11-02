@@ -122,7 +122,8 @@ final class MaintenanceStore: ObservableObject {
     }
 
     var isBusy: Bool {
-        let maintenanceBusy = workflowStores.contains { $0.isBusy }
+        // Enable SSH waiting for macOS's Local Network answer is about to run.
+        let maintenanceBusy = workflowStores.contains { $0.isBusy } || sshAccessStore.isPreparing
         let deviceBusy = deviceProfileID.map { coordinator.isDeviceBusy($0) } == true
         return maintenanceBusy || deviceBusy
     }
@@ -266,11 +267,19 @@ final class MaintenanceStore: ObservableObject {
     }
 
     @discardableResult
-    func enableSSHAccess(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
+    func enableSSHAccess(
+        password: String,
+        profile: DeviceProfile? = nil,
+        localNetworkPreflight: LocalNetworkPreflightResult? = nil
+    ) -> OperationStartResult {
         startMaintenanceWorkflow(
             .sshAccess,
             rejectAlreadyRunning: { sshAccessStore.rejectAlreadyRunning() },
-            start: { sshAccessStore.enable(password: password, noWait: noWait, profile: profile) }
+            start: {
+                sshAccessStore.enable(
+                    password: password, noWait: noWait, profile: profile, localNetworkPreflight: localNetworkPreflight
+                )
+            }
         )
     }
 

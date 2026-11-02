@@ -8,8 +8,10 @@ struct RecoveryGuidancePresentation: Equatable {
     let steps: [String]
     let details: String?
 
-    init(error: BackendErrorViewModel) {
-        let localizedRecovery = BackendRecoveryLocalization.localized(error.recovery)
+    /// `localNetworkFacts` is looked up only for a card the helper marked
+    /// (LocalNetworkAppFacts.current() where the card is drawn).
+    init(error: BackendErrorViewModel, localNetworkFacts: @autoclosure () -> LocalNetworkAppFacts = .empty) {
+        let localizedRecovery = BackendRecoveryLocalization.localized(error.recovery, localNetworkFacts: localNetworkFacts())
         let title = localizedRecovery?.title ?? error.message
         let message = localizedRecovery?.message.flatMap { message in
             message.isEmpty || message.lowercased() == title.lowercased() ? nil : message
@@ -45,7 +47,10 @@ struct LocalizedBackendRecovery: Equatable {
 }
 
 enum BackendRecoveryLocalization {
-    static func localized(_ recovery: BackendRecoveryPayload?) -> LocalizedBackendRecovery? {
+    static func localized(
+        _ recovery: BackendRecoveryPayload?,
+        localNetworkFacts: @autoclosure () -> LocalNetworkAppFacts = .empty
+    ) -> LocalizedBackendRecovery? {
         guard let recovery else {
             return nil
         }
@@ -58,10 +63,20 @@ enum BackendRecoveryLocalization {
         }
         let keyPrefix = "backend.recovery.\(localizationKey)"
         let localizedMessage = localizedStringIfPresent("\(keyPrefix).message")
+        var actions = localizedActions(keyPrefix: keyPrefix, fallback: recovery.actions)
+        // The helper marks the cards where macOS may block the app.
+        switch recovery.localNetworkBlock {
+        case .proven:
+            actions = localNetworkFacts().localizedSteps + actions
+        case .possible:
+            actions += localNetworkFacts().ifBlockedSteps
+        case nil:
+            break
+        }
         return LocalizedBackendRecovery(
             title: localizedStringIfPresent("\(keyPrefix).title") ?? recovery.title,
             message: formatted(localizedMessage, values: recovery.localizationValues) ?? recovery.message,
-            actions: localizedActions(keyPrefix: keyPrefix, fallback: recovery.actions)
+            actions: actions
         )
     }
 

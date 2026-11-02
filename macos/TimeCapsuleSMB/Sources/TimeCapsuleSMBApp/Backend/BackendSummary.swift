@@ -239,7 +239,8 @@ extension FlashWritePayload: BackendSummarized {}
 extension SSHAccessPayload: BackendSummarized {}
 
 extension DoctorCheckPayload {
-    var localizedMessage: String {
+    /// `localNetworkFacts` is looked up only for the block line.
+    func localizedMessage(localNetworkFacts: @autoclosure () -> LocalNetworkAppFacts = .empty) -> String {
         if let problem = DoctorSummary.payloadProblem(code: code) {
             return L10n.string(problem.detailKey)
         }
@@ -273,8 +274,11 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.ssh_disabled")
         case "device_unreachable":
             return L10n.string("doctor.check.device_unreachable")
+        // What the app sees about itself goes after the line's own steps. A
+        // Checkup result has no recovery card to carry the helper's
+        // local_network_block mark, so the line goes by its code.
         case "acp_no_route":
-            return L10n.string("doctor.check.acp_no_route")
+            return L10n.sentences([L10n.string("doctor.check.acp_no_route")] + localNetworkFacts().localizedSteps)
         case "link_local_interface_gone":
             return L10n.string("doctor.check.link_local_interface_gone")
         case "mac_smb3_disabled":

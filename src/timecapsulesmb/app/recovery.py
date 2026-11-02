@@ -23,6 +23,8 @@ class RecoveryInfo:
     # Steps only the CLI has, after the app's own (cli_steps); never sent to
     # the app.
     cli_extra: tuple[str, ...] = ()
+    # The card for macOS's Local Network block.
+    local_network_block: bool = False
 
     def to_jsonable(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -39,6 +41,14 @@ class RecoveryInfo:
             payload["localization_key"] = self.localization_key
         if self.localization_values:
             payload["localization_values"] = dict(self.localization_values)
+        # Whether macOS blocks the app, which decides what the app adds about
+        # itself (LocalNetworkAppFacts): a block is proven on its own card, and
+        # possible on one whose step asks whether AirPort Utility sees the
+        # device.
+        if self.local_network_block:
+            payload["local_network_block"] = "proven"
+        elif _BLOCKED_IF_AIRPORT_UTILITY_SEES_IT in self.actions:
+            payload["local_network_block"] = "possible"
         return payload
 
 
@@ -132,6 +142,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         # No suggested operation: Add Device, SSH Access and every command that
         # reaches the device show this card, and each retries its own operation.
         retryable=True,
+        local_network_block=True,
         action_ids=("open_system_settings", "retry"),
     ),
     # The helper's own message names the address and this Mac's networks.

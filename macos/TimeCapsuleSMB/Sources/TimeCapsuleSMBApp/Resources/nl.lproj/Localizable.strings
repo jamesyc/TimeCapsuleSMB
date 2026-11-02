@@ -732,6 +732,11 @@
 "backend.recovery.local_network_permission_denied.action.2" = "Schakel TimeCapsuleSMB in onder ‘Lokaal netwerk’.";
 "backend.recovery.local_network_permission_denied.action.3" = "Stop TimeCapsuleSMB en open de app weer; probeer het daarna opnieuw.";
 "backend.recovery.local_network_permission_denied.action.4" = "Staat TimeCapsuleSMB al aan, schakel het dan uit en weer in. Helpt dat niet, verplaats andere kopieën van TimeCapsuleSMB naar de prullenmand en start de Mac opnieuw op.";
+"recovery.local_network.just_updated" = "TimeCapsuleSMB is een paar minuten geleden bijgewerkt, en macOS kan een nieuwe versie een paar minuten blokkeren. Wacht 2 minuten en probeer het daarna opnieuw.";
+"recovery.local_network.other_copies" = "Er staan andere kopieën van TimeCapsuleSMB op deze Mac (%@). Verplaats ze naar de prullenmand, leeg de prullenmand en start de Mac daarna opnieuw op.";
+"recovery.local_network.disk_image_copies" = "TimeCapsuleSMB staat ook op een gekoppelde schijfkopie (%@). Werp deze uit in de Finder en start de Mac daarna opnieuw op.";
+"recovery.local_network.if_blocked.other_copies" = "Blokkeert macOS TimeCapsuleSMB nog steeds, dan kunnen andere kopieën van TimeCapsuleSMB op deze Mac de oorzaak zijn (%@): verplaats ze naar de prullenmand, leeg de prullenmand en start de Mac daarna opnieuw op.";
+"recovery.local_network.if_blocked.disk_image_copies" = "Blokkeert macOS TimeCapsuleSMB nog steeds, dan kan de kopie op een gekoppelde schijfkopie de oorzaak zijn (%@): werp de schijfkopie uit in de Finder en start de Mac daarna opnieuw op.";
 "backend.recovery.local_network_filtered.title" = "Verbinding geblokkeerd op deze Mac";
 "backend.recovery.local_network_filtered.message" = "Deze Mac heeft de verbinding verbroken voordat die het apparaat bereikte. Een VPN, firewall of beveiligingssoftware filtert lokaal netwerkverkeer.";
 "backend.recovery.device_off_network.title" = "Apparaat niet in het netwerk van deze Mac";

@@ -732,6 +732,11 @@
 "backend.recovery.local_network_permission_denied.action.2" = "Abilita TimeCapsuleSMB in “Rete locale”.";
 "backend.recovery.local_network_permission_denied.action.3" = "Esci da TimeCapsuleSMB e riaprilo, poi riprova.";
 "backend.recovery.local_network_permission_denied.action.4" = "Se TimeCapsuleSMB è già abilitato, disabilitalo e abilitalo di nuovo. Se non basta, elimina le altre copie di TimeCapsuleSMB e riavvia il Mac.";
+"recovery.local_network.just_updated" = "TimeCapsuleSMB è stato aggiornato pochi minuti fa e macOS può bloccare una nuova versione per qualche minuto. Attendi 2 minuti, poi riprova.";
+"recovery.local_network.other_copies" = "Su questo Mac ci sono altre copie di TimeCapsuleSMB (%@). Eliminale, svuota il Cestino, poi riavvia il Mac.";
+"recovery.local_network.disk_image_copies" = "TimeCapsuleSMB si trova anche su un’immagine disco montata (%@). Espellila nel Finder, poi riavvia il Mac.";
+"recovery.local_network.if_blocked.other_copies" = "Se macOS continua a bloccare TimeCapsuleSMB, la causa potrebbero essere altre copie di TimeCapsuleSMB su questo Mac (%@): eliminale, svuota il Cestino, poi riavvia il Mac.";
+"recovery.local_network.if_blocked.disk_image_copies" = "Se macOS continua a bloccare TimeCapsuleSMB, la causa potrebbe essere la sua copia su un’immagine disco montata (%@): espelli l’immagine disco nel Finder, poi riavvia il Mac.";
 "backend.recovery.local_network_filtered.title" = "Connessione bloccata su questo Mac";
 "backend.recovery.local_network_filtered.message" = "Questo Mac ha interrotto la connessione prima che raggiungesse il dispositivo. Una VPN, un firewall o un software di sicurezza sta filtrando il traffico della rete locale.";
 "backend.recovery.device_off_network.title" = "Dispositivo non sulla rete di questo Mac";

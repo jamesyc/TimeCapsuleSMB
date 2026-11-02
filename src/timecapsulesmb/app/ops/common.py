@@ -18,6 +18,31 @@ from timecapsulesmb.services.runtime import (
 from timecapsulesmb.transport.ssh import SshConnection
 
 
+LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS = (
+    "macos_local_network_preflight_result",
+    "macos_local_network_preflight_duration_ms",
+    "macos_local_network_preflight_service",
+    "macos_local_network_preflight_error",
+)
+
+
+def refuse_if_local_network_denied(params: dict[str, object], context: AppOperationContext) -> None:
+    """Records the app's Local Network preflight, and stops when macOS denied it."""
+    fields = {
+        key: params[key]
+        for key in LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS
+        if key in params and params[key] is not None
+    }
+    if fields:
+        context.add_debug_fields(**fields)
+    if str(params.get("macos_local_network_preflight_result") or "").strip().lower() == "denied":
+        context.stage("local_network_preflight")
+        raise AppOperationError(
+            "macOS is blocking TimeCapsuleSMB from accessing devices on your local network.",
+            code=ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED,
+        )
+
+
 def load_request_config(params: dict[str, object], context: AppOperationContext) -> AppConfig:
     # Finding the saved device runs inside load_config although it reads the
     # network: a stage of its own would need timeline strings in every locale.

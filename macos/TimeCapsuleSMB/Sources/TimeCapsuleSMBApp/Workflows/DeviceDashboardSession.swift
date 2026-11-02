@@ -21,8 +21,9 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     private var handledSSHFailures: [String: String] = [:]
     // By event, not request: a confirmed replay reuses its confirmation's request ID.
     private var checkedAddressOutcomes: Set<UUID> = []
-    // A Checkup waiting for the Local Network preflight before it starts.
-    private var checkupPreflightTask: Task<Void, Never>?
+    // A Checkup or Enable SSH waiting for the Local Network preflight before
+    // it starts (afterLocalNetworkPreflight), and the tab that shows it.
+    private var localNetworkPreflight: (task: Task<Void, Never>, tab: DeviceDashboardTab)?
 
     var events: [BackendEvent] {
         lane.backend.events
@@ -115,11 +116,69 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     }
 
     func enableSSHAccess(profile: DeviceProfile) {
+        // A Checkup waiting for macOS keeps its tab; the click changes nothing.
+        if let waiting = localNetworkPreflight, waiting.tab != .maintenance {
+            return
+        }
         selectedTab = .maintenance
         maintenanceStore.selectedWorkflow = .sshAccess
         if let password = maintenancePassword(for: profile) {
-            maintenanceStore.enableSSHAccess(password: password, profile: profile)
+            startEnableSSHAccess(password: password, profile: profile)
         }
+    }
+
+    /// Enabling SSH reaches the device through ACP from the helper, which
+    /// macOS can block; with SSH off, only the app's preflight can show it.
+    private func startEnableSSHAccess(password: String, profile: DeviceProfile) {
+        guard localNetworkPreflight == nil else {
+            return
+        }
+        // Something else running refuses it at once, without asking macOS.
+        guard let checker = appStore.localNetworkPreflightChecker, !maintenanceStore.isBusy else {
+            maintenanceStore.enableSSHAccess(password: password, profile: profile)
+            return
+        }
+        afterLocalNetworkPreflight(
+            checker: checker,
+            profile: profile,
+            tab: .maintenance,
+            begin: { maintenanceStore.sshAccessStore.beginPreparing() },
+            abandon: { session in session.maintenanceStore.sshAccessStore.endPreparing() },
+            start: { session, result in
+                // Its own wait is over; any other maintenance job asked for
+                // meanwhile was refused as busy.
+                session.maintenanceStore.sshAccessStore.endPreparing()
+                session.maintenanceStore.enableSSHAccess(password: password, profile: profile, localNetworkPreflight: result)
+            }
+        )
+    }
+
+    /// Starts an operation once macOS answers the Local Network preflight.
+    /// One wait at a time: Checkup and Enable SSH both reach the device, and
+    /// one asked for meanwhile would only be refused once the first starts.
+    /// A device forgotten while the app waited gets no operation.
+    private func afterLocalNetworkPreflight(
+        checker: LocalNetworkPreflightChecking,
+        profile: DeviceProfile,
+        tab: DeviceDashboardTab,
+        begin: () -> Void,
+        abandon: @escaping (DeviceDashboardSession) -> Void,
+        start: @escaping (DeviceDashboardSession, LocalNetworkPreflightResult) -> Void
+    ) {
+        begin()
+        let task = Task { [weak self] in
+            let result = await checker.check()
+            guard let self else {
+                return
+            }
+            self.localNetworkPreflight = nil
+            guard self.appStore.deviceRegistry.profile(id: profile.id) != nil else {
+                abandon(self)
+                return
+            }
+            start(self, result)
+        }
+        localNetworkPreflight = (task, tab)
     }
 
     func updateConfiguredAddressFromDiscovery(profile: DeviceProfile) {
@@ -253,7 +312,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             maintenanceStore.checkSSHAccess(profile: profile)
         case .enableSSHAccess:
             if let password = maintenancePassword(for: profile) {
-                maintenanceStore.enableSSHAccess(password: password, profile: profile)
+                startEnableSSHAccess(password: password, profile: profile)
             }
         case .viewDiagnostics:
             showDiagnostics()
@@ -293,25 +352,28 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             return
         }
         profileEditorStore.clearPasswordAttention()
-        selectedTab = .checkup
-        guard checkupPreflightTask == nil else {
+        if let waiting = localNetworkPreflight {
+            // Its own wait shows on the Checkup tab; Enable SSH's keeps its tab.
+            if waiting.tab == .checkup {
+                selectedTab = .checkup
+            }
             return
         }
+        selectedTab = .checkup
         guard let checker = appStore.localNetworkPreflightChecker else {
             startCheckup(password: password, profile: profile, localNetworkPreflight: nil)
             return
         }
         // Checkup's This Mac section reports whether macOS lets the app reach
         // the local network; asking takes milliseconds once macOS has answered.
-        doctorStore.beginPreparing()
-        checkupPreflightTask = Task { [weak self] in
-            let result = await checker.check()
-            guard let self else {
-                return
-            }
-            self.checkupPreflightTask = nil
-            self.startCheckup(password: password, profile: profile, localNetworkPreflight: result)
-        }
+        afterLocalNetworkPreflight(
+            checker: checker,
+            profile: profile,
+            tab: .checkup,
+            begin: { doctorStore.beginPreparing() },
+            abandon: { session in session.doctorStore.clear() },
+            start: { session, result in session.startCheckup(password: password, profile: profile, localNetworkPreflight: result) }
+        )
     }
 
     private func startCheckup(password: String, profile: DeviceProfile, localNetworkPreflight: LocalNetworkPreflightResult?) {

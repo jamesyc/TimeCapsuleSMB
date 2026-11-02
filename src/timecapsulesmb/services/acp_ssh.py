@@ -229,7 +229,7 @@ def _probe_acp_port(
         # The Bonjour record this address came from shows the device is up.
         block = _local_network_block(host, connect_errors, "bonjour" if record is not None else None, tcp_connect_error_func)
         if block is not None:
-            raise ACPNoRouteError(failure, detail=f"{unanswered} {block.detail}")
+            raise ACPNoRouteError(f"{failure} {block.message}", detail=f"{unanswered} {block.detail}")
         raise ACPNoRouteUnprovenError(failure, detail=unanswered, errors=connect_errors)
     if all(connect_unanswered(entry["error"]) for entry in errors):
         # A device that is off or gone drops connects to every port; one that
@@ -337,7 +337,7 @@ def enable_ssh_with_port_preflight(
             if isinstance(exc, ACPNoRouteUnprovenError) and listed_by_bonjour:
                 block = _local_network_block(host, exc.errors, "bonjour", tcp_connect_error_func)
                 if block is not None:
-                    raise ACPNoRouteError(exc.message, detail=f"{exc.detail} {block.detail}") from exc
+                    raise ACPNoRouteError(f"{exc.message} {block.message}", detail=f"{exc.detail} {block.detail}") from exc
             raise
         host = found
     else:

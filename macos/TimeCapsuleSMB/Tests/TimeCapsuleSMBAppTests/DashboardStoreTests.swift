@@ -988,6 +988,184 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_result"], .string("denied"))
     }
 
+    func testCheckupAndEnableSSHNeverWaitForMacOSAtTheSameTime() async throws {
+        // Both reach the device: the one asked for second would only be refused
+        // once the first starts, so it starts nothing and asks macOS nothing.
+        for checkupFirst in [true, false] {
+            let checker = GatedLocalNetworkPreflightChecker()
+            let fixture = try await makeFixture(responses: [
+                .init(events: [
+                    checkupFirst
+                        ? BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                            testDoctorCheck(status: "PASS", message: "ok", domain: "device")
+                        ]))
+                        : BackendEvent.error(operation: "set-ssh", code: "local_network_permission_denied", message: "denied")
+                ])
+            ], checker: checker)
+            let profile = try await fixture.registry.storeTestProfile(
+                configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+                discoveredDevice: nil,
+                passwordState: .available,
+                preferredID: "device-one"
+            )
+            try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+            let session = DashboardStore(appStore: fixture.appStore).session(for: profile)
+
+            if checkupFirst {
+                session.runCheckup(profile: profile)
+                try await waitUntilStoreState { checker.isWaiting }
+                session.enableSSHAccess(profile: profile)
+                XCTAssertFalse(session.maintenanceStore.sshAccessStore.isPreparing, "checkupFirst")
+                // The ignored click leaves the waiting Checkup in view.
+                XCTAssertEqual(session.selectedTab, .checkup)
+                session.runCheckup(profile: profile)
+                XCTAssertEqual(session.selectedTab, .checkup)
+            } else {
+                session.enableSSHAccess(profile: profile)
+                try await waitUntilStoreState { checker.isWaiting }
+                session.runCheckup(profile: profile)
+                XCTAssertEqual(session.selectedTab, .maintenance)
+                // A second click on its own flow shows it again from another tab.
+                session.selectedTab = .overview
+                session.enableSSHAccess(profile: profile)
+                XCTAssertEqual(session.selectedTab, .maintenance)
+            }
+            XCTAssertEqual(checker.checkCount, 1, "checkupFirst: \(checkupFirst)")
+
+            checker.finish(.denied)
+            if checkupFirst {
+                try await waitUntilStoreState { session.doctorStore.state == .passed }
+                XCTAssertFalse(fixture.runner.calls.contains { $0.operation == "set-ssh" })
+                XCTAssertEqual(session.maintenanceStore.sshAccessState, .idle)
+            } else {
+                try await waitUntilStoreState { session.maintenanceStore.sshAccessStore.error != nil }
+                XCTAssertFalse(fixture.runner.calls.contains { $0.operation == "doctor" })
+                XCTAssertNotEqual(session.doctorStore.state, .running)
+            }
+            XCTAssertEqual(checker.checkCount, 1, "checkupFirst: \(checkupFirst)")
+        }
+    }
+
+    func testEnableSSHAsksForLocalNetworkPermissionFirstAndSendsTheAnswer() async throws {
+        // With SSH off, only the app's preflight can show macOS blocking ACP.
+        let checker = GatedLocalNetworkPreflightChecker()
+        let fixture = try await makeFixture(responses: [
+            .init(events: [BackendEvent.error(operation: "set-ssh", code: "local_network_permission_denied", message: "denied")])
+        ], checker: checker)
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let session = DashboardStore(appStore: fixture.appStore).session(for: profile)
+
+        session.enableSSHAccess(profile: profile)
+        try await waitUntilStoreState { checker.isWaiting }
+        // Running while macOS answers, and a second click starts nothing.
+        XCTAssertEqual(session.maintenanceStore.sshAccessState, .running)
+        XCTAssertFalse(session.maintenanceStore.canEnableSSHAccess)
+        XCTAssertFalse(session.maintenanceStore.canCheckSSHAccess)
+        // Nothing else starts in the meantime, so the enable cannot be refused.
+        XCTAssertTrue(session.maintenanceStore.isBusy)
+        XCTAssertFalse(session.maintenanceStore.canRunUninstall)
+        XCTAssertFalse(session.maintenanceStore.canRunWipeDisk)
+        session.performMaintenanceAction(.enableSSHAccess, profile: profile, showDiagnostics: {})
+        XCTAssertEqual(checker.checkCount, 1)
+        // Nor does an enable that skips the session's wait.
+        guard case .rejected = session.maintenanceStore.enableSSHAccess(password: "pw", profile: profile) else {
+            return XCTFail("an enable during the wait is refused as busy")
+        }
+        XCTAssertTrue(session.maintenanceStore.sshAccessStore.isPreparing)
+        // The wait is Enable SSH's own job, so the refusal leaves it shown.
+        XCTAssertNil(session.maintenanceStore.sshAccessStore.error)
+        XCTAssertEqual(session.maintenanceStore.sshAccessState, .running)
+        XCTAssertTrue(fixture.runner.calls.filter { $0.params["action"] == .string("enable") }.isEmpty)
+
+        checker.finish(.denied)
+        // The failed enable is followed by a status check of its own.
+        let enables = { fixture.runner.calls.filter { $0.operation == "set-ssh" && $0.params["action"] == .string("enable") } }
+        try await waitUntilStoreState {
+            session.maintenanceStore.sshAccessStore.error?.code == "local_network_permission_denied"
+        }
+        XCTAssertEqual(enables().count, 1)
+        XCTAssertEqual(enables().first?.params["macos_local_network_preflight_result"], .string("denied"))
+        XCTAssertEqual(session.maintenanceStore.sshAccessStore.error?.code, "local_network_permission_denied")
+        XCTAssertFalse(session.maintenanceStore.sshAccessStore.isPreparing)
+    }
+
+    func testACheckupForADeviceForgottenWhileMacOSAnswersStartsNothing() async throws {
+        let checker = GatedLocalNetworkPreflightChecker()
+        let fixture = try await makeFixture(responses: [], checker: checker)
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let session = DashboardStore(appStore: fixture.appStore).session(for: profile)
+
+        session.runCheckup(profile: profile)
+        try await waitUntilStoreState { checker.isWaiting }
+        XCTAssertEqual(session.doctorStore.state, .running)
+        try await fixture.appStore.forget(profile)
+        checker.finish(.allowed)
+
+        try await waitUntilStoreState { session.doctorStore.state != .running }
+        XCTAssertEqual(session.doctorStore.state, .idle)
+        XCTAssertTrue(fixture.runner.calls.isEmpty)
+    }
+
+    func testEnableSSHWhileAnotherWorkflowRunsIsRefusedWithoutAskingMacOS() async throws {
+        let checker = GatedLocalNetworkPreflightChecker()
+        let fixture = try await makeFixture(responses: [
+            .init(events: [BackendEvent(type: "stage", operation: "activate", stage: "activate_runtime")], pauseAfterEvents: true)
+        ], checker: checker)
+        defer { fixture.runner.finishAll() }
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let session = DashboardStore(appStore: fixture.appStore).session(for: profile)
+        session.maintenanceStore.runActivation(password: "pw", profile: profile)
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 }
+
+        session.enableSSHAccess(profile: profile)
+
+        XCTAssertEqual(checker.checkCount, 0)
+        XCTAssertFalse(session.maintenanceStore.sshAccessStore.isPreparing)
+        XCTAssertEqual(session.maintenanceStore.sshAccessState, .failed)
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["activate"])
+    }
+
+    func testEnableSSHForADeviceForgottenWhileMacOSAnswersStartsNothing() async throws {
+        let checker = GatedLocalNetworkPreflightChecker()
+        let fixture = try await makeFixture(responses: [], checker: checker)
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let session = DashboardStore(appStore: fixture.appStore).session(for: profile)
+
+        session.enableSSHAccess(profile: profile)
+        try await waitUntilStoreState { checker.isWaiting }
+        try await fixture.appStore.forget(profile)
+        checker.finish(.allowed)
+
+        try await waitUntilStoreState { !session.maintenanceStore.sshAccessStore.isPreparing }
+        XCTAssertEqual(session.maintenanceStore.sshAccessState, .idle)
+        XCTAssertFalse(session.maintenanceStore.isBusy)
+        XCTAssertTrue(fixture.runner.calls.isEmpty)
+    }
+
     func testSkippedSSHCheckupDoesNotMarkRuntimeInstalled() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [

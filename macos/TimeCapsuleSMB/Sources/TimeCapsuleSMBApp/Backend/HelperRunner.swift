@@ -26,17 +26,21 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
     private let stderrLimit: Int
     private let requestWriter: any HelperRequestWriting
     private let pipeReader: any HelperPipeReading
+    private let appFields: @Sendable () -> [String: JSONValue]
 
+    /// `appFields` are sent with every request; LocalNetworkAppFacts's by default.
     public init(
         locator: HelperLocator = HelperLocator(),
         stderrLimit: Int = 64 * 1024,
         requestWriter: any HelperRequestWriting = PipeRequestWriter(),
-        pipeReader: any HelperPipeReading = ReadabilityPipeReader()
+        pipeReader: any HelperPipeReading = ReadabilityPipeReader(),
+        appFields: (@Sendable () -> [String: JSONValue])? = nil
     ) {
         self.locator = locator
         self.stderrLimit = stderrLimit
         self.requestWriter = requestWriter
         self.pipeReader = pipeReader
+        self.appFields = appFields ?? { LocalNetworkAppFacts.current().requestFields }
     }
 
     public func run(
@@ -95,6 +99,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
             if let context, requestParams["config"] == nil {
                 requestParams["config"] = .string(context.configURL.path)
             }
+            requestParams.merge(appFields()) { own, _ in own }
             let request = [
                 "operation": JSONValue.string(operation),
                 "request_id": JSONValue.string(requestID),

@@ -3,7 +3,7 @@ from __future__ import annotations
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import set_ssh_payload
-from timecapsulesmb.app.ops.common import load_request_config, require_request_acpd_ready
+from timecapsulesmb.app.ops.common import load_request_config, refuse_if_local_network_denied, require_request_acpd_ready
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
@@ -34,6 +34,10 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
 
     if action not in {"enable", "disable"}:
         raise AppOperationError(f"Unsupported set-ssh action: {action}", code=ErrorCode.VALIDATION_FAILED)
+    if action == "enable":
+        # Enabling goes through ACP from this program, which macOS can block;
+        # with SSH off, nothing else here could show that it does.
+        refuse_if_local_network_denied(params, context)
 
     connection = resolve_env_connection(config)
     acp_host = endpoint_host(connection.host)

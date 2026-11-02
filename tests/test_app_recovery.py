@@ -247,6 +247,32 @@ class AppRecoveryTests(unittest.TestCase):
                 self.assertEqual(recovery["localization_key"], "link_local_interface_gone")
                 self.assertEqual(recovery["title"], "The saved address no longer works")
 
+    def test_the_helper_marks_the_cards_where_macos_may_block_the_app(self) -> None:
+        entries = (
+            [(code, info) for code, info in recovery._DEFAULTS.items()]
+            + [(code, info) for (_, code), info in recovery._OPERATION_CODE_RECOVERY.items()]
+            + [(code, info) for (_, code, _), info in recovery._STAGE_RECOVERY.items()]
+        )
+        for code, info in entries:
+            with self.subTest(key=info.localization_key):
+                payload = info.to_jsonable()
+                if code == ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED:
+                    # A block's card: what the app sees about itself goes first.
+                    self.assertEqual(payload.get("local_network_block"), "proven")
+                elif recovery._BLOCKED_IF_AIRPORT_UTILITY_SEES_IT in info.actions:
+                    # A block nothing proved: the app's steps only as a possibility.
+                    self.assertEqual(payload.get("local_network_block"), "possible")
+                else:
+                    self.assertNotIn("local_network_block", payload)
+        # A proven block on any operation reads the block's card.
+        self.assertEqual(recovery_for("deploy", ErrorCode.ACP_NO_ROUTE)["local_network_block"], "proven")
+        self.assertEqual(recovery_for("discover", ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED)["local_network_block"], "proven")
+        self.assertEqual(recovery_for("set-ssh", ErrorCode.DEVICE_UNREACHABLE)["local_network_block"], "possible")
+        self.assertEqual(
+            recovery_for("configure", ErrorCode.REMOTE_ERROR, stage="acp_port_probe")["local_network_block"], "possible",
+        )
+        self.assertNotIn("local_network_block", recovery_for("deploy", ErrorCode.LOCAL_NETWORK_FILTERED))
+
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
         recovery = recovery_for("deploy", "reboot_not_finished", stage="wait_for_reboot_up")
 

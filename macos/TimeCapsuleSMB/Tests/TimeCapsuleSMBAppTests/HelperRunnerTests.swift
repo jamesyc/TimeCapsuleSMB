@@ -106,6 +106,54 @@ final class HelperRunnerTests: XCTestCase {
         XCTAssertEqual(events.last?.ok, true)
     }
 
+    func testRunnerSendsWhatTheAppSeesAboutItselfWithEveryRequest() async throws {
+        // Telemetry then shows, for every operation, whether other copies or an
+        // update explain a Local Network block.
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            exec python3 -c '
+            import json, sys
+            request = json.load(sys.stdin)
+            print(json.dumps({
+                "schema_version": 1,
+                "request_id": request["request_id"],
+                "type": "result",
+                "operation": request["operation"],
+                "ok": True,
+                "payload": request["params"]
+            }), flush=True)
+            '
+            """
+        )
+        let facts = LocalNetworkAppFacts(otherCopies: ["/a.app"], diskImageCopies: ["/Volumes/T/TimeCapsuleSMB.app"], justUpdated: true)
+        let runner = HelperRunner(
+            locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default),
+            appFields: { facts.requestFields }
+        )
+        let recorder = EventRecorder()
+
+        let result = await runner.run(
+            helperPath: helper.path,
+            operation: "deploy",
+            params: ["no_wait": .bool(true), "macos_app_just_updated": .bool(false)],
+            requestID: "request-1"
+        ) {
+            await recorder.append($0)
+        }
+
+        XCTAssertEqual(result.exitCode, 0)
+        let events = await recorder.events
+        guard case .object(let params)? = events.last?.payload else {
+            return XCTFail("Expected the request's params back")
+        }
+        XCTAssertEqual(params["macos_app_other_copies"], .number(2))
+        XCTAssertEqual(params["no_wait"], .bool(true))
+        // A value the caller set wins.
+        XCTAssertEqual(params["macos_app_just_updated"], .bool(false))
+    }
+
     func testRunnerWritesLargeRequestPayloadWithoutCorruption() async throws {
         let temp = try TemporaryDirectory()
         let helper = try makeHelper(

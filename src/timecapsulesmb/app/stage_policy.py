@@ -37,6 +37,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("reachability", "check_smb_port"): StagePolicy(REMOTE_READ, True, "Check selected device SMB port reachability."),
     ("set-ssh", "load_config"): StagePolicy(LOCAL_READ, True, "Read selected device SSH configuration."),
     ("set-ssh", "probe_ssh"): StagePolicy(REMOTE_READ, True, "Check selected device AirPort ACP and SSH ports."),
+    ("set-ssh", "local_network_preflight"): StagePolicy(LOCAL_READ, True, "Check macOS Local Network permission before enabling SSH."),
     ("set-ssh", "confirm_enable_ssh"): StagePolicy(REBOOT, True, "Confirm SSH enablement and reboot through AirPort ACP."),
     ("set-ssh", "confirm_disable_ssh"): StagePolicy(REBOOT, True, "Confirm SSH disablement and reboot."),
     ("set-ssh", "acp_port_probe"): StagePolicy(REMOTE_READ, True, "Check AirPort ACP reachability before enabling SSH."),

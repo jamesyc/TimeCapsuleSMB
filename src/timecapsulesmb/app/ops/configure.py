@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from timecapsulesmb.app.context import AppOperationContext
+from timecapsulesmb.app.ops.common import refuse_if_local_network_denied
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.contracts import configure_payload
 from timecapsulesmb.core.config import (
@@ -44,28 +45,6 @@ from timecapsulesmb.core.summaries import Summary
 
 
 SETTINGS_SYNCHRONIZED = Summary("settings_synchronized", "Device profile settings synchronized.")
-
-
-LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS = (
-    "macos_local_network_preflight_result",
-    "macos_local_network_preflight_duration_ms",
-    "macos_local_network_preflight_service",
-    "macos_local_network_preflight_error",
-)
-
-
-def add_local_network_preflight_debug_fields(params: dict[str, object], context: AppOperationContext) -> None:
-    fields = {
-        key: params[key]
-        for key in LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS
-        if key in params and params[key] is not None
-    }
-    if fields:
-        context.add_debug_fields(**fields)
-
-
-def local_network_preflight_denied(params: dict[str, object]) -> bool:
-    return str(params.get("macos_local_network_preflight_result") or "").strip().lower() == "denied"
 
 
 def selected_record_name(params: dict[str, object]) -> str:
@@ -158,16 +137,10 @@ ADDRESS_SOURCES = frozenset({"mac", "name", "manual"})
 
 
 def configure_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
-    add_local_network_preflight_debug_fields(params, context)
     address_source = params.get("address_source")
     if address_source in ADDRESS_SOURCES:
         context.update_fields(address_source=address_source)
-    if local_network_preflight_denied(params):
-        context.stage("local_network_preflight")
-        raise AppOperationError(
-            "macOS is blocking TimeCapsuleSMB from accessing devices on your local network.",
-            code=ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED,
-        )
+    refuse_if_local_network_denied(params, context)
 
     context.stage("load_existing_config")
     app_paths = resolve_app_paths(config_path=config_path(params))

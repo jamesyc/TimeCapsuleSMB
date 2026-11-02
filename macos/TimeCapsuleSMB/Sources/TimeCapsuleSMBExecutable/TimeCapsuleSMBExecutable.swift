@@ -21,6 +21,7 @@ struct TimeCapsuleSMBExecutable: App {
             exit(0)
         }
 
+        AppLaunchHistory.recordLaunch()
         updater.start(ifConfiguredIn: .main)
         NSApplication.shared.setActivationPolicy(.regular)
         DispatchQueue.main.async {

@@ -236,6 +236,9 @@ struct DeviceRecoverySnapshot: Codable, Equatable {
     var suggestedOperation: String?
     var docsAnchor: String?
     var localizationKey: String?
+    /// LocalNetworkBlockKind's raw value: a saved profile still loads in an
+    /// app that does not know a kind.
+    var localNetworkBlock: String?
 
     init(
         title: String,
@@ -245,7 +248,8 @@ struct DeviceRecoverySnapshot: Codable, Equatable {
         retryable: Bool,
         suggestedOperation: String?,
         docsAnchor: String?,
-        localizationKey: String? = nil
+        localizationKey: String? = nil,
+        localNetworkBlock: String? = nil
     ) {
         self.title = title
         self.message = message
@@ -255,6 +259,7 @@ struct DeviceRecoverySnapshot: Codable, Equatable {
         self.suggestedOperation = suggestedOperation
         self.docsAnchor = docsAnchor
         self.localizationKey = localizationKey
+        self.localNetworkBlock = localNetworkBlock
     }
 
     init(_ recovery: BackendRecoveryPayload) {
@@ -266,7 +271,8 @@ struct DeviceRecoverySnapshot: Codable, Equatable {
             retryable: recovery.retryable,
             suggestedOperation: recovery.suggestedOperation,
             docsAnchor: recovery.docsAnchor,
-            localizationKey: recovery.localizationKey
+            localizationKey: recovery.localizationKey,
+            localNetworkBlock: recovery.localNetworkBlock?.rawValue
         )
     }
 }

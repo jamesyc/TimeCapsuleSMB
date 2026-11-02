@@ -16,6 +16,10 @@ _CONFIRMATION_ONLY_KEYS = frozenset({
     "confirmation",
 })
 _SECRET_PARAM_KEYS = frozenset({"password", "credentials"})
+# What the app sees about itself, sent with every request for telemetry
+# (HelperRunner). It describes the Mac when the request was sent, not what is
+# confirmed, and the app works it out again for the confirmed request.
+APP_FACT_PARAM_KEYS = frozenset({"macos_app_just_updated", "macos_app_other_copies"})
 
 
 @dataclass(frozen=True)
@@ -57,7 +61,7 @@ def _safe_params(params: Mapping[str, object]) -> dict[str, object]:
     return {
         str(key): value
         for key, value in params.items()
-        if str(key) not in _CONFIRMATION_ONLY_KEYS and str(key) not in _SECRET_PARAM_KEYS
+        if str(key) not in _CONFIRMATION_ONLY_KEYS | _SECRET_PARAM_KEYS | APP_FACT_PARAM_KEYS
     }
 
 

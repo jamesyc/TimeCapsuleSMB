@@ -15,7 +15,8 @@ struct CheckupTab: View {
             state: store.state,
             events: store.events,
             currentStage: store.currentStage,
-            hostWarning: HostCompatibilityPolicy.warning(enabled: appSettings.timeMachineWarningsEnabled)
+            hostWarning: HostCompatibilityPolicy.warning(enabled: appSettings.timeMachineWarningsEnabled),
+            localNetworkFacts: .current()
         )
         let progress = CheckupProgressPresentation(state: store.state, currentStage: store.currentStage)
         let isDeviceBusy = operationCoordinator.isDeviceBusy(profile)

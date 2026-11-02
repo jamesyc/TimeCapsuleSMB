@@ -5,6 +5,7 @@ struct ErrorBlock: View {
     let presentation: RecoveryGuidancePresentation
 
     init(error: BackendErrorViewModel) {
+        // Only the title and message show here: no steps to look up facts for.
         self.presentation = RecoveryGuidancePresentation(error: error)
     }
 
@@ -47,7 +48,7 @@ struct ErrorRecoveryView: View {
     }
 
     var body: some View {
-        let presentation = RecoveryGuidancePresentation(error: error)
+        let presentation = RecoveryGuidancePresentation(error: error, localNetworkFacts: .current())
         VStack(alignment: .leading, spacing: 6) {
             ErrorBlock(presentation: presentation)
             if let guidance {

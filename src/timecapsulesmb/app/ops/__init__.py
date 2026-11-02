@@ -3,12 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from timecapsulesmb.app.confirmations import APP_FACT_PARAM_KEYS
 from timecapsulesmb.app.context import AppOperationContext
-from timecapsulesmb.app.ops.configure import (
-    LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS,
-    configure_operation,
-    update_config_settings_operation,
-)
+from timecapsulesmb.app.ops.common import LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS
+from timecapsulesmb.app.ops.configure import configure_operation, update_config_settings_operation
 from timecapsulesmb.app.ops.deploy import deploy_operation
 from timecapsulesmb.app.ops.discovery import discover_operation
 from timecapsulesmb.app.ops.doctor import doctor_operation
@@ -50,7 +48,7 @@ class OperationSpec:
 # Read by the shared request helpers for every operation: the config path,
 # request-scoped credentials, and the answer to a confirmation.
 # airport_mac is the saved device's AirPort MAC, to find it where it moved.
-COMMON_PARAMS = frozenset({"airport_mac", "config", "credentials", "password", "confirmation_id", "confirmation"})
+COMMON_PARAMS = frozenset({"airport_mac", "config", "credentials", "password", "confirmation_id", "confirmation"}) | APP_FACT_PARAM_KEYS
 MANAGED_SETTING_PARAMS = frozenset({
     "any_protocol",
     "ata_idle_seconds",
@@ -127,7 +125,13 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
         reachability_operation,
         frozenset({"host", "hosts", "smb_host", "smb_hosts", "ssh_host", "ssh_timeout", "tcp_timeout"}),
     ),
-    OperationSpec("set-ssh", set_ssh_operation, frozenset({"action", "no_wait"}), telemetry=True, keep_awake=True),
+    OperationSpec(
+        "set-ssh",
+        set_ssh_operation,
+        frozenset({"action", "no_wait"}) | frozenset(LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS),
+        telemetry=True,
+        keep_awake=True,
+    ),
     OperationSpec("set-telemetry", set_telemetry_operation, frozenset({"enabled"})),
     OperationSpec("uninstall", uninstall_operation, REBOOT_PARAMS, telemetry=True, keep_awake=True),
     OperationSpec("validate-install", validate_install_operation),

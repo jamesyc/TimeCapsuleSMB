@@ -34,11 +34,14 @@ enum OperationParams {
             ["action": .string("status")]
         }
 
-        static func enable(noWait: Bool) -> [String: JSONValue] {
-            [
+        static func enable(noWait: Bool, localNetworkPreflight: LocalNetworkPreflightResult? = nil) -> [String: JSONValue] {
+            var params: [String: JSONValue] = [
                 "action": .string("enable"),
                 "no_wait": .bool(noWait)
             ]
+            // A denied preflight stops it: with SSH off, nothing else shows the block.
+            params.merge(localNetworkPreflight?.telemetryFields ?? [:]) { _, new in new }
+            return params
         }
     }
 
@@ -94,11 +97,7 @@ enum OperationParams {
                 ataStandby: ataStandby,
                 includeAtaStandby: includeAtaStandby
             )) { _, new in new }
-            if let localNetworkPreflight {
-                for (key, value) in localNetworkPreflight.telemetryFields {
-                    params[key] = value
-                }
-            }
+            params.merge(localNetworkPreflight?.telemetryFields ?? [:]) { _, new in new }
             return params
         }
 
@@ -178,11 +177,7 @@ enum OperationParams {
                 "skip_smb": .bool(skipSMB)
             ]
             // Checkup reports the result in its This Mac section.
-            if let localNetworkPreflight {
-                for (key, value) in localNetworkPreflight.telemetryFields {
-                    params[key] = value
-                }
-            }
+            params.merge(localNetworkPreflight?.telemetryFields ?? [:]) { _, new in new }
             return params
         }
     }

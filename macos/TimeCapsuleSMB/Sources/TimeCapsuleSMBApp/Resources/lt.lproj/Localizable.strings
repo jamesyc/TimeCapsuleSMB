@@ -732,6 +732,11 @@
 "backend.recovery.local_network_permission_denied.action.2" = "Skiltyje Local Network įjunkite TimeCapsuleSMB.";
 "backend.recovery.local_network_permission_denied.action.3" = "Išeikite iš TimeCapsuleSMB ir vėl ją atidarykite, tada bandykite dar kartą.";
 "backend.recovery.local_network_permission_denied.action.4" = "Jei TimeCapsuleSMB jau įjungta, išjunkite ją ir vėl įjunkite. Jei tai nepadeda, ištrinkite kitas TimeCapsuleSMB kopijas ir paleiskite Mac iš naujo.";
+"recovery.local_network.just_updated" = "TimeCapsuleSMB buvo atnaujinta prieš kelias minutes, o macOS kelias minutes gali blokuoti naują versiją. Palaukite 2 minutes, tada bandykite dar kartą.";
+"recovery.local_network.other_copies" = "Šiame Mac yra kitų TimeCapsuleSMB kopijų (%@). Ištrinkite jas, išvalykite šiukšlinę, tada paleiskite Mac iš naujo.";
+"recovery.local_network.disk_image_copies" = "TimeCapsuleSMB taip pat yra prijungtame disko atvaizde (%@). Išstumkite jį per Finder, tada paleiskite Mac iš naujo.";
+"recovery.local_network.if_blocked.other_copies" = "Jei macOS vis dar blokuoja TimeCapsuleSMB, priežastis gali būti kitos TimeCapsuleSMB kopijos šiame Mac (%@): ištrinkite jas, išvalykite šiukšlinę, tada paleiskite Mac iš naujo.";
+"recovery.local_network.if_blocked.disk_image_copies" = "Jei macOS vis dar blokuoja TimeCapsuleSMB, priežastis gali būti jos kopija prijungtame disko atvaizde (%@): išstumkite disko atvaizdą per Finder, tada paleiskite Mac iš naujo.";
 "backend.recovery.local_network_filtered.title" = "Ryšys užblokuotas šiame Mac";
 "backend.recovery.local_network_filtered.message" = "Šis Mac nutraukė ryšį dar prieš jam pasiekiant įrenginį. VPN, užkarda arba saugos programa filtruoja vietinio tinklo srautą.";
 "backend.recovery.device_off_network.title" = "Įrenginys ne šio Mac tinkle";

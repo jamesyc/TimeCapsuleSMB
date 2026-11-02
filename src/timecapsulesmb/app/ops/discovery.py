@@ -14,7 +14,7 @@ from timecapsulesmb.discovery.bonjour import (
 )
 from timecapsulesmb.discovery.devices import device_candidate_to_jsonable, device_candidates_from_records
 from timecapsulesmb.services.app import OperationResult, AppOperationError
-from timecapsulesmb.app.ops.configure import add_local_network_preflight_debug_fields, local_network_preflight_denied
+from timecapsulesmb.app.ops.common import refuse_if_local_network_denied
 
 def snapshot_payload(snapshot: BonjourDiscoverySnapshot) -> dict[str, object]:
     devices = device_candidates_from_records(snapshot.resolved)
@@ -33,10 +33,7 @@ def discover_operation(params: dict[str, object], context: AppOperationContext) 
     service = params.get("service")
     if service is not None and (not isinstance(service, str) or not any(t == service or t.startswith(service + ".") for t in SERVICE_TYPES)):
         raise AppOperationError("Unknown Bonjour service filter", code=ErrorCode.VALIDATION_FAILED)
-    add_local_network_preflight_debug_fields(params, context)
-    if local_network_preflight_denied(params):
-        context.stage("local_network_preflight")
-        raise AppOperationError("macOS is blocking TimeCapsuleSMB from accessing devices on your local network.", code=ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED)
+    refuse_if_local_network_denied(params, context)
     context.stage("bonjour_discovery")
     try:
         snapshot, diagnostics = discover_snapshot_detailed(**({"service": service} if service is not None else {}), timeout=timeout)

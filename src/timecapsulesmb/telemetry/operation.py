@@ -29,6 +29,8 @@ OPTION_KEYS = frozenset({
     "vfs_aio_fork_enabled",
     "internal_share_use_disk_root",
     "list_volumes",
+    "macos_app_just_updated",
+    "macos_app_other_copies",
     "macos_local_network_preflight_duration_ms",
     "macos_local_network_preflight_error",
     "macos_local_network_preflight_result",

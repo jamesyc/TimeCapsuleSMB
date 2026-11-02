@@ -38,6 +38,7 @@ final class OperationParamsContractTests: XCTestCase {
             ("reachability", OperationParams.Reachability.check(profile: profile)),
             ("set-ssh", OperationParams.SetSSH.status()),
             ("set-ssh", OperationParams.SetSSH.enable(noWait: true)),
+            ("set-ssh", OperationParams.SetSSH.enable(noWait: false, localNetworkPreflight: preflight)),
             ("configure", OperationParams.Configure.save(
                 host: "10.0.0.2",
                 password: "pw",
@@ -162,5 +163,12 @@ final class OperationParamsContractTests: XCTestCase {
         XCTAssertFalse(added.isEmpty)
         XCTAssertTrue(added.isSubset(of: Set(contract.common)), "not accepted by every operation: \(added.subtracting(contract.common).sorted())")
         XCTAssertEqual(check(runner.calls[1].params, operation: "uninstall", against: contract), .accepted)
+    }
+
+    func testTheFieldsTheRunnerAddsToEveryRequestAreAcceptedByEveryOperation() throws {
+        let contract = try contract()
+        let fields = Set(LocalNetworkAppFacts.empty.requestFields.keys)
+        XCTAssertFalse(fields.isEmpty)
+        XCTAssertTrue(fields.isSubset(of: Set(contract.common)), "not accepted by every operation: \(fields.subtracting(contract.common).sorted())")
     }
 }

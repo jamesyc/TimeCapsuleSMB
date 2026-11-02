@@ -519,7 +519,11 @@ class ConfigureServiceTests(unittest.TestCase):
         run = self.probe_run([no_route] * 3, ssh_error=no_route, record=self.record_at("10.0.0.2"))
 
         self.assertIsInstance(run.error, ACPNoRouteError)
-        self.assertEqual(run.error.message, "Could not connect to ACP.")
+        # The message says what the CLI prints; the app shows its card instead.
+        self.assertTrue(run.error.message.startswith(
+            "Could not connect to ACP. macOS refuses this command's connections to the device, although the device "
+            "is on the network (Bonjour finds it)"
+        ))
         self.assertTrue(run.error.detail.startswith("No answer from 10.0.0.2:5009. No route to 10.0.0.2"))
         self.assertTrue(run.error.detail.endswith("while Bonjour finds it."))
         self.assertEqual(run.ports, [5009, 5009, 5009, 22])

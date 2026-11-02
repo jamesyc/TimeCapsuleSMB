@@ -605,7 +605,8 @@ func recoveryValue(
     actionIDs: [String] = [],
     message: String? = nil,
     localizationKey: String? = nil,
-    localizationValues: [String: String] = [:]
+    localizationValues: [String: String] = [:],
+    localNetworkBlock: String? = nil
 ) -> JSONValue {
     var values: [String: JSONValue] = [
         "title": .string(title),
@@ -620,6 +621,9 @@ func recoveryValue(
     }
     if !localizationValues.isEmpty {
         values["localization_values"] = .object(localizationValues.mapValues(JSONValue.string))
+    }
+    if let localNetworkBlock {
+        values["local_network_block"] = .string(localNetworkBlock)
     }
     return .object(values)
 }

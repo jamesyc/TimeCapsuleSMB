@@ -215,6 +215,8 @@ final class SSHAccessMaintenanceStore: ObservableObject {
     @Published private(set) var currentStage: OperationStageState?
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
+    /// Enable SSH waits for macOS's Local Network answer before it starts.
+    @Published private(set) var isPreparing = false
 
     private let operation: MaintenanceWorkflowOperation
 
@@ -237,11 +239,29 @@ final class SSHAccessMaintenanceStore: ObservableObject {
     var isBusy: Bool { operation.isBusy }
 
     var canCheck: Bool {
-        !isBusy
+        !isBusy && !isPreparing
     }
 
     var canEnable: Bool {
-        !isBusy
+        !isBusy && !isPreparing
+    }
+
+    /// Ends the wait for macOS, idle until the enable starts or for good when
+    /// the device was forgotten meanwhile.
+    func endPreparing() {
+        isPreparing = false
+        state = .idle
+    }
+
+    /// Shows Enable SSH as running while the app asks macOS about Local
+    /// Network access, before the helper starts: it neither looks idle nor
+    /// offers to start again.
+    func beginPreparing() {
+        isPreparing = true
+        state = .running
+        payload = nil
+        error = nil
+        currentStage = nil
     }
 
     @discardableResult
@@ -250,9 +270,14 @@ final class SSHAccessMaintenanceStore: ObservableObject {
     }
 
     @discardableResult
-    func enable(password: String, noWait: Bool, profile: DeviceProfile? = nil) -> OperationStartResult {
+    func enable(
+        password: String,
+        noWait: Bool,
+        profile: DeviceProfile? = nil,
+        localNetworkPreflight: LocalNetworkPreflightResult? = nil
+    ) -> OperationStartResult {
         startRun(
-            params: OperationParams.SetSSH.enable(noWait: noWait),
+            params: OperationParams.SetSSH.enable(noWait: noWait, localNetworkPreflight: localNetworkPreflight),
             profile: profile,
             password: password,
             runningState: .running
@@ -261,7 +286,12 @@ final class SSHAccessMaintenanceStore: ObservableObject {
 
     @discardableResult
     func rejectAlreadyRunning() -> OperationStartResult {
-        operation.refuseAlreadyRunning { rejectRun(.operationAlreadyRunning) }
+        // Waiting for macOS is its own job too: the refusal leaves it shown.
+        operation.refuseAlreadyRunning {
+            if !isPreparing {
+                rejectRun(.operationAlreadyRunning)
+            }
+        }
     }
 
     private func startRun(

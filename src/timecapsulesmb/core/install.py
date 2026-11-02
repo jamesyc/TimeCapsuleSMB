@@ -3,7 +3,8 @@ messages give.
 
 The Homebrew formula's `tcapsule` wrapper sets TCAPSULE_CLIENT=homebrew, which
 telemetry also reports as the client. Anything else is a source checkout run
-through `.venv/bin/tcapsule` (or the Mac app, which never shows these)."""
+through `.venv/bin/tcapsule`, or the helper the Mac app starts, which sets
+TCAPSULE_CLIENT=macos_gui (HelperLocator.helperEnvironment)."""
 from __future__ import annotations
 
 import os
@@ -14,8 +15,15 @@ import shlex
 HOMEBREW_UPGRADE_COMMAND = "brew update && brew upgrade tcapsule"
 
 
+APP_CLIENT = "macos_gui"
+
+
 def installed_with_homebrew() -> bool:
     return os.getenv("TCAPSULE_CLIENT", "").strip() == "homebrew"
+
+
+def running_in_app() -> bool:
+    return os.getenv("TCAPSULE_CLIENT", "").strip() == APP_CLIENT
 
 
 def tcapsule_command(*args: str) -> str:

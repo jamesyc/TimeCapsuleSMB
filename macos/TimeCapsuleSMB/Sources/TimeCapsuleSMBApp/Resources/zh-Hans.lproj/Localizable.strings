@@ -732,6 +732,11 @@
 "backend.recovery.local_network_permission_denied.action.2" = "在“本地网络”中启用 TimeCapsuleSMB。";
 "backend.recovery.local_network_permission_denied.action.3" = "退出并重新打开 TimeCapsuleSMB，然后重试。";
 "backend.recovery.local_network_permission_denied.action.4" = "如果 TimeCapsuleSMB 已启用，请将其禁用后再重新启用。如果仍无效，请删除 TimeCapsuleSMB 的其他副本并重新启动 Mac。";
+"recovery.local_network.just_updated" = "TimeCapsuleSMB 几分钟前刚更新，macOS 可能会在几分钟内阻止新版本。请等待 2 分钟，然后再试一次。";
+"recovery.local_network.other_copies" = "此 Mac 上还有其他 TimeCapsuleSMB 副本（%@）。请删除它们并清倒废纸篓，然后重新启动 Mac。";
+"recovery.local_network.disk_image_copies" = "已挂载的磁盘映像上也有 TimeCapsuleSMB（%@）。请在访达中推出它，然后重新启动 Mac。";
+"recovery.local_network.if_blocked.other_copies" = "如果 macOS 仍然阻止 TimeCapsuleSMB，原因可能是此 Mac 上的其他 TimeCapsuleSMB 副本（%@）：请删除它们并清倒废纸篓，然后重新启动 Mac。";
+"recovery.local_network.if_blocked.disk_image_copies" = "如果 macOS 仍然阻止 TimeCapsuleSMB，原因可能是已挂载的磁盘映像上的 TimeCapsuleSMB（%@）：请在访达中推出该磁盘映像，然后重新启动 Mac。";
 "backend.recovery.local_network_filtered.title" = "此 Mac 上的连接被阻止";
 "backend.recovery.local_network_filtered.message" = "此 Mac 在连接到达设备之前将其中断。VPN、防火墙或安全软件正在过滤本地网络流量。";
 "backend.recovery.device_off_network.title" = "设备不在此 Mac 的网络中";

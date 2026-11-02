@@ -5,6 +5,8 @@
     "confirmation",
     "confirmation_id",
     "credentials",
+    "macos_app_just_updated",
+    "macos_app_other_copies",
     "password"
   ],
   "operations": {
@@ -105,6 +107,10 @@
     ],
     "set-ssh": [
       "action",
+      "macos_local_network_preflight_duration_ms",
+      "macos_local_network_preflight_error",
+      "macos_local_network_preflight_result",
+      "macos_local_network_preflight_service",
       "no_wait"
     ],
     "set-telemetry": [

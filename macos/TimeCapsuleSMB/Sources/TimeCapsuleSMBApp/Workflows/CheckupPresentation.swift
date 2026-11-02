@@ -136,11 +136,11 @@ struct CheckupRowPresentation: Equatable, Identifiable {
     let statusText: String
     let message: String
 
-    init(index: Int, check: DoctorCheckPayload) {
+    init(index: Int, check: DoctorCheckPayload, localNetworkFacts: @autoclosure () -> LocalNetworkAppFacts = .empty) {
         self.id = "\(index):\(check.status):\(check.code ?? check.message)"
         self.status = CheckupStatusPresentation(status: check.status)
         self.statusText = check.status
-        self.message = check.localizedMessage
+        self.message = check.localizedMessage(localNetworkFacts: localNetworkFacts())
     }
 }
 
@@ -155,12 +155,18 @@ struct CheckupDomainPresentation: Equatable, Identifiable {
 
     /// The group's status is its section's, as the helper decided it; the
     /// checks' own severity covers a Checkup still running.
-    init(signal: DoctorDomainSignal, section: DoctorSection? = nil) {
+    init(
+        signal: DoctorDomainSignal,
+        section: DoctorSection? = nil,
+        localNetworkFacts: @autoclosure () -> LocalNetworkAppFacts = .empty
+    ) {
         self.domain = signal.domain
         self.status = section.map { CheckupStatusPresentation(section: $0.status) }
             ?? CheckupStatusPresentation(severity: signal.severity)
         self.countSummary = signal.countSummary
-        self.rows = signal.checks.enumerated().map { CheckupRowPresentation(index: $0.offset, check: $0.element) }
+        self.rows = signal.checks.enumerated().map {
+            CheckupRowPresentation(index: $0.offset, check: $0.element, localNetworkFacts: localNetworkFacts())
+        }
     }
 
     /// A section with no checks to list: the device when SSH was skipped.
@@ -187,7 +193,8 @@ struct CheckupPresentation: Equatable {
         state: DoctorWorkflowState,
         events: [BackendEvent] = [],
         currentStage: OperationStageState? = nil,
-        hostWarning: HostCompatibilityWarning? = nil
+        hostWarning: HostCompatibilityWarning? = nil,
+        localNetworkFacts: @autoclosure () -> LocalNetworkAppFacts = .empty
     ) {
         self.title = L10n.string("dashboard.tab.checkup")
         self.stateTitle = state.title
@@ -197,7 +204,9 @@ struct CheckupPresentation: Equatable {
         // While it runs, the checks reported so far, as Install shows its steps.
         let checks = summary?.checks ?? (state == .running ? DoctorSummary.liveChecks(from: events) : [])
         var domains = DoctorCheckDomainPolicy.signals(from: checks).map { signal in
-            CheckupDomainPresentation(signal: signal, section: summary?.sections[signal.domain])
+            CheckupDomainPresentation(
+                signal: signal, section: summary?.sections[signal.domain], localNetworkFacts: localNetworkFacts()
+            )
         }
         // The device still gets its group when nothing ran on it, so the tab
         // says what the dashboard says.

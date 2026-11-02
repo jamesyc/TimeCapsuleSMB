@@ -9,6 +9,7 @@ from typing import Literal, Union
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.core.install import running_in_app
 from timecapsulesmb.core.net import (
     endpoint_host,
     ipv4_literal,
@@ -414,7 +415,10 @@ LOCAL_NETWORK_BLOCK_PROOFS = {
 @dataclass(frozen=True)
 class LocalNetworkBlock:
     """This computer refuses this program's own connections to the device
-    while something else shows the device is up (local_network_block)."""
+    while something else shows the device is up (local_network_block).
+
+    macOS holds the app responsible for its helper's connections, and the
+    terminal app for a command's."""
 
     host: str
     proof: str
@@ -423,9 +427,12 @@ class LocalNetworkBlock:
 
     @property
     def message(self) -> str:
+        on_network = f"although the device is on the network ({LOCAL_NETWORK_BLOCK_PROOFS[self.proof]})"
+        if running_in_app():
+            return f"macOS refuses TimeCapsuleSMB's connections to the device, {on_network}."
         return (
-            "macOS refuses TimeCapsuleSMB's connections to the device, although the device is on the network "
-            f"({LOCAL_NETWORK_BLOCK_PROOFS[self.proof]})."
+            f"macOS refuses this command's connections to the device, {on_network}: Local Network access is "
+            "blocked for the app tcapsule runs in, such as Terminal."
         )
 
     @property
@@ -435,11 +442,18 @@ class LocalNetworkBlock:
     @property
     def line(self) -> str:
         """Checkup's result line."""
-        return (
+        refused = (
             f"macOS refuses this Mac's connections to {self.host} ([Errno 65] No route to host), although "
-            f"{LOCAL_NETWORK_BLOCK_PROOFS[self.proof]}: Local Network access is blocked for TimeCapsuleSMB, or for "
-            "the app tcapsule runs in. Turn it off and on in System Settings > Privacy & Security > Local Network, "
-            "then quit and reopen that app"
+            f"{LOCAL_NETWORK_BLOCK_PROOFS[self.proof]}"
+        )
+        if running_in_app():
+            return (
+                f"{refused}: Local Network access is blocked for TimeCapsuleSMB. Turn it off and on in System "
+                "Settings > Privacy & Security > Local Network, then quit and reopen TimeCapsuleSMB"
+            )
+        return (
+            f"{refused}: Local Network access is blocked for the app tcapsule runs in, such as Terminal. Turn that "
+            "app off and on in System Settings > Privacy & Security > Local Network, then quit and reopen it"
         )
 
     @property

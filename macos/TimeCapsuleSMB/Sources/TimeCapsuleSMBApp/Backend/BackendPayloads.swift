@@ -1067,6 +1067,13 @@ struct MaintenanceResultPayload: Decodable, Equatable {
     }
 }
 
+/// What the helper diagnosed about macOS blocking the app: shown on the
+/// block's own card, or possible on a card for a device that did not answer.
+enum LocalNetworkBlockKind: String, Decodable, Equatable {
+    case proven
+    case possible
+}
+
 struct BackendRecoveryPayload: Decodable, Equatable {
     let title: String
     let message: String?
@@ -1077,6 +1084,9 @@ struct BackendRecoveryPayload: Decodable, Equatable {
     let docsAnchor: String?
     let localizationKey: String?
     let localizationValues: [String: String]
+    /// Whether macOS blocks the app from the local network, which decides
+    /// the steps the app adds about itself (LocalNetworkAppFacts).
+    let localNetworkBlock: LocalNetworkBlockKind?
 
     enum CodingKeys: String, CodingKey {
         case title
@@ -1088,6 +1098,7 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         case docsAnchor = "docs_anchor"
         case localizationKey = "localization_key"
         case localizationValues = "localization_values"
+        case localNetworkBlock = "local_network_block"
     }
 
     init(
@@ -1099,7 +1110,8 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         suggestedOperation: String?,
         docsAnchor: String?,
         localizationKey: String? = nil,
-        localizationValues: [String: String] = [:]
+        localizationValues: [String: String] = [:],
+        localNetworkBlock: LocalNetworkBlockKind? = nil
     ) {
         self.title = title
         self.message = message
@@ -1110,6 +1122,7 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         self.docsAnchor = docsAnchor
         self.localizationKey = localizationKey
         self.localizationValues = localizationValues
+        self.localNetworkBlock = localNetworkBlock
     }
 
     init(_ snapshot: DeviceRecoverySnapshot) {
@@ -1121,7 +1134,8 @@ struct BackendRecoveryPayload: Decodable, Equatable {
             retryable: snapshot.retryable,
             suggestedOperation: snapshot.suggestedOperation,
             docsAnchor: snapshot.docsAnchor,
-            localizationKey: snapshot.localizationKey
+            localizationKey: snapshot.localizationKey,
+            localNetworkBlock: snapshot.localNetworkBlock.flatMap(LocalNetworkBlockKind.init(rawValue:))
         )
     }
 
@@ -1136,6 +1150,8 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         self.docsAnchor = try container.decodeIfPresent(String.self, forKey: .docsAnchor)
         self.localizationKey = try container.decodeIfPresent(String.self, forKey: .localizationKey)
         self.localizationValues = try container.decodeIfPresent([String: String].self, forKey: .localizationValues) ?? [:]
+        // A kind a later helper adds is ignored rather than failing the card.
+        self.localNetworkBlock = try? container.decodeIfPresent(LocalNetworkBlockKind.self, forKey: .localNetworkBlock)
     }
 }
 
