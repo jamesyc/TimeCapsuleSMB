@@ -1,3 +1,46 @@
+diff --git a/docs-xml/manpages/vfs_aio_fork.8.xml b/docs-xml/manpages/vfs_aio_fork.8.xml
+--- a/docs-xml/manpages/vfs_aio_fork.8.xml
++++ b/docs-xml/manpages/vfs_aio_fork.8.xml
+@@ -43,9 +43,10 @@
+ 	<para>To work around all these limitations, the aio_fork module
+ 	was written. It uses forked helper processes instead of the
+ 	internal Posix AIO interface to create asynchronousity for
+-	read and write calls. It has no parameters, it will create
+-	helper processes when async requests come in as needed. Idle
+-	helper processes will be removed every 30 seconds.
++	read and write calls. It creates helper processes as async
++	requests come in, up to <command>aio_fork:max_children</command>
++	per tree connection. Idle helper processes will be removed
++	every 30 seconds.
+ 	</para>
+ 
+ 	<para>This module is stackable.</para>
+@@ -53,6 +54,25 @@
+ </refsect1>
+ 
+ 
++<refsect1>
++	<title>OPTIONS</title>
++
++	<variablelist>
++
++		<varlistentry>
++		<term>aio_fork:max_children = NUM</term>
++		<listitem>
++		<para>The most helper processes one tree connection uses.
++		With that many busy, requests wait for a free helper,
++		oldest first; past a short queue a read or write runs
++		synchronously in smbd itself, and an fsync keeps waiting.
++		The default, 0, sets no limit.</para>
++		</listitem>
++		</varlistentry>
++
++	</variablelist>
++</refsect1>
++
+ <refsect1>
+ 	<title>EXAMPLES</title>
+ 
 diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 --- a/source3/modules/vfs_aio_fork.c
 +++ b/source3/modules/vfs_aio_fork.c
