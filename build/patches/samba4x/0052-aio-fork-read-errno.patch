@@ -1,14 +1,15 @@
 diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 --- a/source3/modules/vfs_aio_fork.c
 +++ b/source3/modules/vfs_aio_fork.c
-@@ -649,6 +649,16 @@ static void aio_fork_pread_done(struct tevent_req *subreq)
+@@ -649,6 +649,17 @@ static void aio_fork_pread_done(struct tevent_req *subreq)
  	state->vfs_aio_state.error = retbuf->ret_errno;
  	state->vfs_aio_state.duration = retbuf->duration;
  
 +	if (state->ret == -1) {
 +		/*
-+		 * The worker's pread failed: return its errno. Cast to size_t,
-+		 * -1 looked like an oversized read and became EIO.
++		 * The worker's pread failed: return -1 with its errno.
++		 * Checked first, as cast to size_t -1 would pass for an
++		 * oversized read below and become EIO.
 +		 */
 +		state->child->busy = false;
 +		tevent_req_done(req);

@@ -288,6 +288,38 @@ static void deliver_sync_fallbacks(struct tevent_req **requests, unsigned count)
 		}
 }
 
+/* aio_fork logs to stderr (setup_logging() in main): send it to a scratch
+ * file between saturation_log_start() and saturation_log_lines(), which
+ * counts the saturation lines logged in between. */
+static FILE *saturation_log;
+static int saturation_saved_fd = -1;
+
+static void saturation_log_start(void)
+{
+	saturation_log = tmpfile();
+	saturation_saved_fd = dup(2);
+	CHECK(saturation_log != NULL && saturation_saved_fd >= 0);
+	CHECK(dup2(fileno(saturation_log), 2) == 2);
+}
+
+static unsigned saturation_log_lines(void)
+{
+	char line[512];
+	unsigned lines = 0;
+
+	CHECK(dup2(saturation_saved_fd, 2) == 2);
+	close(saturation_saved_fd);
+	rewind(saturation_log);
+	while (fgets(line, sizeof(line), saturation_log) != NULL) {
+		if (strstr(line, "aio_fork saturated with") != NULL) {
+			lines++;
+		}
+	}
+	fclose(saturation_log);
+	saturation_log = NULL;
+	return lines;
+}
+
 /* The scenarios test_queue() runs; NAME+fast_reply names one of them too. */
 static bool queue_case(const char *name)
 {
@@ -302,9 +334,11 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 	unsigned i, count = ARRAY_SIZE(requests);
 	struct aio_child_list *list;
 	struct aio_child *worker;
+	saturation_log_start();
 	for (i = 0; i < count; i++) {
 		requests[i] = submit(h, buffers[i], 4, 0, READ_CMD);
 	}
+	CHECK(saturation_log_lines() == 1);
 	list = pool(h);
 	worker = list->children;
 	CHECK(list->num_children == 1 && worker_count == 1);
@@ -314,6 +348,8 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 		CHECK(request_state(requests[i])->queued);
 	}
 	CHECK(!tevent_req_is_in_progress(requests[count - 1]));
+	/* The two past the bound ran here; the saturation was logged once. */
+	CHECK(list->saturated);
 	if (!strcmp(scenario, "cancel_queued")) {
 		TALLOC_FREE(requests[2]);
 		CHECK(list->num_pending == AIO_FORK_MAX_PENDING - 1);
@@ -371,9 +407,42 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 		if (i == 0) deliver_sync_fallbacks(requests, count);
 	}
 	CHECK(list->num_pending == 0 && list->pending == NULL);
+	/* The FIFO drained: the next saturation is logged again. */
+	CHECK(!list->saturated);
 	fail_fork = 0;
 	finish(submit(h, buffers[0], 4, 0, READ_CMD), 4, 0);
 	CHECK(list->num_children == 1 && !list->children->busy);
+}
+
+/*
+ * Past the FIFO bound reads and writes run synchronously in this process, but
+ * an fsync, which can take long, still waits its turn for a helper, without
+ * counting as a saturation.
+ */
+static void test_fsync_past_bound(struct vfs_handle_struct *h)
+{
+	struct tevent_req *requests[AIO_FORK_MAX_PENDING + 3];
+	char buffers[AIO_FORK_MAX_PENDING + 3][4];
+	unsigned i, queued_fsync = AIO_FORK_MAX_PENDING + 1, late_read = AIO_FORK_MAX_PENDING + 2;
+	struct aio_child_list *list;
+	for (i = 0; i <= AIO_FORK_MAX_PENDING; i++) {
+		requests[i] = submit(h, buffers[i], 4, 0, READ_CMD);
+	}
+	list = pool(h);
+	CHECK(list->num_children == 1 && list->num_pending == AIO_FORK_MAX_PENDING);
+	requests[queued_fsync] = submit(h, NULL, 0, 0, FSYNC_CMD);
+	CHECK(request_state(requests[queued_fsync])->queued);
+	CHECK(list->num_pending == AIO_FORK_MAX_PENDING + 1 && !list->saturated);
+	/* A read past the bound still runs here, and that saturation is logged. */
+	saturation_log_start();
+	requests[late_read] = submit(h, buffers[late_read], 4, 0, READ_CMD);
+	CHECK(saturation_log_lines() == 1);
+	CHECK(!tevent_req_is_in_progress(requests[late_read]) && list->saturated);
+	finish(requests[late_read], 4, 0);
+	for (i = 0; i <= queued_fsync; i++) {
+		finish(requests[i], i == queued_fsync ? 0 : 4, 0);
+	}
+	CHECK(list->num_pending == 0 && !list->saturated && worker_count == 1);
 }
 
 /*
@@ -731,6 +800,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(argv[1], "limits") || !strcmp(argv[1], "unlimited")) test_limits(frame, h, !strcmp(argv[1], "unlimited"));
 	else if (!strcmp(argv[1], "cleanup")) test_cleanup(h);
 	else if (!strcmp(argv[1], "full_buffer") || !strcmp(argv[1], "over_buffer")) test_sizes(h, argv[1]);
+	else if (!strcmp(argv[1], "fsync_past_bound")) test_fsync_past_bound(h);
 	else if (!strcmp(argv[1], "exit_frames")) test_exit_frames(false);
 	else if (!strcmp(argv[1], "exit_frames_debug")) test_exit_frames(true);
 	else if (!strcmp(argv[1], "data_page_writes")) test_data_page_writes();
