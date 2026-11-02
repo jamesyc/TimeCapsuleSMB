@@ -219,10 +219,12 @@
 # sends volatile lock-database deletes straight to the freelist instead of
 # retaining thousands of per-hash-chain dead records after Time Machine closes
 # files; persistent TDBs already use 0, so only a positive value changes them.
+# A clustered database is ctdb's: the setting is read for local ones only.
+# Undocumented, like dbwrap_tdb_mutexes: dbwrap options have no man page.
 0017-dbwrap-tdb-max-dead.patch|configurable dbwrap TDB max-dead records
 # Native HFS xattrs hold at most 3,802 bytes, so smb.conf sets 35 xattrs per
 # stream for Windows alternate data streams of up to about 130 KiB. Upstream
-# accepts at most 16.
+# accepts at most 16. The man page says 64.
 0048-streams-xattr-max-64-per-stream.patch|allow up to 64 xattrs per stream
 # Refactor only: pread, pwrite and fsync have three copies of the same
 # send/done/recv code; use one path that takes the command (and one recv for
@@ -236,7 +238,8 @@
 # first request past it logs the saturation at level 0, once until the FIFO
 # drains. Each helper's shared buffer is 8 MiB, Samba's default SMB2 read and
 # write size: stock aio_fork refuses anything over 128 KiB with EINVAL. Stock's
-# name for WRITE_CMD in debug output, "PRITE", becomes "WRITE".
+# name for WRITE_CMD in debug output, "PRITE", becomes "WRITE". The man page
+# documents aio_fork:max_children.
 #
 # Only aio_fork_send (for a request queued alone) and the event loop (a tevent
 # immediate, as tevent_queue does) run the FIFO: freeing, completing or failing
