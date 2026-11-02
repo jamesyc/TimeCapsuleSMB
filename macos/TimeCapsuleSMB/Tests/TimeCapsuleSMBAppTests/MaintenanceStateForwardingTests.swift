@@ -111,6 +111,33 @@ final class MaintenanceStateForwardingTests: XCTestCase {
         }
     }
 
+    func testARefusalTheAppMadeNeverRechecksSSH() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [.error(operation: "activate", code: "cancelled", message: "Cancelled.")]),
+            .init(events: [BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))]),
+            .init(events: [BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())])
+        ])
+        let store = fixture.session.maintenanceStore
+        // A cancelled run leaves its error event unhandled, since a cancel
+        // says nothing about SSH.
+        store.runActivation(password: "pw", profile: fixture.profile)
+        try await waitUntilStoreState {
+            store.error(for: .activate)?.code == "cancelled" && !fixture.app.operationCoordinator.isDeviceBusy(fixture.profile)
+        }
+
+        store.activationStore.rejectAlreadyRunning()
+        XCTAssertEqual(store.error(for: .activate)?.localError, .operationAlreadyRunning)
+        // The session queues its recheck as a main-actor task; yielding lets
+        // a wrong one start before the next run. That run is another
+        // workflow's: a successful retry of activation would cancel the recheck.
+        await Task.yield()
+        store.runUninstall(password: "pw", profile: fixture.profile)
+        try await waitUntilStoreState {
+            store.uninstallState == .succeeded && !fixture.app.operationCoordinator.isDeviceBusy(fixture.profile)
+        }
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["activate", "uninstall"])
+    }
+
     func testOtherChildChangesDoNotRepublishAnOldSSHObservation() async throws {
         var now = Date(timeIntervalSince1970: 100)
         let fixture = try await makeFixture(responses: [

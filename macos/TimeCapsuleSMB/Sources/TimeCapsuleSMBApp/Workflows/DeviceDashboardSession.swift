@@ -495,7 +495,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     }
 
     private func refreshSSHAccessAfterRemoteFailure(_ error: BackendErrorViewModel?) {
-        guard let error,
+        // A refusal the app made itself never reached the device.
+        guard let error, error.localError == nil,
               !["operation_rejected", "cancelled", "confirmation_cancelled"].contains(error.code),
               let event = latestTerminalEvent(for: error.operation),
               let requestID = event.requestId,
