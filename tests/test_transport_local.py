@@ -18,6 +18,7 @@ from timecapsulesmb.transport.local import (
     command_exists,
     connect_answered,
     connect_unanswered,
+    mac_default_gateway,
     mac_network_filters,
     run_local_capture,
     scoped_tcp_connect_errors,
@@ -303,6 +304,70 @@ class MacNetworkFiltersTests(unittest.TestCase):
         runner = mock.Mock()
 
         self.assertEqual(mac_network_filters(platform="linux", run=runner), {})
+        runner.assert_not_called()
+
+
+# `route -n get default` on macOS, wired to a router and on a VPN without a
+# gateway of its own.
+DEFAULT_ROUTE_OUTPUT = """   route to: default
+destination: default
+       mask: default
+    gateway: 192.168.1.1
+  interface: en0
+      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>
+"""
+DEFAULT_ROUTE_IPV6_SCOPED_OUTPUT = """   route to: default
+destination: default
+    gateway: fe80::1%en0
+  interface: en0
+"""
+DEFAULT_ROUTE_TUNNEL_OUTPUT = """   route to: default
+destination: default
+       mask: default
+  interface: utun4
+      flags: <UP,DONE,STATIC,PRCLONING,GLOBAL>
+"""
+
+
+class MacDefaultGatewayTests(unittest.TestCase):
+    def gateway(self, result: object) -> tuple[str | None, mock.Mock]:
+        def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if isinstance(result, BaseException):
+                raise result
+            returncode, stdout = result if isinstance(result, tuple) else (0, result)
+            return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
+
+        runner = mock.Mock(side_effect=run)
+        return mac_default_gateway(platform="darwin", run=runner), runner
+
+    def test_reads_the_gateway_line(self) -> None:
+        gateway, runner = self.gateway(DEFAULT_ROUTE_OUTPUT)
+
+        self.assertEqual(gateway, "192.168.1.1")
+        runner.assert_called_once()
+        self.assertEqual(runner.call_args.args[0], ["/sbin/route", "-n", "get", "default"])
+        self.assertEqual(runner.call_args.kwargs["timeout"], 5)
+        self.assertIs(runner.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_keeps_a_scoped_address_whole_for_the_caller_to_split(self) -> None:
+        self.assertEqual(self.gateway(DEFAULT_ROUTE_IPV6_SCOPED_OUTPUT)[0], "fe80::1%en0")
+
+    def test_no_gateway_line_no_default_route_or_a_failed_route_is_unknown(self) -> None:
+        cases = (
+            ("tunnel", DEFAULT_ROUTE_TUNNEL_OUTPUT),
+            ("no default route", (1, "")),
+            ("empty gateway", "    gateway: \n"),
+            ("missing", FileNotFoundError(2, "No such file")),
+            ("timeout", subprocess.TimeoutExpired(["route"], 5)),
+        )
+        for name, result in cases:
+            with self.subTest(name):
+                self.assertIsNone(self.gateway(result)[0])
+
+    def test_other_platforms_run_nothing(self) -> None:
+        runner = mock.Mock()
+
+        self.assertIsNone(mac_default_gateway(platform="linux", run=runner))
         runner.assert_not_called()
 
 

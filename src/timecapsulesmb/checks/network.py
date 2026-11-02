@@ -9,7 +9,7 @@ from typing import Literal, Union
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.error_codes import ErrorCode
-from timecapsulesmb.core.install import running_in_app
+from timecapsulesmb.core.install import running_in_app, this_computer
 from timecapsulesmb.core.net import (
     endpoint_host,
     ipv4_literal,
@@ -372,7 +372,7 @@ class LinkLocalInterfaceGone:
 
     @property
     def _computer(self) -> str:
-        return "this Mac" if (self.platform or sys.platform) == "darwin" else "this computer"
+        return this_computer(self.platform)
 
     @property
     def message(self) -> str:

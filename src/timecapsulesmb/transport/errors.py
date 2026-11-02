@@ -4,6 +4,7 @@ import signal
 import sys
 
 from timecapsulesmb.core.error_codes import ErrorCode, exception_chain
+from timecapsulesmb.core.install import this_computer
 
 
 class TransportError(Exception):
@@ -52,7 +53,7 @@ class SshLocalNetworkFilteredError(SshNetworkError):
 
 
 def local_network_filtered_message(*, platform: str = sys.platform) -> str:
-    computer = "This Mac" if platform == "darwin" else "This computer"
+    computer = this_computer(platform, capitalized=True)
     return (
         f"{computer} dropped the connection before it reached the device. "
         "A VPN, firewall or security app is filtering local network traffic."
@@ -78,7 +79,7 @@ class SshClientCrashedError(SshLocalNetworkFilteredError):
 
     def __init__(self, signal_number: int, *, platform: str = sys.platform) -> None:
         name = _signal_name(signal_number)
-        computer = "this Mac" if platform == "darwin" else "this computer"
+        computer = this_computer(platform)
         super().__init__(
             f"The ssh program on {computer} crashed ({name}) before it finished. "
             "A VPN, firewall or security app can cause this; try again, or turn that app off and retry."
@@ -90,7 +91,7 @@ class SshClientStoppedError(SshClientError):
     """Something outside ssh stopped it; this does not identify a network filter."""
 
     def __init__(self, signal_number: int, *, platform: str = sys.platform) -> None:
-        computer = "this Mac" if platform == "darwin" else "this computer"
+        computer = this_computer(platform)
         super().__init__(f"The ssh program on {computer} was stopped by {_signal_name(signal_number)} before it finished.")
         self.signal_number = signal_number
 

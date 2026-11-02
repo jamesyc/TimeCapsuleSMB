@@ -10,7 +10,7 @@ from unittest import mock
 from timecapsulesmb import basebinary
 from timecapsulesmb.basebinary import BasebinaryError
 from timecapsulesmb.core.errors import missing_dependency_message
-from timecapsulesmb.core.install import installed_with_homebrew, reinstall_command, tcapsule_command
+from timecapsulesmb.core.install import installed_with_homebrew, reinstall_command, tcapsule_command, this_computer
 from timecapsulesmb.flash import FlashAnalysisError, require_zopfli_gzip_available
 
 
@@ -28,6 +28,17 @@ def homebrew():
 
 def checkout():
     return client(None)
+
+
+class ThisComputerTests(unittest.TestCase):
+    def test_messages_name_this_mac_only_on_macos(self) -> None:
+        self.assertEqual(this_computer("darwin"), "this Mac")
+        self.assertEqual(this_computer("linux"), "this computer")
+        # Not str.capitalize, which would give "This mac".
+        self.assertEqual(this_computer("darwin", capitalized=True), "This Mac")
+        self.assertEqual(this_computer("win32", capitalized=True), "This computer")
+        with mock.patch("timecapsulesmb.core.install.sys.platform", "linux"):
+            self.assertEqual(this_computer(), "this computer")
 
 
 class InstallKindTests(unittest.TestCase):

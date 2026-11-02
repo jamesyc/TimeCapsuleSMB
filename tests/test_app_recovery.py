@@ -273,6 +273,28 @@ class AppRecoveryTests(unittest.TestCase):
         )
         self.assertNotIn("local_network_block", recovery_for("deploy", ErrorCode.LOCAL_NETWORK_FILTERED))
 
+    def test_a_mac_that_left_the_devices_network_gets_a_checkup_not_an_unplug(self) -> None:
+        # The device may well be back: reconnect, then a Checkup says, without
+        # restarting it again.
+        generic = recovery_for("fsck", ErrorCode.CLIENT_LEFT_NETWORK)
+        self.assertEqual(generic["localization_key"], "client_left_network")
+        self.assertEqual(generic["action_ids"], ["run_checkup"])
+        self.assertIn("by Wi-Fi or one of its LAN ports", generic["actions"][0])
+        self.assertFalse(any("unplug" in step.lower() for step in generic["actions"]))
+        # An install is done once its files are copied; NetBSD 4 may need Activate.
+        deploy = recovery_for("deploy", ErrorCode.CLIENT_LEFT_NETWORK, stage="wait_for_reboot_up")
+        self.assertEqual(deploy["localization_key"], "deploy.client_left_network")
+        self.assertIn("installation files were copied", deploy["message"])
+        self.assertIn("Activate", deploy["actions"][-1])
+        # Add Device has no saved device for a Checkup: reconnect and try again,
+        # which finds SSH on and does not restart the device.
+        configure = recovery_for("configure", ErrorCode.CLIENT_LEFT_NETWORK, stage="wait_for_reboot_up")
+        self.assertEqual(configure["localization_key"], "configure.client_left_network")
+        self.assertTrue(configure["retryable"])
+        self.assertNotIn("run_checkup", configure.get("action_ids", []))
+        self.assertFalse(any("Checkup" in step for step in configure["actions"]))
+        self.assertIn("try again", configure["actions"][-1])
+
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
         recovery = recovery_for("deploy", "reboot_not_finished", stage="wait_for_reboot_up")
 

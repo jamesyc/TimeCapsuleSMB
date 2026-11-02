@@ -343,7 +343,7 @@ class UnsharedNetworkCheckTests(unittest.TestCase):
         sink = DoctorSink(on_result=None, debug_fields=None)
         plan = _parse_link_plan(plan_text) if plan_text is not None else None
         with mock.patch("timecapsulesmb.checks.doctor_steps.local_lan_networks", return_value=local), \
-                mock.patch("timecapsulesmb.checks.doctor_steps.sys.platform", "darwin"):
+                mock.patch("timecapsulesmb.core.install.sys.platform", "darwin"):
             failed = _doctor_check_unshared_network(remote or self.REMOTE, plan, sink)
         return failed, sink.results
 
@@ -512,8 +512,12 @@ class AcpPortPreflightTests(unittest.TestCase):
     """configure and Enable SSH both go through enable_ssh_with_port_preflight."""
 
     def preflight(self, host: str, local: tuple[LocalInterfaceNetwork, ...], *, error: str | None = "timed out", platform: str = "darwin"):
+        # This Mac still has en0 with a link-local address, whatever the
+        # computer running the tests has (a Linux runner has no en0).
         with mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=local), \
-                mock.patch("timecapsulesmb.services.acp_ssh.sys.platform", platform), \
+                mock.patch("timecapsulesmb.checks.network.ipv6_scope_index", return_value=4), \
+                mock.patch("timecapsulesmb.checks.network.local_interface_addresses", return_value=("fe80::2%en0",)), \
+                mock.patch("timecapsulesmb.core.install.sys.platform", platform), \
                 mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
                 mock.patch("timecapsulesmb.services.acp_ssh._run_enable_ssh") as enable:
             enable_ssh_with_port_preflight(

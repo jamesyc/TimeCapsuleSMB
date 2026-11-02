@@ -3742,6 +3742,7 @@ class AppApiTests(unittest.TestCase):
             wait=True,
             callbacks=mock.ANY,
             up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE,
+            wifi_name=None,
         )
         self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
         stages = [event["stage"] for event in confirmed_collector.events_of_type("stage")]
@@ -4482,7 +4483,7 @@ class AppApiTests(unittest.TestCase):
                     mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
                     mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
                     mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=elsewhere), \
-                    mock.patch("timecapsulesmb.services.acp_ssh.sys.platform", "darwin"), \
+                    mock.patch("timecapsulesmb.core.install.sys.platform", "darwin"), \
                     mock.patch("timecapsulesmb.services.set_ssh.reboot_device", return_value=None) as reboot:
                 rc = service.run_api_request({"operation": "set-ssh", "params": params}, collector.sink)
 
@@ -4937,7 +4938,7 @@ class AppApiTests(unittest.TestCase):
                     mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
                     mock.patch("timecapsulesmb.services.acp_diagnostics.local_interface_networks", return_value=mac_lan), \
                     mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=mac_lan), \
-                    mock.patch("timecapsulesmb.services.acp_ssh.sys.platform", "darwin"), \
+                    mock.patch("timecapsulesmb.core.install.sys.platform", "darwin"), \
                     mock.patch(
                         "timecapsulesmb.services.acp_diagnostics.select_route_to_address",
                         return_value=RouteSelection("available", source="192.168.1.170"),

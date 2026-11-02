@@ -62,6 +62,40 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(timeline[2].detail, OperationTimelineBuilder.stageDetail(for: "deploy", stage: "replace_software"))
     }
 
+    func testAMacThatLeftTheDevicesNetworkIsToldInTheRestartRowUntilItIsBack() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        let data = """
+        {"schema_version":1,"type":"progress","operation":"deploy","stage":"wait_for_reboot_up","client_away":true,"network_name":"Apple Network 619b7d"}
+        """.data(using: .utf8)!
+        let away = try JSONDecoder().decode(BackendEvent.self, from: data)
+        XCTAssertEqual(away.clientAway, true)
+        XCTAssertEqual(away.withRequestId("req-2").networkName, "Apple Network 619b7d")
+
+        let stage = BackendEvent(type: "stage", operation: "deploy", stage: "wait_for_reboot_up")
+        var timeline = OperationTimelineBuilder.timeline(from: [stage, away])
+        XCTAssertEqual(timeline.count, 1)
+        XCTAssertEqual(
+            timeline[0].detail,
+            "This Mac left the device's network (Wi-Fi \u{201C}Apple Network 619b7d\u{201D}). Reconnect it; the device is still restarting."
+        )
+        // Without the device's Wi-Fi name, the device's network.
+        let unnamed = BackendEvent(type: "progress", operation: "deploy", stage: "wait_for_reboot_up", clientAway: true, networkName: "")
+        timeline = OperationTimelineBuilder.timeline(from: [stage, unnamed])
+        XCTAssertEqual(timeline[0].detail, L10n.string("timeline.progress.client_away"))
+        // Back on the network: the stage's own text again, in the same row.
+        let back = BackendEvent(type: "progress", operation: "deploy", stage: "wait_for_reboot_up", clientAway: false)
+        timeline = OperationTimelineBuilder.timeline(from: [stage, away, back])
+        XCTAssertEqual(timeline.count, 1)
+        XCTAssertEqual(timeline[0].detail, OperationTimelineBuilder.stageDetail(for: "deploy", stage: "wait_for_reboot_up"))
+        // The live stage line follows it too.
+        let live = try XCTUnwrap(OperationStageState(event: stage)?.updated(by: away))
+        XCTAssertEqual(live.progressDetail, OperationTimelineBuilder.progressDetail(for: away))
+        XCTAssertEqual(live.updated(by: back)?.progressDetail,
+                       OperationTimelineBuilder.stageDetail(for: "deploy", stage: "wait_for_reboot_up"))
+    }
+
     func testStageWithoutProgressKeepsItsDetail() {
         let events = [
             BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy"),

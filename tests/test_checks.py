@@ -1755,7 +1755,7 @@ class CheckTests(unittest.TestCase):
         return run, calls
 
     def test_doctor_from_the_wan_side_fails_first_and_checks_nothing_from_here(self) -> None:
-        with mock.patch("timecapsulesmb.checks.doctor_steps.sys.platform", "linux"):
+        with mock.patch("timecapsulesmb.core.install.sys.platform", "linux"):
             run, calls = self._run_doctor_against_router(local_networks=self.WAN_SIDE)
 
         self.assertTrue(run.fatal)
@@ -1783,7 +1783,7 @@ class CheckTests(unittest.TestCase):
         plan = router_plan(
             wan_ipv4=None, wan_link_local="169.254.247.225", lan_link_local=None, session_server="169.254.247.225")
         elsewhere = (LocalInterfaceNetwork("en0", "192.168.50.10", ipaddress.ip_network("192.168.50.0/24")),)
-        with mock.patch("timecapsulesmb.checks.doctor_steps.sys.platform", "darwin"):
+        with mock.patch("timecapsulesmb.core.install.sys.platform", "darwin"):
             run, calls = self._run_doctor_against_router(local_networks=elsewhere, plan_text=plan)
 
         self.assertTrue(run.fatal)

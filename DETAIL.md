@@ -651,7 +651,7 @@ Arguments:
 - `--no-input`: fail instead of asking when no mode was given
 - `--no-wait`: return right after the change, without waiting for the port or the reboot
 
-Turning SSH on restarts the device. If SSH does not open, the error says which case it was. With `ssh_enable_timeout`, the device did not come back within 10 minutes: unplug it, wait 10 seconds, plug it in, and try again after 2 minutes. With `ssh_closed_after_restart`, it came back with SSH still off: try again.
+Turning SSH on restarts the device. If SSH does not open, the error says which case it was. With `ssh_enable_timeout`, the device did not come back within 10 minutes: unplug it, wait 10 seconds, plug it in, and try again after 2 minutes. With `ssh_closed_after_restart`, it came back with SSH still off: try again. With `client_left_network`, this computer moved to another network while the device restarted and did not come back, so it could not see the device restart: connect it to the device's network again, then run `tcapsule doctor`.
 
 Use `configure` for first-time setup, and `set-ssh` to turn SSH on or off by itself.
 

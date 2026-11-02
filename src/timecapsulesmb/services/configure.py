@@ -227,7 +227,11 @@ def enable_ssh_and_reprobe(
     try:
         connection = followed(
             connection,
-            reboot_device(host, connection.password, wait=True, callbacks=callbacks, up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE),
+            reboot_device(
+                host, connection.password, wait=True, callbacks=callbacks, up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE,
+                # The device's Wi-Fi name, for the hint if this Mac leaves it.
+                wifi_name=record.properties.get("raNm") if record is not None else None,
+            ),
         )
     except RebootFlowError as exc:
         if exc.code != ErrorCode.REBOOT_NOT_FINISHED:

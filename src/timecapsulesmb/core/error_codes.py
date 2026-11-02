@@ -67,6 +67,9 @@ class ErrorCode(str, Enum):
     # Restarting the device.
     REBOOT_NOT_STARTED = "reboot_not_started"
     REBOOT_NOT_FINISHED = "reboot_not_finished"
+    # This Mac left the device's network during the restart wait and never
+    # came back to it (services.reboot): whether the device restarted is unknown.
+    CLIENT_LEFT_NETWORK = "client_left_network"
 
     # The installed runtime.
     RUNTIME_NOT_INSTALLED = "runtime_not_installed"

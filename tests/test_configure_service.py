@@ -318,6 +318,17 @@ class ConfigureServiceTests(unittest.TestCase):
             update_fields,
         )
 
+    def test_enable_ssh_names_the_devices_wifi_from_its_record_for_the_restart_wait(self) -> None:
+        # Only the selected Bonjour record carries the device's Wi-Fi name
+        # (raNm); network ACP does not return it.
+        connection = self.make_connection()
+        callbacks = self.callbacks()[0]
+        with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight", return_value="10.0.0.2"), \
+                mock.patch("timecapsulesmb.services.configure.reboot_device", return_value=None) as wait, \
+                mock.patch("timecapsulesmb.services.configure.probe_connection_state", return_value=self.make_probe_state()):
+            enable_ssh_and_reprobe(connection, callbacks=callbacks, record=SELECTED_RECORD)
+        self.assertEqual(wait.call_args.kwargs["wifi_name"], "Apple Network b67fdb")
+
     def test_enable_ssh_and_reprobe_enables_waits_and_reprobes(self) -> None:
         connection = self.make_connection()
         probe_state = self.make_probe_state()
@@ -339,6 +350,7 @@ class ConfigureServiceTests(unittest.TestCase):
             wait=True,
             callbacks=callbacks,
             up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE,
+            wifi_name=None,
         )
         probe.assert_called_once_with(connection)
         self.assertEqual(stages, ["acp_port_probe", "acp_enable_ssh", "ssh_probe_after_acp"])
@@ -1046,6 +1058,20 @@ class ConfigureServiceTests(unittest.TestCase):
                 probe.assert_not_called()
                 self.assertEqual(stages, ["acp_port_probe", "acp_enable_ssh"])
                 self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT, {"ssh_final_reachable": False}])
+
+    def test_enable_ssh_and_reprobe_passes_on_a_mac_that_left_the_devices_network(self) -> None:
+        # Its own way out: reconnect, then a Checkup; never ssh_enable_timeout's unplug.
+        callbacks = self.callbacks()[0]
+        left = RebootFlowError("This Mac is on another network", code="client_left_network", result="client_left_network")
+        with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
+                mock.patch("timecapsulesmb.services.acp_ssh.set_dbug"), \
+                mock.patch("timecapsulesmb.services.configure.reboot_device", side_effect=left), \
+                mock.patch("timecapsulesmb.services.configure.probe_connection_state") as probe:
+            with self.assertRaises(RebootFlowError) as raised:
+                enable_ssh_and_reprobe(self.make_connection(), callbacks=callbacks)
+
+        self.assertIs(raised.exception, left)
+        probe.assert_not_called()
 
     def test_device_that_did_not_restart_fails_configure_with_its_own_code(self) -> None:
         # Only SSH not opening in time is the soft "try again" outcome; a reboot

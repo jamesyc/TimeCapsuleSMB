@@ -1,5 +1,5 @@
-"""How this copy of tcapsule was installed, which decides the commands its
-messages give.
+"""How and where this copy of tcapsule runs, which decides the commands and
+words its messages give.
 
 The Homebrew formula's `tcapsule` wrapper sets TCAPSULE_CLIENT=homebrew, which
 telemetry also reports as the client. Anything else is a source checkout run
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 
 # `brew upgrade tcapsule` alone fetches the tap only when Homebrew last
 # updated over a day ago, so it can miss a release that is already there.
@@ -24,6 +25,13 @@ def installed_with_homebrew() -> bool:
 
 def running_in_app() -> bool:
     return os.getenv("TCAPSULE_CLIENT", "").strip() == APP_CLIENT
+
+
+def this_computer(platform: str | None = None, *, capitalized: bool = False) -> str:
+    """How a message names the computer it runs on: "this Mac" on macOS, "this
+    computer" elsewhere (`platform`, this one's by default)."""
+    name = "this Mac" if (platform or sys.platform) == "darwin" else "this computer"
+    return name[0].upper() + name[1:] if capitalized else name
 
 
 def tcapsule_command(*args: str) -> str:

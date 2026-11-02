@@ -144,6 +144,16 @@ class SetSshServiceTests(unittest.TestCase):
                 self.assertEqual(str(result), SSH_ENABLE_TIMEOUT_MESSAGE)
                 self.assertEqual(recorder.measurement("reboot_cycle")["result"], wait_result)
 
+    def test_enable_passes_on_a_mac_that_left_the_devices_network(self) -> None:
+        # Not ssh_enable_timeout, whose way out is an unplug: the device may
+        # well be back, out of this Mac's sight.
+        device = FakeAcpDevice(ssh_open=False, mac_network_changes=((20, ("172.20.10.0/28",)),))
+        result, recorder, _enable = self.enable(device)
+
+        self.assertIsInstance(result, RebootFlowError)
+        self.assertEqual((result.code, result.result), ("client_left_network", "client_left_network"))
+        self.assertEqual(recorder.measurement("reboot_cycle")["result"], "client_left_network")
+
     def test_enable_reports_a_device_that_never_restarted(self) -> None:
         result, _recorder, _enable = self.enable(FakeAcpDevice(ssh_open=False, reboots=False))
 

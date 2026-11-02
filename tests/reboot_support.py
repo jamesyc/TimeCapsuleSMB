@@ -8,6 +8,7 @@ things happen and the real reboot loop observes them.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import struct
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -78,6 +79,14 @@ class FakeAcpDevice:
     flaky_reads_at: tuple[tuple[float, float], ...] = ()
     # Device clock speed relative to the host's.
     device_rate: float = 1.0
+    # This Mac's own networks (checks.network.local_lan_networks) before the
+    # request, then from each time (host seconds after the request) on: a
+    # restart can leave it on another network, or with no address at all. ACP
+    # and SSH reach the device only from a network holding its address.
+    mac_networks_before: tuple[str, ...] = ("10.0.0.0/24",)
+    mac_network_changes: tuple[tuple[float, tuple[str, ...]], ...] = ()
+    # This Mac's default router (transport.local.mac_default_gateway).
+    mac_gateway: str | None = None
     # The address the new boot answers at, when DHCP gave the device another
     # one; the old address then answers nothing.
     new_address: str | None = None
@@ -135,7 +144,38 @@ class FakeAcpDevice:
             return int((self.now - kernel) * self.device_rate)
         return int((self.now - self._boot_at) * self.device_rate)
 
+    def mac_networks(self) -> tuple[str, ...]:
+        current = self.mac_networks_before
+        if self.requested_at is not None:
+            for at, networks in self.mac_network_changes:
+                if self.now >= self.requested_at + at:
+                    current = networks
+        return current
+
+    def local_lan_networks(self):
+        # As checks.network.local_interface_networks, without link-local ones.
+        networks = (ipaddress.ip_network(network) for network in self.mac_networks())
+        return tuple(SimpleNamespace(interface="en0", network=network)
+                     for network in networks if not network.network_address.is_link_local)
+
+    def _mac_reaches(self, host: str) -> bool:
+        """Whether this Mac reaches `host`: always for a name, a link-local
+        address, or a device that was on none of its networks before the
+        request (reached through a router); otherwise only from a network
+        holding the address."""
+        try:
+            address = ipaddress.ip_address(host.partition("%")[0])
+        except ValueError:
+            return True
+        if address.is_link_local:
+            return True
+        if not any(address in ipaddress.ip_network(network) for network in self.mac_networks_before):
+            return True
+        return any(address in ipaddress.ip_network(network) for network in self.mac_networks())
+
     def _answers_at(self, host: str) -> bool:
+        if not self._mac_reaches(host):
+            return False
         kernel = self._new_kernel_at()
         if self.new_address is None or kernel is None or self.now < kernel:
             return True
@@ -245,6 +285,8 @@ class FakeAcpDevice:
             ),
             mock.patch("timecapsulesmb.integrations.acp.reboot", side_effect=self.reboot),
             mock.patch("timecapsulesmb.services.reboot.tcp_open", side_effect=self.tcp_open),
+            mock.patch("timecapsulesmb.services.reboot.local_lan_networks", side_effect=self.local_lan_networks),
+            mock.patch("timecapsulesmb.services.reboot.mac_default_gateway", side_effect=lambda: self.mac_gateway),
             mock.patch("timecapsulesmb.device.acpd.mark_restart", side_effect=self.mark_restart),
             mock.patch("timecapsulesmb.device.acpd.restart_never_happened", side_effect=self.restart_never_happened),
             mock.patch(
@@ -264,6 +306,10 @@ class RecordingCallbacks:
         self.debug: dict[str, object] = {}
         self.fields: dict[str, object] = {}
         self.measurements: list[tuple[str, dict[str, object]]] = []
+        # Progress events, each with `clock()` when it came (set clock to
+        # the device's to time them).
+        self.progress: list[tuple[float, str, dict[str, object]]] = []
+        self.clock = lambda: 0.0
 
     def callbacks(self):
         from timecapsulesmb.services.callbacks import OperationCallbacks
@@ -274,6 +320,7 @@ class RecordingCallbacks:
             add_debug_fields=self.debug.update,
             update_fields=self.fields.update,
             record_execution_measurement=lambda kind, **fields: self.measurements.append((kind, fields)),
+            report_progress=lambda stage, **fields: self.progress.append((self.clock(), stage, fields)),
         )
 
     def measurement(self, kind: str) -> dict[str, object]:

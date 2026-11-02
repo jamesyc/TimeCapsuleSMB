@@ -791,3 +791,233 @@ class AcpdHangTests(unittest.TestCase):
                 self.assertEqual({key: recorder.debug[key] for key in debug}, debug)
                 if not debug:
                     self.assertNotIn("restart_marker", recorder.debug)
+
+
+HOTSPOT = ("172.20.10.0/28",)
+
+
+class ClientLeftNetworkTests(unittest.TestCase):
+    """macOS can join another known network (a neighbour's Wi-Fi, an iPhone's
+    hotspot) while the device's restart drops its link, and stay there: the
+    wait then hears nothing until its limit, through no fault of the device."""
+
+    def wait(self, device: FakeAcpDevice, target: str = "root@10.0.0.2", **kwargs):
+        recorder = RecordingCallbacks()
+        recorder.clock = device.monotonic
+        start = device.now
+        with device.patched():
+            try:
+                reboot_device(target, "pw", wait=True, callbacks=recorder.callbacks(), **kwargs)
+                error = None
+            except RebootFlowError as exc:
+                error = exc
+        return error, recorder, start
+
+    def test_a_mac_that_never_comes_back_ends_with_its_own_code_and_a_hint_after_three_minutes(self) -> None:
+        device = FakeAcpDevice(mac_network_changes=((20, HOTSPOT),))
+        error, recorder, start = self.wait(device, wifi_name="Apple Network 619b7d")
+
+        self.assertEqual((error.code, error.result), ("client_left_network", "client_left_network"))
+        self.assertIn("172.20.10.0/28 (an iPhone's Personal Hotspot)", error.message)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["result"], "client_left_network")
+        self.assertTrue(cycle["client_watched"])
+        self.assertTrue(cycle["client_hinted"])
+        self.assertGreaterEqual(cycle["client_left_after_sec"], 20)
+        self.assertNotIn("client_rejoined_after_sec", cycle)
+        # One hint, no sooner than three minutes after the device went down,
+        # naming the device's Wi-Fi in the app and the CLI.
+        self.assertEqual(len(recorder.progress), 1)
+        at, stage, fields = recorder.progress[0]
+        self.assertEqual((stage, fields), ("wait_for_reboot_up", {"client_away": True, "network_name": "Apple Network 619b7d"}))
+        self.assertGreaterEqual(at - start, cycle["down_seen_after_sec"] + reboot_service.CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS)
+        hint = [message for message in recorder.messages if " left the device's network and is now on " in message]
+        self.assertEqual(len(hint), 1)
+        self.assertIn("“Apple Network 619b7d”", hint[0])
+        self.assertIn("172.20.10.0/28 (an iPhone's Personal Hotspot)", hint[0])
+
+    def test_a_mac_back_before_three_minutes_gets_no_hint(self) -> None:
+        # Most Macs are back within about 70 s: telemetry still records the leave.
+        device = FakeAcpDevice(mac_network_changes=((20, HOTSPOT), (120, ("10.0.0.0/24",))))
+        error, recorder, _start = self.wait(device)
+
+        self.assertIsNone(error)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["result"], "success")
+        self.assertGreaterEqual(cycle["client_left_after_sec"], 20)
+        self.assertGreaterEqual(cycle["client_rejoined_after_sec"], 120)
+        self.assertNotIn("client_hinted", cycle)
+        self.assertEqual(recorder.progress, [])
+
+    def test_the_hint_clears_when_the_mac_comes_back(self) -> None:
+        for back in (300, reboot_service.REBOOT_UP_TIMEOUT_SECONDS - 60):
+            with self.subTest(back=back):
+                device = FakeAcpDevice(mac_network_changes=((20, HOTSPOT), (back, ("10.0.0.0/24",))))
+                error, recorder, _start = self.wait(device)
+
+                self.assertIsNone(error)
+                self.assertEqual([fields["client_away"] for _at, _stage, fields in recorder.progress], [True, False])
+                self.assertIn(reboot_service.client_back_message(), recorder.messages)
+                self.assertEqual(recorder.measurement("reboot_cycle")["result"], "success")
+                self.assertEqual(recorder.measurement("reboot_cycle")["client_leaves"], 1)
+
+    def test_each_leave_is_counted_so_the_first_and_last_times_are_not_read_as_one(self) -> None:
+        # Left, back, left again: the first-left and last-rejoined times span
+        # both, and the count says so.
+        device = FakeAcpDevice(
+            kernel_after=10_000.0,
+            mac_network_changes=((20, HOTSPOT), (60, ("10.0.0.0/24",)), (100, HOTSPOT), (300, ("10.0.0.0/24",))),
+        )
+        _error, recorder, _start = self.wait(device)
+
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["client_leaves"], 2)
+        self.assertLess(cycle["client_left_after_sec"], 60)
+        self.assertGreaterEqual(cycle["client_rejoined_after_sec"], 300)
+
+    def test_a_mac_back_on_the_network_while_the_device_stays_down_keeps_the_old_ending(self) -> None:
+        # The Mac rejoined, so it would have seen the device: the device is the problem.
+        device = FakeAcpDevice(kernel_after=10_000.0, mac_network_changes=((20, HOTSPOT), (300, ("10.0.0.0/24",))))
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["result"], "did_not_come_back_up")
+        self.assertGreaterEqual(cycle["client_rejoined_after_sec"], 300)
+
+    def test_a_device_reached_through_a_router_is_never_watched(self) -> None:
+        # This Mac's own networks say nothing about reaching it.
+        device = FakeAcpDevice(
+            mac_networks_before=("192.168.9.0/24",), kernel_after=10_000.0,
+            mac_network_changes=((20, HOTSPOT),),
+        )
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertFalse(cycle["client_watched"])
+        self.assertNotIn("client_left_after_sec", cycle)
+        self.assertEqual(recorder.progress, [])
+
+    def test_no_address_or_nothing_to_compare_is_not_a_leave(self) -> None:
+        # A restart drops the link: no address, a link-local one only, or
+        # another family only is the usual wait, not this Mac on another network.
+        for networks in ((), ("169.254.0.0/16",), ("2001:db8:1::/64",)):
+            with self.subTest(networks=networks):
+                device = FakeAcpDevice(kernel_after=10_000.0, mac_network_changes=((20, networks),))
+                error, recorder, _start = self.wait(device)
+
+                self.assertEqual(error.code, "reboot_not_finished")
+                self.assertNotIn("client_left_after_sec", recorder.measurement("reboot_cycle"))
+                self.assertEqual(recorder.progress, [])
+
+    def test_one_interface_still_on_the_devices_network_is_not_a_leave(self) -> None:
+        device = FakeAcpDevice(
+            mac_networks_before=("10.0.0.0/24", "192.168.5.0/24"),
+            mac_network_changes=((20, ("10.0.0.0/24", "172.20.10.0/28")),),
+        )
+        error, recorder, _start = self.wait(device)
+
+        self.assertIsNone(error)
+        self.assertNotIn("client_left_after_sec", recorder.measurement("reboot_cycle"))
+
+    def test_a_mac_left_only_on_a_network_it_already_had_is_not_a_leave(self) -> None:
+        # On the device's Ethernet and on another Wi-Fi network: the restart
+        # drops the Ethernet link, and it comes back with the device.
+        device = FakeAcpDevice(
+            mac_networks_before=("10.0.0.0/24", "192.168.5.0/24"), kernel_after=10_000.0,
+            mac_network_changes=((20, ("192.168.5.0/24",)),),
+        )
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertTrue(cycle["client_watched"])
+        self.assertNotIn("client_left_after_sec", cycle)
+        self.assertEqual(recorder.progress, [])
+
+    def test_a_new_network_beside_one_it_already_had_is_a_leave_named_by_the_new_one(self) -> None:
+        device = FakeAcpDevice(
+            mac_networks_before=("10.0.0.0/24", "192.168.5.0/24"),
+            mac_network_changes=((20, ("192.168.5.0/24", "172.20.10.0/28")),),
+        )
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "client_left_network")
+        self.assertIn("172.20.10.0/28", error.message)
+        self.assertNotIn("192.168.5.0/24", error.message)
+        self.assertEqual(recorder.measurement("reboot_cycle")["client_leaves"], 1)
+
+    def test_a_hostname_target_is_resolved_once_before_the_request(self) -> None:
+        # A .local name does not resolve while the device is down.
+        import ipaddress
+
+        device = FakeAcpDevice()
+        with mock.patch.object(reboot_service, "host_networks", return_value=[ipaddress.ip_network("10.0.0.2/32")]) as resolve:
+            error, recorder, _start = self.wait(device, target="root@office.local")
+
+        self.assertIsNone(error)
+        resolve.assert_called_once_with("office.local")
+        self.assertTrue(recorder.measurement("reboot_cycle")["client_watched"])
+
+    def test_the_acpd_hang_check_does_not_fire_while_the_mac_is_away(self) -> None:
+        # SSH to the device reads as closed from another network, which ends a
+        # run of marked checks: a real restart is never taken for ACPd's hang.
+        device = FakeAcpDevice(mac_network_changes=((20, HOTSPOT), (400, ("10.0.0.0/24",))))
+        ssh = SshConnection("root@10.0.0.2", "pw", "")
+        error, recorder, _start = self.wait(device, ssh=ssh)
+
+        self.assertIsNone(error)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertGreaterEqual(cycle["acpd_hang_checks"], 2)
+        self.assertEqual(cycle["acpd_marked_checks_max"], 0)
+
+    def test_whether_the_device_is_this_macs_router_is_recorded_on_success(self) -> None:
+        # Telemetry weighs how often a router-mode restart loses the Mac. It is
+        # read before the request: a router-mode device's restart takes the
+        # route away.
+        for gateway, expected in (("10.0.0.2", True), ("10.0.0.1", False), (None, None)):
+            with self.subTest(gateway=gateway):
+                device = FakeAcpDevice(mac_gateway=gateway)
+                read_before_request: list[bool] = []
+
+                def router():
+                    read_before_request.append(device.requested_at is None)
+                    return device.mac_gateway
+
+                recorder = RecordingCallbacks()
+                with device.patched(), mock.patch.object(reboot_service, "mac_default_gateway", side_effect=router):
+                    reboot_device("root@10.0.0.2", "pw", wait=True, callbacks=recorder.callbacks())
+
+                self.assertEqual(read_before_request, [True])
+                self.assertEqual(recorder.measurement("reboot_cycle").get("device_is_gateway"), expected)
+
+    def test_without_a_wifi_name_the_hint_names_the_devices_network(self) -> None:
+        device = FakeAcpDevice(mac_network_changes=((20, ("192.168.50.0/24",)),))
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(recorder.progress[0][2], {"client_away": True, "network_name": ""})
+        hint = next(message for message in recorder.messages if " left the device's network" in message)
+        self.assertIn("Reconnect it to the device's network;", hint)
+        self.assertIn("192.168.50.0/24", hint)
+        # The ending's message reaches telemetry: never a Wi-Fi name.
+        self.assertNotIn("“", error.message)
+
+
+class ClientAwayMessageTests(unittest.TestCase):
+    def test_off_macos_the_messages_name_this_computer(self) -> None:
+        # The detection works wherever the CLI runs.
+        import ipaddress
+
+        joined = (ipaddress.ip_network("192.168.50.0/24"),)
+        self.assertTrue(reboot_service.client_away_message(joined, None, platform="linux").startswith("This computer left"))
+        self.assertTrue(reboot_service.client_left_message(joined, platform="linux").startswith("This computer is on"))
+        self.assertEqual(reboot_service.client_back_message(platform="linux"), "This computer is back on the device's network.")
+        self.assertTrue(reboot_service.client_away_message(joined, None, platform="darwin").startswith("This Mac left"))
+
+    def test_a_public_network_is_named_by_family_and_size_only(self) -> None:
+        import ipaddress
+
+        message = reboot_service.client_left_message((ipaddress.ip_network("8.8.8.0/24"),))
+        self.assertIn("ipv4-public/24", message)
+        self.assertNotIn("8.8.8", message)

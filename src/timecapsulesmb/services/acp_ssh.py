@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import sys
 import time
 
 from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.core.install import this_computer
 from timecapsulesmb.checks.network import (
     SSH_PORT,
     ClosedSshPort,
@@ -107,7 +107,7 @@ def device_off_network(
 ) -> tuple[str, str]:
     """An error's message that the device is off this computer's networks,
     and the facts: its address and those networks."""
-    computer = "this Mac" if (platform or sys.platform) == "darwin" else "this computer"
+    computer = this_computer(platform)
     # The detail reaches telemetry with the operation's error, so this
     # computer's public networks are shown only by family and prefix length.
     networks = ", ".join(reportable_network(network, hide_hosts=True) for network in client_networks)

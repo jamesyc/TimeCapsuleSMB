@@ -3,7 +3,6 @@ from __future__ import annotations
 import ipaddress
 import re
 import subprocess
-import sys
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
@@ -60,6 +59,7 @@ from timecapsulesmb.checks.network import (
     reportable_network,
 )
 from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.core.install import this_computer
 from timecapsulesmb.core.net import RouteSelection, select_route_to_address
 from timecapsulesmb.checks.nbns import (
     NBNS_NEGATIVE_RESPONSE_CODE,
@@ -1622,7 +1622,7 @@ def client_on_unshared_network_message(
 ) -> str:
     """`cabled`: this computer reached the device at a link-local address,
     so it is on that link's own cable rather than on a network of its own."""
-    computer = "this Mac" if (platform or sys.platform) == "darwin" else "this computer"
+    computer = this_computer(platform)
     distinct_roles = set(roles)
     role = next(iter(distinct_roles)) if len(distinct_roles) == 1 else None
     place = _UNSHARED_NETWORK_PLACES.get(role) if role is not None else None

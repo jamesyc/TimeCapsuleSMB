@@ -175,6 +175,38 @@ def run_local_capture(
     return run_process(cmd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
+DEFAULT_ROUTE_COMMAND = ("/sbin/route", "-n", "get", "default")
+DEFAULT_ROUTE_TIMEOUT_SECONDS = 5
+
+
+def mac_default_gateway(
+    *,
+    platform: str = sys.platform,
+    run: Callable[..., subprocess.CompletedProcess[str]] = run_process,
+) -> str | None:
+    """The address of this Mac's default router (`route -n get default`'s
+    gateway); None on another system, without a default route, or when route
+    fails."""
+    if platform != "darwin":
+        return None
+    try:
+        proc = run(
+            list(DEFAULT_ROUTE_COMMAND),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=DEFAULT_ROUTE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in (proc.stdout or "").splitlines():
+        key, _, value = line.strip().partition(":")
+        if key == "gateway" and value.strip():
+            return value.strip()
+    return None
+
+
 SYSTEM_EXTENSIONS_COMMAND = ("/usr/bin/systemextensionsctl", "list")
 VPN_SERVICES_COMMAND = ("/usr/sbin/scutil", "--nc", "list")
 MAC_NETWORK_FILTERS_TIMEOUT_SECONDS = 5

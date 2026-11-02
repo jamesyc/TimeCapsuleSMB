@@ -100,6 +100,11 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
     // whether it rechecks the volume after a repair.
     public let phase: String?
     public let recheck: Bool?
+    // A "progress" event of a restart wait: this Mac left the device's network
+    // (true) or came back (false), and the device's Wi-Fi name, empty when
+    // the helper has none.
+    public let clientAway: Bool?
+    public let networkName: String?
     // When the app received the event; a running Disk Repair counts its time from it.
     public private(set) var receivedAt = Date()
 
@@ -126,6 +131,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         entries: Int64? = nil,
         phase: String? = nil,
         recheck: Bool? = nil,
+        clientAway: Bool? = nil,
+        networkName: String? = nil,
         receivedAt: Date = Date()
     ) {
         self.schemaVersion = schemaVersion
@@ -150,6 +157,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         self.entries = entries
         self.phase = phase
         self.recheck = recheck
+        self.clientAway = clientAway
+        self.networkName = networkName
         self.receivedAt = receivedAt
     }
 
@@ -194,6 +203,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
             entries: entries,
             phase: phase,
             recheck: recheck,
+            clientAway: clientAway,
+            networkName: networkName,
             receivedAt: receivedAt
         )
     }
@@ -221,6 +232,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         case entries
         case phase
         case recheck
+        case clientAway = "client_away"
+        case networkName = "network_name"
     }
 
     /// The operation log's line: the helper's own English, in every app

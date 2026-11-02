@@ -318,6 +318,23 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
+    # This Mac joined another network while the device restarted and never
+    # came back (services.reboot): whether the device came back is unknown,
+    # and a Checkup tells without restarting it again.
+    ErrorCode.CLIENT_LEFT_NETWORK: RecoveryInfo(
+        "This Mac left the device's network",
+        (
+            "While the device restarted, this Mac moved to another network and did not come back, so "
+            "TimeCapsuleSMB could not see whether the device restarted."
+        ),
+        (
+            "Connect this Mac to the device's network again, by Wi-Fi or one of its LAN ports.",
+            "Then run “Checkup” to see whether the device came back.",
+        ),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
     # Apple's firmware, not ours: a stuck ACPd refused before anything changed,
     # tore itself down without restarting the device, stopped answering
     # syUT (services.runtime.require_acpd_ready, services.reboot), or left its
@@ -792,6 +809,20 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         action_ids=("disk_repair",),
     ),
+    # The install is done; only its restart was not seen.
+    ("deploy", ErrorCode.CLIENT_LEFT_NETWORK): RecoveryInfo(
+        "This Mac left the device's network",
+        "The installation files were copied and the restart was requested, but this Mac moved to another network "
+        "while the device restarted and did not come back, so TimeCapsuleSMB could not see the device finish.",
+        (
+            "Connect this Mac to the device's network again, by Wi-Fi or one of its LAN ports.",
+            "Then run “Checkup”.",
+            "On NetBSD 4 devices, run “Activate” if the checkup says Samba is not running.",
+        ),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
     ("deploy", ErrorCode.REBOOT_NOT_FINISHED): RecoveryInfo(
         "Reboot did not finish",
         "The installation files were copied and the restart was requested, but the device did not "
@@ -855,6 +886,21 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         (
             "Reconnect the adapter or cable this Mac used to reach the device, then try again.",
             "Refresh discovery and choose the device again.",
+        ),
+        retryable=True,
+        suggested_operation="configure",
+    ),
+    # Add Device has no saved device to run a Checkup on. Adding it again
+    # restarts it only when SSH is still off.
+    ("configure", ErrorCode.CLIENT_LEFT_NETWORK): RecoveryInfo(
+        "This Mac left the device's network",
+        (
+            "Turning on SSH restarts the device. While it restarted, this Mac moved to another network and did not "
+            "come back, so TimeCapsuleSMB could not see the device come back."
+        ),
+        (
+            "Connect this Mac to the device's network again, by Wi-Fi or one of its LAN ports.",
+            "Then try again. If SSH turned on, adding the device does not restart it again.",
         ),
         retryable=True,
         suggested_operation="configure",
