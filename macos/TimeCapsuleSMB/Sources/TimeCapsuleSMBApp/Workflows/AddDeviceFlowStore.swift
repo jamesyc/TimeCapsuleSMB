@@ -515,6 +515,10 @@ final class AddDeviceFlowStore: ObservableObject {
                 self.reconnectProfileID = nil
                 self.selectedDeviceID = nil
             }
+            // This page catches up with discovery a task later, so a device
+            // clicked in between is already waiting for its password; it keeps
+            // waiting while the list still has it.
+            let keepsPasswordEntry = state == .passwordEntry && selectedDeviceID != nil
             // A lone device is preselected only when it can be added. An unsupported
             // model's row explains why when clicked, instead of leaving Save
             // silently disabled; a saved device's row opens its page.
@@ -523,7 +527,9 @@ final class AddDeviceFlowStore: ObservableObject {
                 selectedDeviceID = discovery.devices[0].id
                 manualHost = discovery.devices[0].connectionTarget
             }
-            state = discovery.devices.isEmpty ? .discoveryEmpty : .discoveryReady
+            if !keepsPasswordEntry {
+                state = discovery.devices.isEmpty ? .discoveryEmpty : .discoveryReady
+            }
             currentStage = nil
             error = nil
         case .failed:

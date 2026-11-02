@@ -990,6 +990,49 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.count, 1)
     }
 
+    func testADeviceClickedBeforeThePageCatchesUpWithDiscoveryKeepsItsPasswordEntry() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let fixture = try await makeStore(responses: [testDiscoverResponse([office, den])])
+        let clicked = selectOnDiscoveryResult(fixture) { $0.devices.last }
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { clicked.device != nil && fixture.store.discovery.state == .ready }
+        await runQueuedStoreUpdates()
+
+        // The page's own catch-up with that result leaves the click alone.
+        let device = try XCTUnwrap(clicked.device)
+        XCTAssertEqual(fixture.store.state, .passwordEntry)
+        XCTAssertEqual(fixture.store.selectedDeviceID, device.id)
+        XCTAssertEqual(fixture.store.manualHost, device.connectionTarget)
+        fixture.store.password = "secret"
+        XCTAssertTrue(fixture.store.canConfigure)
+    }
+
+    func testADeviceClickedAsANewListDropsItGoesBackToTheList() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([office, den]),
+            testDiscoverResponse([office])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady && !fixture.store.coordinator.appLane.isBusy }
+        let gone = try XCTUnwrap(fixture.store.devices.first { $0.id.hasPrefix("bonjour:den capsule.") })
+        // Den is clicked just as the next search's result, which no longer
+        // has it, arrives.
+        let clicked = selectOnDiscoveryResult(fixture) { _ in gone }
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { clicked.device != nil && fixture.store.discovery.state == .ready }
+        await runQueuedStoreUpdates()
+
+        // The one AirPort left is preselected as usual, not opened for its password.
+        let left = try XCTUnwrap(fixture.store.devices.first)
+        XCTAssertEqual(fixture.store.devices.count, 1)
+        XCTAssertNotEqual(left.id, gone.id)
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
+        XCTAssertEqual(fixture.store.selectedDeviceID, left.id)
+    }
+
     func testALoneSavedAirPortIsNotPreselectedForAdding() async throws {
         let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
         let fixture = try await makeStore(responses: [
@@ -1971,6 +2014,32 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         registry: DeviceRegistryStore,
         passwordStore: InMemoryPasswordStore
     )
+
+    @MainActor
+    private final class ClickedDevice {
+        var device: DiscoveredDevice?
+        var subscription: AnyCancellable?
+    }
+
+    /// Clicks a device the moment discovery publishes its next result, before
+    /// the page's own observers have run: the earliest a click can land.
+    private func selectOnDiscoveryResult(
+        _ fixture: StoreFixture,
+        _ pick: @escaping @MainActor (DeviceDiscoveryStore) -> DiscoveredDevice?
+    ) -> ClickedDevice {
+        let clicked = ClickedDevice()
+        let discovery = fixture.store.discovery
+        clicked.subscription = discovery.$state.dropFirst().sink { state in
+            MainActor.assumeIsolated {
+                guard state == .ready, clicked.device == nil, let device = pick(discovery) else {
+                    return
+                }
+                clicked.device = device
+                fixture.store.select(device)
+            }
+        }
+        return clicked
+    }
 
     private func makeStore(
         responses: [StoreTestRunner.Response],
