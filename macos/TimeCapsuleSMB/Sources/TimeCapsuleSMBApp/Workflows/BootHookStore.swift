@@ -128,8 +128,6 @@ final class BootHookStore: ObservableObject {
     var events: [BackendEvent] { operation.events }
     var isRunning: Bool { operation.isRunning }
     var isBusy: Bool { operation.isBusy }
-    var canCancel: Bool { operation.canCancel }
-    var pendingConfirmation: PendingConfirmation? { operation.pendingConfirmation }
 
     var canPlan: Bool {
         !isBusy && backup != nil && !backupSnapshotStale
@@ -236,35 +234,6 @@ final class BootHookStore: ObservableObject {
     @discardableResult
     func rejectAlreadyRunning() -> OperationStartResult {
         operation.refuseAlreadyRunning { _ = reject(.operationAlreadyRunning) }
-    }
-
-    func confirmPending() {
-        operation.confirmPending()
-    }
-
-    func cancelPendingConfirmation() {
-        operation.cancelPendingConfirmation()
-    }
-
-    func cancel() {
-        operation.cancel()
-    }
-
-    func clear() {
-        operation.clear()
-        state = .ready
-        backup = nil
-        plan = nil
-        writeResult = nil
-        backupSnapshotStale = false
-        showsManualPowerCycleNotice = false
-        currentStage = nil
-        error = nil
-        passwordInvalidProfileID = nil
-        runKind = nil
-        lastRunConnectsToDevice = false
-        pendingFirmwareSelection = nil
-        plannedFirmwareSelection = nil
     }
 
     func dismissManualPowerCycleNotice() {

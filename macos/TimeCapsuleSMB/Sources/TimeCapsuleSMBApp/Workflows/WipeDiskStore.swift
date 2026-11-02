@@ -33,29 +33,6 @@ final class WipeDiskStore: ObservableObject {
     var events: [BackendEvent] { operation.events }
     var isRunning: Bool { operation.isRunning }
     var isBusy: Bool { operation.isBusy }
-    var canCancel: Bool { operation.canCancel }
-    var pendingConfirmation: PendingConfirmation? { operation.pendingConfirmation }
-
-    func confirmPending() {
-        operation.confirmPending()
-    }
-
-    func cancelPendingConfirmation() {
-        operation.cancelPendingConfirmation()
-    }
-
-    func cancel() {
-        operation.cancel()
-    }
-
-    func clear() {
-        operation.clear()
-        state = .idle
-        result = nil
-        currentStage = nil
-        error = nil
-        passwordInvalidProfileID = nil
-    }
 
     @discardableResult
     func runWipe(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {

@@ -235,8 +235,6 @@ final class SSHAccessMaintenanceStore: ObservableObject {
     var events: [BackendEvent] { operation.events }
     var isRunning: Bool { operation.isRunning }
     var isBusy: Bool { operation.isBusy }
-    var canCancel: Bool { operation.canCancel }
-    var pendingConfirmation: PendingConfirmation? { operation.pendingConfirmation }
 
     var canCheck: Bool {
         !isBusy
@@ -244,27 +242,6 @@ final class SSHAccessMaintenanceStore: ObservableObject {
 
     var canEnable: Bool {
         !isBusy
-    }
-
-    func confirmPending() {
-        operation.confirmPending()
-    }
-
-    func cancelPendingConfirmation() {
-        operation.cancelPendingConfirmation()
-    }
-
-    func cancel() {
-        operation.cancel()
-    }
-
-    func clear() {
-        operation.clear()
-        state = .idle
-        payload = nil
-        currentStage = nil
-        error = nil
-        passwordInvalidProfileID = nil
     }
 
     @discardableResult

@@ -1238,3 +1238,58 @@ func testFsckFailedResultPayload(returncode: Int) -> JSONValue {
         "summary_args": .array([.number(Double(returncode))])
     ])
 }
+
+/// How tests read the maintenance stores as one. The app reads each workflow
+/// on its own.
+@MainActor
+extension MaintenanceStore {
+    /// On the app's own lanes, as stores built without a device are.
+    convenience init(backend: BackendClient) {
+        self.init(coordinator: OperationCoordinator(backend: backend))
+    }
+
+    convenience init(coordinator: OperationCoordinator) {
+        self.init(coordinator: coordinator, laneKey: .app)
+    }
+
+    var isRunning: Bool {
+        MaintenanceWorkflow.allCases.contains { isRunning(for: $0) }
+    }
+
+    /// The selected workflow's error, else the first workflow's that has one.
+    var error: BackendErrorViewModel? {
+        error(for: selectedWorkflow) ?? MaintenanceWorkflow.allCases.lazy.compactMap { self.error(for: $0) }.first
+    }
+
+    var currentStage: OperationStageState? {
+        currentStage(for: selectedWorkflow) ?? MaintenanceWorkflow.allCases.lazy.compactMap { self.currentStage(for: $0) }.first
+    }
+}
+
+@MainActor
+extension OperationCoordinator {
+    /// The confirmation `operation` waits for on whichever lane ran it, also
+    /// while its helper is still exiting, before the app may answer it.
+    func pendingConfirmation(for operation: String) -> PendingConfirmation? {
+        allLanes.lazy.compactMap(\.backend.pendingConfirmation).first { $0.operation == operation }
+    }
+}
+
+/// The helper's request to confirm `operation` before it goes on; a
+/// `presentationID` names the app's own text for it.
+func testConfirmationRequired(operation: String, id: String, presentationID: String? = nil) -> BackendEvent {
+    var details: [String: JSONValue] = [
+        "title": .string("Confirm \(operation)"),
+        "message": .string("Confirm \(operation)."),
+        "action_title": .string("Confirm"),
+        "confirmation_id": .string(id)
+    ]
+    if let presentationID {
+        details["presentation_id"] = .string(presentationID)
+        details["presentation_values"] = .object(["host": .string("10.0.0.2")])
+    }
+    return BackendEvent(
+        type: "error", operation: operation, code: "confirmation_required",
+        message: "Confirm \(operation).", details: .object(details)
+    )
+}

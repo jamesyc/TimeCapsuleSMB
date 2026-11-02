@@ -65,9 +65,7 @@ final class StoreTestSupportTests: XCTestCase {
     }
 
     func testBootHookStepDriverThrowsForAStepTheStoreRefuses() async throws {
-        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(
-            responses: testBootHookResponses().map { .init(events: $0.events, result: $0.result, pauseBeforeEvents: true) }
-        ))
+        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner.pausing(testBootHookResponses(), before: { _ in true }))
         defer { fixture.runner.finishAll() }
         fixture.maintenanceStore.backUpAndInspectFirmware(password: "pw", profile: fixture.profile)
         try await waitUntilStoreState { fixture.runner.calls.count == 1 }

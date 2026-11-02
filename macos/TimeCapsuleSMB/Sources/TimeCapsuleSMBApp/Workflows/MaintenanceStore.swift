@@ -45,15 +45,6 @@ final class MaintenanceStore: ObservableObject {
     var wipeDiskResult: WipeDiskResultPayload? { wipeDiskStore.result }
     var sshAccessPayload: SSHAccessPayload? { sshAccessStore.payload }
 
-    var currentStage: OperationStageState? {
-        currentStage(for: selectedWorkflow) ?? workflowStores.lazy.compactMap { $0.currentStage }.first
-    }
-
-    var error: BackendErrorViewModel? {
-        error(for: selectedWorkflow) ?? workflowStores.lazy.compactMap { $0.error }.first
-    }
-
-    let backend: BackendClient
     let activationStore: ActivationStore
     let uninstallStore: UninstallStore
     let fsckStore: FsckStore
@@ -65,25 +56,12 @@ final class MaintenanceStore: ObservableObject {
     private let laneKey: OperationLaneKey
     private var cancellables: Set<AnyCancellable> = []
 
-    convenience init() {
-        self.init(backend: BackendClient())
-    }
-
-    convenience init(backend: BackendClient) {
-        self.init(coordinator: OperationCoordinator(backend: backend))
-    }
-
-    convenience init(coordinator: OperationCoordinator) {
-        self.init(coordinator: coordinator, laneKey: .app)
-    }
-
     init(coordinator: OperationCoordinator, laneKey: OperationLaneKey) {
         // Each store runs on its own lane, with that lane's backend.
         func lane(_ workflow: MaintenanceWorkflow) -> (backend: BackendClient, key: OperationLaneKey) {
             let key = Self.workflowLaneKey(workflow, in: laneKey)
             return (coordinator.lane(for: key).backend, key)
         }
-        self.backend = lane(.activate).backend
         self.coordinator = coordinator
         self.laneKey = laneKey
         self.activationStore = ActivationStore(
@@ -143,22 +121,10 @@ final class MaintenanceStore: ObservableObject {
             .store(in: &cancellables)
     }
 
-    var events: [BackendEvent] {
-        workflowStores.flatMap(\.events)
-    }
-
-    var isRunning: Bool {
-        workflowStores.contains { $0.isRunning }
-    }
-
     var isBusy: Bool {
         let maintenanceBusy = workflowStores.contains { $0.isBusy }
         let deviceBusy = deviceProfileID.map { coordinator.isDeviceBusy($0) } == true
         return maintenanceBusy || deviceBusy
-    }
-
-    var canCancel: Bool {
-        activeWorkflowStore?.canCancel ?? false
     }
 
     func timelineEvents(for workflow: MaintenanceWorkflow) -> [BackendEvent] {
@@ -175,31 +141,6 @@ final class MaintenanceStore: ObservableObject {
 
     func error(for workflow: MaintenanceWorkflow) -> BackendErrorViewModel? {
         workflowStore(for: workflow).error
-    }
-
-    func pendingConfirmation(for workflow: MaintenanceWorkflow) -> PendingConfirmation? {
-        workflowStore(for: workflow).pendingConfirmation
-    }
-
-    func confirmPending(for workflow: MaintenanceWorkflow) {
-        workflowStore(for: workflow).confirmPending()
-    }
-
-    func cancelPendingConfirmation(for workflow: MaintenanceWorkflow) {
-        switch workflow {
-        case .sshAccess:
-            sshAccessStore.cancelPendingConfirmation()
-        case .activate:
-            activationStore.cancelPendingConfirmation()
-        case .uninstall:
-            uninstallStore.cancelPendingConfirmation()
-        case .fsck:
-            fsckStore.cancelPendingConfirmation(options: currentOptions)
-        case .wipeDisk:
-            wipeDiskStore.cancelPendingConfirmation()
-        case .bootHook:
-            bootHookStore.cancelPendingConfirmation()
-        }
     }
 
     var mountWaitValue: Int? {
@@ -360,19 +301,6 @@ final class MaintenanceStore: ObservableObject {
         )
     }
 
-    func clear() {
-        activationStore.clear()
-        uninstallStore.clear()
-        fsckStore.clear()
-        wipeDiskStore.clear()
-        sshAccessStore.clear()
-        bootHookStore.clear()
-    }
-
-    func cancel() {
-        activeWorkflowStore?.cancel()
-    }
-
     private func begin(workflow: MaintenanceWorkflow) -> Bool {
         selectedWorkflow = workflow
         return !isBusy
@@ -388,10 +316,6 @@ final class MaintenanceStore: ObservableObject {
 
     private var workflowStores: [any MaintenanceWorkflowStore] {
         [sshAccessStore, bootHookStore, activationStore, uninstallStore, fsckStore, wipeDiskStore]
-    }
-
-    private var activeWorkflowStore: (any MaintenanceWorkflowStore)? {
-        workflowStores.first { $0.isBusy }
     }
 
     private var deviceProfileID: DeviceProfile.ID? {
@@ -440,12 +364,8 @@ private protocol MaintenanceWorkflowStore: ObservableObject {
     var events: [BackendEvent] { get }
     var isRunning: Bool { get }
     var isBusy: Bool { get }
-    var canCancel: Bool { get }
     var currentStage: OperationStageState? { get }
     var error: BackendErrorViewModel? { get }
-    var pendingConfirmation: PendingConfirmation? { get }
-    func confirmPending()
-    func cancel()
 }
 
 extension ActivationStore: MaintenanceWorkflowStore {}

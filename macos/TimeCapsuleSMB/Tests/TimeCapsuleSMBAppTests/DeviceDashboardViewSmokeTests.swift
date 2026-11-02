@@ -302,9 +302,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
     }
 
     func testBootHookFirmwareOptionsLockWhileTheBootHookRuns() async throws {
-        let runner = PausingStoreTestRunner(responses: testBootHookResponses().map {
-            .init(events: $0.events, result: $0.result, pauseBeforeEvents: true)
-        })
+        let runner = PausingStoreTestRunner.pausing(testBootHookResponses(), before: { _ in true })
         defer { runner.finishAll() }
         let fixture = try await AppViewFixture(runner: runner)
         let profile = try await fixture.saveProfile(id: "netbsd4-device", payloadFamily: "netbsd4_samba4")

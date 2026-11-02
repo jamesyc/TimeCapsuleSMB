@@ -696,9 +696,10 @@ final class OperationCompletionTests: XCTestCase {
             await registry.updateInstallOperationState(deployState: previousDeploy, runtimeState: installed, for: fixture.profile.id)
             let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
             session.performMaintenanceAction(action, profile: fixture.profile, showDiagnostics: {})
-            try await waitUntilStoreState { session.maintenanceStore.pendingConfirmation(for: workflow) != nil }
-            session.maintenanceStore.cancelPendingConfirmation(for: workflow)
-            XCTAssertNotNil(session.maintenanceStore.pendingConfirmation(for: workflow))
+            try await waitUntilStoreState { fixture.coordinator.pendingConfirmation(for: operation) != nil }
+            // Refused while the helper still runs.
+            fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.pendingConfirmation(for: operation)))
+            XCTAssertNotNil(fixture.coordinator.pendingConfirmation(for: operation))
             XCTAssertTrue(fixture.coordinator.isDeviceBusy(fixture.profile))
             if workflow == .uninstall { XCTAssertEqual(session.maintenanceStore.uninstallStore.state, .awaitingConfirmation) }
 
@@ -762,16 +763,17 @@ final class OperationCompletionTests: XCTestCase {
         session.performMaintenanceAction(.planFsck, profile: fixture.profile, showDiagnostics: {})
         try await waitUntilStoreState { store.fsckState == .planReady && !store.isBusy }
         session.performMaintenanceAction(.runFsck, profile: fixture.profile, showDiagnostics: {})
-        try await waitUntilStoreState { store.pendingConfirmation(for: .fsck) != nil }
+        try await waitUntilStoreState { fixture.coordinator.pendingConfirmation(for: "fsck") != nil }
         store.noWait = true
-        store.cancelPendingConfirmation(for: .fsck)
+        // Refused while the helper still runs.
+        fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.pendingConfirmation(for: "fsck")))
         XCTAssertEqual(store.fsckStore.state, .awaitingConfirmation)
         fixture.runner.finish(.init("fsck"))
         try await waitUntilStoreState { fixture.coordinator.readyConfirmation != nil }
         fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.readyConfirmation))
         try await waitUntilStoreState { !store.isBusy }
         XCTAssertEqual(store.fsckStore.state, .planStale)
-        XCTAssertNil(store.pendingConfirmation(for: .fsck))
+        XCTAssertNil(fixture.coordinator.pendingConfirmation(for: "fsck"))
         assertDashboardStopped(fixture.profile, app: fixture.app)
     }
 

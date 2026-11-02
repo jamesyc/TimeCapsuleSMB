@@ -5,8 +5,10 @@ import XCTest
 @MainActor
 final class MaintenanceStateForwardingTests: XCTestCase {
     func testChildEventsAreImmediatelyReadableAndNotifyTheParent() async throws {
-        let backend = BackendClient(runner: StoreTestRunner(responses: [.init(events: [])]))
-        let store = MaintenanceStore(backend: backend)
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: StoreTestRunner(responses: [.init(events: [])])))
+        let store = MaintenanceStore(coordinator: coordinator)
+        // The lane activation runs on, where its events arrive.
+        let activationLane = coordinator.lane(for: .appWorkflow(.activate)).backend
         var changes = 0
         let observation = store.objectWillChange.sink { changes += 1 }
         defer { observation.cancel() }
@@ -14,14 +16,14 @@ final class MaintenanceStateForwardingTests: XCTestCase {
         let operation = try XCTUnwrap(store.activationStore.runActivation(password: "pw").operation)
         XCTAssertEqual(store.activateState, .running)
         changes = 0
-        store.backend.events.append(BackendEvent(
+        activationLane.events.append(BackendEvent(
             requestId: operation.id.uuidString, type: "stage", operation: "activate", stage: "probe_runtime"
         ))
         XCTAssertEqual(store.currentStage(for: .activate)?.stage, "probe_runtime")
         XCTAssertGreaterThan(changes, 0)
 
         changes = 0
-        store.backend.events.append(BackendEvent(
+        activationLane.events.append(BackendEvent(
             requestId: operation.id.uuidString, type: "result", operation: "activate", ok: true,
             payload: testActivationResultPayload(alreadyActive: true)
         ))
@@ -31,10 +33,6 @@ final class MaintenanceStateForwardingTests: XCTestCase {
         XCTAssertTrue(store.isBusy, "A result does not finish helper cleanup")
 
         try await waitUntilStoreState { !store.isBusy }
-        store.activationStore.clear()
-        XCTAssertEqual(store.activateState, .idle)
-        XCTAssertNil(store.activationResult)
-        XCTAssertNil(store.currentStage)
     }
 
     func testFsckSelectionHasOneOwnerAndInvalidatesThePlanImmediately() async throws {
@@ -68,12 +66,6 @@ final class MaintenanceStateForwardingTests: XCTestCase {
         XCTAssertEqual(store.fsckState, .planStale)
         XCTAssertFalse(store.canRunFsck)
         XCTAssertGreaterThan(changes, 0)
-
-        store.fsckStore.clear()
-        XCTAssertNil(store.selectedFsckTargetID)
-        XCTAssertTrue(store.fsckTargets.isEmpty)
-        XCTAssertNil(store.fsckPlan)
-        XCTAssertEqual(store.fsckState, .idle)
     }
 
     func testEachRemoteChildInvalidatesCredentialsAndRefreshesSSHDespiteAnotherSelectedError() async throws {

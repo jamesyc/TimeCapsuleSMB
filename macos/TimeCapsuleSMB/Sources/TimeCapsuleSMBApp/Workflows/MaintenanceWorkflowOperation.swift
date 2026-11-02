@@ -49,20 +49,6 @@ final class MaintenanceWorkflowOperation {
     var events: [BackendEvent] { backend.events }
     var isRunning: Bool { backend.isRunning }
     var isBusy: Bool { lane.isBusy }
-    var canCancel: Bool { lane.canCancel }
-    var pendingConfirmation: PendingConfirmation? { backend.pendingConfirmation }
-
-    func confirmPending() {
-        lane.confirmPending()
-    }
-
-    func cancelPendingConfirmation() {
-        lane.cancelPendingConfirmation()
-    }
-
-    func cancel() {
-        lane.cancel()
-    }
 
     func clear() {
         backend.clear()

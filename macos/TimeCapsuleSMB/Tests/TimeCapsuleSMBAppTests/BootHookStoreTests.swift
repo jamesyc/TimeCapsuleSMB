@@ -60,15 +60,10 @@ final class BootHookStoreTests: XCTestCase {
         XCTAssertFalse(store.lastRunConnectsToDevice)
         try await fixture.run(.write(.patch))
         XCTAssertTrue(store.lastRunConnectsToDevice)
-
-        store.clear()
-        XCTAssertFalse(store.lastRunConnectsToDevice)
     }
 
     func testARefusalWhileABackupRunsLeavesTheBackupAlone() async throws {
-        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(
-            responses: testBootHookResponses().map { .init(events: $0.events, pauseBeforeEvents: true) }
-        ))
+        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner.pausing(testBootHookResponses(), before: { _ in true }))
         defer { fixture.runner.finishAll() }
         let store = fixture.store
         store.backUpAndInspectFirmware(password: "pw", profile: fixture.profile)
@@ -182,9 +177,7 @@ final class BootHookStoreTests: XCTestCase {
         XCTAssertTrue(detail(.activate, activation).isRunning)
         XCTAssertFalse(detail(.bootHook, activation).isRunning)
 
-        let backup = try BootHookTestFixture(runner: PausingStoreTestRunner(
-            responses: testBootHookResponses().map { .init(events: $0.events, pauseBeforeEvents: true) }
-        ), onDeviceLane: true)
+        let backup = try BootHookTestFixture(runner: PausingStoreTestRunner.pausing(testBootHookResponses(), before: { _ in true }), onDeviceLane: true)
         defer { backup.runner.finishAll() }
         backup.maintenanceStore.backUpAndInspectFirmware(password: "pw", profile: backup.profile)
         try await waitUntilStoreState { backup.runner.calls.count == 1 }
@@ -254,9 +247,7 @@ final class BootHookStoreTests: XCTestCase {
                 plan: testBootHookPlanPayload(mode: .patch),
                 write: testBootHookWritePayload(.patchNeedsPowerCycle)
             )
-            let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: responses.enumerated().map { index, response in
-                .init(events: response.events, pauseAfterEvents: index == pausedStep)
-            }))
+            let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner.pausing(responses, after: { $0 == pausedStep }))
             let runner = fixture.runner
             defer { runner.finishAll() }
             let store = fixture.store
@@ -407,11 +398,10 @@ final class BootHookStoreTests: XCTestCase {
 
     func testWriteConfirmationCancellationRestoresPlanAvailable() async throws {
         for mode in [FlashPlanMode.patch, .restore] {
-            let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses(
-                plan: testBootHookPlanPayload(mode: mode)
-            ) + [
-                .init(events: [writeConfirmationRequired()], pauseAfterEvents: true)
-            ]), onDeviceLane: true)
+            let responses = testBootHookResponses(plan: testBootHookPlanPayload(mode: mode)) + [
+                .init(events: [testConfirmationRequired(operation: "flash", id: "confirm-1", presentationID: "flash.\(mode.rawValue)_write")])
+            ]
+            let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner.pausing(responses, after: { $0 == 2 }), onDeviceLane: true)
             let runner = fixture.runner
             defer { runner.finishAll() }
             let coordinator = fixture.coordinator
@@ -446,10 +436,8 @@ final class BootHookStoreTests: XCTestCase {
     }
 
     func testATemplateChosenDuringARunDropsThePlanWhenTheRunEnds() async throws {
-        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses(
-            plan: testBootHookPlanPayload(mode: .patch)
-        ) + [
-            .init(events: [writeConfirmationRequired()])
+        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner.pausing(testBootHookResponses(plan: testBootHookPlanPayload(mode: .patch)) + [
+            .init(events: [testConfirmationRequired(operation: "flash", id: "confirm-1", presentationID: "flash.patch_write")])
         ]), onDeviceLane: true)
         defer { fixture.runner.finishAll() }
         let store = fixture.store
@@ -480,9 +468,7 @@ final class BootHookStoreTests: XCTestCase {
             ]
         )
         // The write's helper sends its failure, then waits before it exits.
-        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: responses.indices.map {
-            .init(events: responses[$0].events, result: responses[$0].result, pauseAfterEvents: $0 == responses.count - 1)
-        }))
+        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner.pausing(responses, after: { $0 == responses.count - 1 }))
         defer { fixture.runner.finishAll() }
         let store = fixture.store
         try await fixture.run(.backup, .plan(.patch))
@@ -495,30 +481,6 @@ final class BootHookStoreTests: XCTestCase {
         XCTAssertNil(store.plan)
         XCTAssertEqual(store.state, .failed)
         XCTAssertFalse(store.backupSnapshotStale)
-    }
-
-    func testCancellingTheWriteConfirmationThroughMaintenanceRestoresThePlan() async throws {
-        let fixture = try BootHookTestFixture(responses: testBootHookResponses(plan: testBootHookPlanPayload(mode: .patch)) + [
-            .init(
-                events: [writeConfirmationRequired()],
-                result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
-            )
-        ])
-        let maintenance = fixture.maintenanceStore
-        try await fixture.run(.backup, .plan(.patch))
-
-        maintenance.writeFirmware(mode: .patch, password: "pw", profile: fixture.profile)
-        try await waitUntilStoreState {
-            maintenance.pendingConfirmation(for: .bootHook) != nil && !maintenance.isRunning
-        }
-        maintenance.cancelPendingConfirmation(for: .bootHook)
-
-        try await waitUntilStoreState {
-            fixture.store.state == .planAvailable && maintenance.pendingConfirmation(for: .bootHook) == nil
-        }
-        XCTAssertNil(maintenance.error)
-        XCTAssertTrue(maintenance.canWritePatch)
-        XCTAssertEqual(fixture.runner.calls.count, 3)
     }
 
     func testBootHookButtonsWaitWhileAnotherJobUsesTheDevice() async throws {
@@ -553,9 +515,7 @@ final class BootHookStoreTests: XCTestCase {
     }
 
     func testOtherWorkflowsWaitWhileTheBootHookUsesTheDevice() async throws {
-        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: testBootHookResponses().map {
-            .init(events: $0.events, pauseBeforeEvents: true)
-        }), onDeviceLane: true)
+        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner.pausing(testBootHookResponses(), before: { _ in true }), onDeviceLane: true)
         defer { fixture.runner.finishAll() }
         let maintenance = fixture.maintenanceStore
 
@@ -564,8 +524,7 @@ final class BootHookStoreTests: XCTestCase {
 
         XCTAssertFalse(maintenance.canRunActivation)
         XCTAssertFalse(maintenance.canCheckSSHAccess)
-        XCTAssertTrue(maintenance.isRunning)
-        XCTAssertTrue(maintenance.canCancel)
+        XCTAssertTrue(maintenance.isRunning(for: .bootHook))
 
         fixture.runner.finishAll()
         try await waitUntilStoreState { !maintenance.isBusy }
@@ -1032,9 +991,7 @@ final class BootHookStoreTests: XCTestCase {
     func testASelectionChangedWhileAPlanRunsDiscardsThatPlan() async throws {
         let responses = testBootHookResponses(plan: testBootHookPlanPayload(mode: .patch))
         // Only the plan waits, so the test can change a field during it.
-        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner(responses: responses.indices.map {
-            .init(events: responses[$0].events, result: responses[$0].result, pauseBeforeEvents: $0 == responses.count - 1)
-        }))
+        let fixture = try BootHookTestFixture(runner: PausingStoreTestRunner.pausing(responses, before: { $0 == responses.count - 1 }))
         defer { fixture.runner.finishAll() }
         let store = fixture.store
         try await fixture.run(.backup)
@@ -1128,7 +1085,7 @@ final class BootHookStoreTests: XCTestCase {
 
         XCTAssertEqual(store.state, .failed)
         XCTAssertEqual(store.error?.code, "contract_decode_failed")
-        XCTAssertNil(store.pendingConfirmation)
+        XCTAssertNil(fixture.coordinator.pendingConfirmation(for: "flash"))
         // Nothing was written, so the plan still holds.
         XCTAssertNotNil(store.plan)
         XCTAssertTrue(fixture.maintenanceStore.canWritePatch)
@@ -1167,20 +1124,6 @@ final class BootHookStoreTests: XCTestCase {
         // The flash section's own buttons rerun each step, so the dashboard
         // gives its box no retry (DashboardStoreTests).
         XCTAssertEqual(error.operation, "flash")
-    }
-
-    private func writeConfirmationRequired() -> BackendEvent {
-        BackendEvent(
-            type: "error",
-            operation: "flash",
-            code: "confirmation_required",
-            message: "Confirm?",
-            details: .object([
-                "confirmation_id": .string("confirm-1"),
-                "presentation_id": .string("flash.patch_write"),
-                "presentation_values": .object(["host": .string("10.0.0.2")])
-            ])
-        )
     }
 
     private func row(_ label: String, in presentation: MaintenanceWorkflowDetailPresentation) -> String? {

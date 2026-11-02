@@ -153,19 +153,20 @@ final class MaintenanceStoreTests: XCTestCase {
     func testActivationRunsDirectlyAndHandlesConfirmationReplay() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                confirmationRequired(operation: "activate", id: "activate-confirm")
+                testConfirmationRequired(operation: "activate", id: "activate-confirm")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
             .init(events: [
                 BackendEvent(type: "stage", operation: "activate", stage: "run_activation", risk: "remote_write", cancellable: false),
                 BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
             ])
         ])
-        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = MaintenanceStore(coordinator: coordinator)
 
         store.runActivation(password: "pw")
-        try await waitUntilStoreState { store.activateState == .awaitingConfirmation && store.pendingConfirmation(for: .activate) != nil && !store.isRunning }
+        try await waitUntilStoreState { store.activateState == .awaitingConfirmation && coordinator.readyConfirmation?.operation == "activate" }
 
-        store.confirmPending(for: .activate)
+        coordinator.confirm(try XCTUnwrap(coordinator.readyConfirmation))
 
         try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
         XCTAssertEqual(store.currentStage?.stage, "run_activation")
@@ -177,33 +178,35 @@ final class MaintenanceStoreTests: XCTestCase {
         do {
             let runner = StoreTestRunner(responses: [
                 .init(events: [
-                    confirmationRequired(operation: "activate", id: "activate-confirm")
+                    testConfirmationRequired(operation: "activate", id: "activate-confirm")
                 ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
             ])
-            let store = MaintenanceStore(backend: BackendClient(runner: runner))
+            let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+            let store = MaintenanceStore(coordinator: coordinator)
 
             store.runActivation(password: "pw")
-            try await waitUntilStoreState { store.activateState == .awaitingConfirmation && store.pendingConfirmation(for: .activate) != nil && !store.isRunning }
-            store.cancelPendingConfirmation(for: .activate)
+            try await waitUntilStoreState { store.activateState == .awaitingConfirmation && coordinator.readyConfirmation?.operation == "activate" }
+            coordinator.cancel(try XCTUnwrap(coordinator.readyConfirmation))
 
-            try await waitUntilStoreState { store.activateState == .idle && store.pendingConfirmation(for: .activate) == nil }
+            try await waitUntilStoreState { store.activateState == .idle && coordinator.readyConfirmation == nil }
             XCTAssertNil(store.error)
         }
 
         do {
             let runner = StoreTestRunner(responses: [
                 .init(events: [
-                    confirmationRequired(operation: "uninstall", id: "uninstall-confirm")
+                    testConfirmationRequired(operation: "uninstall", id: "uninstall-confirm")
                 ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
             ])
-            let store = MaintenanceStore(backend: BackendClient(runner: runner))
+            let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+            let store = MaintenanceStore(coordinator: coordinator)
 
             store.runUninstall(password: "pw")
-            try await waitUntilStoreState { store.uninstallState == .awaitingConfirmation && store.pendingConfirmation(for: .uninstall) != nil && !store.isRunning }
+            try await waitUntilStoreState { store.uninstallState == .awaitingConfirmation && coordinator.readyConfirmation?.operation == "uninstall" }
             store.noWait = true
-            store.cancelPendingConfirmation(for: .uninstall)
+            coordinator.cancel(try XCTUnwrap(coordinator.readyConfirmation))
 
-            try await waitUntilStoreState { store.uninstallState == .idle && store.pendingConfirmation(for: .uninstall) == nil }
+            try await waitUntilStoreState { store.uninstallState == .idle && coordinator.readyConfirmation == nil }
             XCTAssertNil(store.error)
         }
 
@@ -216,21 +219,22 @@ final class MaintenanceStoreTests: XCTestCase {
                     BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckPlanPayload())
                 ]),
                 .init(events: [
-                    confirmationRequired(operation: "fsck", id: "fsck-confirm")
+                    testConfirmationRequired(operation: "fsck", id: "fsck-confirm")
                 ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
             ])
-            let store = MaintenanceStore(backend: BackendClient(runner: runner))
+            let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+            let store = MaintenanceStore(coordinator: coordinator)
 
             store.refreshFsckTargets(password: "pw")
             try await waitUntilStoreState { store.fsckState == .listReady && !store.isRunning }
             store.planFsck(password: "pw")
             try await waitUntilStoreState { store.fsckState == .planReady && !store.isRunning }
             store.runFsck(password: "pw")
-            try await waitUntilStoreState { store.fsckState == .awaitingConfirmation && store.pendingConfirmation(for: .fsck) != nil && !store.isRunning }
+            try await waitUntilStoreState { store.fsckState == .awaitingConfirmation && coordinator.readyConfirmation?.operation == "fsck" }
             store.noWait = true
-            store.cancelPendingConfirmation(for: .fsck)
+            coordinator.cancel(try XCTUnwrap(coordinator.readyConfirmation))
 
-            try await waitUntilStoreState { store.fsckState == .planStale && store.pendingConfirmation(for: .fsck) == nil }
+            try await waitUntilStoreState { store.fsckState == .planStale && coordinator.readyConfirmation == nil }
             XCTAssertNil(store.error)
         }
     }
@@ -319,19 +323,20 @@ final class MaintenanceStoreTests: XCTestCase {
     func testUninstallConfirmationReplayCompletes() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                confirmationRequired(operation: "uninstall", id: "uninstall-confirm")
+                testConfirmationRequired(operation: "uninstall", id: "uninstall-confirm")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
             .init(events: [
                 BackendEvent(type: "stage", operation: "uninstall", stage: "remove_payload", risk: "remote_write", cancellable: false),
                 BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
             ])
         ])
-        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = MaintenanceStore(coordinator: coordinator)
 
         store.runUninstall(password: "pw")
-        try await waitUntilStoreState { store.uninstallState == .awaitingConfirmation && store.pendingConfirmation(for: .uninstall) != nil && !store.isRunning }
+        try await waitUntilStoreState { store.uninstallState == .awaitingConfirmation && coordinator.readyConfirmation?.operation == "uninstall" }
 
-        store.confirmPending(for: .uninstall)
+        coordinator.confirm(try XCTUnwrap(coordinator.readyConfirmation))
 
         try await waitUntilStoreState { store.uninstallState == .succeeded && !store.isRunning }
         XCTAssertEqual(store.currentStage?.stage, "remove_payload")
@@ -352,13 +357,14 @@ final class MaintenanceStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckPlanPayload())
             ]),
             .init(events: [
-                confirmationRequired(operation: "fsck", id: "fsck-confirm")
+                testConfirmationRequired(operation: "fsck", id: "fsck-confirm")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
             .init(events: [
                 BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckResultPayload(returncode: 0))
             ])
         ])
-        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = MaintenanceStore(coordinator: coordinator)
 
         store.refreshFsckTargets(password: "pw")
 
@@ -378,9 +384,9 @@ final class MaintenanceStoreTests: XCTestCase {
         store.planFsck(password: "pw")
         try await waitUntilStoreState { store.fsckState == .planReady && !store.isRunning }
         store.runFsck(password: "pw")
-        try await waitUntilStoreState { store.fsckState == .awaitingConfirmation && store.pendingConfirmation(for: .fsck) != nil && !store.isRunning }
+        try await waitUntilStoreState { store.fsckState == .awaitingConfirmation && coordinator.readyConfirmation?.operation == "fsck" }
 
-        store.confirmPending(for: .fsck)
+        coordinator.confirm(try XCTUnwrap(coordinator.readyConfirmation))
 
         try await waitUntilStoreState { store.fsckState == .succeeded }
         XCTAssertEqual(store.fsckResult?.returncode, 0)
@@ -536,28 +542,6 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertNil(store.error(for: .uninstall))
     }
 
-    func testClearResetsMaintenanceState() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
-            ])
-        ])
-        let store = MaintenanceStore(backend: BackendClient(runner: runner))
-
-        store.runActivation(password: "")
-        try await waitUntilStoreState { store.activateState == .succeeded }
-        store.clear()
-
-        XCTAssertEqual(store.activateState, .idle)
-        XCTAssertEqual(store.uninstallState, .idle)
-        XCTAssertEqual(store.fsckState, .idle)
-        XCTAssertNil(store.activationResult)
-        XCTAssertNil(store.uninstallResult)
-        XCTAssertNil(store.fsckPlan)
-        XCTAssertNil(store.error)
-        XCTAssertNil(store.currentStage)
-    }
-
     private func wipeDiskResultPayload(offerInstall: Bool, diskLabel: String? = "Disk 1") -> JSONValue {
         .object([
             "schema_version": .number(1),
@@ -580,27 +564,28 @@ final class MaintenanceStoreTests: XCTestCase {
         // internal disk itself.
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                confirmationRequired(operation: "wipe-disk", id: "wipe-confirm")
+                testConfirmationRequired(operation: "wipe-disk", id: "wipe-confirm")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
             .init(events: [
                 BackendEvent(type: "stage", operation: "wipe-disk", stage: "wipe_disk", risk: "destructive", cancellable: false),
                 BackendEvent(type: "result", operation: "wipe-disk", ok: true, payload: wipeDiskResultPayload(offerInstall: true))
             ])
         ])
-        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = MaintenanceStore(coordinator: coordinator)
         var detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk)
         XCTAssertEqual(detail.actionRows, [[.runWipeDisk]])
         XCTAssertTrue(detail.isEnabled(.runWipeDisk))
 
         store.runWipeDisk(password: "pw")
         try await waitUntilStoreState {
-            store.wipeDiskState == .awaitingConfirmation && store.pendingConfirmation(for: .wipeDisk) != nil && !store.isRunning
+            store.wipeDiskState == .awaitingConfirmation && coordinator.readyConfirmation?.operation == "wipe-disk"
         }
         // Nothing to name and no Plan step: no disk and no dry-run flag.
         XCTAssertNil(runner.calls[0].params["disk"])
         XCTAssertNil(runner.calls[0].params["dry_run"])
 
-        store.confirmPending(for: .wipeDisk)
+        coordinator.confirm(try XCTUnwrap(coordinator.readyConfirmation))
         try await waitUntilStoreState { store.wipeDiskState == .succeeded && !store.isRunning }
         XCTAssertEqual(runner.calls[1].params["confirmation_id"], .string("wipe-confirm"))
         XCTAssertEqual(store.wipeDiskResult?.volumeName, "Data")
@@ -731,16 +716,17 @@ final class MaintenanceStoreTests: XCTestCase {
     func testWipeDiskWithoutInstallNextAndCancelledConfirmation() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                confirmationRequired(operation: "wipe-disk", id: "wipe-confirm")
+                testConfirmationRequired(operation: "wipe-disk", id: "wipe-confirm")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
             .init(events: [
                 BackendEvent(type: "result", operation: "wipe-disk", ok: true, payload: wipeDiskResultPayload(offerInstall: false))
             ])
         ])
-        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = MaintenanceStore(coordinator: coordinator)
         store.runWipeDisk(password: "pw")
-        try await waitUntilStoreState { store.wipeDiskState == .awaitingConfirmation && !store.isRunning }
-        store.cancelPendingConfirmation(for: .wipeDisk)
+        try await waitUntilStoreState { store.wipeDiskState == .awaitingConfirmation && coordinator.readyConfirmation != nil }
+        coordinator.cancel(try XCTUnwrap(coordinator.readyConfirmation))
         try await waitUntilStoreState { store.wipeDiskState == .idle && !store.isRunning }
         XCTAssertNil(store.error(for: .wipeDisk))
 
@@ -749,21 +735,6 @@ final class MaintenanceStoreTests: XCTestCase {
         let detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: .wipeDisk)
         // Samba lives on another disk: no Install button.
         XCTAssertEqual(detail.actionRows, [[.runWipeDisk]])
-    }
-
-    private func confirmationRequired(operation: String, id: String) -> BackendEvent {
-        BackendEvent(
-            type: "error",
-            operation: operation,
-            code: "confirmation_required",
-            message: "Confirm \(operation).",
-            details: .object([
-                "title": .string("Confirm \(operation)"),
-                "message": .string("Confirm \(operation)."),
-                "action_title": .string("Confirm"),
-                "confirmation_id": .string(id)
-            ])
-        )
     }
 
 }
