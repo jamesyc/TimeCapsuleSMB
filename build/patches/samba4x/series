@@ -202,6 +202,14 @@
 # use, such as one reconnected before its timer fired) at debug level, where
 # stock logs a warning, and the scavenger ignores a message of the wrong size.
 0077-smbd-release-orphaned-durable-opens.patch|release durable opens left by dead smbds
+# smb2_signing_key_create() passes memcpy() a NULL source when the master key
+# is empty, as at the start of a session setup: undefined even for 0 bytes
+# (UBSan reports it on every connection). Copy only a key that has bytes.
+0084-smb2-signing-empty-master-key.patch|no memcpy from an empty master key
+# posix_lock_in_range() builds the largest positive off_t by shifting a signed
+# value into its sign bit, which is undefined (UBSan reports it on every read
+# that checks a lock). Compute it unsigned.
+0085-locking-posix-max-lock-offset.patch|largest positive off_t without a signed overflow
 
 # 2. Upstream proposals.
 # Changes upstream would have to agree to; they need no appliance patch.
