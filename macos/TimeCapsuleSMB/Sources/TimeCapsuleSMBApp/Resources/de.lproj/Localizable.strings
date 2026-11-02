@@ -466,7 +466,7 @@
 "flash.row.write_validated" = "Schreibvorgang geprüft";
 "flash.title" = "Permanenter NetBSD-4-Starthook";
 "flash.warning.manual_power_cycle" = "Trennen Sie das Gerät, warten Sie 10 Sekunden und schließen Sie es dann wieder an.";
-"flash.warning.snapshot_stale" = "Nach dieser Sicherung wurde Firmware geschrieben. Sichern und prüfen Sie erneut, bevor Sie einen weiteren Flash-Vorgang planen.";
+"flash.warning.snapshot_stale" = "Die Firmware hat sich seit dieser Sicherung geändert. Sichern und prüfen Sie erneut, bevor Sie einen weiteren Flash-Vorgang planen.";
 "helper.error.cancelled" = "Vorgang abgebrochen.";
 "helper.error.missing_terminal_event" = "Das Hilfsprogramm wurde ohne Ergebnis- oder Fehlerereignis beendet.";
 "host_warning.time_machine.message" = "macOS %d.%d.%d hat bekannte Probleme mit Time-Machine-Netzwerksicherungen. SMB kann funktionieren, die Zuverlässigkeit der Sicherungen kann jedoch vom Betriebssystem des Macs beeinträchtigt werden.";
@@ -902,6 +902,9 @@
 "backend.recovery.flash.flash_patch_refused.message" = "Die Firmware-Bänke sind nicht in einem Zustand, in dem das Patchen sicher ist, daher wurde die Firmware nicht geändert.";
 "backend.recovery.flash.flash_patch_refused.action.1" = "Wählen Sie „Sichern und erneut prüfen“ und prüfen Sie den Status jeder Bank.";
 "backend.recovery.flash.flash_patch_refused.action.2" = "Wenn eine Bank beschädigt ist, lassen Sie die Firmware unverändert.";
+"backend.recovery.flash.flash_backup_outdated.title" = "Firmware seit der Sicherung geändert";
+"backend.recovery.flash.flash_backup_outdated.message" = "Die Firmware des Geräts stimmt nicht mehr mit der gespeicherten Sicherung überein, daher wurde das Schreiben verweigert und die Firmware nicht geändert.";
+"backend.recovery.flash.flash_backup_outdated.action.1" = "Wählen Sie „Sichern und erneut prüfen“ und planen Sie dann erneut.";
 "backend.recovery.activate.runtime_outdated.title" = "Installation ist veraltet";
 "backend.recovery.activate.runtime_outdated.message" = "Das installierte TimeCapsuleSMB ist zu alt, um von dieser App gestartet oder überprüft zu werden.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Führen Sie „Samba installieren / aktualisieren“ aus.";

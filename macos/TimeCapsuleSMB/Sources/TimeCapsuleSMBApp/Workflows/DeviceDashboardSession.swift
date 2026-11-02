@@ -493,7 +493,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         // A refusal the app made itself never reached the device, and a
         // reply the app could not read came from a helper that reached it.
         guard let error, error.localError == nil,
-              !["operation_rejected", "cancelled", "confirmation_cancelled", "contract_decode_failed"].contains(error.code),
+              !["operation_rejected", "cancelled", "confirmation_cancelled", "contract_decode_failed",
+                "flash_backup_outdated"].contains(error.code),
               let event = latestTerminalEvent(for: error.operation),
               let requestID = event.requestId,
               event.type == "error" || event.ok == false,

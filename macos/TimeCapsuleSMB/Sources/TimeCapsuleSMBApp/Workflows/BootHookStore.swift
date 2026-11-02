@@ -330,7 +330,7 @@ final class BootHookStore: ObservableObject {
                 let result = try event.decodePayload(FlashWritePayload.self)
                 writeResult = result
                 if Self.writeMayHaveModifiedFirmware(result) {
-                    markSnapshotStaleAfterWrite()
+                    markBackupStale()
                     if Self.requiresManualPowerCycleAfterWrite(result) {
                         showsManualPowerCycleNotice = true
                     }
@@ -362,11 +362,11 @@ final class BootHookStore: ObservableObject {
     /// no longer describes the banks.
     private func markSnapshotStaleIfFailedWriteMayHaveModifiedFirmware() {
         if runKind == .write, currentStageMayHaveModifiedFirmware() {
-            markSnapshotStaleAfterWrite()
+            markBackupStale()
         }
     }
 
-    private func markSnapshotStaleAfterWrite() {
+    private func markBackupStale() {
         backupSnapshotStale = true
         plan = nil
         plannedFirmwareSelection = nil
@@ -432,6 +432,10 @@ final class BootHookStore: ObservableObject {
             passwordInvalidProfileID = activeOperation.profileID
         }
         markSnapshotStaleIfFailedWriteMayHaveModifiedFirmware()
+        // The live bank no longer matches the backup the plan came from.
+        if event.code == "flash_backup_outdated" {
+            markBackupStale()
+        }
         error = BackendErrorViewModel(event: event)
         state = .failed
         finishRun()

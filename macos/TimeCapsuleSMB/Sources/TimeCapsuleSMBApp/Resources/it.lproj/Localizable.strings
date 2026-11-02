@@ -466,7 +466,7 @@
 "flash.row.write_validated" = "Scrittura convalidata";
 "flash.title" = "Hook di avvio persistente NetBSD 4";
 "flash.warning.manual_power_cycle" = "Scollega il dispositivo, attendi 10 secondi, quindi ricollegalo.";
-"flash.warning.snapshot_stale" = "Il firmware è stato scritto dopo questo backup. Esegui un nuovo backup e una nuova verifica prima di pianificare un’altra operazione flash.";
+"flash.warning.snapshot_stale" = "Il firmware è cambiato dopo questo backup. Esegui un nuovo backup e ispeziona di nuovo prima di pianificare un’altra operazione flash.";
 "helper.error.cancelled" = "Operazione annullata.";
 "helper.error.missing_terminal_event" = "Il programma ausiliario è terminato senza un risultato né un evento di errore.";
 "host_warning.time_machine.message" = "macOS %d.%d.%d presenta problemi noti con i backup di rete di Time Machine. SMB potrebbe funzionare, ma il sistema operativo del Mac può influire sull’affidabilità dei backup.";
@@ -902,6 +902,9 @@
 "backend.recovery.flash.flash_patch_refused.message" = "I banchi firmware non sono in uno stato in cui applicare la patch sia sicuro, quindi il firmware non è stato modificato.";
 "backend.recovery.flash.flash_patch_refused.action.1" = "Scegli “Esegui il backup e ispeziona di nuovo” e controlla lo stato di ogni banco.";
 "backend.recovery.flash.flash_patch_refused.action.2" = "Se un banco è danneggiato, lascia il firmware com’è.";
+"backend.recovery.flash.flash_backup_outdated.title" = "Firmware cambiato dopo il backup";
+"backend.recovery.flash.flash_backup_outdated.message" = "Il firmware del dispositivo non corrisponde più al backup salvato, quindi la scrittura è stata rifiutata e il firmware non è stato modificato.";
+"backend.recovery.flash.flash_backup_outdated.action.1" = "Scegli “Esegui il backup e ispeziona di nuovo”, poi pianifica di nuovo.";
 "backend.recovery.activate.runtime_outdated.title" = "Installazione non aggiornata";
 "backend.recovery.activate.runtime_outdated.message" = "Il TimeCapsuleSMB installato è troppo vecchio perché questa app possa avviarlo o controllarlo.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Esegui “Installa/aggiorna Samba”.";

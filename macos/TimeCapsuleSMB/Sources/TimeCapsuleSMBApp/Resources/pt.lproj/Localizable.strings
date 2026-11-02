@@ -466,7 +466,7 @@
 "flash.row.write_validated" = "Gravação validada";
 "flash.title" = "Hook de inicialização persistente do NetBSD 4";
 "flash.warning.manual_power_cycle" = "Desconecte o dispositivo, aguarde 10 segundos e conecte-o novamente.";
-"flash.warning.snapshot_stale" = "O firmware foi gravado após este backup. Faça um novo backup e verifique-o antes de planejar outra operação flash.";
+"flash.warning.snapshot_stale" = "O firmware mudou desde este backup. Faça um novo backup e inspecione novamente antes de planejar outra operação flash.";
 "helper.error.cancelled" = "Operação cancelada.";
 "helper.error.missing_terminal_event" = "O programa auxiliar encerrou sem resultado nem evento de erro.";
 "host_warning.time_machine.message" = "macOS %d.%d.%d tem problemas conhecidos de backup de rede Time Machine. SMB pode funcionar, mas a confiabilidade do backup pode ser afetada pelo sistema operacional host.";
@@ -902,6 +902,9 @@
 "backend.recovery.flash.flash_patch_refused.message" = "Os bancos de firmware não estão em um estado em que aplicar o patch seja seguro, por isso o firmware não foi alterado.";
 "backend.recovery.flash.flash_patch_refused.action.1" = "Escolha “Fazer backup e inspecionar novamente” e revise o estado de cada banco.";
 "backend.recovery.flash.flash_patch_refused.action.2" = "Se um banco estiver danificado, deixe o firmware como está.";
+"backend.recovery.flash.flash_backup_outdated.title" = "O firmware mudou desde o backup";
+"backend.recovery.flash.flash_backup_outdated.message" = "O firmware do dispositivo não corresponde mais ao backup salvo, por isso a gravação foi recusada e o firmware não foi alterado.";
+"backend.recovery.flash.flash_backup_outdated.action.1" = "Escolha “Fazer backup e inspecionar novamente” e depois planeje de novo.";
 "backend.recovery.activate.runtime_outdated.title" = "A instalação está desatualizada";
 "backend.recovery.activate.runtime_outdated.message" = "O TimeCapsuleSMB instalado é antigo demais para que este app possa iniciá-lo ou verificá-lo.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Execute “Instalar/atualizar Samba”.";

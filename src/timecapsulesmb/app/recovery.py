@@ -948,6 +948,14 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=False,
         cli_extra=("`tcapsule flash --patch --force` patches the primary bank anyway, after you review that status.",),
     ),
+    # The firmware changed after the backup (another write, an AirPort Utility
+    # update): a plan from that backup no longer describes the bank.
+    ("flash", ErrorCode.FLASH_BACKUP_OUTDATED): RecoveryInfo(
+        "Firmware changed since the backup",
+        "The device's firmware no longer matches the saved backup, so the write was refused and the firmware was not changed.",
+        ("Choose “Back Up and Inspect Again”, then plan again.",),
+        retryable=False,
+    ),
     ("activate", ErrorCode.RUNTIME_NOT_INSTALLED): RecoveryInfo(
         "TimeCapsuleSMB not installed",
         "The device has no TimeCapsuleSMB installation to start.",
@@ -1308,6 +1316,8 @@ _CLI_WORDS = (
     ("Then choose “Back Up and Inspect Again”, and patch.", "Then run `tcapsule flash --patch` again."),
     ("Choose “Back Up and Inspect Again” and review each bank's status.", "Review each bank's status above."),
     ("Choose “Back Up and Inspect”.", "Run `tcapsule flash --read-only` to back up and inspect the banks again."),
+    # Each CLI flash run saves a new backup before it plans.
+    ("Choose “Back Up and Inspect Again”, then plan again.", "Run the same `tcapsule flash` command again: it backs up the banks first."),
     ("Refresh discovery and reconnect the saved device.", "Run `tcapsule configure` to find the device again."),
     ("Forget this device, then add your Time Capsule or AirPort Extreme.",
      "Run `tcapsule configure` and choose your Time Capsule or AirPort Extreme."),

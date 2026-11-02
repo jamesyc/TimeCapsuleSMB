@@ -466,7 +466,7 @@
 "flash.row.write_validated" = "写入已验证";
 "flash.title" = "NetBSD 4 持久化启动钩子";
 "flash.warning.manual_power_cycle" = "拔掉设备电源，等待 10 秒，然后重新插上。";
-"flash.warning.snapshot_stale" = "此备份之后已写入固件。规划另一个闪存操作前，请再次备份并检查。";
+"flash.warning.snapshot_stale" = "此备份之后固件已更改。规划另一个闪存操作前，请再次备份并检查。";
 "helper.error.cancelled" = "操作已取消。";
 "helper.error.missing_terminal_event" = "辅助程序已退出，但未返回结果或错误事件。";
 "host_warning.time_machine.message" = "macOS %d.%d.%d 存在已知的时间机器网络备份问题。SMB 可能正常工作，但备份可靠性可能受主机操作系统影响。";
@@ -902,6 +902,9 @@
 "backend.recovery.flash.flash_patch_refused.message" = "固件区当前的状态不适合安全地打补丁，因此固件未作更改。";
 "backend.recovery.flash.flash_patch_refused.action.1" = "选择“再次备份并检查”，并查看每个固件区的状态。";
 "backend.recovery.flash.flash_patch_refused.action.2" = "如果某个固件区已损坏，请保持固件不变。";
+"backend.recovery.flash.flash_backup_outdated.title" = "备份之后固件已更改";
+"backend.recovery.flash.flash_backup_outdated.message" = "设备的固件与保存的备份不再一致，因此已拒绝写入，固件未作更改。";
+"backend.recovery.flash.flash_backup_outdated.action.1" = "选择“再次备份并检查”，然后重新规划。";
 "backend.recovery.activate.runtime_outdated.title" = "已安装的版本过旧";
 "backend.recovery.activate.runtime_outdated.message" = "已安装的 TimeCapsuleSMB 版本过旧，此应用无法启动或检查它。";
 "backend.recovery.activate.runtime_outdated.action.1" = "运行“安装 / 更新 Samba”。";

@@ -33,6 +33,7 @@ from tests.flash_fixtures import (
 )
 from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.cli import flash as cli_flash
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.flash import (
     PATCHED_LOGIN_SCRIPT,
@@ -475,9 +476,25 @@ class SecondaryRefreshServiceTests(unittest.TestCase):
         _bundle, plan = self.plan()
         flash = device(primary=make_full_bank(b"NetBSD 4.0_STABLE #0: changed"))
         with self.patched_device(flash):
-            with self.assertRaisesRegex(FlashAnalysisError, "live primary firmware bank changed"):
+            with self.assertRaisesRegex(FlashAnalysisError, "live primary firmware bank changed") as raised:
                 flash_service.validate_live_target_matches_backup(connection=CONNECTION, plan=plan)
         self.assertEqual(flash.commands, [])
+        self.assertEqual(raised.exception.code, ErrorCode.FLASH_BACKUP_OUTDATED)
+
+    def test_pre_write_check_names_a_changed_target_bank_as_an_outdated_backup(self) -> None:
+        plan = SimpleNamespace(
+            secondary_refresh=None,
+            target_bank=SimpleNamespace(name="primary", device="/dev/rflash0.raw", sha256="backup-sha"),
+        )
+        with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", return_value=b"changed bank"):
+            with self.assertRaisesRegex(FlashAnalysisError, "live firmware bank changed") as raised:
+                flash_service.validate_live_target_matches_backup(connection=CONNECTION, plan=plan)
+        self.assertEqual(raised.exception.code, ErrorCode.FLASH_BACKUP_OUTDATED)
+        # The CLI's own words: each flash run backs up the banks first.
+        self.assertEqual(
+            cli_steps("flash", raised.exception.code),
+            ("Run the same `tcapsule flash` command again: it backs up the banks first.",),
+        )
 
     def test_a_failed_write_is_recorded_as_possibly_modifying_the_device(self) -> None:
         bundle, plan = self.plan()

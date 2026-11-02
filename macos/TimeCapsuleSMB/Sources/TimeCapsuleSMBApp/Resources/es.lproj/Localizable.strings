@@ -466,7 +466,7 @@
 "flash.row.write_validated" = "Escritura verificada";
 "flash.title" = "Hook de arranque persistente de NetBSD 4";
 "flash.warning.manual_power_cycle" = "Desenchufe el dispositivo, espere 10 segundos y luego vuelva a enchufarlo.";
-"flash.warning.snapshot_stale" = "Se escribió firmware después de esta copia de seguridad. Cree otra copia y compruébela antes de planificar una nueva operación flash.";
+"flash.warning.snapshot_stale" = "El firmware cambió desde esta copia de seguridad. Haga otra copia de seguridad e inspeccione de nuevo antes de planificar otra operación flash.";
 "helper.error.cancelled" = "Operación cancelada.";
 "helper.error.missing_terminal_event" = "El programa auxiliar terminó sin devolver un resultado ni un error.";
 "host_warning.time_machine.message" = "macOS %d.%d.%d tiene problemas de copia de seguridad de red Time Machine. SMB puede funcionar, pero la confiabilidad de la copia de seguridad puede verse afectada por el sistema operativo host.";
@@ -902,6 +902,9 @@
 "backend.recovery.flash.flash_patch_refused.message" = "Los bancos de firmware no están en un estado en el que sea seguro aplicar el parche, por lo que el firmware no se modificó.";
 "backend.recovery.flash.flash_patch_refused.action.1" = "Elija «Crear copia de seguridad e inspeccionar de nuevo» y revise el estado de cada banco.";
 "backend.recovery.flash.flash_patch_refused.action.2" = "Si un banco está dañado, deje el firmware como está.";
+"backend.recovery.flash.flash_backup_outdated.title" = "El firmware cambió desde la copia de seguridad";
+"backend.recovery.flash.flash_backup_outdated.message" = "El firmware del dispositivo ya no coincide con la copia de seguridad guardada, por lo que se rechazó la escritura y el firmware no se modificó.";
+"backend.recovery.flash.flash_backup_outdated.action.1" = "Elija «Crear copia de seguridad e inspeccionar de nuevo» y luego planifique de nuevo.";
 "backend.recovery.activate.runtime_outdated.title" = "La instalación está desactualizada";
 "backend.recovery.activate.runtime_outdated.message" = "El TimeCapsuleSMB instalado es demasiado antiguo para que esta app pueda iniciarlo o comprobarlo.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Ejecute «Instalar / actualizar Samba».";

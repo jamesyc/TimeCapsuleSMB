@@ -9,6 +9,7 @@ from typing import Callable
 
 from timecapsulesmb.apple_firmware import normalize_syap
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_SYAP
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.paths import default_user_data_dir, safe_path_part
 from timecapsulesmb.device.compat import DeviceCompatibility, is_netbsd4_payload_family, payload_family_description
@@ -731,6 +732,7 @@ def validate_live_target_matches_backup(
         if live_sha256 != plan.secondary_refresh.primary_sha256:
             raise FlashAnalysisError(
                 "Refusing to write because the live primary firmware bank changed since the saved backup",
+                code=ErrorCode.FLASH_BACKUP_OUTDATED,
                 detail=f"live_sha256={live_sha256} backup_sha256={plan.secondary_refresh.primary_sha256}",
             )
         return
@@ -742,6 +744,7 @@ def validate_live_target_matches_backup(
     if live_sha256 != plan.target_bank.sha256:
         raise FlashAnalysisError(
             "Refusing to write because the live firmware bank changed since the saved backup",
+            code=ErrorCode.FLASH_BACKUP_OUTDATED,
             detail=f"bank={plan.target_bank.name} live_sha256={live_sha256} backup_sha256={plan.target_bank.sha256}",
         )
 

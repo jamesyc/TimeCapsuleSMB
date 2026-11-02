@@ -466,7 +466,7 @@
 "flash.row.write_validated" = "Įrašymas patvirtintas";
 "flash.title" = "Nuolatinis NetBSD 4 įkrovos įskiepis";
 "flash.warning.manual_power_cycle" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
-"flash.warning.snapshot_stale" = "Programinė įranga buvo įrašyta po šios atsarginės kopijos. Prieš planuodami kitą flash veiksmą sukurkite atsarginę kopiją ir patikrinkite dar kartą.";
+"flash.warning.snapshot_stale" = "Programinė įranga pasikeitė po šios atsarginės kopijos. Prieš planuodami kitą flash veiksmą sukurkite atsarginę kopiją ir patikrinkite dar kartą.";
 "helper.error.cancelled" = "Operacija atšaukta.";
 "helper.error.missing_terminal_event" = "Pagalbinė programa baigė darbą be rezultato ar klaidos įvykio.";
 "host_warning.time_machine.message" = "macOS %d.%d.%d turi žinomų Time Machine tinklo atsarginių kopijų problemų. SMB gali veikti, tačiau atsarginių kopijų patikimumą gali paveikti pagrindinė OS.";
@@ -902,6 +902,9 @@
 "backend.recovery.flash.flash_patch_refused.message" = "Programinės įrangos bankai nėra tokios būsenos, kad pataisymą būtų saugu taikyti, todėl programinė įranga nepakeista.";
 "backend.recovery.flash.flash_patch_refused.action.1" = "Pasirinkite „Sukurti atsarginę kopiją ir patikrinti dar kartą“ ir peržiūrėkite kiekvieno banko būseną.";
 "backend.recovery.flash.flash_patch_refused.action.2" = "Jei bankas pažeistas, palikite programinę įrangą tokią, kokia yra.";
+"backend.recovery.flash.flash_backup_outdated.title" = "Programinė įranga pasikeitė po atsarginės kopijos";
+"backend.recovery.flash.flash_backup_outdated.message" = "Įrenginio programinė įranga nebeatitinka išsaugotos atsarginės kopijos, todėl įrašymas atmestas ir programinė įranga nepakeista.";
+"backend.recovery.flash.flash_backup_outdated.action.1" = "Pasirinkite „Sukurti atsarginę kopiją ir patikrinti dar kartą“, tada planuokite iš naujo.";
 "backend.recovery.activate.runtime_outdated.title" = "Įdiegta versija pasenusi";
 "backend.recovery.activate.runtime_outdated.message" = "Įdiegta TimeCapsuleSMB versija per sena, kad ši programa galėtų ją paleisti ar patikrinti.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Paleiskite „Įdiegti / atnaujinti Samba“.";

@@ -314,7 +314,7 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
         )
         context.stage("post_write_validation")
     except FlashAnalysisError as exc:
-        raise AppOperationError(str(exc), code=ErrorCode.OPERATION_FAILED) from exc
+        raise AppOperationError(str(exc), code=exc.code or ErrorCode.OPERATION_FAILED) from exc
     except TransportError as exc:
         raise AppOperationError(f"SSH post-write validation failed: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
     try:

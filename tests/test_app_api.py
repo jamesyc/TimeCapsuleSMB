@@ -949,6 +949,77 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(payload["post_write_action"], "manual_power_cycle")
         self.assertFalse(payload["reboot_requested"])
 
+    def test_flash_write_reports_a_changed_live_bank_as_an_outdated_backup(self) -> None:
+        from timecapsulesmb.flash import FlashAnalysisError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            manifest = {"backup_dir": str(backup_dir)}
+            plan = SimpleNamespace(
+                already_satisfied=False, target_bank=SimpleNamespace(name="primary", sha256="bank-sha"),
+                target_name="primary", secondary_refresh=None, mode="patch",
+            )
+            bundle = SimpleNamespace(manifest=manifest, backup_dir=backup_dir)
+            target = SimpleNamespace(acp_host="10.0.0.2", connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
+            changed = FlashAnalysisError(
+                "Refusing to write because the live firmware bank changed since the saved backup",
+                code=ErrorCode.FLASH_BACKUP_OUTDATED,
+            )
+
+            def run(params: dict[str, object]) -> CollectingSink:
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)), \
+                        mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()), \
+                        mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target), \
+                        mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup", side_effect=changed), \
+                        mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan") as write_mock:
+                    service.run_api_request({"operation": "flash", "params": params}, collector.sink)
+                    collector.write_mock = write_mock  # type: ignore[attr-defined]
+                return collector
+
+            first = run({"action": "write", "backup_dir": str(backup_dir), "mode": "patch"})
+            details = self.assert_confirmation(first, "flash.patch_write", {"host": "10.0.0.2", "mode": "patch"})
+            second = run({
+                "action": "write", "backup_dir": str(backup_dir), "mode": "patch",
+                "confirmation_id": details["confirmation_id"],
+            })
+
+        error = self.assert_single_terminal_event(second, "error")
+        self.assertEqual(error["code"], "flash_backup_outdated")
+        second.write_mock.assert_not_called()  # type: ignore[attr-defined]
+
+    def test_flash_write_reports_an_uncoded_flash_error_as_a_failed_operation(self) -> None:
+        from timecapsulesmb.flash import FlashAnalysisError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            plan = SimpleNamespace(
+                already_satisfied=False, target_bank=SimpleNamespace(name="primary", sha256="bank-sha"),
+                target_name="primary", secondary_refresh=None, mode="patch",
+            )
+            bundle = SimpleNamespace(manifest={"backup_dir": str(backup_dir)}, backup_dir=backup_dir)
+            target = SimpleNamespace(acp_host="10.0.0.2", connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
+
+            def run(params: dict[str, object]) -> CollectingSink:
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)), \
+                        mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()), \
+                        mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target), \
+                        mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup"), \
+                        mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan",
+                                   side_effect=FlashAnalysisError("Flash write readback did not match")):
+                    service.run_api_request({"operation": "flash", "params": params}, collector.sink)
+                return collector
+
+            first = run({"action": "write", "backup_dir": str(backup_dir), "mode": "patch"})
+            details = self.assert_confirmation(first, "flash.patch_write", {"host": "10.0.0.2", "mode": "patch"})
+            second = run({
+                "action": "write", "backup_dir": str(backup_dir), "mode": "patch",
+                "confirmation_id": details["confirmation_id"],
+            })
+
+        self.assertEqual(self.assert_single_terminal_event(second, "error")["code"], "operation_failed")
+
     def test_flash_secondary_restore_confirms_its_own_text_and_never_reboots(self) -> None:
         plan, _download, _restore = plan_full_restore(inspect_full_banks())
         with tempfile.TemporaryDirectory() as tmp:

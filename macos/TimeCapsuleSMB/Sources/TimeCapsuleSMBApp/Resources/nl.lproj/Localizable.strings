@@ -466,7 +466,7 @@
 "flash.row.write_validated" = "Schrijven gevalideerd";
 "flash.title" = "Permanente NetBSD 4-opstart-hook";
 "flash.warning.manual_power_cycle" = "Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
-"flash.warning.snapshot_stale" = "Na deze back-up is firmware geschreven. Maak opnieuw een back-up en controleer deze voordat u een nieuwe flashbewerking plant.";
+"flash.warning.snapshot_stale" = "De firmware is gewijzigd sinds deze back-up. Maak opnieuw een back-up en inspecteer de firmware voordat u een nieuwe flashbewerking plant.";
 "helper.error.cancelled" = "Bewerking geannuleerd.";
 "helper.error.missing_terminal_event" = "Het hulpprogramma is afgesloten zonder resultaat- of foutmelding.";
 "host_warning.time_machine.message" = "macOS %d.%d.%d heeft bekende problemen met netwerkback-ups via Time Machine. SMB werkt mogelijk wel, maar het besturingssysteem van de Mac kan de betrouwbaarheid van back-ups beïnvloeden.";
@@ -902,6 +902,9 @@
 "backend.recovery.flash.flash_patch_refused.message" = "De firmwarebanken zijn niet in een staat waarin patchen veilig is, dus de firmware is niet gewijzigd.";
 "backend.recovery.flash.flash_patch_refused.action.1" = "Kies ‘Back-up maken en opnieuw inspecteren’ en bekijk de status van elke bank.";
 "backend.recovery.flash.flash_patch_refused.action.2" = "Als een bank beschadigd is, laat de firmware dan zoals hij is.";
+"backend.recovery.flash.flash_backup_outdated.title" = "Firmware gewijzigd sinds de back-up";
+"backend.recovery.flash.flash_backup_outdated.message" = "De firmware van het apparaat komt niet meer overeen met de opgeslagen back-up, dus het schrijven is geweigerd en de firmware is niet gewijzigd.";
+"backend.recovery.flash.flash_backup_outdated.action.1" = "Kies ‘Back-up maken en opnieuw inspecteren’ en plan daarna opnieuw.";
 "backend.recovery.activate.runtime_outdated.title" = "Installatie is verouderd";
 "backend.recovery.activate.runtime_outdated.message" = "De geïnstalleerde TimeCapsuleSMB is te oud om door deze app te worden gestart of gecontroleerd.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Voer ‘Samba installeren / bijwerken’ uit.";

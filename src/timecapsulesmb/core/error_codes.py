@@ -127,6 +127,8 @@ class ErrorCode(str, Enum):
     SECONDARY_BANK_INVALID = "secondary_bank_invalid"
     SECONDARY_BANK_READ_MISMATCH = "secondary_bank_read_mismatch"
     FLASH_PATCH_REFUSED = "flash_patch_refused"
+    # The live bank no longer matches the saved backup a write was planned from.
+    FLASH_BACKUP_OUTDATED = "flash_backup_outdated"
 
 
 # Codes that only say something failed, so their guidance cannot be specific.

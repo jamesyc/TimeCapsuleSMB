@@ -466,7 +466,7 @@
 "flash.row.write_validated" = "Write Validated";
 "flash.title" = "Persistent NetBSD 4 Boot Hook";
 "flash.warning.manual_power_cycle" = "Unplug the device, wait 10 seconds, then plug it back in.";
-"flash.warning.snapshot_stale" = "Firmware was written after this backup. Back up and inspect again before planning another flash action.";
+"flash.warning.snapshot_stale" = "The firmware has changed since this backup. Back up and inspect again before planning another flash action.";
 "helper.error.cancelled" = "Operation cancelled.";
 "helper.error.missing_terminal_event" = "Helper exited without a result or error event.";
 "host_warning.time_machine.message" = "macOS %d.%d.%d has known Time Machine network backup issues. SMB may work, but backup reliability can be affected by the host OS.";
@@ -902,6 +902,9 @@
 "backend.recovery.flash.flash_patch_refused.message" = "The firmware banks are not in a state where patching is safe, so the firmware was not changed.";
 "backend.recovery.flash.flash_patch_refused.action.1" = "Choose “Back Up and Inspect Again” and review each bank's status.";
 "backend.recovery.flash.flash_patch_refused.action.2" = "If a bank is damaged, leave the firmware as it is.";
+"backend.recovery.flash.flash_backup_outdated.title" = "Firmware changed since the backup";
+"backend.recovery.flash.flash_backup_outdated.message" = "The device's firmware no longer matches the saved backup, so the write was refused and the firmware was not changed.";
+"backend.recovery.flash.flash_backup_outdated.action.1" = "Choose “Back Up and Inspect Again”, then plan again.";
 "backend.recovery.activate.runtime_outdated.title" = "Installation is out of date";
 "backend.recovery.activate.runtime_outdated.message" = "The installed TimeCapsuleSMB is too old for this app to start or check.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Run “Install / Update Samba”.";

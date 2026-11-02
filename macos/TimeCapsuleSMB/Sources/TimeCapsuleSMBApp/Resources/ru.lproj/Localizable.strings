@@ -902,6 +902,9 @@
 "backend.recovery.flash.flash_patch_refused.message" = "Банки прошивки находятся в состоянии, в котором устанавливать патч небезопасно, поэтому прошивка не изменена.";
 "backend.recovery.flash.flash_patch_refused.action.1" = "Выберите «Снова создать резервную копию и проверить» и проверьте состояние каждого банка.";
 "backend.recovery.flash.flash_patch_refused.action.2" = "Если банк поврежден, оставьте прошивку как есть.";
+"backend.recovery.flash.flash_backup_outdated.title" = "Прошивка изменилась после резервной копии";
+"backend.recovery.flash.flash_backup_outdated.message" = "Прошивка устройства больше не совпадает с сохраненной резервной копией, поэтому запись отклонена и прошивка не изменена.";
+"backend.recovery.flash.flash_backup_outdated.action.1" = "Выберите «Снова создать резервную копию и проверить», затем спланируйте снова.";
 "backend.recovery.activate.runtime_outdated.title" = "Установленная версия устарела";
 "backend.recovery.activate.runtime_outdated.message" = "Установленный TimeCapsuleSMB слишком старый, и это приложение не может его запустить или проверить.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Запустите «Установить/обновить Samba».";

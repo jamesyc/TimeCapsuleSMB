@@ -631,7 +631,7 @@ final class BootHookStoreTests: XCTestCase {
         XCTAssertEqual(store.planFirmware(mode: .patch, profile: fixture.profile).rejectionMessage, WorkflowLocalError.flashBackupRequired.message)
         XCTAssertEqual(fixture.runner.calls.count, calls)
         XCTAssertEqual(presentation.title(for: .backUpAndInspectFirmware), "Back Up and Inspect Again")
-        XCTAssertTrue(presentation.warnings.contains("Firmware was written after this backup. Back up and inspect again before planning another flash action."))
+        XCTAssertTrue(presentation.warnings.contains("The firmware has changed since this backup. Back up and inspect again before planning another flash action."))
     }
 
     func testAWriteTheHelperFindsUnneededSaysSoAndDropsThePlan() async throws {
@@ -801,7 +801,7 @@ final class BootHookStoreTests: XCTestCase {
         XCTAssertNil(row("Firmware Banks", in: presentation))
         XCTAssertNil(row("Active Bank", in: presentation))
         XCTAssertEqual(row("Backup", in: presentation), "/tmp/flash-backup")
-        XCTAssertTrue(presentation.warnings.contains("Firmware was written after this backup. Back up and inspect again before planning another flash action."))
+        XCTAssertTrue(presentation.warnings.contains("The firmware has changed since this backup. Back up and inspect again before planning another flash action."))
     }
 
     func testWriteInProgressDoesNotAskForWritePatch() async throws {
@@ -962,6 +962,30 @@ final class BootHookStoreTests: XCTestCase {
             XCTAssertEqual(store.plan == nil, testCase.backupStale, testCase.stage)
             XCTAssertEqual(fixture.maintenanceStore.canWriteRestore, !testCase.backupStale, testCase.stage)
         }
+    }
+
+    func testAWriteRefusedForAChangedLiveBankAsksForANewBackup() async throws {
+        let fixture = try BootHookTestFixture(responses: testBootHookResponses(
+            plan: testBootHookPlanPayload(mode: .patch),
+            failure: [
+                BackendEvent(type: "stage", operation: "flash", stage: "pre_write_validation", risk: "remote_write", cancellable: false),
+                .error(operation: "flash", code: "flash_backup_outdated", message: "Refusing to write because the live firmware bank changed since the saved backup")
+            ]
+        ))
+        let store = fixture.store
+        try await fixture.run(.backup, .plan(.patch))
+        fixture.maintenanceStore.writeFirmware(mode: .patch, password: "pw", profile: fixture.profile)
+        try await waitUntilStoreState { store.error != nil && !store.isBusy }
+
+        // Nothing was written, but the backup no longer describes the bank.
+        let presentation = fixture.presentation
+        XCTAssertEqual(store.state, .failed)
+        XCTAssertTrue(store.backupSnapshotStale)
+        XCTAssertNil(store.plan)
+        XCTAssertFalse(fixture.maintenanceStore.canWritePatch)
+        XCTAssertFalse(fixture.maintenanceStore.canPlanFirmware)
+        XCTAssertEqual(presentation.title(for: .backUpAndInspectFirmware), "Back Up and Inspect Again")
+        XCTAssertTrue(presentation.warnings.contains("The firmware has changed since this backup. Back up and inspect again before planning another flash action."))
     }
 
     func testOnlyAFieldChangeThatChangesTheSelectionDropsThePlan() async throws {

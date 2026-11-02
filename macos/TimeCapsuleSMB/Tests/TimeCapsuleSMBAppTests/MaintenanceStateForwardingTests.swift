@@ -181,9 +181,10 @@ final class MaintenanceStateForwardingTests: XCTestCase {
     }
 
     func testAWriteThatReachedTheDeviceButFailedLeavesSSHAlone() async throws {
-        // The helper reached the device over SSH.
+        // The helper reached the device over SSH either way.
         let failures: [(name: String, event: BackendEvent)] = [
             ("an unreadable confirmation", BackendEvent(type: "error", operation: "flash", code: "confirmation_required", message: "Confirm?")),
+            ("a backup the bank no longer matches", .error(operation: "flash", code: "flash_backup_outdated", message: "The live bank changed.")),
         ]
         for (name, failure) in failures {
             let fixture = try await makeFixture(responses: testBootHookResponses(
