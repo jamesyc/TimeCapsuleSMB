@@ -39,14 +39,15 @@ AIO_CASES = (
     "exit_frames", "exit_frames_debug", "exit_no_frames", "exit_late_frames", "data_page_writes",
 )
 DURABLE_CASES = (
-    "transition", "live", "already_disconnected", "client_mismatch",
+    "transition", "live", "live_self", "already_disconnected", "client_mismatch",
     "create_mismatch", "owner_mismatch", "not_durable", "database_failure", "v1_reconnect",
     "v1_transition", "rename_open_descendants", "rename_allocation_failure",
     "rename_case_sensitive", "rename_case_sensitive_match", "rename_unicode", "rename_emoji",
     "rename_message", "rename_message_other_share", "rename_case_only",
     "rename_message_reused_path", "rename_stat_failure",
-    "scavenger_hello_sent", "scavenger_hello_exited", "scavenger_hello_silent",
+    "scavenger_hello_sent", "scavenger_hello_exited", "scavenger_hello_half", "scavenger_hello_silent",
     "rescan_dead_owners", "rescan_nothing_dead", "cleanup_dead_owner", "cleanup_live_owner",
+    "cleanup_file_id", "cleanup_zero_file_id",
     "brlock_reconnect", "brlock_reconnect_dropped", "brlock_reconnect_foreign",
     "brlock_reconnect_foreign_first",
 )
@@ -133,12 +134,15 @@ def stage(source: Path) -> None:
     # tc_durable_reconnect_test (patch 0075).
     scavenger = (source / "source3/smbd/scavenger.c").read_text()
     (modules / "tc_scavenger_hello.inc").write_text(
-        cut(scavenger, "#ifndef TC_SCAVENGER_HELLO_SECONDS", "static bool scavenger_wait_hello(") + "\n")
+        cut(scavenger, "#ifndef SCAVENGER_HELLO_TIMEOUT_SECONDS", "static bool scavenger_wait_hello(") + "\n")
     # The walk after an unclean exit (patch 0077) and the message it builds.
     message = scavenger.index("struct scavenger_message {")
     (modules / "tc_scavenger_rescan.inc").write_text(
         scavenger[message:scavenger.index("};", message) + 2] + "\n\n"
         + cut(scavenger, "struct scavenger_rescan_rec {", "static size_t scavenger_rescan(void)") + "\n")
+    # The expiry of one open (patch 0077), which the walk calls.
+    head = "static bool scavenger_cleanup(const struct scavenger_message *msg)"
+    (modules / "tc_scavenger_cleanup.inc").write_text(cut(scavenger, head, head) + "\n")
     # The durable reconnect's byte-range lock steps (patches 0080 and 0082),
     # with the record parse and store and the locked-record wrapper that owns
     # their br_lck, for tc_durable_reconnect_test. Each piece is in the order

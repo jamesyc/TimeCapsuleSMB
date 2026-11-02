@@ -159,7 +159,7 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
         (tmp_path / filename).write_text("static int before;\n\n" + region + "\n\nstatic void after(void)\n{\n}\n")
     # The scavenger hello wait comes with the timeout block above it, and only
     # its own column-0 closing brace ends the cut.
-    hello = ("#ifndef TC_SCAVENGER_HELLO_SECONDS\n#define TC_SCAVENGER_HELLO_SECONDS 30\n#endif\n\n"
+    hello = ("#ifndef SCAVENGER_HELLO_TIMEOUT_SECONDS\n#define SCAVENGER_HELLO_TIMEOUT_SECONDS 30\n#endif\n\n"
              "static bool scavenger_wait_hello(int fd, pid_t pid, struct server_id *child)\n{\n"
              "\tif (fd) {\n\t\treturn false;\n\t}\n\treturn true;\n}")
     # The rescan after an unclean exit (0077) comes with the message it
@@ -168,8 +168,12 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     message = "struct scavenger_message {\n\tuint64_t open_persistent_id;\n};"
     rescan = ("struct scavenger_rescan_rec {\n\tstruct scavenger_message msg;\n};\n\n"
               "static size_t scavenger_rescan(void)\n{\n\tif (before) {\n\t\treturn;\n\t}\n}")
+    # The one-open expiry the walk calls sits between them, alone in its cut.
+    cleanup = ("static bool scavenger_cleanup(const struct scavenger_message *msg)\n{\n"
+               "\tif (msg) {\n\t\treturn true;\n\t}\n\treturn false;\n}")
     (smbd / "scavenger.c").write_text("static int before;\n\n" + message + "\n\nstatic int between;\n\n" + hello
-                                      + "\n\n" + rescan + "\n\nstatic void after(void)\n{\n}\n")
+                                      + "\n\n" + cleanup + "\n\nstatic void timer(void)\n{\n}\n\n"
+                                      + rescan + "\n\nstatic void after(void)\n{\n}\n")
     # The brlock cut: the private struct, the parse definition (not its
     # declaration, which comes first), the store, the read, the reconnect
     # steps and the wrapper, each ending at its last function's column-0
@@ -214,6 +218,7 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     assert (modules / "tc_file_growth_callers.inc").read_text() == "\n\n".join(regions) + "\n"
     assert (modules / "tc_scavenger_hello.inc").read_text() == hello + "\n"
     assert (modules / "tc_scavenger_rescan.inc").read_text() == message + "\n\n" + rescan + "\n"
+    assert (modules / "tc_scavenger_cleanup.inc").read_text() == cleanup + "\n"
     assert (modules / "tc_brlock_reconnect.inc").read_text() == "\n\n".join(
         (lock_struct, parse, flush, read, reconnect, wrapper)) + "\n"
     calls = []

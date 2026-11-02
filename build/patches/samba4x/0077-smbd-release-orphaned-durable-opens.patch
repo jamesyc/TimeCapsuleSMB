@@ -42,7 +42,7 @@ diff --git a/source3/locking/brlock.c b/source3/locking/brlock.c
 diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
 --- a/source3/smbd/scavenger.c
 +++ b/source3/smbd/scavenger.c
-@@ -341,6 +341,7 @@ fail:
+@@ -348,6 +348,7 @@ fail:
  
  static void scavenger_add_timer(struct smbd_scavenger_state *state,
  				struct scavenger_message *msg);
@@ -50,7 +50,7 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
  
  static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
  			       void *private_data,
-@@ -392,6 +393,15 @@ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
+@@ -399,6 +400,15 @@ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
  	}
  
  	DEBUG(10, ("scavenger: got a message\n"));
@@ -66,7 +66,7 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
  	msg = (struct scavenger_message*)data->data;
  	scavenger_add_timer(state, msg);
  done:
-@@ -501,11 +511,14 @@ static bool cleanup_disconnected_share_mode_entry_fn(
+@@ -508,11 +518,14 @@ static bool cleanup_disconnected_share_mode_entry_fn(
  		return false;
  	}
  
@@ -86,7 +86,7 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
  	if (!disconnected) {
  		char *name = share_mode_filename(talloc_tos(), state->lck);
  		struct file_id_buf tmp1;
-@@ -600,6 +613,48 @@ done:
+@@ -607,6 +620,59 @@ done:
  	return ret;
  }
  
@@ -100,6 +100,7 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
 +static bool scavenger_cleanup(const struct scavenger_message *msg)
 +{
 +	struct file_id_buf idbuf;
++	struct file_id zero_id = {0};
 +	NTSTATUS status;
 +	bool ok;
 +
@@ -120,6 +121,16 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
 +		return false;
 +	}
 +
++	/*
++	 * A non-durable open of a file it created keeps the zero id
++	 * fsp_bind_smb() stored (smbd_smb2_create_after_exec()): nothing
++	 * leads from it to the share mode entry, which goes when another
++	 * open of the file finds it stale.
++	 */
++	if (file_id_equal(&msg->file_id, &zero_id)) {
++		return true;
++	}
++
 +	ok = share_mode_cleanup_disconnected(msg->file_id,
 +					     msg->open_persistent_id,
 +					     msg->name_hash);
@@ -135,7 +146,7 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
  static void scavenger_timer(struct tevent_context *ev,
  			    struct tevent_timer *te,
  			    struct timeval t, void *data)
-@@ -607,33 +662,129 @@ static void scavenger_timer(struct tevent_context *ev,
+@@ -614,33 +680,129 @@ static void scavenger_timer(struct tevent_context *ev,
  	struct scavenger_timer_context *ctx =
  		talloc_get_type_abort(data, struct scavenger_timer_context);
  	struct file_id_buf idbuf;
@@ -154,9 +165,9 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
 + * An smbd that dies without closing its files (a crash, an abort, a kill)
 + * leaves its open records with its server id, live as far as anyone can
 + * tell. Nothing indexes opens by owner, and cleanupd only rescans
-+ * persistent handles, so they stayed until smbd restarted: a reconnect
-+ * finds such a record "not cleaned up" and refuses it, and the client opens
-+ * the file again under a new record. After an unclean exit cleanupd asks
++ * persistent handles, so they stay until smbd restarts: a reconnect finds
++ * such a record "not cleaned up" and refuses it, and the client opens the
++ * file again under a new record. After an unclean exit cleanupd asks
 + * for this walk (scavenger_rescan_request()); clean exits closed or
 + * disconnected their opens, so ordinary reconnects never trigger it.
 + * Disconnected opens are left to their timers, persistent ones to
@@ -249,8 +260,8 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
 +		if (scavenger_cleanup(&state.recs[i].msg)) {
 +			removed += 1;
 +		}
-+	}
-+
+ 	}
+ 
 +	if (removed != 0) {
 +		DBG_ERR("removed %zu opens left by exited smbds\n", removed);
 +	}
@@ -264,8 +275,8 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
 +
 +	if (smbd_scavenger_state == NULL) {
 +		return;
- 	}
- 
++	}
++
 +	/*
 +	 * An empty MSG_SMB_SCAVENGER asks for scavenger_rescan(). The
 +	 * parent forwards it like any other, starting a scavenger if none
@@ -293,28 +304,6 @@ diff --git a/source3/smbd/scavenger.h b/source3/smbd/scavenger.h
  void scavenger_schedule_disconnected(struct messaging_context *msg_ctx,
  				     uint64_t open_persistent_id,
  				     struct file_id *file_id,
-diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
---- a/source3/smbd/smb2_create.c
-+++ b/source3/smbd/smb2_create.c
-@@ -1956,6 +1956,18 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
- 
- 	if (state->update_open) {
- 		state->op->global->create_guid = state->_create_guid;
-+		/*
-+		 * fsp_bind_smb() stored the open before a new file had an
-+		 * id. Store the file's, so that the record alone leads to
-+		 * its share mode entry (scavenger_rescan(), cleanup_ph()).
-+		 * An open that stores nothing here (no durable handle,
-+		 * create GUID or replay) keeps a new file's zero id: after
-+		 * a crash the rescan removes its record, but its share mode
-+		 * entry stays until another open of the file drops it as
-+		 * stale. Storing every open would cost a write per open.
-+		 */
-+		state->op->global->file_id = state->result->file_id;
-+		state->op->global->name_hash = state->result->name_hash;
- 		if (state->need_replay_cache) {
- 			state->op->flags |= SMBXSRV_OPEN_NEED_REPLAY_CACHE;
- 		}
 diff --git a/source3/smbd/smbd_cleanupd.c b/source3/smbd/smbd_cleanupd.c
 --- a/source3/smbd/smbd_cleanupd.c
 +++ b/source3/smbd/smbd_cleanupd.c
