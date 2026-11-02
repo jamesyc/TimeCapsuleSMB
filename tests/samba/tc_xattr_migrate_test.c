@@ -227,7 +227,6 @@ static bool commit_error;
 /* Commits that succeed before commit_error takes effect (-1: from the first). */
 static int commits_before_error = -1;
 static int fsync_error;              /* errno the fsync hook fails with (0 = real fsync) */
-static int sync_calls;
 static unsigned progress_resets;
 
 static void migration_test_progress(void)
@@ -255,10 +254,6 @@ static int migration_test_fsync(int fd)
 	return fsync(fd);
 }
 
-static void migration_test_sync(void)
-{
-	sync_calls++;
-}
 static int collection_allocations_before_failure = -1;
 static ssize_t migration_test_pread(int fd, void *value, size_t size, off_t offset)
 {
@@ -346,7 +341,6 @@ static void *migration_test_talloc_realloc_array(
 #define TC_MIGRATE_LSTAT(path, st) migration_test_lstat((path), (st))
 #define TC_MIGRATE_OPEN(path, flags) migration_test_open((path), (flags))
 #define fsync migration_test_fsync
-#define sync migration_test_sync
 #define dbwrap_transaction_commit migration_test_commit
 #define TC_MIGRATION_PROGRESS_HOOK() migration_test_progress()
 #define TC_PROGRESS_CLOCK() migration_test_clock()
@@ -675,7 +669,10 @@ static void test_resource(void)
 	CHECK(base_fd != -1);
 	reset_xattrs();
 	progress_resets = 0;
+	/* Interrupted and short reads of the sidecar still copy the whole fork. */
+	interrupted_reads = 2; partial_reads = true;
 	CHECK(tc_migrate_appledouble(&migration, base_fd, base) == 0);
+	partial_reads = false;
 	CHECK(progress_resets > 10);
 	CHECK(stat(native, &st) == 0 && st.st_size == 1024 * 1024);
 	CHECK(find_xattr(TC_RESOURCE_MARKER_XATTR) == NULL);
@@ -1355,14 +1352,12 @@ static void test_orphans(void)
 		CHECK(access(third_slot, F_OK) == 0);
 		unlink(third_slot);
 
-		/* A filesystem that refuses directory fsync falls back to sync(2)
-		 * and the quarantine counts as complete. */
+		/* So is a directory fsync the filesystem refuses: HFS on both
+		 * devices fsyncs directories, and nothing falls back to sync(2). */
 		write_orphan_rows(tdb_path, st.st_dev, missing_inode, 1, 0);
 		fsync_error = ENOTSUP;
-		sync_calls = 0;
-		CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+		CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 4);
 		fsync_error = 0;
-		CHECK(sync_calls >= 1);
 		CHECK(access(tdb_path, F_OK) == -1 && errno == ENOENT);
 		CHECK(access(third_slot, F_OK) == 0);
 		unlink(third_slot);
@@ -1533,7 +1528,14 @@ static void test_multi(void)
     multi_value(newer, &id, "user.DosStream.sample:$DATA", anchor_high, sizeof(anchor_high));
     CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
     multi_prepare(&multi, frame, root, old, newer); reset_xattrs();
-    CHECK(tc_multi_scan(&multi, &counts) == -1);
+    /* The newer value's missing extent ends it, as stock fgetxattr_multi()
+     * reads it (an interrupted write); the older value's extent is not used. */
+    CHECK(tc_multi_scan(&multi, &counts) == 0);
+    CHECK(find_xattr("user.DosStream.sample:$DATA") != NULL);
+    CHECK(find_xattr("user.DosStream.sample:$DATA")->size == 2);
+    CHECK(find_xattr("user.DosStream.sample:$DATA")->value[0] == 'b');
+    CHECK(find_xattr("user.DosStream.sample:$DATA")->value[1] == 0);
+    CHECK(find_xattr("user.DosStreamExt.1.sample:$DATA") == NULL);
     CHECK(access(old, F_OK) == 0 && access(newer, F_OK) == 0);
     TALLOC_FREE(frame); unlink(old); unlink(newer);
 
