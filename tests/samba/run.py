@@ -83,7 +83,7 @@ FORK_REPAIR_CASES = ("kernel", "bounds", "registry", "regions", "read_after_repa
                      "free_then_fork", "stack_below", "stack_deep", "needscopy")
 # Patch 0072's check for a short macOS WRITE, its frame walk and end decision.
 SHORT_WRITE_CASES = ("whole", "short", "several", "keepalive", "false_match", "ids_and_offset",
-                     "partial_tail", "end_now", "arriving", "compound", "cap", "read_idle", "feed_merge")
+                     "partial_tail", "end_now", "arriving", "compound", "cap", "read_idle", "feed_replace")
 STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks",
                         "root", "root_widen", "root_rename", "root_no_fds", "root_aio", "root_failed", "root_unchanged")
 
