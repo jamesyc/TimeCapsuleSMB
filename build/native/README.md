@@ -460,6 +460,17 @@ cite them by number. ([DETAIL.md](../../DETAIL.md) has the user-facing side.)
   recorded in `/mnt/Flash/dmesg.panic`) under bursts of link conversions, and
   replay after that unclean restart can overwrite recently reused blocks. Each
   native symlink conversion therefore ends with `sync()`.
+- Once an HFS volume has about 1 to 2 GiB free, each new block takes seconds
+  and pegs the CPU in the kernel: a 4 KB append or a file create took 10-23 s on
+  a 2 TB NetBSD 4 volume and 18-29 s on a 4 TB NetBSD 6 one, against 0.05 s with
+  3 GiB free. The cost grows with the volume, so it looks like a scan of the
+  whole allocation bitmap; running out of free space outside HFS's metadata
+  zone is a guess. Deleting 131 MB of ordinary files made allocations 0.05 s
+  again. To reproduce it, extend a file past its end from a process that keeps
+  it open (`(printf x; exec sleep 100000) | dd of=fill bs=1 seek=N`), which
+  allocates at once; `rm` it while open, then end the `sleep`, and it is freed
+  at once with no zero-fill. smbd must hold out through this as it starts
+  (`TC_ROLE_READY_MS`).
 - `fsck_hfs` holds its output until exit on a pipe; on a terminal (`ssh -tt`)
   each `** Checking …` line arrives as the step starts. It has crashed with
   SIGBUS (status 138) repeatably on one volume.

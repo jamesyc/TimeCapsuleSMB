@@ -1264,7 +1264,7 @@
 "timeline.stage.post_upload_actions.detail" = "Diegiami flash įskiepiai ir taikomi failų teisių režimai.";
 "timeline.stage.post_upload_actions.title" = "Taikyti failų leidimus";
 "timeline.stage.post_write_validation.title" = "Tikrinama įrašyta programinė įranga";
-"timeline.stage.pre_upload_actions.detail" = "Sustabdomos valdomos paslaugos ir šalinami pasenę diegimo failai.";
+"timeline.stage.pre_upload_actions.detail" = "Sustabdomos valdomos paslaugos, šalinami pasenę diegimo failai ir Samba žurnalai.";
 "timeline.stage.pre_upload_actions.title" = "Sustabdyti esamą aplinką";
 "timeline.stage.pre_write_validation.title" = "Tikrinama prieš įrašymą";
 "timeline.stage.prepare_deployment_files.detail" = "Generuojama aplinkos konfigūracija.";
@@ -1275,7 +1275,7 @@
 "timeline.stage.read_flash.title" = "Nuskaitoma programinė įranga";
 "timeline.stage.reboot.detail" = "Siunčiama paleidimo iš naujo užklausa per AirPort ACP.";
 "timeline.stage.reboot.title" = "Prašyti paleisti iš naujo";
-"timeline.stage.replace_software.detail" = "Iš flash atminties ir diskų šalinami anksčiau įdiegti programinės įrangos failai. Metaduomenys ir žurnalai išsaugomi.";
+"timeline.stage.replace_software.detail" = "Iš flash atminties ir diskų šalinami anksčiau įdiegti programinės įrangos failai. Metaduomenys ir kiti žurnalai išsaugomi.";
 "timeline.stage.replace_software.title" = "Pašalinti seną programinę įrangą";
 "timeline.stage.resolve_connection.title" = "Prisijungti prie įrenginio";
 "timeline.stage.resolve_managed_target.title" = "Prisijungti prie įrenginio";

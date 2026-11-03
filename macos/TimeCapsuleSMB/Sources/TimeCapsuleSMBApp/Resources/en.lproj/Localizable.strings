@@ -1264,7 +1264,7 @@
 "timeline.stage.post_upload_actions.detail" = "Installing flash hooks and applying file modes.";
 "timeline.stage.post_upload_actions.title" = "Apply File Permissions";
 "timeline.stage.post_write_validation.title" = "Checking Written Firmware";
-"timeline.stage.pre_upload_actions.detail" = "Stopping managed services and removing stale installed files.";
+"timeline.stage.pre_upload_actions.detail" = "Stopping managed services, removing stale installed files and deleting Samba's logs.";
 "timeline.stage.pre_upload_actions.title" = "Stop Existing Runtime";
 "timeline.stage.pre_write_validation.title" = "Checking Before Writing";
 "timeline.stage.prepare_deployment_files.detail" = "Generating runtime config.";
@@ -1275,7 +1275,7 @@
 "timeline.stage.read_flash.title" = "Reading Firmware";
 "timeline.stage.reboot.detail" = "Sending the reboot request through AirPort ACP.";
 "timeline.stage.reboot.title" = "Request Reboot";
-"timeline.stage.replace_software.detail" = "Removing previously installed software files from flash and the disks. Metadata and logs are kept.";
+"timeline.stage.replace_software.detail" = "Removing previously installed software files from flash and the disks. Metadata and other logs are kept.";
 "timeline.stage.replace_software.title" = "Remove old software";
 "timeline.stage.resolve_connection.title" = "Connect to Device";
 "timeline.stage.resolve_managed_target.title" = "Connect to Device";

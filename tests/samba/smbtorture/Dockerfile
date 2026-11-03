@@ -2,7 +2,7 @@
 # appliance builds from (build/env.sh: SAMBA4X_GIT_URL, SAMBA4X_GIT_REF and
 # the pinned SAMBA4X_GIT_COMMIT). tests/samba/torture.py builds this image and
 # runs one suite per container against a device.
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 ARG SAMBA_URL
 ARG SAMBA_REF
 ARG SAMBA_COMMIT

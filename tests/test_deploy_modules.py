@@ -19,9 +19,11 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from tests.native.build import header_define
 from tests.test_xattr_migration import fake_inventory
 from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
+from timecapsulesmb.checks.doctor_steps import DOCTOR_STARTUP_WINDOW_SECONDS
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.commands import (
@@ -3131,6 +3133,46 @@ describe_managed_smbd_status "" ""
         self.assertIs(decision.runtime, runtime_ready)
         runtime_mock.assert_called_once_with(SshConnection("host", "pw", "-o foo"), timeout_seconds=9)
 
+    def test_every_wait_for_the_runtime_outlasts_a_full_disk_start_and_the_ready_deadline(self) -> None:
+        # The manager restarts an smbd without listeners after this long. On a
+        # nearly full 4 TB disk a new block took 29 s, and a start with debug
+        # logging off allocates up to two. The deadline keeps twice that.
+        ready = header_define("service/manager.c", "TC_ROLE_READY_MS") / 1000
+        self.assertGreaterEqual(ready, 2 * 2 * 29)
+        # A wait no longer than the deadline would report a failure while
+        # smbd is still starting, or before the manager could restart it.
+        self.assertGreater(DOCTOR_STARTUP_WINDOW_SECONDS, ready)
+        for name, startup_mode, family, is_netbsd4, autostart in (
+            ("deploy, NetBSD 6", DEPLOY_STARTUP_REBOOT_THEN_VERIFY, "netbsd6_samba4", False, False),
+            ("deploy, NetBSD 4 boot hook", DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE, "netbsd4be_samba4", True, True),
+            ("deploy, NetBSD 4 without it", DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE, "netbsd4be_samba4", True, False),
+        ):
+            with self.subTest(name):
+                prepared_plan = self._prepared_deploy_plan(
+                    startup_mode=startup_mode, payload_family=family, is_netbsd4=is_netbsd4,
+                    rc_local_autostart=autostart,
+                )
+                callbacks, _stages, _logs, _debug_fields, _finish_fields = self._operation_callbacks()
+                verify_runtime = mock.Mock()
+                with mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None):
+                    complete_deployment_after_upload(
+                        SshConnection("root@10.0.0.2", "pw", "-o foo"),
+                        prepared_plan,
+                        no_wait=False,
+                        callbacks=callbacks,
+                        run_remote_actions_func=mock.Mock(),
+                        verify_runtime_func=verify_runtime,
+                    )
+                self.assertGreater(verify_runtime.call_args.kwargs["timeout_seconds"], ready)
+        # The Activate operation, on a runtime that is not ready.
+        with mock.patch("timecapsulesmb.services.activation.require_compatible_install"), \
+                mock.patch("timecapsulesmb.services.activation.require_acpd_for_start"), \
+                mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn",
+                           return_value=self._runtime_not_ready()), \
+                mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as start:
+            activate_runtime(SshConnection("host", "pw", ""), [], callbacks=OperationCallbacks())
+        self.assertGreater(start.call_args.kwargs["verification_timeout_seconds"], ready)
+
     def test_complete_deployment_no_wait_requests_reboot_without_verifying_runtime(self) -> None:
         prepared_plan = self._prepared_deploy_plan(
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
@@ -4217,7 +4259,12 @@ describe_managed_smbd_status "" ""
         self.assertIn("/usr/bin/pkill '^mdns$' >/dev/null 2>&1 || true", text)
         self.assertIn("/usr/bin/acp rpc diskd.useVolume path:s:/Volumes/dk2", text)
         self.assertIn(f"mkdir -p {payload_dir} {payload_dir}/private {payload_dir}/cache /mnt/Flash", text)
-        payload_rm = next(line.strip() for line in text.splitlines() if line.strip().startswith(f"rm -rf {payload_dir}/"))
+        # Samba's logs go first, in a command of their own.
+        logs_rm, payload_rm = [
+            line.strip() for line in text.splitlines() if line.strip().startswith(f"rm -rf {payload_dir}/")
+        ]
+        self.assertEqual(logs_rm, f"rm -rf {payload_dir}/logs/log.smbd {payload_dir}/logs/log.smbd.old || true")
+        self.assertNotIn("/logs/", payload_rm)
         for name in ("smb.conf.template", "private/adisk.uuid", "private/nbns.enabled"):
             self.assertIn(f" {payload_dir}/{name}", payload_rm)
         self.assertNotIn("generated smbpasswd", text)

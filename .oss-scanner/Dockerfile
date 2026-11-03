@@ -4,16 +4,10 @@
 FROM debian:trixie AS host
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      build-essential gcc-13 g++-13 ca-certificates curl expect file git patch pkg-config \
+      build-essential ca-certificates curl expect file git patch pkg-config \
       python3 python3-dev python3-venv ripgrep smbclient openssh-client \
       bison flex libparse-yapp-perl libgnutls28-dev zlib1g-dev libpopt-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# Match Ubuntu CI's compiler: GCC 14 rejects an implicit declaration in the
-# existing durable-handle regression driver. Native fixtures invoke cc directly.
-ENV CC=gcc-13 CXX=g++-13
-RUN update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-13 100 \
-    && update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-13 100
 
 # Permission tests must run unprivileged, even though the scanner's final layer
 # runs as root. The threat model gives runuser commands for that environment.

@@ -1264,7 +1264,7 @@
 "timeline.stage.post_upload_actions.detail" = "正在安装闪存启动钩子并应用文件权限。";
 "timeline.stage.post_upload_actions.title" = "应用文件权限";
 "timeline.stage.post_write_validation.title" = "正在检查已写入的固件";
-"timeline.stage.pre_upload_actions.detail" = "正在停止托管服务并移除旧部署文件。";
+"timeline.stage.pre_upload_actions.detail" = "正在停止托管服务，并移除旧部署文件和 Samba 日志。";
 "timeline.stage.pre_upload_actions.title" = "停止现有服务";
 "timeline.stage.pre_write_validation.title" = "正在进行写入前检查";
 "timeline.stage.prepare_deployment_files.detail" = "正在生成运行时配置。";
@@ -1275,7 +1275,7 @@
 "timeline.stage.read_flash.title" = "正在读取固件";
 "timeline.stage.reboot.detail" = "正在通过 AirPort ACP 发送重启请求。";
 "timeline.stage.reboot.title" = "请求重启";
-"timeline.stage.replace_software.detail" = "正在从闪存和磁盘中移除以前安装的软件文件。元数据和日志会保留。";
+"timeline.stage.replace_software.detail" = "正在从闪存和磁盘中移除以前安装的软件文件。元数据和其他日志会保留。";
 "timeline.stage.replace_software.title" = "移除旧软件";
 "timeline.stage.resolve_connection.title" = "连接设备";
 "timeline.stage.resolve_managed_target.title" = "连接设备";

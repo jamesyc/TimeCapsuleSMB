@@ -1264,7 +1264,7 @@
 "timeline.stage.post_upload_actions.detail" = "Installation des hooks de démarrage en mémoire flash et application des autorisations des fichiers.";
 "timeline.stage.post_upload_actions.title" = "Appliquer les autorisations de fichiers";
 "timeline.stage.post_write_validation.title" = "Vérification du firmware écrit";
-"timeline.stage.pre_upload_actions.detail" = "Arrêt des services gérés et suppression des anciens fichiers d’installation.";
+"timeline.stage.pre_upload_actions.detail" = "Arrêt des services gérés, suppression des anciens fichiers d’installation et des journaux de Samba.";
 "timeline.stage.pre_upload_actions.title" = "Arrêter les services existants";
 "timeline.stage.pre_write_validation.title" = "Vérification avant l’écriture";
 "timeline.stage.prepare_deployment_files.detail" = "Création de la configuration des services.";
@@ -1275,7 +1275,7 @@
 "timeline.stage.read_flash.title" = "Lecture du firmware";
 "timeline.stage.reboot.detail" = "Envoi de la demande de redémarrage via AirPort ACP.";
 "timeline.stage.reboot.title" = "Demander un redémarrage";
-"timeline.stage.replace_software.detail" = "Suppression des fichiers logiciels déjà installés dans la mémoire flash et sur les disques. Les métadonnées et les journaux sont conservés.";
+"timeline.stage.replace_software.detail" = "Suppression des fichiers logiciels déjà installés dans la mémoire flash et sur les disques. Les métadonnées et les autres journaux sont conservés.";
 "timeline.stage.replace_software.title" = "Supprimer l’ancien logiciel";
 "timeline.stage.resolve_connection.title" = "Se connecter à l’appareil";
 "timeline.stage.resolve_managed_target.title" = "Se connecter à l’appareil";

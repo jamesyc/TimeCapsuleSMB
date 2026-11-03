@@ -75,6 +75,9 @@ class StopTelemetryAction:
 @dataclass(frozen=True)
 class RemovePathsAction:
     paths: tuple[str, ...]
+    # What is left behind does no harm, so an rm that fails is ignored. One that
+    # hangs still times out and stops the operation.
+    best_effort: bool = False
 
 
 @dataclass(frozen=True)
@@ -158,7 +161,8 @@ def _render_remove_paths_action(action: RemovePathsAction) -> str:
             and path[len("/mnt/Flash")].isspace()
         ):
             raise ValueError(f"Refusing to remove flash root path: {path}")
-    return "rm -rf " + " ".join(shlex.quote(path) for path in action.paths)
+    command = "rm -rf " + " ".join(shlex.quote(path) for path in action.paths)
+    return f"{command} || true" if action.best_effort else command
 
 
 def render_remote_action(action: RemoteAction) -> str:

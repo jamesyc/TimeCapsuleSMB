@@ -157,7 +157,7 @@ def run_pytest(log: Path) -> bool:
 # tag follows this text) rather than installed on every run.
 HOST_PACKAGES = ("build-essential", "pkg-config", "python3", "git", "bison", "flex", "libparse-yapp-perl",
                  "libgnutls28-dev", "zlib1g-dev", "libpopt-dev", "patch", "rsync", "ccache")
-HOST_DOCKERFILE = ("FROM ubuntu:24.04\n"
+HOST_DOCKERFILE = ("FROM ubuntu:26.04\n"
                    "RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
                    + " ".join(HOST_PACKAGES) + " >/dev/null && rm -rf /var/lib/apt/lists/*\n")
 HOST_IMAGE = "tc-samba-host:" + hashlib.sha256(HOST_DOCKERFILE.encode()).hexdigest()[:12]

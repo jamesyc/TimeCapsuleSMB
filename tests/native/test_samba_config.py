@@ -117,7 +117,9 @@ def test_tested_aio_and_debug_preferences(renderer):
     # aio_fork's helper buffers cover Samba's default SMB2 sizes, so none are set.
     assert "smb2 max read" not in conf["global"] and "smb2 max write" not in conf["global"]
     assert conf["global"]["aio read size"] == conf["global"]["aio write size"] == "1"
-    assert conf["global"]["max log size"] == "0" and conf["global"]["log level"] == "10"
+    # A debug log rotates at 2 GiB: the largest size Samba's 32-bit KiB-to-bytes
+    # product (lib/util/debug.c) holds, so it never overflows into no rotation.
+    assert conf["global"]["max log size"] == "2097151" and conf["global"]["log level"] == "10"
     assert conf["Data"]["aio_fork:max_children"] == "2"
     assert conf["Data"]["vfs objects"].endswith(" aio_fork")
 

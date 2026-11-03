@@ -1264,7 +1264,7 @@
 "timeline.stage.post_upload_actions.detail" = "Установка хуков запуска во флеш-памяти и применение прав доступа к файлам.";
 "timeline.stage.post_upload_actions.title" = "Применить права доступа к файлам";
 "timeline.stage.post_write_validation.title" = "Проверка записанной прошивки";
-"timeline.stage.pre_upload_actions.detail" = "Остановка управляемых служб и удаление старых файлов установки.";
+"timeline.stage.pre_upload_actions.detail" = "Остановка управляемых служб и удаление старых файлов установки и журналов Samba.";
 "timeline.stage.pre_upload_actions.title" = "Остановить работающие службы";
 "timeline.stage.pre_write_validation.title" = "Проверка перед записью";
 "timeline.stage.prepare_deployment_files.detail" = "Создание конфигурации служб.";
@@ -1275,7 +1275,7 @@
 "timeline.stage.read_flash.title" = "Чтение прошивки";
 "timeline.stage.reboot.detail" = "Отправка запроса перезагрузки через AirPort ACP.";
 "timeline.stage.reboot.title" = "Запросить перезагрузку";
-"timeline.stage.replace_software.detail" = "Удаление ранее установленных файлов программ из флеш-памяти и с дисков. Метаданные и журналы сохраняются.";
+"timeline.stage.replace_software.detail" = "Удаление ранее установленных файлов программ из флеш-памяти и с дисков. Метаданные и другие журналы сохраняются.";
 "timeline.stage.replace_software.title" = "Удалить старое ПО";
 "timeline.stage.resolve_connection.title" = "Подключиться к устройству";
 "timeline.stage.resolve_managed_target.title" = "Подключиться к устройству";

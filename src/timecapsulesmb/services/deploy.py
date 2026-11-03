@@ -115,6 +115,7 @@ from timecapsulesmb.device.probe import AirportAcpReading
 from timecapsulesmb.device.processes import UNREADABLE_SERVICE_STOP_MESSAGE
 from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error, require_acpd_ready
 from timecapsulesmb.services.runtime_verification import (
+    RUNTIME_REBOOT_WAIT_SECONDS,
     verify_managed_runtime_ready,
 )
 from timecapsulesmb.transport.ssh import (
@@ -1475,12 +1476,16 @@ def upload_and_verify_deployment_payload(
         )
         config_uploads = [] if plan.config_upload.destination in kept else [plan.config_upload]
         run_remote_actions_func(connection, plan.replace_software_actions)
-        # Apply the same explicit software ownership list to other detected
-        # payloads. Their metadata, receipts, logs and quarantines stay intact.
-        payload_software = [
-            path
-            for action in plan.replace_software_actions if isinstance(action, RemovePathsAction)
-            for path in action.paths if path.startswith(plan.payload_dir + "/")
+        # Apply the same explicit ownership list to other detected payloads,
+        # Samba's logs included. Their metadata, receipts, other logs and
+        # quarantines stay intact.
+        payload_removals = [
+            (paths, action.best_effort)
+            # Software first: its removal must not wait behind a slow log's,
+            # away from the mount check that comes just before it.
+            for action in (*plan.replace_software_actions, *plan.pre_upload_actions)
+            if isinstance(action, RemovePathsAction)
+            if (paths := [path for path in action.paths if path.startswith(plan.payload_dir + "/")])
         ]
         for directory in inventory.payload_dirs:
             if directory == plan.payload_dir:
@@ -1492,7 +1497,8 @@ def upload_and_verify_deployment_payload(
                     volume.volume_root, volume.device_path, plan.apple_mount_wait_seconds,
                     held=claims.holds(volume.volume_root),
                 ),
-                RemovePathsAction(tuple(directory + path[len(plan.payload_dir):] for path in payload_software)),
+                *(RemovePathsAction(tuple(directory + path[len(plan.payload_dir):] for path in paths), best_effort)
+                  for paths, best_effort in payload_removals),
             ])
         callbacks.stage("check_flash_capacity")
         try:
@@ -1692,7 +1698,7 @@ def complete_deployment_after_upload(
         connection,
         callbacks=callbacks,
         stage="verify_runtime_reboot",
-        timeout_seconds=240,
+        timeout_seconds=RUNTIME_REBOOT_WAIT_SECONDS,
         heading=messages.reboot_heading,
         failure_message=messages.reboot_failure,
     )

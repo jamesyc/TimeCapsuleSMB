@@ -32,7 +32,7 @@ TIMINGS=dict(
     JOB_RETRY_MS=500,           # device 5 s
     TC_PAYLOAD_RECHECK_MS=3000, # device 30 s
     TC_STALE_KILL_MS=2000,      # device 10 s
-    TC_ROLE_READY_MS=4000,      # device 10 s
+    TC_ROLE_READY_MS=4000,      # device 120 s
     # test_stall_while_stopping_is_still_recovered injects a stall after the
     # stop begins; its raise and wake (about 1 s) must land before the drain ends.
     TC_CHILD_GRACE_MS=5000,     # device 10 s
@@ -206,7 +206,7 @@ if not (root/'no-listener').exists():
     if any(row['kind']=='start' and row['pid']==pid
            for row in map(json.loads,(root/'events').read_text().splitlines())):
         print('root smbd 1 3* internet stream tcp deadbeef *:445')
-        print('root smbd 1 4* internet6 stream tcp deadbeef *:445')
+        if not (root/'no-ipv6').exists():print('root smbd 1 4* internet6 stream tcp deadbeef *:445')
         print('root rsync 1 4* internet stream tcp 192.0.2.1:873')
 ''')
     binary=compile_service(root/'manager',flags=[
@@ -228,7 +228,7 @@ def manager(manager_tools):
     hosts=root/'hosts'
     if hosts.is_dir():hosts.rmdir()
     else:hosts.unlink(missing_ok=True)
-    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','diskd-absent','diskd-fail','record-acp','fail-claim','record-audit','record-fstat','smbd-hold','hold-activation',
+    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','no-ipv6','diskd-absent','diskd-fail','record-acp','fail-claim','record-audit','record-fstat','smbd-hold','hold-activation',
                  'bufcache','bufcache.writes','bufcache.wakes','bufcache.tmp','bufcache.new','fork-fail','smbd-ignore-term','telemetry-hang',
                  'report-hold','report-exit','titles','smbd-corrupt','smbd-exit-status','rsync-exit-status','discovery-exit-status'):
         (root/name).unlink(missing_ok=True)
@@ -948,6 +948,20 @@ def test_an_rsync_without_its_listener_is_restarted_and_says_so(manager):
     start()
     wait(lambda rows:rsync_starts(rows),40)
     until(root,lambda:'manager: rsync missing required listeners; restarting' in runtime_log(root),40)
+
+
+@pytest.mark.parametrize('switch',['no-listener','no-ipv6'])
+def test_an_smbd_missing_a_listener_is_restarted_and_serves_once_it_has_both(manager,switch):
+    # no-ipv6 is a port another program held for one family as smbd started:
+    # it stays up on the other, which is not serving.
+    root,start,events,wait,_,_=manager
+    (root/switch).touch()
+    start()
+    wait(lambda rows:len(smbd_starts(rows))>=2,40)
+    assert 'manager: smbd missing required listeners; restarting' in runtime_log(root)
+    assert not [e for e in events() if e['role']=='discovery' and '--adisk-share' in e['args']]
+    (root/switch).unlink()
+    wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows),40)
 
 
 @pytest.mark.parametrize('checksum',[True,False])

@@ -288,6 +288,7 @@ def load(out: Path) -> list[dict]:
 
 def run(args) -> int:
     from timecapsulesmb.core.config import parse_env_file
+    from tests.samba.durable_device import _smbd_log_since
     from tests.samba.links_device import Device, mount, unmount
     from tests.samba.swap_smbd import Swapper
 
@@ -393,8 +394,7 @@ def run(args) -> int:
             w.wait()
         if small:
             p("small-file loop:", dict(small))
-        lines = dev.sh(f"dd if={smbd_log} bs=65536 skip={off0 // 65536} 2>/dev/null | "
-                       "sed -n -e '/tc_desync/p' -e '/bad message_id/p'", check=False)
+        lines = _smbd_log_since(dev, smbd_log, off0, keep="sed -n -e '/tc_desync/p' -e '/bad message_id/p'")
         (out / "smbd.log").write_text(lines)
         p("smbd:\n" + (lines.strip() or "(nothing)"))
         r = subprocess.run(["hdiutil", "detach", "-force", str(img)], capture_output=True, text=True)

@@ -958,15 +958,16 @@ def _smbd_log(device: Device) -> tuple[str, int]:
     return log, int(device.sh(f"ls -l {shlex.quote(log)}").split()[4])
 
 
-def _smbd_log_since(device: Device, log: str, start: int) -> str:
-    """What smbd logged after start; a debug-logging log can be gigabytes.
-    Past "max log size" smbd renames the log to .old and starts a new one."""
+def _smbd_log_since(device: Device, log: str, start: int, *, keep: str = "") -> str:
+    """What smbd logged after start; a debug-logging log can be gigabytes, so
+    keep, a device command, can filter it there. Past "max log size" smbd
+    renames the log to .old and starts a new one."""
     block = 4096
     tail = f"dd if={{}} bs={block} skip={start // block} 2>/dev/null"
     size = int(device.sh(f"ls -l {shlex.quote(log)}").split()[4])
-    if size >= start:
-        return device.sh(tail.format(shlex.quote(log)), check=False)
-    return device.sh(f"{tail.format(shlex.quote(log + '.old'))}; cat {shlex.quote(log)}", check=False)
+    command = (tail.format(shlex.quote(log)) if size >= start
+               else f"{tail.format(shlex.quote(log + '.old'))}; cat {shlex.quote(log)}")
+    return device.sh(f"({command}) | {keep}" if keep else command, check=False)
 
 
 # 0072 checks every 250 ms and ends the connection once nothing has been read

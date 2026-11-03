@@ -488,7 +488,7 @@ On by default. Selects `fruit:metadata = netatalk`; off selects `fruit:metadata 
 
 ### Enable debug logging
 
-Off by default. Sets Samba to `log level = 10` and removes the usual log size limits. Use it only while troubleshooting: the logs grow on the disk without limit and slow the device down.
+Off by default. Sets Samba to `log level = 10`, rotates `log.smbd` at about 2 GiB and lets the other payload logs grow without limit. Use it only while troubleshooting: it slows the device down.
 
 ### Enable vfs_aio_fork
 
@@ -942,9 +942,9 @@ Run it after setup, after a deploy, and after a reboot.
 - stops before changing anything while a volume exists only in memory (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory))
 - builds the plan and the configuration on this computer before stopping anything
 - asks before stopping or replacing anything, unless `--yes` is given; answering no leaves the device as it was
-- stops the current and older TimeCapsuleSMB processes and Apple's file servers, disables `rc.local`, and runs `sync`
+- stops the current and older TimeCapsuleSMB processes and Apple's file servers, disables `rc.local`, deletes Samba's logs, and runs `sync`
 - migrates old metadata (see [Migrating older metadata](#migrating-older-metadata))
-- removes known obsolete programs, keeping data, metadata, quarantined databases, logs, SSH keys and Apple's settings
+- removes known obsolete programs, keeping data, metadata, quarantined databases, other logs, SSH keys and Apple's settings
 - checks the free space on flash, with a small margin
 - uploads `smbd`, `rsync` and `rsyncd.conf` to the payload, and the `service` image, `boot.sh` and `dfree.sh` to flash
 - checks the uploaded sizes and sets file and directory permissions, then runs `sync`
@@ -976,8 +976,10 @@ On NetBSD 4:
 Dry runs print the exact steps without changing the device.
 
 Debug logging:
-- `tcapsule deploy --debug-logging` writes `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1` to the flash config, and sets Samba to `log level = 10` and `max log size = 0`.
-- `log.smbd` is normally capped at `128 KiB`, and the other payload logs are cut to their last `16 KiB` once they pass `32 KiB`. With `--debug-logging` they grow without limit.
+- `tcapsule deploy --debug-logging` writes `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1` to the flash config, and sets Samba to `log level = 10` and `max log size = 2097151`, the largest value Samba's 32-bit arithmetic holds (about 2 GiB).
+- `log.smbd` is normally capped at `128 KiB`, and the other payload logs are cut to their last `16 KiB` once they pass `32 KiB`. With `--debug-logging`, Samba renames `log.smbd` to `log.smbd.old` at about 2 GiB and starts a new one, so the two take about 4 GiB, and the other payload logs grow without limit.
+- Every deploy deletes `log.smbd` and `log.smbd.old` from each payload on the device. Under about 2 GiB free, each new block on an HFS volume takes 10 to 30 seconds, and deleting a large log makes writes fast again. A delete that fails does not stop the install; one that hangs for 5 minutes does.
+- `--no-debug-logging` turns it off for that deploy, and the next deploy goes back to the saved setting. `tcapsule configure --no-debug-logging` saves it.
 - The flag is left out of the command help because it is only for debugging.
 
 ## Client telemetry

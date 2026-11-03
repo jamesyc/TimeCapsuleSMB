@@ -105,6 +105,7 @@ static struct server_id current_process(const struct messaging_context *ctx)
 static int tc_hello_seconds;
 #define TC_SCAVENGER_HELLO_SECONDS tc_hello_seconds
 #include "../../lib/util/select.h"
+#include "../../lib/util/sys_rw_data.h"
 #include "tc_scavenger_hello.inc"
 
 static int scavenger_hello(const char *name)

@@ -1264,7 +1264,7 @@
 "timeline.stage.post_upload_actions.detail" = "Instalando hooks de inicialização na memória flash e aplicando permissões de arquivo.";
 "timeline.stage.post_upload_actions.title" = "Aplicar permissões de arquivo";
 "timeline.stage.post_write_validation.title" = "Verificando o firmware gravado";
-"timeline.stage.pre_upload_actions.detail" = "Interrompendo os serviços gerenciados e removendo arquivos de instalações anteriores.";
+"timeline.stage.pre_upload_actions.detail" = "Interrompendo os serviços gerenciados e removendo arquivos de instalações anteriores e os logs do Samba.";
 "timeline.stage.pre_upload_actions.title" = "Parar os serviços existentes";
 "timeline.stage.pre_write_validation.title" = "Verificando antes de gravar";
 "timeline.stage.prepare_deployment_files.detail" = "Gerando a configuração dos serviços.";
@@ -1275,7 +1275,7 @@
 "timeline.stage.read_flash.title" = "Lendo o firmware";
 "timeline.stage.reboot.detail" = "Enviando solicitação de reinicialização pelo AirPort ACP.";
 "timeline.stage.reboot.title" = "Solicitar reinicialização";
-"timeline.stage.replace_software.detail" = "Removendo da memória flash e dos discos os arquivos de software já instalados. Metadados e logs são mantidos.";
+"timeline.stage.replace_software.detail" = "Removendo da memória flash e dos discos os arquivos de software já instalados. Metadados e outros logs são mantidos.";
 "timeline.stage.replace_software.title" = "Remover software antigo";
 "timeline.stage.resolve_connection.title" = "Conectar ao dispositivo";
 "timeline.stage.resolve_managed_target.title" = "Conectar ao dispositivo";

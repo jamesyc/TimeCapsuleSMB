@@ -277,6 +277,13 @@ def build_deployment_plan(
             "private/adisk.uuid", "private/nbns.enabled",
         )
     )]
+    # Except Samba's own log and its rotated copy. A debug log can reach
+    # gigabytes, and on a nearly full disk the space it frees makes every new
+    # block fast again (manager.c TC_ROLE_READY_MS), so these go as soon as
+    # smbd has stopped, before metadata migration writes to the disk. Being
+    # the largest files there, they are likely to meet a bad block, and a
+    # delete that fails does not stop the install.
+    samba_logs = [f"{payload_dir}/logs/log.smbd", f"{payload_dir}/logs/log.smbd.old"]
     return DeploymentPlan(
         host=host,
         volume_root=payload_home.volume_root,
@@ -319,6 +326,8 @@ def build_deployment_plan(
             StopTelemetryAction(),
             WaitForIdleJobsAction(),
             RemovePathsAction((flash_targets["rc.local"], "/mnt/Memory/samba4")),
+            ensure_payload_volume,
+            RemovePathsAction(tuple(samba_logs), best_effort=True),
             ensure_payload_volume,
             PrepareDirsAction(tuple(remote_directories), tuple(legacy_symlinks)),
         ],

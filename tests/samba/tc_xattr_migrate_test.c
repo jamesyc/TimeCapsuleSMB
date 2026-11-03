@@ -211,6 +211,12 @@ static int test_migrate_flock(int fd, int operation)
 	TC_MIGRATE_CALL(number)(__VA_ARGS__)
 #define TC_AIRPORT_XATTR_FLOCK(fd, operation) test_migrate_flock((fd), (operation))
 #define TC_AIRPORT_PATH_IS_HFS(path) true
+/* The migrator calls only the fd helpers. The path helpers (tc_airport_l*xattr)
+ * are unused static inlines, so these need a declaration and no definition. */
+long test_migrate_syscall_376(const char *path, const char *name, const void *value, size_t size, int flags);
+long test_migrate_syscall_379(const char *path, const char *name, void *value, size_t size);
+long test_migrate_syscall_382(const char *path, char *list, size_t size);
+long test_migrate_syscall_385(const char *path, const char *name);
 static int injected_read_fd = -2;
 static off_t injected_read_offset;
 static ino_t injected_read_inode;

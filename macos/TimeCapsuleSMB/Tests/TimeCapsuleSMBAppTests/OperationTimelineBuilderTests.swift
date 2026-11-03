@@ -527,7 +527,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(Array(timeline.prefix(3).map(\.detail)), [
             "Looking on each disk for earlier installations and legacy Samba metadata (xattr.tdb).",
-            "Removing previously installed software files from flash and the disks. Metadata and logs are kept.",
+            "Removing previously installed software files from flash and the disks. Metadata and other logs are kept.",
             "Writing service settings (tcapsulesmb.conf) to /mnt/Flash."
         ])
         XCTAssertEqual(timeline.map(\.state), [.succeeded, .succeeded, .succeeded, .running])

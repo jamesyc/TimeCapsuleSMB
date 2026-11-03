@@ -1264,7 +1264,7 @@
 "timeline.stage.post_upload_actions.detail" = "Opstart-hooks in flash installeren en bestandsrechten toepassen.";
 "timeline.stage.post_upload_actions.title" = "Bestandsrechten toepassen";
 "timeline.stage.post_write_validation.title" = "Geschreven firmware controleren";
-"timeline.stage.pre_upload_actions.detail" = "Beheerde services stoppen en oude installatiebestanden verwijderen.";
+"timeline.stage.pre_upload_actions.detail" = "Beheerde services stoppen, oude installatiebestanden verwijderen en de Samba-logbestanden wissen.";
 "timeline.stage.pre_upload_actions.title" = "Bestaande services stoppen";
 "timeline.stage.pre_write_validation.title" = "Controleren voor het schrijven";
 "timeline.stage.prepare_deployment_files.detail" = "Serviceconfiguratie maken.";
@@ -1275,7 +1275,7 @@
 "timeline.stage.read_flash.title" = "Firmware lezen";
 "timeline.stage.reboot.detail" = "Het herstartverzoek via AirPort ACP verzenden.";
 "timeline.stage.reboot.title" = "Verzoek om opnieuw opstarten";
-"timeline.stage.replace_software.detail" = "Eerder geïnstalleerde softwarebestanden uit flashgeheugen en van de schijven verwijderen. Metadata en logbestanden blijven behouden.";
+"timeline.stage.replace_software.detail" = "Eerder geïnstalleerde softwarebestanden uit flashgeheugen en van de schijven verwijderen. Metadata en andere logbestanden blijven behouden.";
 "timeline.stage.replace_software.title" = "Oude software verwijderen";
 "timeline.stage.resolve_connection.title" = "Verbinden met apparaat";
 "timeline.stage.resolve_managed_target.title" = "Verbinden met apparaat";

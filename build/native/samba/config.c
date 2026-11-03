@@ -119,6 +119,9 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
      * it; "off" stops offering it, so a client that insists cannot connect. */
     if (config->disable_encryption)
         fputs("    server smb encrypt = off\n", file);
+    /* A debug log rotates at about 2 GiB, so log.smbd and log.smbd.old take
+     * about 4 GiB of the data disk. 2097151 KiB is the most Samba's 32-bit
+     * "max log size" * 1024 holds (lib/util/debug.c). */
     fprintf(file,
             "    server multi channel support = no\n    load printers = no\n    disable spoolss = yes\n"
             "    dfree command = /mnt/Flash/dfree.sh\n    pid directory = " TC_RAM_ROOT "/var\n"
@@ -126,7 +129,7 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
             "    cache directory = %s%s\n    private dir = " TC_RAM_ROOT "/private\n"
             "    dbwrap_tdb_max_dead:* = 0\n    log file = %s/logs/log.smbd\n    max log size = %d\n",
             config->netbsd4 ? payload : TC_RAM_ROOT, config->netbsd4 ? "/cache" : "/var", payload,
-            config->debug ? 0 : 128);
+            config->debug ? 2097151 : 128);
     if (config->debug)
         fputs("    log level = 10\n", file);
     fputs("    smb ports = 445\n", file);

@@ -28,7 +28,11 @@ from timecapsulesmb.deploy.commands import RemoteAction
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import DeviceAccessError, DiskCheckRunningError, acpd_problems_and_disk_stalls
-from timecapsulesmb.services.runtime_verification import runtime_failure_error, verify_managed_runtime_ready
+from timecapsulesmb.services.runtime_verification import (
+    RUNTIME_ACTIVATION_WAIT_SECONDS,
+    runtime_failure_error,
+    verify_managed_runtime_ready,
+)
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -184,7 +188,7 @@ def start_netbsd4_runtime_after_reboot(
             activation_message=messages.activation_message,
             activation_stage="post_reboot_activation",
             verification_stage="verify_runtime_activation",
-            verification_timeout_seconds=200,
+            verification_timeout_seconds=RUNTIME_ACTIVATION_WAIT_SECONDS,
             verification_heading=messages.heading,
             failure_message=messages.failure_message,
             run_remote_actions_func=run_remote_actions_func,
@@ -196,7 +200,7 @@ def start_netbsd4_runtime_after_reboot(
         connection,
         callbacks=callbacks,
         stage="verify_runtime_activation",
-        timeout_seconds=200,
+        timeout_seconds=RUNTIME_ACTIVATION_WAIT_SECONDS,
         heading=messages.heading,
         failure_message=messages.failure_message,
     )
@@ -376,7 +380,7 @@ def activate_runtime(
             connection,
             callbacks=callbacks,
             stage="verify_runtime_activation",
-            timeout_seconds=200,
+            timeout_seconds=RUNTIME_ACTIVATION_WAIT_SECONDS,
             heading="Waiting for rsync to start on the NetBSD 4 device...",
             failure_message="NetBSD 4 activation failed.",
         )
@@ -388,7 +392,7 @@ def activate_runtime(
             activation_message="Activating NetBSD 4 payload without file transfer.",
             activation_stage="run_activation",
             verification_stage="verify_runtime_activation",
-            verification_timeout_seconds=200,
+            verification_timeout_seconds=RUNTIME_ACTIVATION_WAIT_SECONDS,
             verification_heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
             failure_message="NetBSD 4 activation failed.",
         )

@@ -26,6 +26,9 @@ from timecapsulesmb.services.deploy import (
 from timecapsulesmb.transport.ssh import SshConnection, SshError, upload_file
 
 
+SAMBA_LOGS = ('logs/log.smbd', 'logs/log.smbd.old')
+
+
 class Device:
     def __init__(self, root, monkeypatch):
         from tests.test_xattr_migration import fake_inventory
@@ -69,6 +72,9 @@ class Device:
                      '/Volumes/dk2/.samba4/mdns-smbd-advertiser',
                      '/Volumes/dk2/.samba4/sbin/smbd', '/Volumes/dk2/.samba4/smbd'):
             self.write(name, b'old or truncated software')
+        # Samba's log and its rotated copy, as a debug log leaves them.
+        for name in SAMBA_LOGS:
+            self.write('/Volumes/dk2/.samba4/' + name, b'old samba log')
         monkeypatch.setattr(executor, 'upload_file', self.upload)
         monkeypatch.setattr(executor, 'run_ssh', self.ssh)
         monkeypatch.setattr(executor, 'ensure_volume_root_mounted_conn', self.mount)
@@ -128,6 +134,8 @@ class Device:
             free = 0 if self.failure == 'capacity' else self.flash_free_kb
             return SimpleNamespace(stdout=f'Filesystem 1K-blocks Used Avail Capacity Mounted on\n/dev/flash 5000 100 {free} 2% /mnt/Flash\n')
         command = self.local(command)
+        if self.failure == 'logs' and 'log.smbd' in command:
+            command = command.replace('rm -rf', 'false')
         if self.failure == 'permissions' and 'chmod' in command:
             raise RuntimeError('injected permissions')
         result = subprocess.run(command, shell=True, executable='/bin/sh', text=True, capture_output=True)
@@ -152,6 +160,9 @@ class Device:
     def migrate(self, connection, plan, phase, **kwargs):
         self.events.append(phase)
         assert not self.path('/mnt/Flash/rc.local').exists()
+        # Migration writes to the disk, so their space is free by now.
+        for name in SAMBA_LOGS:
+            assert self.failure == 'logs' or not self.path('/Volumes/dk2/.samba4/' + name).exists()
         if self.failure == phase:
             raise RuntimeError('injected migration ' + phase)
         return executor.XattrMigrationResult('migration complete', ())
@@ -190,6 +201,8 @@ class Device:
         assert self.path('/mnt/Flash/service').is_file()
         assert not self.path('/mnt/Flash/mdns-advertiser').exists()
         assert not self.path('/mnt/Flash/.discoveryd.tmp').exists()
+        for name in SAMBA_LOGS:
+            assert not self.path('/Volumes/dk2/.samba4/' + name).exists()
         self.assert_protected()
 
     def assert_protected(self):
@@ -224,6 +237,9 @@ def test_surviving_supervisor_blocks_deletion(tmp_path, monkeypatch):
     assert device.path('/mnt/Flash/rc.local').read_bytes() == before
     assert device.transfers == []
     assert 'capacity' not in device.events
+    # smbd may still be writing them.
+    for name in SAMBA_LOGS:
+        assert device.path('/Volumes/dk2/.samba4/' + name).exists()
 
 
 def test_absent_managed_software_installs_without_old_scripts(tmp_path, monkeypatch):
@@ -329,7 +345,7 @@ def test_known_software_removed_from_every_detected_payload_only(tmp_path, monke
     from tests.test_xattr_migration import fake_inventory
     device = Device(tmp_path, monkeypatch)
     secondary = '/Volumes/dk3/.samba4'
-    for name in ('sbin/telemetry', 'sbin/service', 'manager.sh', 'mdns-advertiser'):
+    for name in ('sbin/telemetry', 'sbin/service', 'manager.sh', 'mdns-advertiser', *SAMBA_LOGS):
         device.write(secondary + '/' + name, b'old program')
     for name in ('private/xattr.tdb', 'private/xattr.tdb.orphaned.1', 'logs/old.log'):
         device.write(secondary + '/' + name, b'preserve')
@@ -338,10 +354,56 @@ def test_known_software_removed_from_every_detected_payload_only(tmp_path, monke
     inv.payload_dirs = [secondary]
     monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a, **_k: inv)
     device.install()
-    for name in ('sbin/telemetry', 'sbin/service', 'manager.sh', 'mdns-advertiser'):
+    for name in ('sbin/telemetry', 'sbin/service', 'manager.sh', 'mdns-advertiser', *SAMBA_LOGS):
         assert not device.path(secondary + '/' + name).exists()
     for name in ('private/xattr.tdb', 'private/xattr.tdb.orphaned.1', 'logs/old.log'):
         assert device.path(secondary + '/' + name).read_bytes() == b'preserve'
+
+
+def test_logs_that_cannot_be_deleted_do_not_stop_the_install(tmp_path, monkeypatch):
+    # A debug log can sit on a bad block. On every payload, the software still
+    # goes and the install finishes.
+    from tests.test_xattr_migration import fake_inventory
+    device = Device(tmp_path, monkeypatch)
+    secondary = '/Volumes/dk3/.samba4'
+    for name in ('manager.sh', *SAMBA_LOGS):
+        device.write(secondary + '/' + name, b'old')
+    inv = fake_inventory()
+    inv.volumes = (SimpleNamespace(volume_root='/Volumes/dk3', device_path='/dev/dk3'),)
+    inv.payload_dirs = [secondary]
+    monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a, **_k: inv)
+    device.failure = 'logs'
+    device.install()
+    assert device.transfers[-1] == '/mnt/Flash/rc.local'
+    assert not device.path(secondary + '/manager.sh').exists()
+    for payload in ('/Volumes/dk2/.samba4/', secondary + '/'):
+        for name in SAMBA_LOGS:
+            assert device.path(payload + name).exists()
+
+
+def test_other_payloads_lose_their_software_right_after_the_mount_check(tmp_path, monkeypatch):
+    from tests.test_xattr_migration import fake_inventory
+    device = Device(tmp_path, monkeypatch)
+    secondary = '/Volumes/dk3/.samba4'
+    device.write(secondary + '/manager.sh', b'old program')
+    inv = fake_inventory()
+    inv.volumes = (SimpleNamespace(volume_root='/Volumes/dk3', device_path='/dev/dk3'),)
+    inv.payload_dirs = [secondary]
+    monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a, **_k: inv)
+    batches = []
+    run_actions = device.actions
+
+    def record(connection, actions, on_action_done=None):
+        batches.append(list(actions))
+        return run_actions(connection, actions, on_action_done)
+
+    device.actions = record
+    device.install()
+    guard, software, logs = next(batch for batch in batches
+                                 if isinstance(batch[0], EnsureVolumeMountedAction)
+                                 and batch[0].volume_root == '/Volumes/dk3')
+    assert secondary + '/manager.sh' in software.paths and not software.best_effort
+    assert logs.paths == tuple(secondary + '/' + name for name in SAMBA_LOGS) and logs.best_effort
 
 
 @pytest.mark.parametrize('claimed', [True, False])

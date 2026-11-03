@@ -388,7 +388,7 @@ class HostImageTest(unittest.TestCase):
         build, kwargs = calls[1]
         self.assertEqual(build, ["docker", "build", "-t", check.HOST_IMAGE, "-"])
         dockerfile = kwargs["input"].decode()
-        self.assertTrue(dockerfile.startswith("FROM ubuntu:24.04\n"))
+        self.assertTrue(dockerfile.startswith("FROM ubuntu:26.04\n"))
         for package in check.HOST_PACKAGES:
             self.assertIn(f" {package} ", dockerfile)
 

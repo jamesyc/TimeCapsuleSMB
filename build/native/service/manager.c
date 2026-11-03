@@ -32,9 +32,14 @@ typedef char stage_job_fits_two_payload_reads[2 * TC_PAYLOAD_READ_BUDGET_MS + 30
  * pass this long after the first to agree: longer than a MaSt poll
  * (INVENTORY_MS) plus TC_STORAGE_SETTLE_MS, so a late disk is in it. */
 /* How long a started smbd or rsync has to bind its listeners before the
- * audit restarts it. */
+ * audit restarts it. smbd writes its log to the data disk as it starts, and
+ * on an HFS volume with under about 2 GiB free each new block takes 10 s
+ * (2 TB, NetBSD 4) to 29 s (4 TB, NetBSD 6), apparently a scan of the whole
+ * allocation bitmap. A start with debug logging off allocates one or two
+ * blocks; one with it on took 31-49 s on that 2 TB disk. Deploy and Activate
+ * wait 200 s and doctor 180 s for smbd, so keep this below both. */
 #ifndef TC_ROLE_READY_MS
-#define TC_ROLE_READY_MS 10000
+#define TC_ROLE_READY_MS 120000
 #endif
 #ifndef TC_PAYLOAD_RECHECK_MS
 #define TC_PAYLOAD_RECHECK_MS 30000

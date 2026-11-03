@@ -10,8 +10,11 @@ import contextlib
 import errno
 import io
 import logging
+import subprocess
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from tests.device_ps import ps_row
@@ -1048,6 +1051,40 @@ class QuietDroppedSocketLogTest(unittest.TestCase):
         self.assertTrue(quiet.filter(self.record(OSError(errno.ECONNRESET, "Connection reset"))))
         self.assertTrue(quiet.filter(self.record(KeyError(1))))
         self.assertTrue(quiet.filter(self.record(None)))
+
+
+class SmbdLogSinceTests(unittest.TestCase):
+    """The device's shell commands, run here on real files."""
+
+    class Local:
+        def sh(self, command: str, *, check: bool = True) -> str:
+            return subprocess.run(command, shell=True, check=check, capture_output=True, text=True).stdout
+
+    def logs(self, directory: str, *, old: bytes | None, new: bytes) -> str:
+        log = Path(directory) / "log.smbd"
+        log.write_bytes(new)
+        if old is not None:
+            log.with_name("log.smbd.old").write_bytes(old)
+        return str(log)
+
+    def test_reads_past_the_offset_of_a_log_that_did_not_rotate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = self.logs(directory, old=None, new=b"x\n" * 2048 + b"tc_desync after\n")
+            logged = durable_device._smbd_log_since(self.Local(), log, 4096)
+        self.assertEqual(logged, "tc_desync after\n")
+
+    def test_reads_both_files_after_a_rotation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = self.logs(directory, old=b"x\n" * 2048 + b"tc_desync before\n", new=b"tc_desync after\n")
+            logged = durable_device._smbd_log_since(self.Local(), log, 4096)
+        self.assertEqual(logged, "tc_desync before\ntc_desync after\n")
+
+    def test_keep_filters_both_files_on_the_device(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = self.logs(directory, old=b"x\n" * 2048 + b"noise\ntc_desync before\n",
+                            new=b"tc_desync after\nnoise\n")
+            logged = durable_device._smbd_log_since(self.Local(), log, 4096, keep="sed -n -e '/tc_desync/p'")
+        self.assertEqual(logged, "tc_desync before\ntc_desync after\n")
 
 
 if __name__ == "__main__":

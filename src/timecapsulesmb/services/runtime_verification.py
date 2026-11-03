@@ -30,6 +30,11 @@ from timecapsulesmb.discovery.bonjour import BonjourQuery, BonjourServiceInstanc
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.ssh import SshConnection
 
+# How long deploy and Activate wait for the runtime. Each must outlast the
+# manager's restart of an smbd without listeners (manager.c TC_ROLE_READY_MS).
+RUNTIME_ACTIVATION_WAIT_SECONDS = 200
+RUNTIME_REBOOT_WAIT_SECONDS = 240
+
 
 def verify_managed_runtime_ready(
     connection: SshConnection,
