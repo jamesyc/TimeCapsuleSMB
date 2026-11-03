@@ -39,7 +39,7 @@ from timecapsulesmb.checks.bonjour import (
     select_smb_instance,
 )
 from timecapsulesmb.checks.doctor import run_doctor_checks
-from timecapsulesmb.checks.doctor_steps import _add_bonjour_results, check_xattr_tdb_persistence
+from timecapsulesmb.checks.doctor_steps import _add_bonjour_results, _terminal_app_hint, check_xattr_tdb_persistence
 from timecapsulesmb.checks.doctor_debug import _data_disk_unresponsive_result
 from timecapsulesmb.checks.doctor_state import DoctorSink
 from timecapsulesmb.checks.doctor_steps import (
@@ -91,6 +91,7 @@ from timecapsulesmb.checks.smb import (
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from tests.fixtures.smb_clients import SMBCLIENT_PATH, apple_client_here, smbclient_here
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.install import APP_CLIENT
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
@@ -1806,9 +1807,10 @@ class CheckTests(unittest.TestCase):
         {"code": "device_unreachable"},
     )
 
-    def run_doctor_against_a_dead_address(self, airports, *, values=None, skip_bonjour=False):
+    def run_doctor_against_a_dead_address(self, airports, *, values=None, skip_bonjour=False, browse_error=None):
         query = mock.Mock()
         query.return_value.browse.return_value = (BonjourDiscoverySnapshot([], airports), None)
+        query.return_value.browse.side_effect = browse_error
         smb_browse = mock.Mock()
         run = self.run_doctor_with_mocks(
             values,
@@ -1857,7 +1859,11 @@ class CheckTests(unittest.TestCase):
         run = self.run_doctor_with_mocks(
             None,
             ssh_login=self.UNREACHABLE,
-            extra_patches={"timecapsulesmb.checks.doctor_steps.BonjourQuery": query},
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.BonjourQuery": query,
+                # The step after it is test_doctor_at_a_dead_address_says_when_no_airport_answers_or_bonjour_is_skipped's.
+                "timecapsulesmb.checks.doctor_steps._terminal_app_hint": mock.Mock(return_value=""),
+            },
         )
         self.assertEqual([r.details.get("code") for r in run.results if r.status == "FAIL"], ["device_unreachable"])
         self.assertIn("could not list the AirPorts this computer sees: dns-sd exited with status 1",
@@ -1889,12 +1895,35 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(debug_fields["acpd_problems"], ["acp_port_unanswered"])
 
     def test_doctor_at_a_dead_address_says_when_no_airport_answers_or_bonjour_is_skipped(self) -> None:
-        run, _query, _smb = self.run_doctor_against_a_dead_address([])
-        self.assertIn("no AirPort answers Bonjour on this computer's networks", [r.message for r in run.results])
+        # A terminal app macOS blocks gets neither ssh nor Bonjour through:
+        # both Bonjour lines end with the step that names its setting.
+        with mock.patch("timecapsulesmb.checks.doctor_steps._terminal_app_hint", return_value=" <step>"):
+            run, _query, _smb = self.run_doctor_against_a_dead_address([])
+            self.assertIn("no AirPort answers Bonjour on this computer's networks <step>", [r.message for r in run.results])
+            run, _query, _smb = self.run_doctor_against_a_dead_address([], browse_error=OSError("Bonjour query error -65570"))
+            self.assertIn("could not list the AirPorts this computer sees: Bonjour query error -65570 <step>",
+                          [r.message for r in run.results])
 
         run, query, _smb = self.run_doctor_against_a_dead_address([], skip_bonjour=True)
         query.assert_not_called()
         self.assertTrue(any(r.details.get("code") == "network_not_checked" for r in run.results))
+
+    def test_the_terminal_app_step_is_for_a_command_on_a_mac(self) -> None:
+        step = (
+            ". If AirPort Utility can see the device but this command cannot, and it runs in a terminal app other "
+            "than Terminal, such as iTerm2 or Visual Studio Code, macOS is blocking that app: turn it on in System "
+            "Settings > Privacy & Security > Local Network"
+        )
+        for platform, client, expected in (
+            ("darwin", {}, step),
+            ("darwin", {"TCAPSULE_CLIENT": "homebrew"}, step),
+            # The app checks its own Local Network access before Checkup.
+            ("darwin", {"TCAPSULE_CLIENT": APP_CLIENT}, ""),
+            ("linux", {}, ""),
+        ):
+            with self.subTest(platform=platform, client=client), mock.patch.dict("os.environ", client), \
+                    mock.patch("timecapsulesmb.checks.doctor_steps.sys.platform", platform):
+                self.assertEqual(_terminal_app_hint(), expected)
 
     def test_doctor_from_the_wan_side_fails_even_when_bonjour_and_smb_are_skipped(self) -> None:
         run, calls = self._run_doctor_against_router(local_networks=self.WAN_SIDE, skip_bonjour=True, skip_smb=True)
@@ -2587,17 +2616,16 @@ class CheckTests(unittest.TestCase):
         run.compare = compare
         return run, lines, debug_fields
 
-    def test_doctor_reports_a_local_network_block_when_ssh_works_but_this_programs_reads_get_no_route(self) -> None:
-        # 2d4ec41c and d372271d: SSH worked, the ACP read and the SMB port got
-        # Errno 65, and Checkup never said why.
+    def run_doctor_with_a_no_route_read(self, client: dict[str, str], smb_port: mock.Mock):
+        """SSH works, and the ACP read and port 22 get Errno 65 from this
+        program. ACPd's own listener answers through SSH: the path from this
+        Mac is what fails."""
         no_route = "Could not connect to ACP on 10.0.0.2:5009: [Errno 65] No route to host"
-        smb_port = mock.Mock(side_effect=AssertionError("the SMB port is not checked from a blocked Mac"))
-        # ACPd's own listener answers through SSH: the path from this Mac is what fails.
-        with mock.patch("timecapsulesmb.checks.network.local_lan_networks", return_value=SAME_NETWORK_LOCAL_NETWORKS), \
-                mock.patch("timecapsulesmb.checks.network.sys.platform", "darwin"), \
+        with mock.patch.dict("os.environ", client), \
+                mock.patch("timecapsulesmb.checks.network.local_lan_networks", return_value=SAME_NETWORK_LOCAL_NETWORKS), \
                 mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value="[Errno 65] No route to host"), \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=True):
-            run = self.run_doctor_with_mocks(
+            return self.run_doctor_with_mocks(
                 device_reading=AirportAcpReading(password_matches=None, error=no_route),
                 ssh_login=mock.Mock(status="PASS", message="ssh ok", details={}),
                 mdns_probe=mock.Mock(ready=True, detail="ok"),
@@ -2605,6 +2633,12 @@ class CheckTests(unittest.TestCase):
                 xattr_result=mock.Mock(status="WARN", message="xattr skipped"),
                 extra_patches={"timecapsulesmb.checks.doctor_steps.check_smb_port": smb_port},
             )
+
+    def test_doctor_reports_a_local_network_block_when_ssh_works_but_this_programs_reads_get_no_route(self) -> None:
+        # 2d4ec41c and d372271d: SSH worked, the ACP read and the SMB port got
+        # Errno 65, and Checkup never said why.
+        smb_port = mock.Mock(side_effect=AssertionError("the SMB port is not checked from a blocked Mac"))
+        run = self.run_doctor_with_a_no_route_read({"TCAPSULE_CLIENT": APP_CLIENT}, smb_port)
         block = [result for result in run.results if result.details.get("code") == "acp_no_route"]
         self.assertEqual(len(block), 1)
         self.assertEqual(block[0].status, "FAIL")
@@ -2618,13 +2652,26 @@ class CheckTests(unittest.TestCase):
             ("SKIP", "Bonjour, SMB and NBNS checks skipped: macOS refuses this Mac's connections to 10.0.0.2"),
         )
 
+    def test_doctor_outside_the_app_checks_the_network_after_a_no_route_read(self) -> None:
+        # Outside the app nothing could prove a block (a terminal app macOS
+        # blocks refuses ssh too), so the network checks run and show the
+        # real cause.
+        for client in ({}, {"TCAPSULE_CLIENT": "homebrew"}):
+            with self.subTest(client=client):
+                smb_port = mock.Mock(return_value=CheckResult("WARN", "SMB not reachable at 10.0.0.2:445"))
+                run = self.run_doctor_with_a_no_route_read(client, smb_port)
+                self.assertFalse(any(result.details.get("code") == "acp_no_route" for result in run.results))
+                self.assertFalse(any(result.details.get("code") == "network_not_checked" for result in run.results))
+                self.assertTrue(any("could not compare" in result.message for result in run.results))
+                smb_port.assert_called()
+
     def test_doctor_keeps_a_read_that_merely_failed_as_unknown(self) -> None:
         # A timeout, or no route that port 22 gets past, is not a block.
         for error, retry in (("ACP receive failed: timed out", "[Errno 65] No route to host"),
                              ("Could not connect to ACP on 10.0.0.2:5009: [Errno 65] No route to host", None)):
             with self.subTest(error=error, retry=retry), \
                     mock.patch("timecapsulesmb.checks.network.local_lan_networks", return_value=SAME_NETWORK_LOCAL_NETWORKS), \
-                    mock.patch("timecapsulesmb.checks.network.sys.platform", "darwin"), \
+                    mock.patch.dict("os.environ", {"TCAPSULE_CLIENT": APP_CLIENT}), \
                     mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=retry), \
                     mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=True):
                 _run, lines, _debug = self.run_doctor_with_password_answer(
@@ -7861,16 +7908,17 @@ class CheckTests(unittest.TestCase):
         listing_mock = mock.Mock(side_effect=[self.smb_listing_result("127.0.0.1"), direct_failure])
         file_ops_mock = mock.Mock(return_value=[CheckResult("PASS", "file ops ok")])
 
-        run = self.run_doctor_with_mocks(
-            real_device_smb=True,
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            debug_fields=debug_fields,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
-                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
-            },
-        )
+        with mock.patch.dict("os.environ", {"TCAPSULE_CLIENT": APP_CLIENT}):
+            run = self.run_doctor_with_mocks(
+                real_device_smb=True,
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=mock.Mock(status="PASS", message="445 ok"),
+                debug_fields=debug_fields,
+                extra_patches={
+                    "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                    "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
+                },
+            )
 
         self.assertFalse(run.fatal)
         run.mocks.ssh_local_forward.assert_called_once_with(mock.ANY, local_port=2445, remote_host="127.0.0.1", remote_port=445)
@@ -8011,15 +8059,19 @@ class CheckTests(unittest.TestCase):
             "smbutil: server connection failed: No route to host",
             {"attempts": [{"outcome": "error", "failure": "smbutil: server connection failed: No route to host"}]},
         )
-        listing = mock.Mock(side_effect=[self.smb_listing_result("127.0.0.1"), refused])
-        run = self.device_smb_run(listing, extra_patches=self.APPLE_CLIENT)
-
-        warning = next(result for result in run.results if result.details.get("code") == "smb_listing_host_unreachable")
-        self.assertEqual((warning.status, warning.domain), ("WARN", "computer"))
-        self.assertTrue(warning.message.startswith(
-            "Apple's SMB client on this computer could not reach the device's SMB service (No route to host); "
-            "on a Mac this usually means TimeCapsuleSMB lacks Local Network permission"
-        ))
+        unreachable = "Apple's SMB client on this computer could not reach the device's SMB service (No route to host)"
+        for client, words in (
+            ({"TCAPSULE_CLIENT": APP_CLIENT},
+             f"{unreachable}; this usually means TimeCapsuleSMB lacks Local Network permission "
+             "(System Settings > Privacy & Security > Local Network)"),
+            # The line names TimeCapsuleSMB only in the app.
+            ({}, unreachable),
+        ):
+            with self.subTest(client=client), mock.patch.dict("os.environ", client):
+                listing = mock.Mock(side_effect=[self.smb_listing_result("127.0.0.1"), refused])
+                run = self.device_smb_run(listing, extra_patches=self.APPLE_CLIENT)
+                warning = next(result for result in run.results if result.details.get("code") == "smb_listing_host_unreachable")
+                self.assertEqual((warning.status, warning.domain, warning.message), ("WARN", "computer", words))
 
     def test_run_doctor_checks_reads_apples_authentication_error_as_a_rejected_password(self) -> None:
         rejected = CheckResult(

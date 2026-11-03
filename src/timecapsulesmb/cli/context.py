@@ -74,10 +74,13 @@ def error_with_next_steps(
     command: str,
     stage: str | None = None,
     config: AppConfig | None = None,
+    code: ErrorCode | None = None,
 ) -> str:
     """The message, then the next steps for the code of the error behind it
-    (app.recovery.cli_steps), as the app shows them for the same failure."""
-    code = cli_error_code(exc)
+    (app.recovery.cli_steps), as the app shows them for the same failure.
+    `code` is the one the app reports when the command decides it, as
+    set-ssh's does (services.set_ssh.enable_failure_code)."""
+    code = code or cli_error_code(exc)
     if code is None:
         return message
     steps = list(cli_steps(command, code, stage=stage))
@@ -238,9 +241,12 @@ class CommandContext:
         self.finish(result=self.result, **self.finish_fields)
         return False
 
-    def with_next_steps(self, message: str, exc: BaseException) -> str:
-        """The message, then the next steps for the code of the error behind it."""
-        return error_with_next_steps(message, exc, command=self.command_name, stage=self.debug_stage, config=self.config)
+    def with_next_steps(self, message: str, exc: BaseException, *, code: ErrorCode | None = None) -> str:
+        """The message, then the next steps for the code of the error behind it
+        (or `code`, error_with_next_steps)."""
+        return error_with_next_steps(
+            message, exc, command=self.command_name, stage=self.debug_stage, config=self.config, code=code,
+        )
 
     def succeed(self) -> None:
         self.result = "success"

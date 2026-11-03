@@ -16,6 +16,7 @@ from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.install import tcapsule_command
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready
 from timecapsulesmb.services.set_ssh import (
@@ -23,6 +24,7 @@ from timecapsulesmb.services.set_ssh import (
     SetSshResult,
     SetSshStatusResult,
     disable_set_ssh,
+    enable_failure_code,
     enable_set_ssh,
     probe_set_ssh_status,
     select_set_ssh_action,
@@ -129,7 +131,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 label = "Failed to enable SSH via ACP"
                 message = f"{label}: {error_text}"
                 print(color_red(f"{label}:"))
-                print(command_context.with_next_steps(error_text, e))
+                # The same code as the app's, which picks the steps.
+                code = enable_failure_code(e, command_context.debug_stage) if isinstance(e, ACPConnectionError) else None
+                print(command_context.with_next_steps(error_text, e, code=code))
                 command_context.fail_with_error(message)
                 return 1
 

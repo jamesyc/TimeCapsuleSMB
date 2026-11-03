@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import subprocess
+import sys
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
@@ -45,6 +46,7 @@ from timecapsulesmb.checks.local_tools import check_required_artifacts, check_re
 from timecapsulesmb.checks.models import DEVICE_NOT_CHECKED_CODE, DOMAIN_COMPUTER, DOMAIN_DEVICE, CheckResult
 from timecapsulesmb.checks.nsmb_conf import check_nsmb_conf
 from timecapsulesmb.checks.network import (
+    CLI_TERMINAL_APP_BLOCKED,
     IpNetwork,
     NetworkLinkResult,
     check_smb_port,
@@ -59,7 +61,7 @@ from timecapsulesmb.checks.network import (
     reportable_network,
 )
 from timecapsulesmb.core.error_codes import ErrorCode
-from timecapsulesmb.core.install import this_computer
+from timecapsulesmb.core.install import running_in_app, this_computer
 from timecapsulesmb.core.net import RouteSelection, select_route_to_address
 from timecapsulesmb.checks.nbns import (
     NBNS_NEGATIVE_RESPONSE_CODE,
@@ -356,8 +358,9 @@ DEVICE_SMB_BLOCKED = "blocked"
 # smbclient's statuses, and the errno text of Apple's client (EAUTH from NetFS,
 # the same words from smbutil).
 SMB_LOGIN_REJECTED_TOKENS = ("NT_STATUS_LOGON_FAILURE", "NT_STATUS_WRONG_PASSWORD", "Authentication error")
-# How each client reports a connection macOS refused, which is what a missing
-# Local Network permission looks like: smbclient's status and EHOSTUNREACH.
+# How each client reports a connection macOS refused, which in the macOS app is
+# what a missing Local Network permission looks like: smbclient's status and
+# EHOSTUNREACH.
 SMB_LOCAL_ROUTE_FAILURE_TOKENS = ("NT_STATUS_HOST_UNREACHABLE", "No route to host")
 DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE = "active smb.conf xattr_tdb:file parent is missing"
 DOCTOR_STARTUP_WINDOW_SECONDS = 180
@@ -2139,14 +2142,19 @@ def _add_authenticated_smb_results(
         return
     if _smb_listing_looks_like_local_route_failure(listing_result):
         # macOS refuses the connection itself when the app lacks Local Network
-        # permission. A warning only when the device's own SMB check passed:
-        # otherwise nothing showed that SMB works at all.
+        # permission, so the line names TimeCapsuleSMB only in the app. A
+        # terminal app macOS blocks has doctor's SSH refused too, which ends
+        # at the device's not-answering line instead. A warning only when the
+        # device's own SMB check passed: otherwise nothing showed that SMB
+        # works at all.
         client = local_smb.local_smb_client()
+        cause = (
+            "; this usually means TimeCapsuleSMB lacks Local Network permission "
+            "(System Settings > Privacy & Security > Local Network)"
+        ) if running_in_app() else ""
         add_result(CheckResult(
             "WARN" if device_smb_passed else "FAIL",
-            f"{client.label} on this computer could not reach the device's SMB service ({client.unreachable}); "
-            "on a Mac this usually means TimeCapsuleSMB lacks Local Network permission "
-            "(System Settings > Privacy & Security > Local Network)",
+            f"{client.label} on this computer could not reach the device's SMB service ({client.unreachable}){cause}",
             {**listing_result.details, "code": DOCTOR_CODE_SMB_LISTING_HOST_UNREACHABLE},
         ))
         return
@@ -2270,6 +2278,13 @@ def _doctor_report_blocked_network(target: DoctorTarget, sink: DoctorSink) -> No
     ))
 
 
+def _terminal_app_hint() -> str:
+    """The step after a Bonjour line that found no AirPort, for a command on a
+    Mac: a terminal app macOS blocks has ssh and Bonjour refused alike. The
+    app checks its own Local Network access before Checkup."""
+    return f". {CLI_TERMINAL_APP_BLOCKED}" if sys.platform == "darwin" and not running_in_app() else ""
+
+
 def _doctor_report_unanswered_device(inputs: DoctorInputs, target: DoctorTarget, sink: DoctorSink) -> None:
     """Nothing answers at the saved address, so Bonjour, SMB and NBNS checks of
     it would only fail the same way. Say which AirPorts this computer sees
@@ -2284,11 +2299,11 @@ def _doctor_report_unanswered_device(inputs: DoctorInputs, target: DoctorTarget,
     try:
         snapshot, _diagnostics = BonjourQuery().browse(AIRPORT_SERVICE, timeout=AIRPORT_BROWSE_SECONDS)
     except Exception as exc:
-        sink.add(CheckResult("INFO", f"could not list the AirPorts this computer sees: {exc}"))
+        sink.add(CheckResult("INFO", f"could not list the AirPorts this computer sees: {exc}{_terminal_app_hint()}"))
         return
     airports = device_candidates_from_records(snapshot.resolved)
     if not airports:
-        sink.add(CheckResult("INFO", "no AirPort answers Bonjour on this computer's networks"))
+        sink.add(CheckResult("INFO", f"no AirPort answers Bonjour on this computer's networks{_terminal_app_hint()}"))
         return
     saved_mac = normalize_airport_mac(inputs.config.get("TC_AIRPORT_MAC") or None)
     seen = [

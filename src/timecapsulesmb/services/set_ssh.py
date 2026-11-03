@@ -9,7 +9,7 @@ from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.device.probe import AirportAcpReading
-from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH
+from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH, ACPConnectionError
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
@@ -96,6 +96,16 @@ def probe_set_ssh_status(
         acp_port_error=acp_error,
         ssh_port_error=ssh_error,
     )
+
+
+def enable_failure_code(exc: ACPConnectionError, stage: str | None) -> ErrorCode:
+    """What a failed ACP enable reports, in the app and the CLI alike: the
+    port probe's own cause (services.acp_ssh), else device_unreachable when
+    neither SSH nor ACP answered at the saved address (the probe's stage, after
+    which the app looks for the device elsewhere), else remote_error."""
+    if exc.code is not None:
+        return exc.code
+    return ErrorCode.DEVICE_UNREACHABLE if stage == "acp_port_probe" else ErrorCode.REMOTE_ERROR
 
 
 def enable_set_ssh(

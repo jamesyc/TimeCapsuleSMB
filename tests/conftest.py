@@ -80,6 +80,17 @@ def block_unmocked_telemetry_posts(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def run_as_the_cli(monkeypatch: pytest.MonkeyPatch):
+    # TCAPSULE_CLIENT says who runs the code (core.install): the macOS app
+    # gets its Local Network checks, and Homebrew's wrapper gets `tcapsule`
+    # in messages. A value left in the shell would change both, so each test
+    # starts as the CLI from a checkout; one that runs as the app or Homebrew
+    # sets it.
+    monkeypatch.delenv("TCAPSULE_CLIENT", raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def hide_host_crypto_policy(monkeypatch: pytest.MonkeyPatch):
     # On Fedora and RHEL the host's OpenSSL refuses SHA-1 signatures, which
     # gives every ssh child an OpenSSL config and doctor another check.

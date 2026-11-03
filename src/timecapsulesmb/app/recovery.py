@@ -4,6 +4,7 @@ import sys
 
 from dataclasses import dataclass, replace
 
+from timecapsulesmb.checks.network import CLI_TERMINAL_APP_BLOCKED
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.disk_errors import DISK_CHECK_STALL_WAIT
 from timecapsulesmb.transport.errors import LOCAL_NETWORK_FILTERED_MESSAGE, SSH_TIMEOUT_SLOW_DEVICE_MESSAGE
@@ -1455,16 +1456,7 @@ def recovery_for(
 # match some step (tests/test_app_recovery.py), so a reworded app step cannot
 # silently lose its CLI form.
 _CLI_WORDS = (
-    ("Open “System Settings” > “Privacy & Security” > “Local Network”.",
-     "Open System Settings > Privacy & Security > Local Network."),
-    # macOS asks Local Network access of the app a command runs in.
-    ("Enable TimeCapsuleSMB in “Local Network”.", "Turn on the app this command runs in, such as Terminal."),
-    ("Quit and reopen TimeCapsuleSMB, then try again.", "Then run the command again."),
-    ("If TimeCapsuleSMB is already on, turn it off and on again. If that doesn't help, delete other copies of "
-     "TimeCapsuleSMB and restart the Mac.", "If it is already on, turn it off and on again."),
-    (_BLOCKED_IF_AIRPORT_UTILITY_SEES_IT,
-     "If AirPort Utility can see the device but this command cannot, macOS is blocking the app it runs in, such as "
-     "Terminal: turn that app off and on in System Settings > Privacy & Security > Local Network."),
+    (_BLOCKED_IF_AIRPORT_UTILITY_SEES_IT, f"{CLI_TERMINAL_APP_BLOCKED}."),
     ("Open “SSH Access” and choose “Enable SSH”", "Run `tcapsule set-ssh --enable`"),
     ("Disable SSH again in “SSH Access”.", "Run `tcapsule set-ssh --disable` again."),
     ("Re-enter the AirPort admin password.", "Run `tcapsule configure` again and enter the AirPort admin password."),

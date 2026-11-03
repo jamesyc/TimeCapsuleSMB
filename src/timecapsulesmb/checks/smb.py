@@ -32,8 +32,8 @@ class LocalSmbClient:
     label: str
     tool: str
     path: str | None  # absolute; None when the client is missing
-    # How it reports a connection macOS refused, which is what a missing
-    # Local Network permission looks like.
+    # How it reports a connection macOS refused, which in the macOS app is what
+    # a missing Local Network permission looks like.
     unreachable: str
     # The self-test behind problem(); it runs only when the client is there.
     self_test: Callable[[], Optional[str]] = field(compare=False, repr=False)

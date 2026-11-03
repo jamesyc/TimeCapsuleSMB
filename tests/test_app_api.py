@@ -4518,7 +4518,6 @@ class AppApiTests(unittest.TestCase):
                     mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
                     mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=here), \
                     mock.patch("timecapsulesmb.services.acp_ssh.locate_airport", preflight_locate), \
-                    mock.patch("timecapsulesmb.checks.network.sys.platform", "darwin"), \
                     mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=AirportAcpReading(
                         password_matches=None, error="Could not connect to ACP on 10.0.0.2:5009: [Errno 65] No route to host",
                     )), \
@@ -6987,7 +6986,7 @@ MaSt = (
 
         refused = SshNetworkError("ssh: connect to host 10.0.0.2 port 22: Connection refused")
         here = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)
-        with mock.patch("timecapsulesmb.checks.network.sys.platform", "darwin"), \
+        with mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": "macos_gui"}), \
                 mock.patch("timecapsulesmb.checks.network.local_lan_networks", return_value=here), \
                 mock.patch("timecapsulesmb.services.runtime.probe_ssh_command_conn",
                            return_value=SshCommandProbeResult(ok=False, detail=str(refused), error=refused)):

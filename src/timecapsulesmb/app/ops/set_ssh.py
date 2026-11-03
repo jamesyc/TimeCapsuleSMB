@@ -13,6 +13,7 @@ from timecapsulesmb.services.credentials import saved_airport_mac
 from timecapsulesmb.services.runtime import learn_airport_identity, resolve_env_connection
 from timecapsulesmb.services.set_ssh import (
     disable_set_ssh,
+    enable_failure_code,
     enable_set_ssh,
     probe_set_ssh_status,
 )
@@ -69,14 +70,9 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 debug=str(exc),
             ) from exc
         except ACPConnectionError as exc:
-            # The port probe's errors that name a cause (services.acp_ssh) keep it.
-            if exc.code is not None:
-                raise AppOperationError(str(exc), code=exc.code) from exc
-            if context.current_stage == "acp_port_probe":
-                # Neither SSH nor ACP answers at the saved address: the app then
-                # looks for the device elsewhere.
-                raise AppOperationError(str(exc), code=ErrorCode.DEVICE_UNREACHABLE) from exc
-            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
+            code = enable_failure_code(exc, context.current_stage)
+            message = f"Failed to enable SSH via ACP: {exc}" if code == ErrorCode.REMOTE_ERROR else str(exc)
+            raise AppOperationError(message, code=code) from exc
         except RebootFlowError as exc:
             # SSH not opening in time has its own codes (services.set_ssh).
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=exc.code) from exc

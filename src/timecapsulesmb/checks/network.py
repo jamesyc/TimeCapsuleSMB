@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal, Union
@@ -405,6 +404,16 @@ def ssh_reached_device(result: SshCommandProbeResult) -> bool:
     return "refused" in (connect_error_kind(str(result.error)) or "").split("+")
 
 
+# What a command outside the app says when AirPort Utility may see a device it
+# cannot reach. Terminal.app and SSH are exempt from Local Network access;
+# another terminal app is not, and a command's connections count as that app's.
+CLI_TERMINAL_APP_BLOCKED = (
+    "If AirPort Utility can see the device but this command cannot, and it runs in a terminal app other than "
+    "Terminal, such as iTerm2 or Visual Studio Code, macOS is blocking that app: turn it on in System Settings > "
+    "Privacy & Security > Local Network"
+)
+
+
 # What shows the device is up when this program's own connections get no route.
 LOCAL_NETWORK_BLOCK_PROOFS = {
     "ssh": "SSH reaches it",
@@ -414,11 +423,9 @@ LOCAL_NETWORK_BLOCK_PROOFS = {
 
 @dataclass(frozen=True)
 class LocalNetworkBlock:
-    """This computer refuses this program's own connections to the device
-    while something else shows the device is up (local_network_block).
-
-    macOS holds the app responsible for its helper's connections, and the
-    terminal app for a command's."""
+    """macOS refuses the app's own connections to the device while something
+    else shows the device is up (local_network_block). macOS holds the app
+    responsible for its helper's connections."""
 
     host: str
     proof: str
@@ -427,12 +434,9 @@ class LocalNetworkBlock:
 
     @property
     def message(self) -> str:
-        on_network = f"although the device is on the network ({LOCAL_NETWORK_BLOCK_PROOFS[self.proof]})"
-        if running_in_app():
-            return f"macOS refuses TimeCapsuleSMB's connections to the device, {on_network}."
         return (
-            f"macOS refuses this command's connections to the device, {on_network}: Local Network access is "
-            "blocked for the app tcapsule runs in, such as Terminal."
+            "macOS refuses TimeCapsuleSMB's connections to the device, although the device is on the network "
+            f"({LOCAL_NETWORK_BLOCK_PROOFS[self.proof]})."
         )
 
     @property
@@ -442,18 +446,11 @@ class LocalNetworkBlock:
     @property
     def line(self) -> str:
         """Checkup's result line."""
-        refused = (
-            f"macOS refuses this Mac's connections to {self.host} ([Errno 65] No route to host), although "
-            f"{LOCAL_NETWORK_BLOCK_PROOFS[self.proof]}"
-        )
-        if running_in_app():
-            return (
-                f"{refused}: Local Network access is blocked for TimeCapsuleSMB. Turn it off and on in System "
-                "Settings > Privacy & Security > Local Network, then quit and reopen TimeCapsuleSMB"
-            )
         return (
-            f"{refused}: Local Network access is blocked for the app tcapsule runs in, such as Terminal. Turn that "
-            "app off and on in System Settings > Privacy & Security > Local Network, then quit and reopen it"
+            f"macOS refuses this Mac's connections to {self.host} ([Errno 65] No route to host), although "
+            f"{LOCAL_NETWORK_BLOCK_PROOFS[self.proof]}: Local Network access is blocked for TimeCapsuleSMB. Turn "
+            "it off and on in System Settings > Privacy & Security > Local Network, then quit and reopen "
+            "TimeCapsuleSMB"
         )
 
     @property
@@ -465,15 +462,19 @@ def local_network_block_possible(
     host: str,
     errors: Iterable[str],
     *,
-    platform: str | None = None,
     networks: Iterable[LocalInterfaceNetwork] | None = None,
 ) -> bool:
     """Whether local_network_block could find a block behind these connects,
-    before any proof or retry: on macOS, every connect got no route, and the
-    address is not on a separate network. A proof that costs time (ssh) is
-    asked only when this is True."""
+    before any proof or retry: in the macOS app, every connect got no route,
+    and the address is not on a separate network. A proof that costs time
+    (ssh) is asked only when this is True.
+
+    macOS applies Local Network access to apps. A terminal app it blocks
+    (Terminal.app and SSH are exempt) has ssh and Bonjour refused too, so
+    nothing could prove the device is up: outside the app, no route is never
+    a proven block."""
     errors = [error for error in errors if error]
-    if (platform or sys.platform) != "darwin" or not errors:
+    if not running_in_app() or not errors:
         return False
     if any(connect_error_kind(error) != "no_route" for error in errors):
         return False
@@ -486,14 +487,13 @@ def local_network_block(
     errors: Iterable[str],
     *,
     proof: str | None,
-    platform: str | None = None,
     connect_error: Callable[[str, int, float], str | None] | None = None,
     networks: Iterable[LocalInterfaceNetwork] | None = None,
 ) -> LocalNetworkBlock | None:
     """The block, when macOS refuses this program's connections to a device
-    that is up: on macOS, every connect this work made to the device got No
-    route to host (Errno 65), `proof` (LOCAL_NETWORK_BLOCK_PROOFS) shows the
-    device is up, and one more connect to port 22 gets no route too.
+    that is up: in the macOS app, every connect this work made to the device
+    got No route to host (Errno 65), `proof` (LOCAL_NETWORK_BLOCK_PROOFS)
+    shows the device is up, and one more connect to port 22 gets no route too.
 
     No route alone never decides it: a device that is off or gone gives it
     too, and Linux reports a failed address lookup on the link the same way
@@ -502,7 +502,7 @@ def local_network_block(
     computer's networks is never a block: its route goes through a router.
     `networks` is local_lan_networks()."""
     errors = tuple(dict.fromkeys(error for error in errors if error))
-    if proof is None or not local_network_block_possible(host, errors, platform=platform, networks=networks):
+    if proof is None or not local_network_block_possible(host, errors, networks=networks):
         return None
     retry = (connect_error or tcp_connect_error)(host, SSH_PORT, PORT_CHECK_TIMEOUT_SECONDS)
     if connect_error_kind(retry) != "no_route":

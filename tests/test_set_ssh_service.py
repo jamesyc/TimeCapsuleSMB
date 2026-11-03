@@ -14,13 +14,14 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.integrations.acp import ACP_PORT
-from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, ACPStuckError
+from timecapsulesmb.integrations.acp import ACP_PORT, ACPConnectionError
+from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, ACPNoRouteUnprovenError, ACPStuckError
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.set_ssh import (
     SSH_PORT,
     SetSshStatusResult,
     disable_set_ssh,
+    enable_failure_code,
     enable_set_ssh,
     probe_set_ssh_status,
 )
@@ -242,6 +243,31 @@ class SetSshServiceTests(unittest.TestCase):
         self.assertEqual(device.calls, ["request"])
         self.assertTrue(result.ssh_verification_skipped)
         self.assertEqual(result.summary.key, "ssh.disable_requested")
+
+
+class EnableFailureCodeTests(unittest.TestCase):
+    """The code a failed ACP enable reports, which the app and the CLI share
+    and which picks the steps both show."""
+
+    def test_a_cause_the_port_probe_named_is_kept(self) -> None:
+        stuck = ACPStuckError("Could not connect to ACP.", detail="")
+        for stage in ("acp_port_probe", "acp_enable_ssh", None):
+            with self.subTest(stage=stage):
+                self.assertEqual(enable_failure_code(stuck, stage), stuck.code)
+
+    def test_nothing_answering_at_the_saved_address_is_an_unreachable_device(self) -> None:
+        # The port probe's stage: neither SSH nor ACP answered there.
+        for error in (
+            ACPConnectionError("Could not connect to ACP."),
+            ACPNoRouteUnprovenError("Could not connect to ACP.", detail="", errors=("[Errno 65] No route to host",)),
+        ):
+            with self.subTest(error=type(error).__name__):
+                self.assertEqual(enable_failure_code(error, "acp_port_probe"), ErrorCode.DEVICE_UNREACHABLE)
+
+    def test_a_failure_after_the_port_answered_is_a_remote_error(self) -> None:
+        for stage in ("acp_enable_ssh", None):
+            with self.subTest(stage=stage):
+                self.assertEqual(enable_failure_code(ACPConnectionError("ACP receive failed"), stage), ErrorCode.REMOTE_ERROR)
 
 
 if __name__ == "__main__":

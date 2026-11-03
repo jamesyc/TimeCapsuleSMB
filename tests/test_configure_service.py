@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.core.install import APP_CLIENT
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.probe import AirportAcpReading, ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
@@ -486,13 +488,13 @@ class ConfigureServiceTests(unittest.TestCase):
         ssh_error: str | None = "timed out",
         lan: str = "10.0.0.0/24",
         record: BonjourResolvedService | None = None,
-        platform: str = "darwin",
+        client: Mapping[str, str] = {"TCAPSULE_CLIENT": APP_CLIENT},
     ) -> SimpleNamespace:
         """One failed port probe of 10.0.0.2, with each ACP attempt's connect
         error, `ssh_error` for SSH's port, this computer on `lan`, `record`
-        the Bonjour record the address came from and this computer's
-        `platform`: the error, the ports connected to in order, and the fields
-        updated. A lookup by the record's MAC finds nothing elsewhere."""
+        the Bonjour record the address came from and `client`, who runs it
+        (TCAPSULE_CLIENT; {} for a command): the error, the ports connected to in order, and the
+        fields updated. A lookup by the record's MAC finds nothing elsewhere."""
         networks = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network(lan)),)
         callbacks, _stages, _logs, _debug_fields, update_fields = self.callbacks()
         acp_errors = iter(errors)
@@ -506,7 +508,7 @@ class ConfigureServiceTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=networks), \
                 mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
                 mock.patch("timecapsulesmb.services.acp_ssh.locate_airport", return_value=LocateResult("not_found")), \
-                mock.patch("timecapsulesmb.checks.network.sys.platform", platform), \
+                mock.patch.dict(os.environ, client), \
                 mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
             with self.assertRaises(ACPConnectionError) as raised:
                 enable_ssh_with_port_preflight(
@@ -531,22 +533,23 @@ class ConfigureServiceTests(unittest.TestCase):
         run = self.probe_run([no_route] * 3, ssh_error=no_route, record=self.record_at("10.0.0.2"))
 
         self.assertIsInstance(run.error, ACPNoRouteError)
-        # The message says what the CLI prints; the app shows its card instead.
         self.assertTrue(run.error.message.startswith(
-            "Could not connect to ACP. macOS refuses this command's connections to the device, although the device "
-            "is on the network (Bonjour finds it)"
+            "Could not connect to ACP. macOS refuses TimeCapsuleSMB's connections to the device, although the "
+            "device is on the network (Bonjour finds it)"
         ))
         self.assertTrue(run.error.detail.startswith("No answer from 10.0.0.2:5009. No route to 10.0.0.2"))
         self.assertTrue(run.error.detail.endswith("while Bonjour finds it."))
         self.assertEqual(run.ports, [5009, 5009, 5009, 22])
 
     def test_port_probe_with_no_route_and_nothing_showing_the_device_is_up_stays_generic(self) -> None:
-        # A device that is off or gone gets no route too; only macOS has the
-        # block; and a port 22 that answers on the last try was a passing fault.
+        # A device that is off or gone gets no route too; outside the macOS app
+        # nothing could prove a block (a terminal app macOS blocks refuses ssh
+        # and Bonjour too); and a port 22 that answers on the last try was a
+        # passing fault.
         no_route = "[Errno 65] No route to host"
         for name, kwargs in {
             "typed host": {"ssh_error": no_route},
-            "Linux": {"ssh_error": no_route, "record": self.record_at("10.0.0.2"), "platform": "linux"},
+            "outside the app": {"ssh_error": no_route, "record": self.record_at("10.0.0.2"), "client": {}},
             "port 22 answers": {"ssh_error": "[Errno 61] Connection refused", "record": self.record_at("10.0.0.2")},
         }.items():
             with self.subTest(name):

@@ -7,8 +7,10 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 import timecapsulesmb.cli.main as cli_main_module
+from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.checks.network import LocalInterfaceNetwork
 from timecapsulesmb.cli import set_ssh
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.services.locate import LocateResult
 from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
@@ -296,6 +298,39 @@ class CliSetSshTests(CliTestCase):
             "  2. Wait 2 minutes for the device to start up, then try again.",
             rendered,
         )
+
+    def test_set_ssh_enable_that_nothing_answers_gives_the_apps_unreachable_steps(self) -> None:
+        # From a terminal app macOS blocks, ssh and ACP both get no route. The
+        # app reports device_unreachable for the port probe
+        # (services.set_ssh.enable_failure_code), and so does the CLI, whose
+        # steps then include the terminal app's setting on a Mac.
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        here = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)), \
+                mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False), \
+                mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="[Errno 65] No route to host"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=here), \
+                mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_mock:
+            with redirect_stdout(output):
+                rc = set_ssh.main([])
+
+        self.assertEqual(rc, 1)
+        enable_mock.assert_not_called()
+        rendered = output.getvalue()
+        self.assertIn("Could not connect to ACP.", rendered)
+        steps = (
+            *cli_steps("set-ssh", ErrorCode.DEVICE_UNREACHABLE),
+            # This configuration has no saved MAC to look the device up by.
+            "This configuration has no AirPort MAC: run `tcapsule configure` once, so commands find the device "
+            "when its address changes.",
+        )
+        numbered = "\n".join(f"  {index}. {step}" for index, step in enumerate(steps, 1))
+        self.assertIn(f"\n\nNext steps:\n{numbered}", rendered)
+        self.assertIn("Run `tcapsule doctor` to see which AirPorts answer on this network.", rendered)
+        self.assertIn("stage=acp_port_probe", self.telemetry_payload("set_ssh_finished")["error"])
 
     def test_set_ssh_disable_failure_is_reported_as_ssh_error(self) -> None:
         output = io.StringIO()

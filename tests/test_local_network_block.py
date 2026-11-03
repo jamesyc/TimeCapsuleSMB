@@ -1,8 +1,9 @@
 """Errno 65 (No route to host) from this program's own connections has
 several causes on macOS, and each gets its own error (checks.network):
 
-- a Local Network block: macOS refuses this program's connections to a device
-  that /usr/bin/ssh reaches, and one more connect to port 22 gets no route;
+- a Local Network block, in the macOS app only: macOS refuses its connections
+  to a device that /usr/bin/ssh reaches, and one more connect to port 22 gets
+  no route;
 - a saved link-local address on an interface this computer no longer has;
 - a device that is off or gone, or a block nothing could prove, which keeps
   the "not answering" error.
@@ -12,6 +13,8 @@ from __future__ import annotations
 import ipaddress
 import os
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest import mock
 
 from timecapsulesmb.checks import network
@@ -46,6 +49,31 @@ NO_ROUTE = "[Errno 65] No route to host"
 ACP_NO_ROUTE_READ = f"Could not connect to ACP on 10.0.0.2:5009: {NO_ROUTE}"
 ON_THE_DEVICES_NETWORK = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)
 ON_ANOTHER_NETWORK = (LocalInterfaceNetwork("en0", "192.168.1.50", ipaddress.ip_network("192.168.1.0/24")),)
+# Who runs tcapsule (TCAPSULE_CLIENT; tests/conftest.py removes it): the macOS
+# app, or a command from a source checkout or Homebrew. Outside the app a
+# terminal app that macOS blocks has ssh and Bonjour refused too, so nothing
+# proves the device is up.
+IN_THE_APP = {"TCAPSULE_CLIENT": APP_CLIENT}
+OUTSIDE_THE_APP = ({}, {"TCAPSULE_CLIENT": "homebrew"})
+
+
+@contextmanager
+def outside_the_app(environment: dict[str, str]) -> Iterator[None]:
+    """Runs as a command, with Homebrew's client or none, inside a test that
+    runs as the app."""
+    with mock.patch.dict(os.environ, environment):
+        if "TCAPSULE_CLIENT" not in environment:
+            del os.environ["TCAPSULE_CLIENT"]
+        yield
+
+
+class InTheApp(unittest.TestCase):
+    """Runs each test as the macOS app's helper."""
+
+    def setUp(self) -> None:
+        patcher = mock.patch.dict(os.environ, IN_THE_APP)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
 
 def ssh_refused() -> SshCommandProbeResult:
@@ -127,14 +155,11 @@ class SshReachedDeviceTests(unittest.TestCase):
                 self.assertFalse(ssh_reached_device(result))
 
 
-class LocalNetworkBlockTests(unittest.TestCase):
-    def block(self, errors, *, proof="ssh", platform="darwin", retry=NO_ROUTE, networks=ON_THE_DEVICES_NETWORK):
+class LocalNetworkBlockTests(InTheApp):
+    def block(self, errors, *, proof="ssh", retry=NO_ROUTE, networks=ON_THE_DEVICES_NETWORK):
         self.retry = mock.Mock(return_value=retry)
-        return local_network_block(
-            "10.0.0.2", errors, proof=proof, platform=platform, connect_error=self.retry, networks=networks,
-        )
+        return local_network_block("10.0.0.2", errors, proof=proof, connect_error=self.retry, networks=networks)
 
-    @mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": APP_CLIENT})
     def test_no_route_everywhere_with_proof_is_a_block(self) -> None:
         block = self.block((NO_ROUTE, ACP_NO_ROUTE_READ))
         self.assertEqual(block.code, "acp_no_route")
@@ -151,20 +176,11 @@ class LocalNetworkBlockTests(unittest.TestCase):
         # One more connect to SSH's port, which also got no route.
         self.retry.assert_called_once_with("10.0.0.2", 22, network.PORT_CHECK_TIMEOUT_SECONDS)
 
-    def test_the_app_is_named_for_the_app_and_the_terminal_app_for_a_command(self) -> None:
-        # macOS holds the app responsible for its helper's connections, and
-        # the terminal app for a command's.
-        with mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": APP_CLIENT}):
-            app = LocalNetworkBlock("10.0.0.2", "ssh", (NO_ROUTE,))
-            self.assertNotIn("Terminal", app.message + app.line)
-            self.assertTrue(app.line.endswith("then quit and reopen TimeCapsuleSMB"))
-        for environment in ({"TCAPSULE_CLIENT": "terminal"}, {"TCAPSULE_CLIENT": "homebrew"}, {}):
-            with self.subTest(environment=environment), mock.patch.dict(os.environ, environment, clear=True):
-                command = LocalNetworkBlock("10.0.0.2", "ssh", (NO_ROUTE,))
-                self.assertTrue(command.message.startswith("macOS refuses this command's connections to the device"))
-                self.assertIn("the app tcapsule runs in, such as Terminal", command.message)
-                self.assertIn("Turn that app off and on in System Settings > Privacy & Security > Local Network",
-                              command.line)
+    def test_checkup_s_line_names_the_app_and_its_setting(self) -> None:
+        line = LocalNetworkBlock("10.0.0.2", "ssh", (NO_ROUTE,)).line
+        self.assertTrue(line.startswith("macOS refuses this Mac's connections to 10.0.0.2 ([Errno 65] No route to host)"))
+        self.assertIn("Local Network access is blocked for TimeCapsuleSMB", line)
+        self.assertTrue(line.endswith("then quit and reopen TimeCapsuleSMB"))
 
     def test_each_proof_is_named(self) -> None:
         for proof, words in (("ssh", "SSH reaches it"), ("bonjour", "Bonjour finds it")):
@@ -176,9 +192,13 @@ class LocalNetworkBlockTests(unittest.TestCase):
         self.assertIsNone(self.block((NO_ROUTE,), proof=None))
         self.retry.assert_not_called()
 
-    def test_only_macos_has_the_block(self) -> None:
-        # Linux reports a failed address lookup on the link as no route.
-        self.assertIsNone(self.block((NO_ROUTE,), platform="linux"))
+    def test_outside_the_app_no_route_is_never_a_proven_block(self) -> None:
+        # Terminal.app and SSH are exempt, and a terminal app macOS blocks
+        # refuses the proof too. Linux has no app.
+        for environment in OUTSIDE_THE_APP:
+            with self.subTest(environment=environment), outside_the_app(environment):
+                self.assertIsNone(self.block((NO_ROUTE, ACP_NO_ROUTE_READ)))
+                self.retry.assert_not_called()
 
     def test_any_other_failure_is_not_a_block(self) -> None:
         for errors in (("timed out",), (NO_ROUTE, "timed out"), ("[Errno 64] Host is down",), ("Connection refused",), ()):
@@ -195,13 +215,13 @@ class LocalNetworkBlockTests(unittest.TestCase):
         self.retry.assert_not_called()
 
 
-class LocalNetworkBlockPossibleTests(unittest.TestCase):
+class LocalNetworkBlockPossibleTests(InTheApp):
     """What can be ruled out before a proof that costs time (ssh) is asked."""
 
-    def possible(self, errors=(NO_ROUTE,), *, platform="darwin", networks=ON_THE_DEVICES_NETWORK) -> bool:
-        return local_network_block_possible("10.0.0.2", errors, platform=platform, networks=networks)
+    def possible(self, errors=(NO_ROUTE,), *, networks=ON_THE_DEVICES_NETWORK) -> bool:
+        return local_network_block_possible("10.0.0.2", errors, networks=networks)
 
-    def test_no_route_on_macos_to_an_address_on_this_network_is_possible(self) -> None:
+    def test_no_route_in_the_app_to_an_address_on_this_network_is_possible(self) -> None:
         self.assertTrue(self.possible())
         self.assertTrue(self.possible((NO_ROUTE, None, ACP_NO_ROUTE_READ)))
 
@@ -209,8 +229,10 @@ class LocalNetworkBlockPossibleTests(unittest.TestCase):
         # Unreadable interfaces do not make the address another network's.
         self.assertTrue(self.possible(networks=()))
 
-    def test_linux_another_network_or_another_failure_is_not(self) -> None:
-        self.assertFalse(self.possible(platform="linux"))
+    def test_outside_the_app_another_network_or_another_failure_is_not(self) -> None:
+        for environment in OUTSIDE_THE_APP:
+            with self.subTest(environment=environment), outside_the_app(environment):
+                self.assertFalse(self.possible())
         self.assertFalse(self.possible(networks=ON_ANOTHER_NETWORK))
         for errors in ((), (None,), ("timed out",), (NO_ROUTE, "[Errno 64] Host is down")):
             with self.subTest(errors=errors):
@@ -225,12 +247,12 @@ class ProbeFailureBlockTests(unittest.TestCase):
     CLOSED = ProbeResult(SshAccessStatus.CLOSED, "SSH is not reachable yet.", "", "", "", "unknown")
 
     def failure(self, *, acp=NO_ROUTE, retry=NO_ROUTE, ssh=None, host="root@10.0.0.2", gone=None,
-                platform="darwin", networks=ON_THE_DEVICES_NETWORK):
+                client=IN_THE_APP, networks=ON_THE_DEVICES_NETWORK):
         ports = {5009: acp, 22: retry}
         self.ssh = mock.Mock(return_value=ssh or ssh_refused())
         with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", side_effect=lambda _h, port, _t: ports[port]), \
                 mock.patch("timecapsulesmb.checks.network.local_lan_networks", return_value=networks), \
-                mock.patch("timecapsulesmb.checks.network.sys.platform", platform), \
+                mock.patch.dict(os.environ, client), \
                 mock.patch("timecapsulesmb.services.runtime.link_local_interface_gone", return_value=gone), \
                 mock.patch("timecapsulesmb.services.runtime.probe_ssh_command_conn", self.ssh):
             return service_runtime.probe_failure_error(self.CLOSED, SshConnection(host, "pw", ""))
@@ -239,7 +261,7 @@ class ProbeFailureBlockTests(unittest.TestCase):
         # 0b33f140 and 45fcd831: deploy said "not answering" while ssh worked.
         error = self.failure()
         self.assertEqual(error.code, "acp_no_route")
-        self.assertTrue(error.message.startswith("macOS refuses this command's connections to the device"))
+        self.assertTrue(error.message.startswith("macOS refuses TimeCapsuleSMB's connections to the device"))
         self.ssh.assert_called_once()
         self.assertEqual(self.ssh.call_args.kwargs["timeout"], service_runtime.SSH_PROOF_TIMEOUT_SECONDS)
 
@@ -260,8 +282,9 @@ class ProbeFailureBlockTests(unittest.TestCase):
                 self.ssh.assert_not_called()
 
     def test_no_route_where_no_block_is_possible_never_asks_ssh(self) -> None:
-        # ssh could take its whole timeout and still not change the answer.
-        for case in ({"platform": "linux"}, {"networks": ON_ANOTHER_NETWORK}):
+        # ssh could take its whole timeout and still not change the answer:
+        # outside the app nothing could prove a block.
+        for case in ({"client": {}}, {"client": {"TCAPSULE_CLIENT": "homebrew"}}, {"networks": ON_ANOTHER_NETWORK}):
             with self.subTest(**{key: str(value) for key, value in case.items()}):
                 error = self.failure(**case)
                 self.assertEqual(error.code, "device_unreachable")
@@ -280,7 +303,7 @@ class ProbeFailureBlockTests(unittest.TestCase):
         self.ssh.assert_not_called()
 
 
-class RequireAcpdReadyBlockTests(unittest.TestCase):
+class RequireAcpdReadyBlockTests(InTheApp):
     """Uninstall, Disk Repair, Wipe Disk, flash and SSH Access: SSH works for
     the preflight, so a network ACP read refused with no route is a block
     when port 22 gets no route from this program too."""
@@ -295,7 +318,6 @@ class RequireAcpdReadyBlockTests(unittest.TestCase):
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=True), \
                 mock.patch("timecapsulesmb.services.runtime.client_networks_if_off_network", return_value=off_network), \
                 mock.patch("timecapsulesmb.checks.network.local_lan_networks", return_value=networks), \
-                mock.patch("timecapsulesmb.checks.network.sys.platform", "darwin"), \
                 mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=retry):
             with self.assertRaises(service_runtime.DeviceAccessError) as raised:
                 service_runtime.require_acpd_ready(self.CONNECTION, OperationCallbacks(), reading=reading)
@@ -359,7 +381,7 @@ class SetSshLinkLocalTests(unittest.TestCase):
         enable.assert_called_once()
 
 
-class DoctorSshLoginBlockTests(unittest.TestCase):
+class DoctorSshLoginBlockTests(InTheApp):
     """Checkup's SSH line: ssh itself reached the device (SSH off: the port
     is refused) while this program's own connects got no route (4c5c2a9b)."""
 
@@ -370,7 +392,6 @@ class DoctorSshLoginBlockTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.checks.network.probe_ssh_command_conn", return_value=ssh), \
                 mock.patch("timecapsulesmb.checks.network.tcp_connect_error", side_effect=lambda _h, port, _t: ports[port]), \
                 mock.patch("timecapsulesmb.checks.network.local_lan_networks", return_value=ON_THE_DEVICES_NETWORK), \
-                mock.patch("timecapsulesmb.checks.network.sys.platform", "darwin"), \
                 mock.patch("timecapsulesmb.checks.network.link_local_interface_gone", return_value=gone):
             return check_ssh_login(self.CONNECTION)
 

@@ -441,9 +441,9 @@ def probe_failure_error(probe_result: ProbeResult, connection: SshConnection) ->
     no longer has (checks.network.link_local_interface_gone), and macOS
     refusing this program's connections to a device that ssh reaches
     (checks.network.local_network_block). ssh is asked only when that block
-    is possible (checks.network.local_network_block_possible: macOS, an ACP
-    connect with no route, an address not on another network), so other
-    failures cost nothing more."""
+    is possible (checks.network.local_network_block_possible: the macOS app,
+    an ACP connect with no route, an address not on another network), so
+    other failures cost nothing more."""
     if probe_result.ssh_status == SshAccessStatus.CLOSED:
         host = endpoint_host(connection.host)
         if (interface := link_local_interface_gone(host)) is not None:

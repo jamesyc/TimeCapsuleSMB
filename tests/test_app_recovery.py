@@ -29,9 +29,15 @@ class AppRecoveryTests(unittest.TestCase):
                 "open “System Settings” > “Privacy & Security” > “Local Network”, then turn TimeCapsuleSMB off and on.",
             ],
         )
-        # The CLI names the app it runs in, and leaves the step out on Linux.
+        # Terminal.app is exempt from Local Network access; another terminal
+        # app is not. The step has no use on Linux.
         mac = cli_steps("configure", ErrorCode.REMOTE_ERROR, stage="acp_port_probe", platform="darwin")
-        self.assertIn("macOS is blocking the app it runs in, such as Terminal", mac[-1])
+        self.assertEqual(
+            mac[-1],
+            "If AirPort Utility can see the device but this command cannot, and it runs in a terminal app other than "
+            "Terminal, such as iTerm2 or Visual Studio Code, macOS is blocking that app: turn it on in System "
+            "Settings > Privacy & Security > Local Network.",
+        )
         linux = cli_steps("configure", ErrorCode.REMOTE_ERROR, stage="acp_port_probe", platform="linux")
         self.assertEqual(linux, mac[:-1])
 
@@ -328,12 +334,16 @@ class CliStepsTests(unittest.TestCase):
     """The CLI prints the app's next steps, with each control named by its command."""
 
     def entries(self) -> list[tuple[str, ErrorCode, str | None, recovery.RecoveryInfo]]:
-        return (
+        """Every entry the CLI can print. The Local Network cards are not
+        among them: only the app raises their codes
+        (network.local_network_block_possible)."""
+        entries = (
             # doctor has no entries of its own, so each code reads its default.
             [("doctor", code, None, info) for code, info in recovery._DEFAULTS.items()]
             + [(operation, code, None, info) for (operation, code), info in recovery._OPERATION_CODE_RECOVERY.items()]
             + [(operation, code, stage, info) for (operation, code, stage), info in recovery._STAGE_RECOVERY.items()]
         )
+        return [entry for entry in entries if not entry[-1].local_network_block]
 
     def test_app_controls_become_commands(self) -> None:
         self.assertEqual(
@@ -356,8 +366,6 @@ class CliStepsTests(unittest.TestCase):
 
     def test_an_entry_s_own_cli_steps_replace_the_app_s(self) -> None:
         self.assertEqual(cli_steps("set-ssh", ErrorCode.SSH_DISABLED), ("Run `tcapsule set-ssh --enable`, then try again.",))
-        # The terminal app needs Local Network access, not TimeCapsuleSMB.
-        self.assertIn("Turn on the app this command runs in", " ".join(cli_steps("discover", ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED)))
 
     def test_the_stage_and_operation_choose_the_steps_as_in_the_app(self) -> None:
         self.assertEqual(cli_steps("deploy", ErrorCode.REMOTE_ERROR, stage="verify_payload_upload")[0], "Wake the disk, then try again.")
@@ -406,9 +414,10 @@ class CliStepsTests(unittest.TestCase):
             (
                 "Make sure the device is turned on and connected to the same network or Wi-Fi as this computer.",
                 "If the device is restarting, wait a few minutes, then try again.",
-                # macOS asks Local Network access of the app a command runs in.
-                "If AirPort Utility can see the device but this command cannot, macOS is blocking the app it runs in, "
-                "such as Terminal: turn that app off and on in System Settings > Privacy & Security > Local Network.",
+                # A command's connections count as its terminal app's.
+                "If AirPort Utility can see the device but this command cannot, and it runs in a terminal app other than "
+                "Terminal, such as iTerm2 or Visual Studio Code, macOS is blocking that app: turn it on in System "
+                "Settings > Privacy & Security > Local Network.",
                 "Run `tcapsule doctor` to see which AirPorts answer on this network.",
             ),
         )
