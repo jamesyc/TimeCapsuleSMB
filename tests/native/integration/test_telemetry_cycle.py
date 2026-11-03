@@ -518,17 +518,27 @@ def production_collector(rig):
     return rig[1]
 
 
+def collector_with_acp_deadline(root, name, seconds):
+    binary = compile_service(root / name,
+                             flags=['-include', str(root / 'test_config.h'),
+                                    f'-DTC_ACP_TIMEOUT_SECONDS={seconds}', '-I', str(ROOT / 'build/native')],
+                             exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
+    first_exec(binary)
+    return binary
+
+
 @pytest.fixture(scope='module')
 def short_collector(rig):
     # Only deadline tests need a shortened clock. Ordinary HTTP/JSON tests
     # use the production allowance so fixture startup isn't the assertion.
-    root, _, _ = rig
-    binary = compile_service(root / 'service-short-timeout',
-                             flags=['-include', str(root / 'test_config.h'),
-                                    '-DTC_ACP_TIMEOUT_SECONDS=1', '-I', str(ROOT / 'build/native')],
-                             exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
-    first_exec(binary)
-    return binary
+    return collector_with_acp_deadline(rig[0], 'service-short-timeout', 1)
+
+
+@pytest.fixture(scope='module')
+def paced_collector(rig):
+    # A reply that must arrive inside the deadline gets 1.5 s of it to spare
+    # for the fake acp's start on a loaded runner.
+    return collector_with_acp_deadline(rig[0], 'service-paced-timeout', 2)
 
 
 @pytest.fixture
@@ -750,14 +760,14 @@ def test_production_telemetry_uses_the_default_acp_deadline(cycle, production_co
     assert len(state['calls']) == 1
 
 
-def test_each_acp_command_gets_its_own_deadline(cycle, short_collector, acp_calls):
+def test_each_acp_command_gets_its_own_deadline(cycle, paced_collector, acp_calls):
     _, state, _, _, env = cycle
     # The fake paces its replies, sleeping less when a start is slow: the six
-    # identity replies span 1.2 s, past short_collector's 1 s per-key deadline,
-    # while each lasts only 0.2 s or its own startup. test_device.c pins the
+    # identity replies span 2.4 s, past paced_collector's 2 s per-key deadline,
+    # while each lasts only 0.4 s or its own startup. test_device.c pins the
     # exact per-key and shared deadlines.
-    pace_ms = 200
-    result = subprocess.run(telemetry_command(short_collector, '--once', 'manual'),
+    pace_ms = 400
+    result = subprocess.run(telemetry_command(paced_collector, '--once', 'manual'),
                             env={**env, 'TC_TEST_ACP_MODE': 'slow_each', 'TC_TEST_ACP_KEY': '*',
                                  'TC_TEST_ACP_CALLS': str(acp_calls), 'TC_TEST_ACP_PACE_MS': str(pace_ms)},
                             capture_output=True, text=True, timeout=20)
