@@ -246,6 +246,14 @@ def children(discovery):
     return children_in(event_lines(discovery.events))
 
 
+def inspected_children(discovery):
+    """Children in the order discovery inspected them. The fake fstat names
+    each one before it acts, so this counts a child it killed before that
+    child's START."""
+    return list(dict.fromkeys(int(line.split()[1]) for line in event_lines(discovery.events)
+                              if line.startswith("FSTAT ")))
+
+
 def first_added_child(discovery):
     """The child that received the first add. On a loaded host discovery can
     discard a slow child at startup or inspection before sending it anything,
@@ -649,16 +657,18 @@ def test_child_exit_during_ownership_check_is_reported_and_retried(rig, dnssd):
     discovery = Discovery(rig, shares=True, fstat_mode="kill")
     try:
         connections = bonjour_connections(dnssd)
-        assert wait_for(lambda: len(children(discovery)) >= 2, timeout=12)
+        # On a loaded host the fake fstat can kill a child before its Python
+        # start logs START.
+        assert wait_for(lambda: len(inspected_children(discovery)) >= 2, timeout=12)
         assert not adds(discovery)
-        first = children(discovery)[0]
+        first = inspected_children(discovery)[0]
         assert_reaped(first, discovery.proc.pid)
         discovery.fstat_mode.write_text("owned")
         assert wait_for(lambda: len(adds(discovery)) == 3, timeout=15)
         assert_bonjour_unchanged(discovery, dnssd, connections)
     finally:
         log = discovery.stop()[1]
-    assert "killed by signal" in log
+    assert f"child {first} killed by signal 9; replacing native child" in log
 
 
 def test_stalled_inspection_keeps_bonjour_responsive_and_stops_cleanly(rig, dnssd):
