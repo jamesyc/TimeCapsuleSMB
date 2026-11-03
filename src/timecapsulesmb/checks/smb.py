@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import fcntl
 import functools
 import ipaddress
@@ -17,10 +16,11 @@ from pathlib import Path
 from typing import Callable, Optional, Union
 
 from timecapsulesmb.checks import smb_macos
-from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.checks.models import DOMAIN_COMPUTER, CheckResult
 from timecapsulesmb.transport.local import find_command, run_local_capture
 
 SMBCLIENT_DEBUG_TEXT_LIMIT = 1000
+SMB_SHARE_STAYED_MOUNTED_CODE = "smb_share_stayed_mounted"
 
 
 @dataclass(frozen=True)
@@ -682,8 +682,6 @@ def _check_authenticated_smb_file_ops_macos(
 ) -> list[CheckResult]:
     target_host = f"{server} via {ip_address}" if ip_address else server
     target = f"{username}@{target_host}/{share_name}"
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        smb_macos.unmount_stale_doctor_mounts()
     results: list[CheckResult] = []
     try:
         with smb_macos.mounted_share(
@@ -695,8 +693,15 @@ def _check_authenticated_smb_file_ops_macos(
     except smb_macos.SmbMountError as exc:
         return [CheckResult("FAIL", f"SMB mount failed for {target}: {exc}", {"errno": exc.code})]
     except smb_macos.SmbUnmountError as exc:
-        # The checks ran; the next doctor's sweep retries the unmount.
-        results.append(CheckResult("WARN", f"SMB share stayed mounted after the checks for {target}: {exc}"))
+        # The checks ran; the share stays mounted, hidden from Finder, until
+        # it is unmounted or the Mac restarts. It is this Mac's, not the
+        # device's, so the device's runtime stays verified.
+        results.append(CheckResult(
+            "WARN",
+            f"SMB share stayed mounted after the checks for {target}: {exc}; it goes away when this Mac restarts",
+            {"code": SMB_SHARE_STAYED_MOUNTED_CODE},
+            domain=DOMAIN_COMPUTER,
+        ))
     except (OSError, subprocess.SubprocessError) as exc:
         return results + [CheckResult("FAIL", f"SMB mount failed for {target}: {exc}")]
     return results

@@ -3,9 +3,11 @@ macOS paths in checks/smb.py). NetFS, smbutil, umount and diskutil are faked,
 so these run on every host; a real device run is the end-to-end check."""
 from __future__ import annotations
 
+import ctypes
 import errno
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -21,6 +23,7 @@ from timecapsulesmb.checks.doctor_steps import (
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.smb import SmbClientTarget, authenticated_smb_listing_retryable
+from timecapsulesmb.services.doctor import doctor_finished_fields
 from tests.fixtures.smb_clients import apple_client_here
 
 HEADER = "Share                                           Type    Comments\n-------------------------------\n"
@@ -179,164 +182,111 @@ class UnmountTests(unittest.TestCase):
 
     def test_mount_points_with_spaces_and_other_shares(self) -> None:
         table = (
-            "//admin@10.0.0.2/Data on /private/var/folders/x/T/tcapsule-doctor-smb-1-a (smbfs, nodev, nosuid, nobrowse)\n"
+            "//admin@localhost:52144/Data on /Volumes/Data (smbfs, nodev, nosuid, nobrowse, mounted by me)\n"
             "//me@nas.local/My%20Files on /Volumes/My Files (smbfs, nodev, nosuid, mounted by me)\n"
             "/dev/disk3s1 on / (apfs, sealed, local, read-only, journaled)\n"
         )
         with mock.patch.object(smb_macos, "run_local_capture", return_value=completed(table)) as run:
             mount_points = smb_macos.smbfs_mount_points()
-        self.assertEqual(mount_points, [Path("/private/var/folders/x/T/tcapsule-doctor-smb-1-a"), Path("/Volumes/My Files")])
+        self.assertEqual(mount_points, [Path("/Volumes/Data"), Path("/Volumes/My Files")])
         run.assert_called_once_with([smb_macos.MOUNT, "-t", "smbfs"], timeout=10)
-
-
-class StaleMountSweepTests(unittest.TestCase):
-    def sweep(self, table: subprocess.CompletedProcess[str]) -> list[Path]:
-        with mock.patch.object(smb_macos, "run_local_capture", return_value=table):
-            return smb_macos.unmount_stale_doctor_mounts()
-
-    def mount_lines(self, *paths: str) -> subprocess.CompletedProcess[str]:
-        lines = [f"//admin@10.0.0.2/Data on {path} (smbfs, nodev, nosuid, nobrowse, mounted by me)" for path in paths]
-        lines.append("//admin@nas.local/Media on /Volumes/Media (smbfs, nodev, nosuid, mounted by me)")
-        return completed("\n".join(lines) + "\n")
-
-    def test_only_mounts_of_doctors_that_exited_are_unmounted(self) -> None:
-        live = os.getpid()
-        dead = 999_999_999
-        mounts = self.mount_lines(
-            f"/private/var/folders/x/T/tcapsule-doctor-smb-{dead}-abc",
-            f"/private/var/folders/x/T/tcapsule-doctor-smb-{live}-def",
-        )
-        with mock.patch.object(smb_macos, "unmount") as unmount:
-            removed = self.sweep(mounts)
-        unmount.assert_called_once_with(Path(f"/private/var/folders/x/T/tcapsule-doctor-smb-{dead}-abc"))
-        self.assertEqual(removed, [Path(f"/private/var/folders/x/T/tcapsule-doctor-smb-{dead}-abc")])
-
-    def test_another_users_doctor_counts_as_running(self) -> None:
-        mounts = self.mount_lines("/private/var/folders/x/T/tcapsule-doctor-smb-1-abc")
-        with mock.patch.object(smb_macos.os, "kill", side_effect=PermissionError), \
-             mock.patch.object(smb_macos, "unmount") as unmount:
-            self.assertEqual(self.sweep(mounts), [])
-        unmount.assert_not_called()
-
-    def test_a_failed_sweep_is_left_for_next_time(self) -> None:
-        mounts = self.mount_lines("/private/var/folders/x/T/tcapsule-doctor-smb-999999999-abc")
-        with mock.patch.object(smb_macos, "unmount", side_effect=smb_macos.SmbUnmountError("busy")):
-            self.assertEqual(self.sweep(mounts), [])
-
-    def test_empty_folders_of_doctors_that_exited_are_removed(self) -> None:
-        # A doctor stopped mid-mount leaves its folder and no mount.
-        with tempfile.TemporaryDirectory() as tmp:
-            temp = Path(tmp)
-            dead_empty = temp / "tcapsule-doctor-smb-999999999-a"
-            dead_full = temp / "tcapsule-doctor-smb-999999998-b"
-            live = temp / f"tcapsule-doctor-smb-{os.getpid()}-c"
-            other = temp / "tcapsule-doctor-other"
-            for folder in (dead_empty, dead_full, live, other):
-                folder.mkdir()
-            (dead_full / "file").write_text("x")
-            with mock.patch.object(smb_macos.tempfile, "gettempdir", return_value=tmp):
-                self.sweep(completed(""))
-            self.assertFalse(dead_empty.exists())
-            # rmdir only: a folder with anything in it, as a mounted one has, stays.
-            self.assertTrue((dead_full / "file").exists())
-            self.assertTrue(live.exists())
-            self.assertTrue(other.exists())
 
 
 class MountTests(unittest.TestCase):
     def test_returns_the_mounted_path(self) -> None:
-        with mock.patch.object(smb_macos, "_netfs_mount", return_value=Path("/tmp/m")) as netfs:
-            self.assertEqual(smb_macos._mount_within("smb://h/s", Path("/tmp/m"), "admin", "pw", 5), Path("/tmp/m"))
-        netfs.assert_called_once_with("smb://h/s", Path("/tmp/m"), "admin", "pw")
+        with mock.patch.object(smb_macos, "_netfs_mount", return_value=Path("/Volumes/Data")) as netfs:
+            self.assertEqual(smb_macos._mount_within("smb://h/s", "admin", "pw", 5), Path("/Volumes/Data"))
+        netfs.assert_called_once_with("smb://h/s", "admin", "pw")
 
     def test_netfs_errors_come_back_with_their_errno(self) -> None:
         with mock.patch.object(smb_macos, "_netfs_mount", side_effect=smb_macos.SmbMountError(80)):
             with self.assertRaises(smb_macos.SmbMountError) as raised:
-                smb_macos._mount_within("smb://h/s", Path("/tmp/m"), "admin", "pw", 5)
+                smb_macos._mount_within("smb://h/s", "admin", "pw", 5)
         self.assertEqual(raised.exception.code, 80)
         # EAUTH, "Authentication error" on macOS; other hosts name errno 80 differently.
         self.assertEqual(str(raised.exception), f"{os.strerror(80)} (errno 80)")
 
-    def test_a_mount_that_finishes_after_the_deadline_is_unmounted_and_its_folder_removed(self) -> None:
+    def test_a_mount_that_finishes_after_the_deadline_is_unmounted(self) -> None:
         release = threading.Event()
         unmounted = threading.Event()
-        removed = threading.Event()
-        real_rmdir = Path.rmdir
 
-        def slow_mount(_url: str, mountpoint: Path, *_args: object) -> Path:
+        def slow_mount(*_args: object) -> Path:
             release.wait(10)
-            return mountpoint
+            return Path("/Volumes/Data")
 
-        def rmdir(path: Path) -> None:
-            real_rmdir(path)
-            removed.set()
+        with mock.patch.object(smb_macos, "_netfs_mount", side_effect=slow_mount), \
+             mock.patch.object(smb_macos, "unmount", side_effect=lambda path: unmounted.set()) as unmount:
+            with self.assertRaises(smb_macos.SmbMountTimeout):
+                smb_macos._mount_within("smb://h/s", "admin", "pw", 0.05)
+            # Nothing is unmounted while the mount is still running...
+            self.assertFalse(unmounted.is_set())
+            release.set()
+            # ...and the late mount is unmounted once it finishes.
+            self.assertTrue(unmounted.wait(10))
+        unmount.assert_called_once_with(Path("/Volumes/Data"))
 
-        with tempfile.TemporaryDirectory() as tmp:
-            mountpoint = Path(tmp) / "m"
-            mountpoint.mkdir()
-            with mock.patch.object(smb_macos, "_netfs_mount", side_effect=slow_mount), \
-                 mock.patch.object(smb_macos, "unmount", side_effect=lambda path: unmounted.set()) as unmount, \
-                 mock.patch.object(Path, "rmdir", rmdir):
-                with self.assertRaises(smb_macos.SmbMountTimeout):
-                    smb_macos._mount_within("smb://h/s", mountpoint, "admin", "pw", 0.05)
-                # Nothing is unmounted while the mount is still running...
-                self.assertFalse(unmounted.is_set())
-                release.set()
-                # ...and the late mount is unmounted once it finishes, then its folder removed.
-                self.assertTrue(unmounted.wait(10))
-                self.assertTrue(removed.wait(10))
-            unmount.assert_called_once_with(mountpoint)
-            self.assertFalse(mountpoint.exists())
-
-    def test_the_mount_folder_is_reached_without_a_symlink_and_names_this_doctor(self) -> None:
-        # NetFS refuses a mount point reached through a symlink (ELOOP), and
-        # macOS's temporary directory is under /var -> /private/var.
-        with tempfile.TemporaryDirectory() as tmp:
-            real = Path(tmp).resolve() / "real"
-            real.mkdir()
-            link = Path(tmp).resolve() / "link"
-            link.symlink_to(real, target_is_directory=True)
-            made = link / f"tcapsule-doctor-smb-{os.getpid()}-x"
-            made.mkdir()
-            with mock.patch.object(smb_macos.tempfile, "mkdtemp", return_value=str(made)) as mkdtemp, \
-                 mock.patch.object(smb_macos, "_mount_within", side_effect=lambda url, mountpoint, *a: mountpoint) as mount_within, \
-                 mock.patch.object(smb_macos, "unmount"):
-                with smb_macos.mounted_share("10.0.0.2", "Data", "admin", "pw"):
-                    pass
-            self.assertEqual(mkdtemp.call_args.kwargs["prefix"], f"tcapsule-doctor-smb-{os.getpid()}-")
-            self.assertEqual(mount_within.call_args.args[1], real / made.name)
-
-    def test_mounted_share_always_unmounts_and_removes_its_directory(self) -> None:
-        seen: list[Path] = []
-
-        def fake_mount(url: str, mountpoint: Path, *_args: object) -> Path:
-            seen.append(mountpoint)
-            return mountpoint
-
-        with mock.patch.object(smb_macos, "_mount_within", side_effect=fake_mount) as mount_within, \
+    def test_mounted_share_always_unmounts_the_path_netfs_chose(self) -> None:
+        with mock.patch.object(smb_macos, "_mount_within", return_value=Path("/Volumes/Data-1")) as mount_within, \
              mock.patch.object(smb_macos, "unmount") as unmount:
             with self.assertRaises(RuntimeError):
-                with smb_macos.mounted_share("10.0.0.2", "Data", "admin", "pw", port=445, timeout=9):
+                with smb_macos.mounted_share("10.0.0.2", "Data", "admin", "pw", port=445, timeout=9) as root:
+                    self.assertEqual(root, Path("/Volumes/Data-1"))
                     raise RuntimeError("check failed")
-        self.assertEqual(mount_within.call_args.args[0], "smb://10.0.0.2/Data")
-        self.assertEqual(mount_within.call_args.args[4], 9)
-        unmount.assert_called_once_with(seen[0])
-        self.assertFalse(seen[0].exists())
+        mount_within.assert_called_once_with("smb://10.0.0.2/Data", "admin", "pw", 9)
+        unmount.assert_called_once_with(Path("/Volumes/Data-1"))
 
-    def test_a_failed_mount_still_removes_its_directory(self) -> None:
-        seen: list[Path] = []
-
-        def failing_mount(url: str, mountpoint: Path, *_args: object) -> Path:
-            seen.append(mountpoint)
-            raise smb_macos.SmbMountError(errno.ENOENT)
-
-        with mock.patch.object(smb_macos, "_mount_within", side_effect=failing_mount), \
+    def test_a_failed_mount_unmounts_nothing(self) -> None:
+        with mock.patch.object(smb_macos, "_mount_within", side_effect=smb_macos.SmbMountError(errno.ENOENT)), \
              mock.patch.object(smb_macos, "unmount") as unmount:
             with self.assertRaises(smb_macos.SmbMountError):
                 with smb_macos.mounted_share("10.0.0.2", "Nope", "admin", "pw"):
                     pass
         unmount.assert_not_called()
-        self.assertFalse(seen[0].exists())
+
+
+@unittest.skipUnless(sys.platform == "darwin", "drives the real CoreFoundation")
+class NetFSCallTests(unittest.TestCase):
+    """_netfs_mount with the real CoreFoundation and a NetFS stand-in that
+    records the mount folder and options it gets."""
+
+    def setUp(self) -> None:
+        self.cf, _netfs = smb_macos._NetFS.load()
+        vp = ctypes.c_void_p
+        self.cf.CFDictionaryContainsKey.restype = ctypes.c_bool
+        self.cf.CFDictionaryContainsKey.argtypes = [vp, vp]
+        self.cf.CFArrayCreate.restype = vp
+        self.cf.CFArrayCreate.argtypes = [vp, vp, ctypes.c_long, vp]
+        self.calls: list[tuple[object, bool]] = []
+
+    def cfstr(self, text: str) -> int:
+        ref = self.cf.CFStringCreateWithCString(None, text.encode(), smb_macos._CF_STRING_ENCODING_UTF8)
+        self.addCleanup(self.cf.CFRelease, ref)
+        return ref
+
+    def mount(self, *paths: str) -> Path:
+        cf = self.cf
+
+        def netfs_mount(url, mountpath, user, password, open_options, mount_options, out):
+            self.calls.append((mountpath, cf.CFDictionaryContainsKey(mount_options, self.cfstr("MountAtMountDir"))))
+            if paths:
+                values = (ctypes.c_void_p * len(paths))(*[self.cfstr(path) for path in paths])
+                callbacks = ctypes.addressof(ctypes.c_char.in_dll(cf, "kCFTypeArrayCallBacks"))
+                out.contents.value = cf.CFArrayCreate(None, values, len(paths), callbacks)
+            return 0
+
+        with mock.patch.object(smb_macos._NetFS, "load", return_value=(cf, mock.Mock(NetFSMountURLSync=netfs_mount))):
+            return smb_macos._netfs_mount("smb://localhost:52144/Data", "admin", "pw")
+
+    def test_netfs_chooses_the_mount_folder(self) -> None:
+        self.assertEqual(self.mount("/Volumes/Data-1"), Path("/Volumes/Data-1"))
+        # No folder of our own, and no MountAtMountDir that would need one.
+        self.assertEqual(self.calls, [(None, False)])
+
+    def test_a_mount_without_a_path_is_an_error(self) -> None:
+        # Doctor could neither use nor unmount it.
+        with self.assertRaises(smb_macos.SmbMountError) as raised:
+            self.mount()
+        self.assertEqual(raised.exception.code, errno.EIO)
 
 
 class LocalSmbClientTests(unittest.TestCase):
@@ -531,9 +481,6 @@ class AppleFileOpsTests(unittest.TestCase):
         patcher = mock.patch.object(smb, "local_smb_client", return_value=apple_client_here())
         patcher.start()
         self.addCleanup(patcher.stop)
-        sweep = mock.patch.object(smb_macos, "unmount_stale_doctor_mounts", return_value=[])
-        self.sweep = sweep.start()
-        self.addCleanup(sweep.stop)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.share_root = Path(tmp.name)
@@ -565,8 +512,6 @@ class AppleFileOpsTests(unittest.TestCase):
         )])
         self.assertEqual(self.mount_calls, [("127.0.0.1", "Data", 2445)])
         self.assertEqual(list(self.share_root.iterdir()), [])
-        # Mounts an earlier doctor left behind are swept first.
-        self.sweep.assert_called_once_with()
 
     def test_the_connect_address_is_mounted_when_given(self) -> None:
         with mock.patch.object(smb_macos, "mounted_share", self.fake_mounted_share):
@@ -600,8 +545,8 @@ class AppleFileOpsTests(unittest.TestCase):
         cases = (
             (smb_macos.SmbMountError(80), f"SMB mount failed for {target}: {os.strerror(80)} (errno 80)"),
             (smb_macos.SmbMountTimeout("slow"), f"SMB mount timed out for {target}"),
-            # mkdtemp in a full or unwritable temporary directory.
-            (OSError(errno.ENOSPC, "No space left on device"), f"SMB mount failed for {target}: [Errno 28] No space left on device"),
+            # NetFS.framework that does not load.
+            (OSError(errno.ENOENT, "NetFS"), f"SMB mount failed for {target}: [Errno 2] NetFS"),
         )
         for error, message in cases:
             with self.subTest(error=error):
@@ -645,14 +590,20 @@ class AppleFileOpsTests(unittest.TestCase):
             results = smb.check_authenticated_smb_file_ops_detailed("admin", "pw", "127.0.0.1", "Data", port=2445)
         self.assertEqual([r.status for r in results], ["PASS"] * 10 + ["WARN"])
         self.assertIn(f"{self.share_root} is still mounted: /sbin/umount did not finish within 20 s", results[-1].message)
+        self.assertEqual(results[-1].details, {"code": smb.SMB_SHARE_STAYED_MOUNTED_CODE})
 
     def test_a_share_left_mounted_is_reported_after_the_steps(self) -> None:
         results = self.file_ops(mounted_share=self.raising(smb_macos.SmbUnmountError("/m is still mounted: busy"), after_body=True))
         self.assertEqual([r.status for r in results], ["PASS"] * 10 + ["WARN"])
         self.assertEqual(
             results[-1].message,
-            "SMB share stayed mounted after the checks for admin@127.0.0.1/Data: /m is still mounted: busy",
+            "SMB share stayed mounted after the checks for admin@127.0.0.1/Data: /m is still mounted: busy; "
+            "it goes away when this Mac restarts",
         )
+        # The leftover is this Mac's: the device's section stays clear.
+        sections = doctor_finished_fields(results, False, {})["doctor_sections"]
+        self.assertEqual(sections["computer"]["warn_codes"], [smb.SMB_SHARE_STAYED_MOUNTED_CODE])
+        self.assertEqual(sections["device"]["warn_codes"], [])
 
 
 if __name__ == "__main__":

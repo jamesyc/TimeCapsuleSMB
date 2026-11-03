@@ -14,7 +14,6 @@ import ipaddress
 import os
 import re
 import subprocess
-import tempfile
 import threading
 import urllib.parse
 from collections.abc import Iterator
@@ -27,11 +26,8 @@ SMBUTIL = "/usr/bin/smbutil"
 UMOUNT = "/sbin/umount"
 DISKUTIL = "/usr/sbin/diskutil"
 MOUNT = "/sbin/mount"
-# Mount folders are named for the doctor that made them, PID included.
-DOCTOR_MOUNT_PREFIX = "tcapsule-doctor-smb-"
-_DOCTOR_MOUNT_NAME = re.compile(rf"{DOCTOR_MOUNT_PREFIX}(?P<pid>\d+)-")
 # A `mount -t smbfs` line:
-# "//admin@10.0.0.2/Data on /private/var/folders/.../tcapsule-doctor-smb-123-abc (smbfs, ...)"
+# "//admin@localhost:52144/Data on /Volumes/Data (smbfs, nodev, nosuid, nobrowse, mounted by me)"
 _SMBFS_MOUNT_LINE = re.compile(r" on (?P<path>/.*) \(smbfs[,)]")
 NETFS_FRAMEWORK = "/System/Library/Frameworks/NetFS.framework/NetFS"
 COREFOUNDATION_FRAMEWORK = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
@@ -110,8 +106,6 @@ class _NetFS:
                 cf.CFStringCreateWithCString.argtypes = [vp, ctypes.c_char_p, ctypes.c_uint32]
                 cf.CFURLCreateWithString.restype = vp
                 cf.CFURLCreateWithString.argtypes = [vp, vp, vp]
-                cf.CFURLCreateFromFileSystemRepresentation.restype = vp
-                cf.CFURLCreateFromFileSystemRepresentation.argtypes = [vp, ctypes.c_char_p, ctypes.c_long, ctypes.c_bool]
                 cf.CFDictionaryCreateMutable.restype = vp
                 cf.CFDictionaryCreateMutable.argtypes = [vp, ctypes.c_long, vp, vp]
                 cf.CFDictionarySetValue.argtypes = [vp, vp, vp]
@@ -130,8 +124,10 @@ class _NetFS:
             return cls._loaded
 
 
-def _netfs_mount(url: str, mountpoint: Path, username: str, password: str) -> Path:
-    """Mount `url` on the existing directory `mountpoint`, without any prompt."""
+def _netfs_mount(url: str, username: str, password: str) -> Path:
+    """Mount `url` without any prompt where NetFS chooses, as Finder does:
+    /Volumes/<share>, or <share>-1 and so on when that name is taken. Some
+    macOS builds refuse a mount folder of the caller's own with EPERM."""
     cf, netfs = _NetFS.load()
     created: list[int] = []
 
@@ -150,8 +146,6 @@ def _netfs_mount(url: str, mountpoint: Path, username: str, password: str) -> Pa
         value_callbacks = ctypes.addressof(ctypes.c_char.in_dll(cf, "kCFTypeDictionaryValueCallBacks"))
         # CoreFoundation returns NULL for a string it does not accept as a URL.
         cf_url = own(cf.CFURLCreateWithString(None, cfstr(url), None), errno.EINVAL)
-        raw_path = os.fsencode(mountpoint)
-        cf_path = own(cf.CFURLCreateFromFileSystemRepresentation(None, raw_path, len(raw_path), True))
         open_options = own(cf.CFDictionaryCreateMutable(None, 0, key_callbacks, value_callbacks))
         cf.CFDictionarySetValue(open_options, cfstr("UIOption"), cfstr("NoUI"))
         # Time Machine may already hold a session to this share; a new one
@@ -162,24 +156,23 @@ def _netfs_mount(url: str, mountpoint: Path, username: str, password: str) -> Pa
         cf.CFDictionarySetValue(
             mount_options, cfstr("MountFlags"), own(cf.CFNumberCreate(None, _CF_NUMBER_INT_TYPE, ctypes.byref(flags)))
         )
-        cf.CFDictionarySetValue(mount_options, cfstr("MountAtMountDir"), cf_true)
         # File calls on a soft mount fail after a while instead of hanging
         # when the device stops answering.
         cf.CFDictionarySetValue(mount_options, cfstr("SoftMount"), cf_true)
         mountpoints = ctypes.c_void_p()
         code = netfs.NetFSMountURLSync(
-            cf_url, cf_path, cfstr(username), cfstr(password), open_options, mount_options, ctypes.byref(mountpoints)
+            cf_url, None, cfstr(username), cfstr(password), open_options, mount_options, ctypes.pointer(mountpoints)
         )
         if code != 0:
             raise SmbMountError(code)
-        mounted = mountpoint
         if mountpoints.value:
             created.append(mountpoints.value)
             if cf.CFArrayGetCount(mountpoints) > 0:
                 buffer = ctypes.create_string_buffer(4096)
                 if cf.CFStringGetCString(cf.CFArrayGetValueAtIndex(mountpoints, 0), buffer, len(buffer), _CF_STRING_ENCODING_UTF8):
-                    mounted = Path(buffer.value.decode("utf-8"))
-        return mounted
+                    return Path(buffer.value.decode("utf-8"))
+        # Mounted, but nowhere doctor could use or unmount.
+        raise SmbMountError(errno.EIO)
     finally:
         for ref in reversed(created):
             cf.CFRelease(ref)
@@ -220,54 +213,16 @@ def unmount(path: Path, *, timeout: int = 20) -> None:
         raise SmbUnmountError(f"{path} is still mounted: {'; '.join(failures)}")
 
 
-def _doctor_pid(path: Path) -> int | None:
-    """The PID in a doctor mount folder's name, or None for any other path."""
-    match = _DOCTOR_MOUNT_NAME.match(path.name)
-    return int(match.group("pid")) if match else None
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def unmount_stale_doctor_mounts() -> list[Path]:
-    """Unmount the mounts an earlier doctor left behind: one that exited while
-    NetFS was still mounting, or whose unmount failed. Then remove the empty
-    mount folders of doctors that exited, such as one stopped mid-mount. Each
-    folder names its doctor's PID, so a doctor running now keeps its own."""
-    removed: list[Path] = []
-    for path in smbfs_mount_points():
-        pid = _doctor_pid(path)
-        if pid is None or _pid_alive(pid):
-            continue
-        with contextlib.suppress(OSError, subprocess.SubprocessError, SmbUnmountError):
-            unmount(path)
-            removed.append(path)
-    for folder in Path(tempfile.gettempdir()).resolve().glob(f"{DOCTOR_MOUNT_PREFIX}*"):
-        pid = _doctor_pid(folder)
-        if pid is not None and not _pid_alive(pid):
-            # rmdir removes only an empty folder; one still mounted is busy.
-            with contextlib.suppress(OSError):
-                folder.rmdir()
-    return removed
-
-
-def _mount_within(url: str, mountpoint: Path, username: str, password: str, timeout: float) -> Path:
+def _mount_within(url: str, username: str, password: str, timeout: float) -> Path:
     """NetFS blocks 60 s on an address that does not answer, so the mount runs
     in a thread. A mount that finishes after the deadline is unmounted by that
-    thread, and its folder removed, so nothing stays behind doctor's back."""
+    thread when it can."""
     lock = threading.Lock()
     state: dict[str, object] = {"abandoned": False}
 
     def worker() -> None:
         try:
-            outcome: object = _netfs_mount(url, mountpoint, username, password)
+            outcome: object = _netfs_mount(url, username, password)
         except BaseException as exc:  # handed to the waiting thread
             outcome = exc
         with lock:
@@ -275,10 +230,9 @@ def _mount_within(url: str, mountpoint: Path, username: str, password: str, time
                 state["outcome"] = outcome
                 return
         if isinstance(outcome, Path):
-            # A failure here is left to the next doctor's sweep.
+            # A failure here leaves the mount hidden until the Mac restarts.
             with contextlib.suppress(OSError, subprocess.SubprocessError, SmbUnmountError):
                 unmount(outcome)
-                mountpoint.rmdir()
 
     thread = threading.Thread(target=worker, name="tcapsule-smb-mount", daemon=True)
     thread.start()
@@ -304,20 +258,14 @@ def mounted_share(
     port: int | None = None,
     timeout: float = 20,
 ) -> Iterator[Path]:
-    """Mount `share` on a fresh temporary directory, and always unmount it.
-    SmbUnmountError after the body means the share stayed mounted."""
-    # NetFS refuses a mount point reached through a symlink with ELOOP, and
-    # the temporary directory is under /var, a symlink to /private/var.
-    mountpoint = Path(tempfile.mkdtemp(prefix=f"{DOCTOR_MOUNT_PREFIX}{os.getpid()}-")).resolve()
+    """Mount `share` hidden from Finder, and always unmount it; NetFS removes
+    the folder it made. SmbUnmountError after the body means the share stayed
+    mounted."""
+    mounted = _mount_within(smb_url(host, share, port), username, password, timeout)
     try:
-        mounted = _mount_within(smb_url(host, share, port), mountpoint, username, password, timeout)
-        try:
-            yield mounted
-        finally:
-            unmount(mounted)
+        yield mounted
     finally:
-        with contextlib.suppress(OSError):
-            mountpoint.rmdir()
+        unmount(mounted)
 
 
 def _smbutil_share_row(line: str) -> tuple[str, str] | None:
