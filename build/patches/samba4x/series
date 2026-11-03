@@ -554,7 +554,8 @@
 # Uninstall removes the payload with that database, so ._ files on a disk
 # uninstalled and reinstalled stay unconverted and hidden. A FinderInfo the
 # stream list cannot read leaves AFP_AfpInfo out of it, as stock fruit does for
-# unreadable metadata, instead of failing the whole list.
+# unreadable metadata, instead of failing the whole list. A symlink stat'ed
+# without following it has no AFP_AfpInfo; the target's is never read for it.
 0055-fruit-native-finderinfo.patch|native HFS FinderInfo in fruit
 # Building on 0055's native_hfs switch, fruit serves the AFP_Resource stream
 # from the file's native resource fork, opened as <file>/..namedfork/rsrc like

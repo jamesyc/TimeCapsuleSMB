@@ -102,7 +102,9 @@ static int tc_native_finderinfo_base_fsp(
 		/*
 		 * A name relative to the share root can have several
 		 * components, which openat_pathref_fsp_lcomp() asserts
-		 * against; stock fruit opens such names this way too.
+		 * against. openat_pathref_fsp() follows a final symlink, so
+		 * fruit_fstatat_meta_native() answers for a link itself
+		 * before it gets here.
 		 */
 		status = openat_pathref_fsp(dirfsp, base_name);
 	} else {
@@ -317,6 +319,16 @@ static int fruit_fstatat_meta_native(struct vfs_handle_struct *handle,
 	uint8_t native_finderinfo[AFP_FinderSize];
 	int native_state;
 
+	/*
+	 * sbuf is the base file's, stat'ed with the caller's flags, so a link
+	 * here was asked for with AT_SYMLINK_NOFOLLOW. Its stream is absent,
+	 * as the lcomp open under any other directory finds; opening the name
+	 * under the share root would follow the link to the target's.
+	 */
+	if (S_ISLNK(sbuf->st_ex_mode)) {
+		errno = ENOENT;
+		return -1;
+	}
 	native_state = tc_native_finderinfo_read_at(
 		handle, dirfsp, smb_relname, native_finderinfo);
 	if (native_state != 1 ||
