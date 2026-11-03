@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import functools
 import posixpath
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 
@@ -97,6 +99,52 @@ def parse_active_shares(smb_conf: str) -> list[SmbShare]:
 
     append_current()
     return shares
+
+
+@functools.lru_cache(maxsize=None)
+def apple_composites() -> dict[tuple[str, str], str]:
+    """The pairs Apple's SMB server and the Mac kernel compose (xnu's
+    vfs_utfconv): the Unicode 3.2 primary composites in the Basic Multilingual
+    Plane, Hangul syllables aside. build/native/storage/gen_compose_table.py
+    writes the device's copy from this table."""
+    # Unicode 3.2's own decompositions: ucd_3_2_0.normalize() composes with
+    # the current tables and would add pairs Apple's table lacks (Balinese).
+    pairs = {}
+    for code in range(0x10000):
+        if 0xAC00 <= code <= 0xD7A3:
+            continue
+        decomposition = unicodedata.ucd_3_2_0.decomposition(chr(code))
+        parts = decomposition.split()
+        if len(parts) == 2 and not decomposition.startswith("<"):
+            first, second = (chr(int(part, 16)) for part in parts)
+            # Composition exclusions decompose but never compose again.
+            if unicodedata.normalize("NFC", first + second) == chr(code):
+                pairs[first, second] = chr(code)
+    return pairs
+
+
+def _apple_compose_pair(base: str, mark: str) -> str | None:
+    b, m = ord(base), ord(mark)
+    if 0x1100 <= b < 0x1113 and 0x1161 <= m < 0x1176:
+        return chr(0xAC00 + ((b - 0x1100) * 21 + m - 0x1161) * 28)
+    if 0xAC00 <= b < 0xD7A4 and (b - 0xAC00) % 28 == 0 and 0x11A8 <= m < 0x11C3:
+        return chr(b + m - 0x11A7)
+    return apple_composites().get((base, mark))
+
+
+def apple_precompose(name: str) -> str:
+    """NAME as a Mac sends it in a tree connect, and as the device names the
+    share's smb.conf section: each character combined into the one before it
+    when Unicode 3.2 has a composite for the pair, the table Apple's SMB server
+    and the Mac kernel use (utf8_decodestr with UTF_PRECOMPOSED)."""
+    out: list[str] = []
+    for char in name:
+        composite = _apple_compose_pair(out[-1], char) if out else None
+        if composite:
+            out[-1] = composite
+        else:
+            out.append(char)
+    return "".join(out)
 
 
 def parse_active_share_names(smb_conf: str) -> list[str]:

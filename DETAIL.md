@@ -33,6 +33,8 @@ What clients see:
 - a Bonjour name managed by Apple's mDNSResponder, which also handles conflict renames; the Samba server string comes from the AirPort name (`syNm`)
 - a Samba NetBIOS name from `/bin/hostname`, falling back to `syNm`
 - one share per Apple `MaSt` volume, at `smb://<advertised-host>.local/<share name>`, with names cleaned up and made unique
+  - the share takes the name as macOS sends it, with accents combined by Apple's Unicode 3.2 table, while `_adisk._tcp` keeps the disk's HFS spelling, as Apple's `diskd` does
+  - a name Samba keeps for itself (`global`, `globals`, `homes`, `printers`, `IPC$`), or one that matches another share under Samba's case rules, gets ` (dkN)` added; a `%` before a letter Samba expands in share names becomes `_`
 
 Logins:
 - any SMB username works with the AirPort device password; the docs use `admin`

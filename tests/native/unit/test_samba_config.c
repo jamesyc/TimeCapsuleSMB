@@ -20,5 +20,8 @@ int main(int argc, char **argv) {
     if (tc_shares_build(&shares, &inventory, available, config.internal_root, config.advertise_afp))
         return 3;
     assert(tc_shares_equal(&shares, &shares));
+    /* The manager advertises these names as adVN; tests compare them with the sections. */
+    for (i = 0; i < shares.count; i++)
+        fprintf(stderr, "adisk=%s\n", shares.values[i].name);
     return tc_samba_render(stdout, &config, &identity, "/Volumes/dk2/.samba4", &shares);
 }

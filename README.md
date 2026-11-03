@@ -234,6 +234,7 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 - that SMB is reachable
 - that Bonjour `_smb._tcp` advertisement is visible and resolves
 - that an authenticated SMB listing actually works and includes the active share name
+- that no share name has its characters split into parts (accents, voiced kana, Korean syllables), a name no Mac can open
 - that authenticated SMB file operations also work on the share
 - that the configured non-HFS `xattr_tdb:file` fallback points at persistent storage instead of the RAM disk; a successfully migrated HFS runtime does not open or recreate that TDB
 

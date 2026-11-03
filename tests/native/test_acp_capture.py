@@ -48,6 +48,9 @@ def run_nt_hash(service, password):
     (b"password", b"8846F7EAEE8FB117AD06BDD830B7586C\n"),
     ("pässwörd".encode(), b"0553152250AC01ADB4213CB9938663E4\n"),
     ("🔐password".encode(), b"CD08E0CEDBB719A7387D2F9DAE50FFA0\n"),
+    ("パスワード".encode(), b"62D6A9AA1EA010222C5E9FC49563D6A8\n"),
+    # Share names refuse U+FFFE and U+FFFF; a password keeps them.
+    ("a\ufffeb\uffff".encode(), b"44BF30C6C1878EDA94C02D8662ECA3C8\n"),
 ])
 def test_nt_hash_known_utf8_vectors(capture_tools, password, expected):
     result = run_nt_hash(capture_tools[1], password)
@@ -60,7 +63,11 @@ def test_nt_hash_strips_single_acp_newline(capture_tools, password):
     assert run_nt_hash(capture_tools[1], password).stdout == b"8846F7EAEE8FB117AD06BDD830B7586C\n"
 
 
-@pytest.mark.parametrize("password", [b"", b"\xff"])
+@pytest.mark.parametrize("password", [
+    b"", b"\xff",
+    # Overlong forms, a surrogate, a code point past U+10FFFF, a cut-off sequence.
+    b"\xc0\xaf", b"\xe0\x80\xaf", b"\xed\xa0\x80", b"\xf4\x90\x80\x80", b"pass\xe3\x81",
+])
 def test_nt_hash_rejects_invalid_or_empty_input(capture_tools, password):
     result = run_nt_hash(capture_tools[1], password)
     assert result.returncode != 0

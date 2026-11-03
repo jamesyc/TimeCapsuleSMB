@@ -181,12 +181,14 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
      * even if a crash leaves one behind, and let folder deletion remove it. */
     for (i = 0; i < shares->count; i++) {
         const struct tc_share *share = &shares->values[i];
+        char section[TC_SHARE_NAME_MAX];
+        tc_share_section(section, share->name);
         fprintf(file,
                 "\n[%s]\n    path = %s\n    browseable = yes\n    read only = no\n"
                 "    guest ok = no\n    valid users = root\n    veto files = /.samba4/.tc-xsym.*/\n"
                 "    delete veto files = yes\n"
                 "    vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb%s\n",
-                share->name, share->path, config->aio_fork ? " aio_fork" : "");
+                section, share->path, config->aio_fork ? " aio_fork" : "");
         /* Each helper holds up to an 8 MiB buffer. One Mac used at most two
          * helpers in benchmarks on both device families, and more were no
          * faster; two bound the memory to 16 MiB per client per mounted share. */

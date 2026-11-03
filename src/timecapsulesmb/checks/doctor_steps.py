@@ -79,6 +79,7 @@ from timecapsulesmb.checks.smb import (
     check_authenticated_smb_file_ops_detailed,
 )
 from timecapsulesmb.core.smb_config import (
+    apple_precompose,
     parse_active_netbios_name,
     parse_active_share_names,
     parse_xattr_tdb_paths,
@@ -555,6 +556,16 @@ def _add_active_smb_conf_results(
             add_result(CheckResult("INFO", "active Samba NetBIOS name: unavailable (netbios name not found in active smb.conf)"))
         if share_names:
             add_result(CheckResult("INFO", f"active Samba share names: {', '.join(share_names)}"))
+            # No Mac asks for a section named in the disk's decomposed HFS
+            # spelling, so a share named that way cannot be opened.
+            for share_name in share_names:
+                if apple_precompose(share_name) != share_name:
+                    add_result(CheckResult(
+                        "FAIL",
+                        f"Macs cannot open share {share_name!r}: the device stores the name with its characters split "
+                        "into parts (accents, voiced kana, Korean syllables); "
+                        "run \"Install / Update Samba\" in the macOS app, or tcapsule deploy from the command line",
+                    ))
         else:
             add_result(CheckResult("INFO", "active Samba share names: unavailable (no share sections found in active smb.conf)"))
         return
@@ -828,10 +839,12 @@ def _add_time_machine_adisk_results(
         add_result(CheckResult("PASS", f"_adisk._tcp TXT advertises {mode} as configured"))
 
     if active_share_names:
-        active_set = set(active_share_names)
-        advertised_set = set(advertised_shares)
-        missing = [share for share in active_share_names if share not in advertised_set]
-        extra = [share for share in advertised_shares if share not in active_set]
+        # The device serves share names precomposed while the ADisk TXT keeps
+        # the disk's decomposed HFS spelling; compare them as a Mac sends them.
+        active_set = {apple_precompose(share) for share in active_share_names}
+        advertised_set = {apple_precompose(share) for share in advertised_shares}
+        missing = [share for share in active_share_names if apple_precompose(share) not in advertised_set]
+        extra = [share for share in advertised_shares if apple_precompose(share) not in active_set]
         if missing:
             failed = True
             add_result(
@@ -1503,8 +1516,10 @@ def _select_smb_file_ops_share(
 ) -> str | None:
     disk_shares = _listing_disk_shares(listing_result)
     if active_share_names:
+        # smbutil prints every name decomposed; compare as a Mac sends them.
+        listed_keys = {apple_precompose(share) for share in disk_shares}
         for active_share_name in active_share_names:
-            if active_share_name in disk_shares:
+            if apple_precompose(active_share_name) in listed_keys:
                 add_result(CheckResult("PASS", f"authenticated SMB listing includes active share {active_share_name!r}"))
                 return active_share_name
         expected = ", ".join(active_share_names)

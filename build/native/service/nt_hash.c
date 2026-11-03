@@ -1,4 +1,5 @@
 #include "service.h"
+#include "../common/utf8.h"
 struct tc_md4_ctx {
     uint32_t a;
     uint32_t b;
@@ -161,86 +162,6 @@ static void tc_md4_final(struct tc_md4_ctx *ctx, uint8_t digest[16]) {
     tc_store_le32(digest + 12, ctx->d);
 }
 
-static int tc_utf8_next_codepoint(const uint8_t *input, size_t len, size_t *offset, uint32_t *codepoint) {
-    uint8_t c0;
-    uint8_t c1;
-    uint8_t c2;
-    uint8_t c3;
-    uint32_t cp;
-
-    if (*offset >= len) {
-        return -1;
-    }
-
-    c0 = input[*offset];
-    if (c0 < 0x80) {
-        *codepoint = c0;
-        (*offset)++;
-        return 0;
-    }
-
-    if (c0 >= 0xc2 && c0 <= 0xdf) {
-        if (*offset + 1 >= len) {
-            return -1;
-        }
-        c1 = input[*offset + 1];
-        if ((c1 & 0xc0) != 0x80) {
-            return -1;
-        }
-        *codepoint = ((uint32_t)(c0 & 0x1f) << 6) | (uint32_t)(c1 & 0x3f);
-        *offset += 2;
-        return 0;
-    }
-
-    if (c0 >= 0xe0 && c0 <= 0xef) {
-        if (*offset + 2 >= len) {
-            return -1;
-        }
-        c1 = input[*offset + 1];
-        c2 = input[*offset + 2];
-        if ((c1 & 0xc0) != 0x80 || (c2 & 0xc0) != 0x80) {
-            return -1;
-        }
-        if ((c0 == 0xe0 && c1 < 0xa0) || (c0 == 0xed && c1 >= 0xa0)) {
-            return -1;
-        }
-        cp = ((uint32_t)(c0 & 0x0f) << 12) | ((uint32_t)(c1 & 0x3f) << 6) | (uint32_t)(c2 & 0x3f);
-        if (cp >= 0xd800 && cp <= 0xdfff) {
-            return -1;
-        }
-        *codepoint = cp;
-        *offset += 3;
-        return 0;
-    }
-
-    if (c0 >= 0xf0 && c0 <= 0xf4) {
-        if (*offset + 3 >= len) {
-            return -1;
-        }
-        c1 = input[*offset + 1];
-        c2 = input[*offset + 2];
-        c3 = input[*offset + 3];
-        if ((c1 & 0xc0) != 0x80 || (c2 & 0xc0) != 0x80 || (c3 & 0xc0) != 0x80) {
-            return -1;
-        }
-        if ((c0 == 0xf0 && c1 < 0x90) || (c0 == 0xf4 && c1 >= 0x90)) {
-            return -1;
-        }
-        cp = ((uint32_t)(c0 & 0x07) << 18) |
-             ((uint32_t)(c1 & 0x3f) << 12) |
-             ((uint32_t)(c2 & 0x3f) << 6) |
-             (uint32_t)(c3 & 0x3f);
-        if (cp > 0x10ffff) {
-            return -1;
-        }
-        *codepoint = cp;
-        *offset += 4;
-        return 0;
-    }
-
-    return -1;
-}
-
 static void tc_md4_update_utf16le_unit(struct tc_md4_ctx *ctx, uint16_t unit) {
     uint8_t encoded[2];
 
@@ -251,8 +172,8 @@ static void tc_md4_update_utf16le_unit(struct tc_md4_ctx *ctx, uint16_t unit) {
 
 static int tc_nt_hash_utf8(const uint8_t *input, size_t len, uint8_t digest[16]) {
     struct tc_md4_ctx ctx;
-    size_t offset;
-    uint32_t cp;
+    size_t offset, step;
+    unsigned cp;
     uint32_t shifted;
     uint16_t high;
     uint16_t low;
@@ -260,10 +181,11 @@ static int tc_nt_hash_utf8(const uint8_t *input, size_t len, uint8_t digest[16])
     tc_md4_init(&ctx);
     offset = 0;
     while (offset < len) {
-        if (tc_utf8_next_codepoint(input, len, &offset, &cp) != 0) {
+        if (!(step = tc_utf8_decode(input + offset, input + len, &cp))) {
             fprintf(stderr, "invalid UTF-8 password input\n");
             return -1;
         }
+        offset += step;
         if (cp <= 0xffff) {
             tc_md4_update_utf16le_unit(&ctx, (uint16_t)cp);
         } else {

@@ -18,6 +18,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.checks.bonjour import BonjourServiceTarget  # noqa: E402
 from timecapsulesmb.core.smb_config import (  # noqa: E402
     SmbShare,
+    apple_precompose,
     parse_active_netbios_name,
     parse_active_payload_dir,
     parse_active_share_names,
@@ -108,6 +109,106 @@ def test_adisk_afp_flag_must_match_the_setting_on_every_disk(disks, advertise_af
         assert not any("as configured" in message for message in passes), passes
     # A bad flag does not hide the disk's share from the share comparison.
     assert not any("does not advertise active Samba share" in message for message in failures)
+
+
+NFD_SWEDISH = "AirPort-hårddisk"
+NFC_SWEDISH = "AirPort-hårddisk"
+NFD_JAPANESE = "AirMac ディスク"
+NFC_JAPANESE = "AirMac ディスク"
+
+
+@pytest.mark.parametrize("listed, active, expected", [
+    # smbutil prints every name decomposed; smb.conf holds the precomposed one.
+    ([NFD_SWEDISH], [NFC_SWEDISH], NFC_SWEDISH),
+    ([NFD_JAPANESE, "Data"], [NFC_JAPANESE], NFC_JAPANESE),
+    # A device from before precomposed sections serves the decomposed name.
+    ([NFD_SWEDISH], [NFD_SWEDISH], NFD_SWEDISH),
+    (["Data"], ["Data"], "Data"),
+    (["Public"], ["Data"], None),
+    ([NFD_SWEDISH], [NFC_JAPANESE], None),
+    # Apple composes only into the character just before a mark, so the
+    # device's section keeps this one decomposed where NFC would not.
+    (["x\u0323\u0308"], ["x\u0323\u0308"], "x\u0323\u0308"),
+])
+def test_file_ops_share_matches_the_listing_in_either_unicode_spelling(listed, active, expected):
+    results: list[CheckResult] = []
+    selected = doctor_steps._select_smb_file_ops_share(
+        CheckResult("PASS", "listing ok", {"disk_shares": listed}), active, "", results.append)
+    # The active spelling is what doctor then mounts; macOS composes it anyway.
+    assert selected == expected
+    statuses = [result.status for result in results]
+    assert statuses == (["PASS"] if expected else ["FAIL"])
+
+
+@pytest.mark.parametrize("advertised, active, failure", [
+    # The ADisk TXT keeps the disk's decomposed HFS name, as Apple's diskd does.
+    ([NFD_SWEDISH, NFD_JAPANESE], [NFC_SWEDISH, NFC_JAPANESE], None),
+    ([NFC_SWEDISH], [NFC_SWEDISH], None),
+    ([NFD_SWEDISH], [NFC_SWEDISH, "Data"], "does not advertise active Samba share(s): Data"),
+    ([NFD_SWEDISH, "Old"], [NFC_SWEDISH], "advertises stale share(s) not present in active Samba config: Old"),
+])
+def test_adisk_names_match_active_shares_in_either_unicode_spelling(advertised, active, failure):
+    properties = {"sys": "adVF=0x1010"}
+    properties.update({f"dk{i}": f"adVF=0x82,adVN={name},adVU=uuid-{i}" for i, name in enumerate(advertised)})
+    adisk = BonjourResolvedService("Home", "home.local", "_adisk._tcp.local.", port=9, properties=properties)
+    results: list[CheckResult] = []
+    failed = doctor_steps._add_time_machine_adisk_results(
+        [adisk], instance_name="Home", smb_hostname="home.local", active_share_names=active,
+        advertise_afp=False, add_result=results.append)
+    failures = [r.message for r in results if r.status == "FAIL"]
+    assert failed is (failure is not None)
+    if failure:
+        assert any(failure in message for message in failures), failures
+    else:
+        assert failures == []
+        assert any("advertises active Time Machine shares" in r.message for r in results if r.status == "PASS")
+
+
+@pytest.mark.parametrize("name, composed", [
+    (NFD_SWEDISH, NFC_SWEDISH),
+    (NFD_JAPANESE, NFC_JAPANESE),
+    # Hangul composes arithmetically, through a final consonant; U+11A7 is no
+    # final consonant and stays.
+    ("\u1100\u1161\u11a8", "\uac01"),
+    ("\uac00\u11a7", "\uac00\u11a7"),
+    # Each character combines only into the one before it: a second mark
+    # composes with a composite, an earlier mark that composes with nothing
+    # blocks a later one, and so does a mark at the start.
+    ("a\u0323\u0302", "\u1ead"),
+    ("x\u0323\u0308", "x\u0323\u0308"),
+    ("\u0301Data", "\u0301Data"),
+    # Apple's table is Unicode 3.2's: the U+2000-2FFF composites HFS does
+    # not decompose are in it, Balinese (Unicode 5.0) and the composition
+    # exclusions are not.
+    ("\u2203\u0338", "\u2204"),
+    ("\u1b05\u1b35", "\u1b05\u1b35"),
+    ("\u0915\u093c", "\u0915\u093c"),
+    ("Data", "Data"),
+])
+def test_apple_precompose_follows_apples_table(name, composed):
+    assert apple_precompose(name) == composed
+
+
+@pytest.mark.parametrize("sections, failing", [
+    (f"[{NFD_SWEDISH}]\n[Data]\n", [NFD_SWEDISH]),
+    (f"[{NFD_SWEDISH}]\n[{NFD_JAPANESE}]\n", [NFD_SWEDISH, NFD_JAPANESE]),
+    ("[\u2203\u0338]\n", ["\u2203\u0338"]),
+    # Names a Mac sends unchanged: precomposed, ASCII, CJK without marks, and
+    # pairs Apple's table does not compose.
+    (f"[{NFC_SWEDISH}]\n[{NFC_JAPANESE}]\n[Data]\n[AirPort\u78c1\u76d8]\n", []),
+    ("[\u1b05\u1b35]\n[x\u0323\u0308]\n", []),
+])
+def test_doctor_fails_each_share_no_mac_can_open(sections, failing):
+    results: list[CheckResult] = []
+    doctor_steps._add_active_smb_conf_results("[global]\n    netbios name = HOME\n" + sections, "", results.append)
+    failures = [r.message for r in results if r.status == "FAIL"]
+    assert len(failures) == len(failing)
+    for message, name in zip(failures, failing):
+        assert message.startswith(f"Macs cannot open share {name!r}: the device stores the name with its "
+                                  "characters split into parts")
+        assert message.endswith(
+            'run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line')
+    assert any(r.message.startswith("active Samba share names:") for r in results if r.status == "INFO")
 
 
 class DoctorHelperTests(unittest.TestCase):

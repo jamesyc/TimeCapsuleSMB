@@ -16,4 +16,7 @@ struct tc_share_set {
 int tc_shares_build(struct tc_share_set *, const struct tc_inventory *, uint32_t available, int internal_root,
                     int advertise_afp);
 int tc_shares_equal(const struct tc_share_set *, const struct tc_share_set *);
+/* The smb.conf section for a share name (a tc_share name, shorter than
+ * TC_SHARE_NAME_MAX): the name a Mac asks for. */
+void tc_share_section(char out[TC_SHARE_NAME_MAX], const char *name);
 #endif
