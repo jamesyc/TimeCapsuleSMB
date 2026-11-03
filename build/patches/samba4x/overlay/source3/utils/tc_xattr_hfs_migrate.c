@@ -775,6 +775,7 @@ static bool tc_stream_extent(const char *name)
 
 static int tc_read_tdb_stream(struct tc_migration *migration,
 			      TALLOC_CTX *mem_ctx,
+			      const char *path,
 			      const struct file_id *id,
 			      const char *anchor_name,
 			      DATA_BLOB *logical)
@@ -822,8 +823,13 @@ static int tc_read_tdb_stream(struct tc_migration *migration,
 			/*
 			 * An interrupted fsetxattr_multi() wrote no further
 			 * extents: the stream ends here, as stock
-			 * fgetxattr_multi() reads it.
+			 * fgetxattr_multi() reads it. Extents past the gap,
+			 * which smbd never reads, go with the database.
 			 */
+			fprintf(stderr, "stream cut at a missing extent "
+				"path=%s name=%s extents=%u of %u\n",
+				path, anchor_name, (unsigned)(i - 1),
+				(unsigned)extents);
 			break;
 		}
 		if (ret < 0) {
@@ -936,7 +942,7 @@ static int tc_migrate_stream(struct tc_migration *migration,
 		return 0;
 	}
 	ret = tc_read_tdb_stream(
-		migration, frame, id, anchor_name, &logical);
+		migration, frame, path, id, anchor_name, &logical);
 	if (ret != 0) {
 		fprintf(stderr, "stream decode failed path=%s name=%s error=%s\n",
 			path, anchor_name, strerror(errno));
@@ -982,13 +988,14 @@ static int tc_migrate_stream(struct tc_migration *migration,
 
 static int tc_finderinfo_from_stream(struct tc_migration *migration,
 				     TALLOC_CTX *mem_ctx,
+				     const char *path,
 				     const struct file_id *id,
 				     uint8_t finderinfo[AFP_FinderSize])
 {
 	DATA_BLOB logical = data_blob_null;
 
-	if (tc_read_tdb_stream(
-			migration, mem_ctx, id, TC_AFPINFO_XATTR, &logical) != 0)
+	if (tc_read_tdb_stream(migration, mem_ctx, path, id,
+			       TC_AFPINFO_XATTR, &logical) != 0)
 	{
 		return -1;
 	}
@@ -1092,11 +1099,11 @@ static int tc_migrate_finderinfo(struct tc_migration *migration,
 			migration, frame, id, finderinfo);
 		if (ret != 0 && tc_missing_error(errno)) {
 			ret = tc_finderinfo_from_stream(
-				migration, frame, id, finderinfo);
+				migration, frame, path, id, finderinfo);
 		}
 	} else {
 		ret = tc_finderinfo_from_stream(
-			migration, frame, id, finderinfo);
+			migration, frame, path, id, finderinfo);
 		if (ret != 0 && tc_missing_error(errno)) {
 			ret = tc_finderinfo_from_netatalk(
 				migration, frame, id, finderinfo);

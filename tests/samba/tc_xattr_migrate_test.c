@@ -1174,6 +1174,33 @@ static int read_stdout_capture(int (*call)(const char *), const char *argument,
 	return rc;
 }
 
+/* Send stderr to a scratch file until stderr_capture_end() reads it back. */
+static int stderr_capture_begin(int *saved)
+{
+	char capture[PATH_MAX] = "/tmp/tc-migrate-stderr.XXXXXX";
+	int capture_fd = mkstemp(scratch_path(capture, sizeof(capture)));
+
+	*saved = dup(STDERR_FILENO);
+	CHECK(capture_fd != -1 && *saved != -1);
+	unlink(capture);
+	fflush(stderr);
+	CHECK(dup2(capture_fd, STDERR_FILENO) != -1);
+	return capture_fd;
+}
+
+static void stderr_capture_end(int capture_fd, int saved, char *buffer, size_t size)
+{
+	ssize_t got;
+
+	fflush(stderr);
+	CHECK(dup2(saved, STDERR_FILENO) != -1);
+	close(saved);
+	got = pread(capture_fd, buffer, size - 1, 0);
+	CHECK(got >= 0);
+	buffer[got] = '\0';
+	close(capture_fd);
+}
+
 static void test_fingerprint(void)
 {
 	char root[PATH_MAX] = "/tmp/tc-migrate-fingerprint.XXXXXX";
@@ -1422,7 +1449,8 @@ static void test_multi(void)
     const uint8_t low[] = {'l','o','w',0}, high[] = {'h','i',0}, extent_low[] = {'x'}, extent_high[] = {'y'};
     uint8_t anchor_low[] = {'a',1}, anchor_high[] = {'b',1};
     uint8_t finder[AFP_FinderSize] = {0x41};
-    int fd;
+    char log[512];
+    int fd, capture_fd, saved_stderr;
     CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
     snprintf(private_dir, sizeof(private_dir), "%s/.samba4", root); CHECK(mkdir(private_dir, 0700) == 0);
     snprintf(old, sizeof(old), "%s/old.tdb", private_dir);
@@ -1529,8 +1557,13 @@ static void test_multi(void)
     CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
     multi_prepare(&multi, frame, root, old, newer); reset_xattrs();
     /* The newer value's missing extent ends it, as stock fgetxattr_multi()
-     * reads it (an interrupted write); the older value's extent is not used. */
+     * reads it (an interrupted write), and says so; the older value's
+     * extent is not used. */
+    capture_fd = stderr_capture_begin(&saved_stderr);
     CHECK(tc_multi_scan(&multi, &counts) == 0);
+    stderr_capture_end(capture_fd, saved_stderr, log, sizeof(log));
+    CHECK(strstr(log, "stream cut at a missing extent path=") != NULL);
+    CHECK(strstr(log, " name=user.DosStream.sample:$DATA extents=0 of 1\n") != NULL);
     CHECK(find_xattr("user.DosStream.sample:$DATA") != NULL);
     CHECK(find_xattr("user.DosStream.sample:$DATA")->size == 2);
     CHECK(find_xattr("user.DosStream.sample:$DATA")->value[0] == 'b');
