@@ -14,8 +14,9 @@ from unittest import mock
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device.probe import AirportAcpReading
 from timecapsulesmb.integrations import acp
-from tests.device_ps import FakePs, process, ps_row
-from timecapsulesmb.device.acpd import acpd_stuck_children
+from tests.device_ps import FakePs, process
+from timecapsulesmb.device.acpd import RestartMarker, RestartVerdict, acpd_stuck_children
+from timecapsulesmb.device.errors import DeviceRestartingError
 from timecapsulesmb.device.processes import PS_LISTING_END, parse_ps_rows
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError
 from timecapsulesmb.transport.ssh import SshConnection
@@ -24,7 +25,7 @@ from timecapsulesmb.transport.ssh import SshConnection
 REAL_ACPD_ANSWERS = acpd.acpd_answers
 REAL_READ_PROCESSES = acpd.read_processes
 REAL_MARK_RESTART = acpd.mark_restart
-REAL_RESTART_NEVER_HAPPENED = acpd.restart_never_happened
+REAL_RESTART_VERDICT = acpd.restart_verdict
 REAL_ACPD_ANSWERS_NETWORK = acpd.acpd_answers_network
 REAL_NETWORK_SILENT_DETAILS = acpd.network_silent_details
 
@@ -93,6 +94,10 @@ HEALTHY_NETBSD4_FINISHED = f"{HEALTHY_NETBSD4}\n{PS_LISTING_END}"
 
 def completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(["ssh"], returncode, stdout=stdout, stderr="")
+
+
+# A marker past the grace on a kernel whose ACPd tore itself down.
+HUNG = RestartVerdict("hung", 75.0, {"restart_verdict": "hung", "restart_marker_age_sec": 75.0})
 
 
 class AcpdStuckChildrenTests(unittest.TestCase):
@@ -205,9 +210,42 @@ class AcpdAnswersTests(unittest.TestCase):
             self.answers(completed(""), SshCommandTimeout("timed out"))
 
 
+# The LAN NetBSD 4 device's last listing before its kernel stopped in a real
+# restart: ACPd's teardown has stopped mDNSResponder, left
+# ifconfig as a zombie, and a dd of the raw disk waits in the kernel beside
+# the kernel's own threads.
+TEARDOWN_DONE_NETBSD4 = "\n".join((
+    "    1 0 1 Is 0 wait 0:00.03 init",
+    "   10 0 0 DK 0 stdflash 0:00.00 stdflash0",
+    "  251 1 251 Sa 0 kqread 0:01.20 ACPd",
+    "  569 251 251 S 0 select 0:00.10 sshd",
+    " 2038 1 2038 DL 0 physio2 0:00.40 dd",
+    " 3507 251 251 ZW 0 - 0:00.00 ifconfig",
+))
+# The same device 2 s earlier, its teardown not yet at mDNSResponder.
+TEARDOWN_UNDER_WAY_NETBSD4 = TEARDOWN_DONE_NETBSD4 + "\n  552 251 251 Sa 0 kqread 0:00.30 mDNSResponder"
+TICKS_AT_MARK = "user = 521, nice = 0, sys = 1537, intr = 275, idle = 40408"
+
+
+def ticks_later(seconds: float) -> str:
+    """TICKS_AT_MARK `seconds` later, all of them idle."""
+    return f"user = 521, nice = 0, sys = 1537, intr = 275, idle = {40408 + round(seconds * 100)}"
+
+
+def marker_output(
+    marked: str, now: str | None, listing: str = TEARDOWN_UNDER_WAY_NETBSD4, *,
+    written: str = "Nov  3 01:40:12 2026", clock: str = "Nov  3 01:40:20 2026",
+) -> str:
+    """_RESTART_MARKER_READ's output for a marker holding `marked`, written
+    and read at those device-clock times."""
+    lines = [f"marked: {marked}"] + ([] if now is None else [f"now: {now}"])
+    lines += [f"written: -rw-r--r--  1 root  wheel  57 {written} /mnt/Memory/acp-reboot", f"clock: {clock}"]
+    return "\n".join(lines) + "\n" + listing + "\n"
+
+
 class RestartMarkerTests(unittest.TestCase):
-    """The marker written before a restart request, and read while the wait
-    and later commands look for a restart that never happened."""
+    """The marker written before a restart request, with the kernel's tick
+    count, and read by every command that judges the last restart."""
 
     # The LAN NetBSD 4 device's table, in PS_COLUMNS' layout.
     NETBSD4_ROWS = [
@@ -216,66 +254,134 @@ class RestartMarkerTests(unittest.TestCase):
         process("289 S sshd /usr/sbin/sshd -D -e", ppid="190", wchan="select"),
     ]
 
-    def rows(self, *extra: str) -> str:
-        """NETBSD4_ROWS as STUCK_PROCESS_PS_COMMAND prints them, plus processes named extra."""
-        names = [(int(p["pid"]), str(p["ucomm"])) for p in self.NETBSD4_ROWS]
-        names += [(900 + index, name) for index, name in enumerate(extra)]
-        return "".join(ps_row(pid, name) + "\n" for pid, name in names)
-
-    def test_the_device_side_commands_write_and_find_the_marker(self) -> None:
-        # The device has no touch: the write is the shell's own redirection.
+    def test_the_device_side_commands_write_and_read_the_marker(self) -> None:
         writes: list[str] = []
         with mock.patch("timecapsulesmb.device.acpd.run_ssh", side_effect=lambda _c, command, **_k: writes.append(command) or completed("")):
             self.assertTrue(REAL_MARK_RESTART(CONNECTION))
-        reads: list[str] = []
-        with mock.patch("timecapsulesmb.device.acpd.run_ssh", side_effect=lambda _c, command, **_k: reads.append(command) or completed("", 1)):
-            REAL_RESTART_NEVER_HAPPENED(CONNECTION)
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "marker"
+            ticks = Path(tmp) / "ticks"
+            sysctl = Path(tmp) / "sysctl"
+            sysctl.write_text(f"#!/bin/sh\ncat {ticks}\n")
+            sysctl.chmod(0o755)
             # The fake ps fails a listing that asks for command lines, whose
             # read can wait on a busy process.
             fake = FakePs(Path(tmp), self.NETBSD4_ROWS)
 
-            def on_this_host(command: str) -> subprocess.CompletedProcess[str]:
+            def on_this_host(_connection: SshConnection, command: str, **_kwargs) -> subprocess.CompletedProcess[str]:
+                command = command.replace(acpd.RESTART_MARKER, str(marker))
+                command = command.replace(acpd.RESTART_TICKS_COMMAND, str(sysctl))
+                # GNU ls reads -T as a tab width; `date -r FILE` prints a file's
+                # time in the devices' `ls -lT` layout on macOS and Linux alike.
+                command = command.replace(f"ls -lT {marker}", f"date -r {marker} '+%b %e %H:%M:%S %Y'")
                 return subprocess.run(
-                    ["/bin/sh", "-c", fake.install(command.replace(acpd.RESTART_MARKER, str(marker)))],
+                    ["/bin/sh", "-c", fake.install(command)],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=20,
                 )
 
-            absent = on_this_host(reads[0])
-            self.assertNotEqual(absent.returncode, 0)
-            self.assertEqual((absent.stdout, fake.calls), ("", []))
-            self.assertEqual(on_this_host(writes[0]).returncode, 0)
-            self.assertTrue(marker.exists())
-            present = on_this_host(reads[0])
-            self.assertEqual(present.returncode, 0, present.stdout)
-            self.assertEqual([p.ucomm for p in parse_ps_rows(present.stdout)], ["init", "ACPd", "sshd"])
-            self.assertEqual(len(fake.calls), 1)
+            with mock.patch("timecapsulesmb.device.acpd.run_ssh", side_effect=on_this_host):
+                self.assertIsNone(acpd.read_restart_marker(CONNECTION))
+                self.assertEqual(fake.calls, [])
+                # A tick read that fails writes no marker.
+                self.assertNotEqual(on_this_host(CONNECTION, writes[0]).returncode, 0)
+                self.assertFalse(marker.exists())
+                ticks.write_text(TICKS_AT_MARK + "\n")
+                self.assertEqual(on_this_host(CONNECTION, writes[0]).returncode, 0)
+                self.assertEqual(marker.read_text(), TICKS_AT_MARK + "\n")
+                ticks.write_text(ticks_later(42.5) + "\n")
+                found = acpd.read_restart_marker(CONNECTION)
+                # The tick count unread now: the marker's time by the clock.
+                ticks.write_text("")
+                untimed = acpd.read_restart_marker(CONNECTION)
+                # An older version's empty marker: the same.
+                marker.write_text("")
+                legacy = acpd.read_restart_marker(CONNECTION)
+            self.assertEqual((found.age_seconds, found.age_clock), (42.5, "ticks"))
+            for clocked in (untimed, legacy):
+                self.assertEqual(clocked.age_clock, "device_clock")
+                self.assertLess(clocked.age_seconds, 60)
+            self.assertEqual([p.ucomm for p in parse_ps_rows(found.listing)], ["init", "ACPd", "sshd"])
+            self.assertEqual(len(fake.calls), 3)
             self.assertEqual(fake.command_reads(), [])
         self.assertTrue(acpd.RESTART_MARKER.startswith("/mnt/Memory/"))
 
-    def never_happened(self, outcome) -> bool:
-        run = mock.Mock(side_effect=outcome) if isinstance(outcome, Exception) else mock.Mock(return_value=outcome)
-        with mock.patch("timecapsulesmb.device.acpd.run_ssh", run):
-            return REAL_RESTART_NEVER_HAPPENED(CONNECTION)
+    def read(self, output: str) -> RestartMarker | None:
+        with mock.patch("timecapsulesmb.device.acpd.run_ssh", return_value=completed(output)):
+            return acpd.read_restart_marker(CONNECTION)
 
-    def test_a_marker_that_outlived_its_request_with_no_shutdown_running_is_a_restart_that_never_happened(self) -> None:
-        self.assertTrue(self.never_happened(completed(self.rows())))
-        self.assertTrue(self.never_happened(completed(self.rows("shutdownd"))))
+    def test_the_age_comes_from_the_kernel_s_ticks(self) -> None:
+        self.assertEqual(self.read(marker_output(TICKS_AT_MARK, ticks_later(61))).age_seconds, 61.0)
+        # Every counter counts, not idle alone.
+        busy = "user = 621, nice = 0, sys = 1637, intr = 375, idle = 40408"
+        self.assertEqual(self.read(marker_output(TICKS_AT_MARK, busy)).age_seconds, 3.0)
 
-    def test_no_marker_is_a_restart_that_happened(self) -> None:
-        self.assertFalse(self.never_happened(completed("", 1)))
+    def test_a_32_bit_counter_that_wrapped_still_counts(self) -> None:
+        # NetBSD 4 prints a long counter past 2**31 as negative.
+        marked = "user = 521, nice = 0, sys = 1537, intr = 275, idle = 2147483000"
+        now = "user = 521, nice = 0, sys = 1537, intr = 275, idle = -2147483296"
+        self.assertEqual(self.read(marker_output(marked, now)).age_seconds, 10.0)
 
-    def test_a_slow_shutdown_still_running_is_a_restart_under_way(self) -> None:
-        for name in ("shutdown", "reboot"):
-            with self.subTest(name=name):
-                self.assertFalse(self.never_happened(completed(self.rows(name))))
+    def test_the_device_clock_ages_a_marker_the_ticks_cannot(self) -> None:
+        cases = {
+            "written empty by an older version": marker_output("", ticks_later(5)),
+            # Unknown, its age would be judged as an old marker's.
+            "tick count unread now": marker_output(TICKS_AT_MARK, None),
+            "tick count garbled now": marker_output(TICKS_AT_MARK, "sysctl: kern.cp_time: not found"),
+        }
+        for name, output in cases.items():
+            with self.subTest(name):
+                marker = self.read(output)
+                self.assertEqual((marker.age_seconds, marker.age_clock), (8.0, "device_clock"))
+        old = marker_output("", None, written="Oct 31 23:59:50 2026", clock="Nov  1 00:01:00 2026")
+        self.assertEqual(self.read(old).age_seconds, 70.0)
+
+    def test_a_marker_whose_age_cannot_be_told_is_still_a_marker(self) -> None:
+        cases = {
+            "written empty, clock unread": marker_output("", ticks_later(5), written="", clock=""),
+            "written empty, clock stepped back": marker_output(
+                "", ticks_later(5), written="Nov  3 01:40:12 2026", clock="Oct 12 09:00:00 2026",
+            ),
+            "garbage, clock unread": marker_output("x", ticks_later(5), written="", clock=""),
+            "four counters, clock unread": marker_output(
+                "user = 1, nice = 0, sys = 2, intr = 3", ticks_later(5), written="", clock="",
+            ),
+        }
+        for name, output in cases.items():
+            with self.subTest(name):
+                marker = self.read(output)
+                self.assertIsNotNone(marker)
+                self.assertEqual((marker.age_seconds, marker.age_clock), (None, None))
+
+    def test_no_marker(self) -> None:
+        self.assertIsNone(self.read(""))
 
     def test_an_ssh_failure_reading_the_marker_is_raised(self) -> None:
         for error in (SshError("Connection refused"), SshCommandTimeout("timed out")):
             with self.subTest(error=type(error).__name__):
-                with self.assertRaises(type(error)):
-                    self.never_happened(error)
+                with mock.patch("timecapsulesmb.device.acpd.run_ssh", side_effect=error):
+                    with self.assertRaises(type(error)):
+                        acpd.read_restart_marker(CONNECTION)
+
+    def test_the_teardown_ran_once_mdnsresponder_is_gone(self) -> None:
+        cases = {
+            "under way": (TEARDOWN_UNDER_WAY_NETBSD4, False),
+            "done": (TEARDOWN_DONE_NETBSD4, True),
+            "only a zombie left": (TEARDOWN_DONE_NETBSD4 + "\n  552 251 251 Z 0 - 0:00.00 mDNSResponder", True),
+            "ps failed": ("", None),
+        }
+        for name, (listing, done) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(RestartMarker(70.0, listing).teardown_done, done)
+
+    def test_the_evidence_names_acpd_and_what_waits_in_the_kernel(self) -> None:
+        self.assertEqual(acpd.restart_evidence(RestartMarker(70.04, TEARDOWN_DONE_NETBSD4, "ticks")), {
+            "restart_marker_age_sec": 70.0,
+            "restart_marker_clock": "ticks",
+            "restart_teardown_done": True,
+            "restart_acpd_processes": ["251/1/kqread"],
+            # The kernel's own flash thread is left out.
+            "restart_waiting_processes": ["dd/physio2"],
+        })
 
     def test_a_marker_that_could_not_be_written_says_so(self) -> None:
         for outcome in (completed("sh: cannot create /mnt/Memory/x: No space left on device\n", 2), SshError("Connection reset"), SshCommandTimeout("timed out")):
@@ -283,6 +389,54 @@ class RestartMarkerTests(unittest.TestCase):
                 run = mock.Mock(side_effect=outcome) if isinstance(outcome, Exception) else mock.Mock(return_value=outcome)
                 with mock.patch("timecapsulesmb.device.acpd.run_ssh", run):
                     self.assertFalse(REAL_MARK_RESTART(CONNECTION))
+
+
+class RestartVerdictTests(unittest.TestCase):
+    """What the marker says about the last restart asked for in this boot."""
+
+    def verdict(self, marker: RestartMarker | None, *, answers: bool = True) -> RestartVerdict:
+        with mock.patch("timecapsulesmb.device.acpd.read_restart_marker", return_value=marker), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as syut:
+            verdict = REAL_RESTART_VERDICT(CONNECTION)
+        self.syut = syut
+        return verdict
+
+    def test_the_verdicts(self) -> None:
+        old = acpd.RESTART_HANG_SECONDS
+        cases = (
+            # name, marker, syUT answers, verdict, syUT read
+            ("no marker", None, True, "none", False),
+            ("young, teardown done", RestartMarker(old - 1, TEARDOWN_DONE_NETBSD4), False, "restarting", False),
+            ("young, teardown under way", RestartMarker(5.0, TEARDOWN_UNDER_WAY_NETBSD4), False, "restarting", False),
+            ("old, teardown done", RestartMarker(old, TEARDOWN_DONE_NETBSD4), True, "hung", False),
+            ("old, teardown not done, syUT silent", RestartMarker(old, TEARDOWN_UNDER_WAY_NETBSD4), False, "hung", True),
+            ("old, ACPd healthy", RestartMarker(old + 30, TEARDOWN_UNDER_WAY_NETBSD4), True, "not_taken", True),
+            ("old, ps failed, syUT silent", RestartMarker(old, ""), False, "hung", True),
+            ("old, ps failed, ACPd answers", RestartMarker(old, ""), True, "not_taken", True),
+            ("age unknown, teardown done", RestartMarker(None, TEARDOWN_DONE_NETBSD4), True, "hung", False),
+            ("age unknown, ACPd healthy", RestartMarker(None, TEARDOWN_UNDER_WAY_NETBSD4), True, "not_taken", True),
+        )
+        for name, marker, answers, state, read in cases:
+            with self.subTest(name):
+                verdict = self.verdict(marker, answers=answers)
+                self.assertEqual(verdict.state, state)
+                self.assertEqual(self.syut.called, read)
+                self.assertEqual(verdict.acpd_answers, answers if read else None)
+                if marker is None:
+                    self.assertEqual(verdict.details, {})
+                else:
+                    self.assertEqual(verdict.details["restart_verdict"], state)
+                    self.assertEqual(verdict.age_seconds, marker.age_seconds)
+
+    def test_the_restart_message(self) -> None:
+        self.assertEqual(
+            acpd.restarting_message(12.4),
+            "The device is restarting: TimeCapsuleSMB asked it to restart 12 seconds ago.",
+        )
+        self.assertEqual(
+            acpd.restarting_message(0.6),
+            "The device is restarting: TimeCapsuleSMB asked it to restart 1 second ago.",
+        )
 
 
 class ReadProcessesTests(unittest.TestCase):
@@ -389,7 +543,7 @@ class AcpdProblemsTests(unittest.TestCase):
     def problems(
         self,
         *,
-        never_happened: bool = False,
+        restart: RestartVerdict = RestartVerdict("none"),
         answers: bool = True,
         listing: str = HEALTHY_NETBSD6,
         ps_output: str | None = None,
@@ -400,7 +554,7 @@ class AcpdProblemsTests(unittest.TestCase):
         """acpd_problems with these readings. `listings` are the listings read
         in turn (the recheck's too); otherwise every read gives `listing`."""
         reads = {"side_effect": list(listings)} if listings is not None else {"return_value": listing}
-        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=never_happened) as marker, \
+        with mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=restart) as marker, \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as syut, \
                 mock.patch("timecapsulesmb.device.acpd.read_processes", **reads) as ps, \
                 mock.patch("timecapsulesmb.device.acpd.pause") as pause, \
@@ -418,7 +572,7 @@ class AcpdProblemsTests(unittest.TestCase):
                 self.assertEqual(self.problems(listing=listing)[0], [])
 
     def test_each_problem_is_named(self) -> None:
-        problems, _ps = self.problems(never_happened=True)
+        problems, _ps = self.problems(restart=HUNG)
         self.assertEqual([problem.code for problem in problems], ["restart_never_happened"])
         self.assertIn("did not restart", problems[0].what)
         problems, _ps = self.problems(answers=False)
@@ -503,7 +657,7 @@ class AcpdProblemsTests(unittest.TestCase):
     def test_a_restart_that_never_happened_comes_before_an_acpd_that_quit(self) -> None:
         # The marker is the restart ACPd took and never ran: its own fix. Its
         # listing is read once, for Samba, and never rechecked for a quit.
-        problems, ps = self.problems(never_happened=True, listing=QUIT_NETBSD4)
+        problems, ps = self.problems(restart=HUNG, listing=QUIT_NETBSD4)
         self.assertEqual([problem.code for problem in problems], ["restart_never_happened"])
         ps.assert_called_once_with(CONNECTION)
         self.pause.assert_not_called()
@@ -511,7 +665,7 @@ class AcpdProblemsTests(unittest.TestCase):
     def test_a_restart_that_never_happened_is_reported_alone(self) -> None:
         # ACPd tore itself down: its silent syUT and stuck fork are the same
         # problem, with the same fix, so they are not read or reported again.
-        problems, ps = self.problems(never_happened=True, answers=False, listing=STUCK_AFTER_REQUEST)
+        problems, ps = self.problems(restart=HUNG, answers=False, listing=STUCK_AFTER_REQUEST)
         self.assertEqual([problem.code for problem in problems], ["restart_never_happened"])
         self.syut.assert_not_called()
         ps.assert_called_once_with(CONNECTION)
@@ -527,10 +681,10 @@ class AcpdProblemsTests(unittest.TestCase):
         )
         for name, listing, sharing_off in cases:
             with self.subTest(name):
-                problems, _ps = self.problems(never_happened=True, listing=listing)
+                problems, _ps = self.problems(restart=HUNG, listing=listing)
                 self.assertEqual(problems[0].sharing_off, sharing_off)
         # Doctor's listing is used as it is.
-        problems, ps = self.problems(never_happened=True, ps_output=QUIT_NETBSD4)
+        problems, ps = self.problems(restart=HUNG, ps_output=QUIT_NETBSD4)
         ps.assert_not_called()
         self.assertTrue(problems[0].sharing_off)
 
@@ -554,10 +708,10 @@ class AcpdProblemsTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
     def test_an_ssh_failure_is_raised_not_blamed_on_acpd(self) -> None:
-        for failing in ("restart_never_happened", "acpd_answers", "acpd_answers_network"):
+        for failing in ("restart_verdict", "acpd_answers", "acpd_answers_network"):
             with self.subTest(read=failing):
                 reads = {
-                    "restart_never_happened": mock.Mock(return_value=False),
+                    "restart_verdict": mock.Mock(return_value=RestartVerdict("none")),
                     "acpd_answers": mock.Mock(return_value=True),
                     failing: mock.Mock(side_effect=SshError("Connection reset")),
                 }
@@ -568,21 +722,37 @@ class AcpdProblemsTests(unittest.TestCase):
     def test_a_failed_marker_read_is_raised_before_any_listing_is_read(self) -> None:
         # A listing says nothing when SSH fails, after its own timeout: the
         # marker read, which raises, goes first.
-        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened",
+        with mock.patch("timecapsulesmb.device.acpd.restart_verdict",
                         side_effect=SshCommandTimeout("timed out")), \
                 mock.patch("timecapsulesmb.device.acpd.read_processes") as ps:
             with self.assertRaises(SshCommandTimeout):
                 acpd.acpd_problems(CONNECTION)
         ps.assert_not_called()
 
-    def test_a_listing_taken_while_the_device_shuts_down_is_no_quit(self) -> None:
-        # A real restart's shutdown stops ACPd before sshd: that is no quit,
-        # and the other checks go on as usual.
-        shutting_down = QUIT_NETBSD4.replace(PS_LISTING_END, f"  901 1 901 S 0 wait 0:00.01 shutdown\n{PS_LISTING_END}")
-        problems, ps = self.problems(listing=shutting_down)
+    def test_a_restart_under_way_is_raised_before_anything_else_is_read(self) -> None:
+        # Nothing is broken, and the device is about to go down.
+        restarting = RestartVerdict("restarting", 7.0, {"restart_verdict": "restarting", "restart_marker_age_sec": 7.0})
+        with mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=restarting), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers") as syut, \
+                mock.patch("timecapsulesmb.device.acpd.read_processes") as ps:
+            with self.assertRaises(DeviceRestartingError) as raised:
+                acpd.acpd_problems(CONNECTION)
+        self.assertEqual(raised.exception.code, "device_restarting")
+        self.assertEqual(raised.exception.message, acpd.restarting_message(7.0))
+        self.assertEqual(raised.exception.details, restarting.details)
+        syut.assert_not_called()
+        ps.assert_not_called()
+
+    def test_a_request_never_taken_is_no_problem_and_its_syut_answer_is_reused(self) -> None:
+        not_taken = RestartVerdict("not_taken", 90.0, {"restart_verdict": "not_taken"}, acpd_answers=True)
+        problems, ps = self.problems(restart=not_taken, listing=HEALTHY_NETBSD4_FINISHED)
         self.assertEqual(problems, [])
+        self.syut.assert_not_called()
         ps.assert_called_once_with(CONNECTION)
-        self.pause.assert_not_called()
+
+    def test_a_restart_that_never_happened_carries_the_marker_s_evidence(self) -> None:
+        problems, _ps = self.problems(restart=HUNG)
+        self.assertEqual(problems[0].details, HUNG.details)
 
     def test_a_listener_silent_through_ssh_after_an_unanswered_network_read(self) -> None:
         # The device's own acp answered, this computer's read did not, and
@@ -627,7 +797,7 @@ class AcpdProblemsTests(unittest.TestCase):
         self.network.assert_not_called()
 
     def test_a_restart_that_never_happened_is_not_read_through_ssh(self) -> None:
-        problems, _ps = self.problems(never_happened=True, network_reading=READ_UNANSWERED, network_answers=False)
+        problems, _ps = self.problems(restart=HUNG, network_reading=READ_UNANSWERED, network_answers=False)
         self.assertEqual([problem.code for problem in problems], ["restart_never_happened"])
         self.network.assert_not_called()
 

@@ -335,6 +335,7 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ išjungia SMB 3 serveriui [%2$@]. Jei tai šis įrenginys, ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
 "doctor.check.ssh_disabled" = "Šiame įrenginyje SSH išjungta.";
 "doctor.check.device_unreachable" = "Įrenginys neatsako nei per SSH, nei per AirPort ACP.";
+"doctor.check.device_restarting" = "Įrenginys paleidžiamas iš naujo, todėl jis nepatikrintas. Palaukite kelias minutes, tada vėl paleiskite operaciją „Patikrinimas“.";
 "doctor.check.acp_no_route" = "macOS atmeta šio Mac jungtis su įrenginiu, nors SSH jį pasiekia. Sistemos nustatymuose, skiltyje Privacy & Security > Local Network, išjunkite ir vėl įjunkite TimeCapsuleSMB, tada uždarykite ir vėl atidarykite TimeCapsuleSMB.";
 "doctor.check.link_local_interface_gone" = "Išsaugotas įrenginio adresas yra ryšio vietinis adresas tinklo jungtyje, kurios šis Mac nebeturi, pavyzdžiui, ištrauktame USB Ethernet adapteryje. Vėl jį prijunkite arba atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
 "doctor.domain.this_mac" = "Šis Mac";
@@ -998,6 +999,9 @@
 "backend.recovery.reboot_not_finished.action.1" = "Palaukite dar kelias minutes.";
 "backend.recovery.reboot_not_finished.action.2" = "Įsitikinkite, kad esate prisijungę prie to paties tinklo ar Wi-Fi kaip ir įrenginys.";
 "backend.recovery.reboot_not_finished.action.3" = "Jei įrenginys vis dar neatsako, atjunkite jį, palaukite 10 sekundžių ir vėl prijunkite.";
+"backend.recovery.device_restarting.title" = "Įrenginys paleidžiamas iš naujo";
+"backend.recovery.device_restarting.message" = "Įrenginys šiuo metu paleidžiamas iš naujo, todėl nieko nebuvo atlikta.";
+"backend.recovery.device_restarting.action.1" = "Palaukite kelias minutes, kol įrenginys pasileis, tada bandykite dar kartą.";
 "backend.recovery.acpd_broken.title" = "Apple ACPd sugedo";
 "backend.recovery.acpd_broken.message" = "Apple AirPort tarnyba (ACPd) įrenginyje užstrigo arba nebeveikia. Tai Apple programinės įrangos klaida, o ne TimeCapsuleSMB.";
 "backend.recovery.acpd_broken.action.1" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
@@ -1364,6 +1368,7 @@
 "timeline.progress.migration_files" = "Patikrinta failų: %lld";
 "timeline.progress.client_away" = "Šis Mac paliko įrenginio tinklą. Vėl jį prijunkite; įrenginys vis dar paleidžiamas iš naujo.";
 "timeline.progress.client_away_named" = "Šis Mac paliko įrenginio tinklą (Wi-Fi „%@“). Vėl jį prijunkite; įrenginys vis dar paleidžiamas iš naujo.";
+"timeline.progress.acpd_hung" = "Apple AirPort tarnyba sustojo nepaleidusi įrenginio iš naujo. Atjunkite jį, palaukite 10 sekundžių ir vėl prijunkite; veiksmas tęsis, kai įrenginys įsijungs.";
 "timeline.operation.saving_device" = "Išsaugomas įrenginys";
 "toggle.internal_share_use_disk_root" = "Bendrinti vidinio disko šaknį";
 "toggle.smb_browse_compatibility" = "Leisti naršyti SMB bendrinamus diskus";

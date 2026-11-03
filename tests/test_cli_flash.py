@@ -37,6 +37,7 @@ from timecapsulesmb.core.config import AppConfig
 from tests.cli_support import CliTestCase, FakeCommandContext
 from tests.reboot_support import FakeAcpDevice
 from timecapsulesmb.services.reboot import reboot_device
+from timecapsulesmb.device.acpd import RestartVerdict
 from tests.flash_fixtures import (
     bank_checksum,
     bank_end_offset,
@@ -266,7 +267,7 @@ class CliFlashTests(CliTestCase):
             with self.subTest(mode=mode[0]):
                 command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
                 with tempfile.TemporaryDirectory() as tmp, zopfli_available(), self.flash_cli(command_context), \
-                        mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True), \
+                        mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("hung")), \
                         mock.patch("timecapsulesmb.services.flash.read_flash_inputs") as read_inputs, \
                         redirect_stdout(io.StringIO()):
                     with self.assertRaises(DeviceAccessError) as raised:

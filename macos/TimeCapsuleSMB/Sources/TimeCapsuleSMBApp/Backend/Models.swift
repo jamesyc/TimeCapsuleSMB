@@ -102,9 +102,11 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
     public let recheck: Bool?
     // A "progress" event of a restart wait: this Mac left the device's network
     // (true) or came back (false), and the device's Wi-Fi name, empty when
-    // the helper has none.
+    // the helper has none; and whether Apple's ACPd stopped without restarting
+    // the device, so the user is to unplug it.
     public let clientAway: Bool?
     public let networkName: String?
+    public let acpdHung: Bool?
     // When the app received the event; a running Disk Repair counts its time from it.
     public private(set) var receivedAt = Date()
 
@@ -133,6 +135,7 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         recheck: Bool? = nil,
         clientAway: Bool? = nil,
         networkName: String? = nil,
+        acpdHung: Bool? = nil,
         receivedAt: Date = Date()
     ) {
         self.schemaVersion = schemaVersion
@@ -159,6 +162,7 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         self.recheck = recheck
         self.clientAway = clientAway
         self.networkName = networkName
+        self.acpdHung = acpdHung
         self.receivedAt = receivedAt
     }
 
@@ -205,6 +209,7 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
             recheck: recheck,
             clientAway: clientAway,
             networkName: networkName,
+            acpdHung: acpdHung,
             receivedAt: receivedAt
         )
     }
@@ -234,6 +239,7 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         case recheck
         case clientAway = "client_away"
         case networkName = "network_name"
+        case acpdHung = "acpd_hung"
     }
 
     /// The operation log's line: the helper's own English, in every app

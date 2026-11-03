@@ -335,6 +335,7 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ отключает SMB 3 для сервера [%2$@]. Если это и есть данное устройство, удалите эту строку, затем удалите диск в настройках Time Machine и добавьте его снова.";
 "doctor.check.ssh_disabled" = "SSH отключен на этом устройстве.";
 "doctor.check.device_unreachable" = "Устройство не отвечает ни по SSH, ни по AirPort ACP.";
+"doctor.check.device_restarting" = "Устройство перезагружается, поэтому его не проверили. Подождите несколько минут, затем снова запустите операцию «Проверка».";
 "doctor.check.acp_no_route" = "macOS отклоняет подключения этого Mac к устройству, хотя SSH до него доходит. В разделе «Системные настройки» > «Конфиденциальность и безопасность» > «Локальная сеть» отключите и снова включите TimeCapsuleSMB, затем закройте TimeCapsuleSMB и откройте его снова.";
 "doctor.check.link_local_interface_gone" = "Сохраненный адрес устройства является локальным для канала адресом на сетевом подключении, которого у этого Mac больше нет, например на отключенном адаптере USB Ethernet. Подключите его снова или обновите поиск и повторно подключите сохраненное устройство.";
 "doctor.domain.this_mac" = "Этот Mac";
@@ -998,6 +999,9 @@
 "backend.recovery.reboot_not_finished.action.1" = "Подождите еще несколько минут.";
 "backend.recovery.reboot_not_finished.action.2" = "Убедитесь, что вы подключены к той же сети или Wi-Fi, что и устройство.";
 "backend.recovery.reboot_not_finished.action.3" = "Если устройство по-прежнему не отвечает, отключите его, подождите 10 секунд, затем снова подключите.";
+"backend.recovery.device_restarting.title" = "Устройство перезагружается";
+"backend.recovery.device_restarting.message" = "Устройство перезагружается, поэтому ничего не было сделано.";
+"backend.recovery.device_restarting.action.1" = "Подождите несколько минут, пока устройство запустится, затем повторите попытку.";
 "backend.recovery.acpd_broken.title" = "Apple ACPd не работает";
 "backend.recovery.acpd_broken.message" = "Служба AirPort от Apple (ACPd) на устройстве зависла или больше не работает. Это ошибка в прошивке Apple, а не в TimeCapsuleSMB.";
 "backend.recovery.acpd_broken.action.1" = "Отключите устройство, подождите 10 секунд, затем снова подключите его.";
@@ -1364,6 +1368,7 @@
 "timeline.progress.migration_files" = "Проверено файлов: %lld";
 "timeline.progress.client_away" = "Этот Mac покинул сеть устройства. Подключите его снова; устройство еще перезагружается.";
 "timeline.progress.client_away_named" = "Этот Mac покинул сеть устройства (Wi-Fi «%@»). Подключите его снова; устройство еще перезагружается.";
+"timeline.progress.acpd_hung" = "Служба AirPort от Apple остановилась, не перезагрузив устройство. Отключите его, подождите 10 секунд и снова подключите; операция продолжится после запуска.";
 "timeline.operation.saving_device" = "Сохранение устройства";
 "toggle.internal_share_use_disk_root" = "Открыть доступ к корню внутреннего диска";
 "toggle.smb_browse_compatibility" = "Разрешить просмотр общих ресурсов SMB";

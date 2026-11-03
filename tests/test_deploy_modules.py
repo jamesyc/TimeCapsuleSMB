@@ -165,6 +165,7 @@ from timecapsulesmb.services.runtime_verification import (
 )
 from timecapsulesmb.transport.errors import SshLocalNetworkFilteredError, SshUploadTimeout
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError, upload_timeout_seconds
+from timecapsulesmb.device.acpd import RestartVerdict
 
 
 def manager_state(problems, *, acpd_running: bool | None = True) -> ManagerState | None:
@@ -4086,13 +4087,14 @@ describe_managed_smbd_status "" ""
         run_actions.assert_called_once()
         self.assertTrue(decision.run_actions)
 
-    def _activate_with_acpd(self, *, never_happened=False, answers=True, listing="", runtime=None):
+    def _activate_with_acpd(self, *, never_happened=False, answers=True, listing="", runtime=None, restart=None):
         """activate_runtime on a device whose runtime is not ready, with these
         ACPd readings (device.acpd); the start itself is a mock."""
         with mock.patch("timecapsulesmb.services.activation.require_compatible_install"), \
                 mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn",
                            return_value=runtime or self._runtime_not_ready()), \
-                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=never_happened), \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict",
+                           return_value=restart or RestartVerdict("hung" if never_happened else "none")), \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers), \
                 mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing), \
                 mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as run_actions:
@@ -4127,6 +4129,17 @@ describe_managed_smbd_status "" ""
                 self.assertTrue(str(error).startswith("NetBSD 4 activation failed. Apple ACPd is broken: "))
                 self.assertIn(said, str(error))
                 self.assertTrue(str(error).endswith("Nothing was started."))
+
+    def test_activate_refuses_a_device_that_is_restarting(self) -> None:
+        # The device is about to go down; nothing about ACPd is broken.
+        error, run_actions = self._activate_with_acpd(restart=RestartVerdict("restarting", 9.0))
+        run_actions.assert_not_called()
+        self.assertEqual(error.code, "device_restarting")
+        self.assertEqual(
+            str(error),
+            "NetBSD 4 activation failed. The device is restarting: TimeCapsuleSMB asked it to restart 9 seconds ago. "
+            "Nothing was started.",
+        )
 
     def test_activate_says_acpd_quit_before_a_verdict_the_manager_shows_without_it(self) -> None:
         # The manager's verdict is stale without ACPd: the refusal names ACPd.

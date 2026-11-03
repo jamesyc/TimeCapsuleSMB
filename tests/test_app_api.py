@@ -102,6 +102,7 @@ from timecapsulesmb.transport.errors import (
 )
 from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.device.acpd import RestartVerdict
 
 
 class SampleMode(Enum):
@@ -7566,6 +7567,19 @@ MaSt = (
 
         compare.assert_called_once()
 
+    def test_a_restart_under_way_is_an_ordinary_preflight_refusal(self) -> None:
+        from timecapsulesmb.app.ops.common import require_request_acpd_ready
+        from timecapsulesmb.device.acpd import RestartVerdict
+
+        context = AppOperationContext("uninstall", CollectingSink().sink)
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", acp_password_answer(True)), \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("restarting", 3.0)):
+            with self.assertRaises(AppOperationError) as raised:
+                require_request_acpd_ready(context, SshConnection("root@10.0.0.2", "pw", ""))
+
+        self.assertEqual(raised.exception.code, "device_restarting")
+        self.assertTrue(str(raised.exception).endswith("Nothing was changed."))
+
     def test_uninstall_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
         collector, rc, compare, uninstall = self.run_uninstall_with_password_answer(False, {})
 
@@ -7714,7 +7728,7 @@ MaSt = (
     def test_fsck_refuses_a_broken_apple_acpd_before_asking(self) -> None:
         # The reboot would leave ACPd torn down and the device running.
         for patch, value in (
-            ("timecapsulesmb.device.acpd.restart_never_happened", True),
+            ("timecapsulesmb.device.acpd.restart_verdict", RestartVerdict("hung")),
             ("timecapsulesmb.device.acpd.read_processes", "  119 1 2 Sl 0 kqueue 0:00.00 ACPd\n  352 119 2 S 1 nanoslp 0:00.00 ACPd\n"),
             ("timecapsulesmb.device.acpd.acpd_answers", False),
         ):
@@ -7768,7 +7782,7 @@ MaSt = (
                     "timecapsulesmb.app.ops.flash.require_connection_compatibility",
                     return_value=supported_compatibility("netbsd4be_samba4"),
                 ), \
-                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True), \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("hung")), \
                 mock.patch("timecapsulesmb.app.ops.flash.backup_flash") as backup:
             rc = service.run_api_request({"operation": "flash", "params": {"action": "backup"}}, collector.sink)
 

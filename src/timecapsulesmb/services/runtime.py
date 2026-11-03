@@ -18,7 +18,7 @@ from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.paths import AppPaths, resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility
-from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.errors import DeviceError, DeviceRestartingError
 from timecapsulesmb.device.probe import (
     ProbeResult,
     ProbedDeviceState,
@@ -136,7 +136,8 @@ def acpd_problems_and_disk_stalls(
     that keeps running raises DiskCheckRunningError first
     (require_no_disk_check): the unplug that a stall or ACPd's problems ask
     for would interrupt it. Work that neither restarts the device nor uses
-    the disk leaves it out."""
+    the disk leaves it out. A restart under way raises
+    DeviceRestartingError, with the marker's fields recorded."""
 
     def stalls_in(ps_output: str) -> list[StuckProcess]:
         stalls = disk_io_stalls(ps_output)
@@ -148,7 +149,11 @@ def acpd_problems_and_disk_stalls(
     stalls = stalls_in(listing)
     if stalls:
         return [], stalls
-    problems = acpd.acpd_problems(connection, listing, network_reading=network_reading)
+    try:
+        problems = acpd.acpd_problems(connection, listing, network_reading=network_reading)
+    except DeviceRestartingError as exc:
+        callbacks.debug(**exc.details)
+        raise
     if acpd.disk_stall_could_explain(problems):
         stalls = stalls_in(acpd.read_processes(connection))
         if stalls:
@@ -293,7 +298,8 @@ def require_acpd_ready(
     as a Disk Repair whose connection ended, refuses it before either
     (require_no_disk_check), unless `restarts` is False: a flash backup,
     plan or patch neither restarts the device nor uses its disk, so it
-    cannot interrupt the check. `reading` is
+    cannot interrupt the check. A restart under way, such as another
+    command's, refuses it as well (code device_restarting). `reading` is
     this command's earlier network read of the device at this address
     (confirm_device_address); an unanswered one is not read again from here,
     as the second read would only repeat the same retry, but ACPd's listener
@@ -305,9 +311,12 @@ def require_acpd_ready(
     if reading.password_matches is False:
         raise DeviceAccessError(AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, code=ErrorCode.AUTH_FAILED)
     report_airport_identity(callbacks, reading)
-    problems, stalls = acpd_problems_and_disk_stalls(
-        connection, callbacks, network_reading=reading, disk_check=restarts,
-    )
+    try:
+        problems, stalls = acpd_problems_and_disk_stalls(
+            connection, callbacks, network_reading=reading, disk_check=restarts,
+        )
+    except DeviceRestartingError as exc:
+        raise DeviceAccessError(f"{exc.message} Nothing was changed.", code=exc.code) from None
     if stalls:
         raise DeviceAccessError(
             f"{DISK_NOT_RESPONDING_MESSAGE} Nothing was changed.",

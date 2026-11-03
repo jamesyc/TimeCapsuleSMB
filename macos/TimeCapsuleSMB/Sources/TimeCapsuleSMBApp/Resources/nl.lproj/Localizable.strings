@@ -335,6 +335,7 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ schakelt SMB 3 uit voor de server [%2$@]. Als dat dit apparaat is, verwijder dan die regel, verwijder daarna de schijf in de Time Machine-instellingen en voeg hem opnieuw toe.";
 "doctor.check.ssh_disabled" = "SSH is uitgeschakeld op dit apparaat.";
 "doctor.check.device_unreachable" = "Het apparaat reageert niet via SSH of AirPort ACP.";
+"doctor.check.device_restarting" = "Het apparaat wordt opnieuw opgestart en is daarom niet gecontroleerd. Wacht een paar minuten en voer dan ‘Controle’ opnieuw uit.";
 "doctor.check.acp_no_route" = "macOS weigert de verbindingen van deze Mac met het apparaat, hoewel SSH het bereikt. Schakel TimeCapsuleSMB bij ‘Systeeminstellingen’ > ‘Privacy en beveiliging’ > ‘Lokaal netwerk’ uit en weer in, stop TimeCapsuleSMB en open het opnieuw.";
 "doctor.check.link_local_interface_gone" = "Het opgeslagen adres van het apparaat is een link-lokaal adres op een netwerkverbinding die deze Mac niet meer heeft, zoals een losgekoppelde USB-ethernetadapter. Sluit die opnieuw aan, of vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
 "doctor.domain.this_mac" = "Deze Mac";
@@ -998,6 +999,9 @@
 "backend.recovery.reboot_not_finished.action.1" = "Wacht nog een paar minuten.";
 "backend.recovery.reboot_not_finished.action.2" = "Zorg ervoor dat u verbonden bent met hetzelfde netwerk of Wi-Fi als het apparaat.";
 "backend.recovery.reboot_not_finished.action.3" = "Als het apparaat nog steeds niet reageert, koppel het dan los, wacht 10 seconden en sluit het weer aan.";
+"backend.recovery.device_restarting.title" = "Apparaat wordt opnieuw opgestart";
+"backend.recovery.device_restarting.message" = "Het apparaat wordt opnieuw opgestart, dus er is niets gedaan.";
+"backend.recovery.device_restarting.action.1" = "Wacht een paar minuten tot het apparaat is opgestart en probeer het dan opnieuw.";
 "backend.recovery.acpd_broken.title" = "Apple ACPd werkt niet";
 "backend.recovery.acpd_broken.message" = "De AirPort-dienst van Apple (ACPd) op het apparaat is vastgelopen of draait niet meer. Dit is een fout in de firmware van Apple, niet in TimeCapsuleSMB.";
 "backend.recovery.acpd_broken.action.1" = "Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
@@ -1364,6 +1368,7 @@
 "timeline.progress.migration_files" = "Gecontroleerde bestanden: %lld";
 "timeline.progress.client_away" = "Deze Mac heeft het netwerk van het apparaat verlaten. Verbind hem opnieuw; het apparaat start nog opnieuw op.";
 "timeline.progress.client_away_named" = "Deze Mac heeft het netwerk van het apparaat (Wi-Fi ‘%@’) verlaten. Verbind hem opnieuw; het apparaat start nog opnieuw op.";
+"timeline.progress.acpd_hung" = "De AirPort-dienst van Apple is gestopt zonder het apparaat opnieuw op te starten. Koppel het los, wacht 10 seconden en sluit het weer aan; dit gaat verder zodra het is opgestart.";
 "timeline.operation.saving_device" = "Apparaat opslaan";
 "toggle.internal_share_use_disk_root" = "Hoofdmap van interne schijf delen";
 "toggle.smb_browse_compatibility" = "SMB-shares laten weergeven";

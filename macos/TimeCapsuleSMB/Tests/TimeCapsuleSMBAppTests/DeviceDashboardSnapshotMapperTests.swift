@@ -461,6 +461,26 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(sameOperation.deployState.startedAt, prior.startedAt)
     }
 
+    func testADeployRefusedDuringARestartLeavesTheInstallUnchecked() throws {
+        // Preflight refused before changing anything: the deploy failed, the
+        // install did not.
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let operation = ActiveOperation(operation: "deploy", profileID: profile.id, context: nil)
+        let error = BackendErrorViewModel(
+            operation: "deploy", code: DoctorSummary.deviceRestartingResultCode, message: "The device is restarting."
+        )
+
+        let failed = DeviceDashboardSnapshotMapper.failedDeploySnapshots(
+            operation: operation, profile: profile, stage: "preflight", payloadFamily: "netbsd6_samba4",
+            error: error, failedAt: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertEqual(failed.deployState.status, .failed)
+        XCTAssertEqual(failed.deployState.errorCode, DoctorSummary.deviceRestartingResultCode)
+        XCTAssertEqual(failed.runtimeState.state, .unknown)
+        XCTAssertFalse(failed.runtimeState.state.isFailure)
+    }
+
     func testProgressKeepsAttemptDetailsWhileUpdatingItsStage() {
         let startedAt = Date(timeIntervalSince1970: 100)
         let observedAt = Date(timeIntervalSince1970: 200)

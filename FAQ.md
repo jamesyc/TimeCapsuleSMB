@@ -235,7 +235,7 @@ ACPd is Apple's AirPort service on the device: AirPort Utility, file sharing set
 
 To fix it, unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, then run Install or Checkup again.
 
-Install, Uninstall, Disk Repair, turning SSH off and the firmware tools check ACPd before they change anything, and stop with "Nothing was changed" when it is stuck or has quit. If ACPd gets stuck during the restart at the end of an install, the update is already in place and starts when the device starts up again. On a NetBSD 4 device (Gen 1-4) without the firmware startup hook, run Activate once it has started up.
+Install, Uninstall, Disk Repair, turning SSH off and the firmware tools check ACPd before they change anything, and stop with "Nothing was changed" when it is stuck or has quit. If ACPd gets stuck during a restart that TimeCapsuleSMB asked for, such as the one at the end of an install, the app asks you to unplug the device, wait 10 seconds and plug it back in. It keeps waiting, and the command finishes once the device starts up. If the device has not come back 10 minutes after that request, the command stops with "Apple ACPd is broken". An install has already put the update in place, and it starts when the device starts up again. On a NetBSD 4 device (Gen 1-4) without the firmware startup hook, run Activate once it has started up.
 
 #### Install or Activate says "Apple ACPd quit"
 

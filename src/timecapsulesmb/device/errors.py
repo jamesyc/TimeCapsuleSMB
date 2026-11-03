@@ -16,6 +16,18 @@ class AcpdQuitError(DeviceError):
     samba_off = True
 
 
+class DeviceRestartingError(DeviceError):
+    """A restart TimeCapsuleSMB asked for is under way (device.acpd's
+    restart_verdict "restarting"): the device is about to go down, and nothing
+    on it is broken. `details` are the marker's debug fields."""
+
+    code = ErrorCode.DEVICE_RESTARTING
+
+    def __init__(self, message: str, *, details: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
+
+
 class DiskPayloadError(DeviceError):
     """The manager cannot run the payload on the disk as installed, however
     long anything waits (device.probe.DISK_PAYLOAD_PROBLEMS): a reinstall

@@ -380,19 +380,42 @@ cite them by number. ([DETAIL.md](../../DETAIL.md) has the user-facing side.)
 
 - **Restart hang.** ACPd can accept an `acRB` reboot request, stop
   mDNSResponder, diskd, printd, afpserver, iCloudd, link_local and rtsold, stop
-  answering port 5009, and never run `/sbin/shutdown`. The kernel keeps running
+  answering port 5009, and never restart the kernel. The kernel keeps running
   with the same PIDs; sshd, ACPd's child stopped late in that path, survives,
   so SSH still works. The device stays off the network until unplugged. The
   predictor is a child process also named `ACPd`, asleep in nanosleep (`ps`
   shows `nanoslp`; NetBSD 4 truncates it to `nanoslee`); a healthy device runs
   one ACPd whose parent is init. A NetBSD 4 variant also takes SSH and the
-  network down. The runtime detects a restart that never happened with the RAM
-  marker `/mnt/Memory/acp-reboot` (`device/acpd.py`), which only a real restart
-  empties.
-- **Real restart timing.** Ports 22 and 5009 close within the same second; the
-  old sshd does not outlive ACP. The new boot answers ACP 54 s (NetBSD 6) to
-  64 s (NetBSD 4) later, and SSH 2-3 s after ACP. NTP steps the clock by weeks
-  just after boot, so no restart check may trust the device clock.
+  network down.
+- **Restart marker.** Before each restart request it can see over SSH, the
+  Mac writes `/mnt/Memory/acp-reboot` (`device/acpd.py`) holding the output of
+  `sysctl -n kern.cp_time`: the statistics clock's ticks since boot, five
+  counters whose sum grows 100 a second on both families, with no part for
+  ACPd and none for the device clock. A real restart empties the RAM disk, so
+  any process reads from one SSH command how long ago a restart that has not
+  happened yet was asked for (`restart_verdict`). Under 60 s it is a restart
+  under way, and commands refuse with `device_restarting`. Past that, ACPd's
+  teardown having run (mDNSResponder gone) or a device whose own `acp` gets
+  no `syUT` is the hang; a healthy ACPd beside the marker means the request
+  never started a restart, and nothing is blamed. NetBSD 4's counters are
+  32-bit and wrap after about 248 days of uptime. Versions up to v3.8.2 wrote
+  the marker empty; such a marker is aged by the device clock (`ls -lT`
+  against `date`), which NTP's step just after boot can make look older. So
+  is a marker whose tick count cannot be read now; the debug field
+  `restart_marker_clock` says which clock gave the age.
+- **Real restart timing.** ACPd writes `ACPData.bin` to flash for about 4 s
+  after the request, closes port 5009 at about 4.3 s, then stops its daemons in
+  a fixed order (iCloudd, printd, wcifsfs and afpserver, sntpd and snmpd,
+  link_local and dhclient, then mDNSResponder and rtsold). The old kernel stops
+  about 7.5 s after the request on NetBSD 4 and 4.5 s on NetBSD 6, CPU and disk
+  load or not; port 22 closes with it, 2.5-5.6 s after 5009. No `shutdown` or
+  `reboot` process ever shows in `ps`, and ACPd, sshd and the runtime run
+  until the kernel stops. The new boot answers ACP 54 s (NetBSD 6) to 64 s
+  (NetBSD 4) later, and SSH 2-3 s after ACP. NTP steps the clock by weeks just
+  after boot, so no restart check may trust the device clock. Some field
+  restarts kept the old kernel answering SSH with the marker for 100-300 s
+  before a new boot; whether those were slow restarts or hangs a user
+  unplugged is unknown.
 - **Failed gets.** `acp` prints `### get 'X' failed: <<UNKNOWN FORMAT
   CONVERSION CODE %m>>` to stderr and exits 0 for any failed get, unknown
   properties included. Only a failing `acp -q syUT` (`syUT` always exists)

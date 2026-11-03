@@ -409,6 +409,8 @@ class CliSetSshTests(CliTestCase):
         self.assertEqual(rc, 1)
         self.assertIn("Apple ACPd is broken", text)
         self.assertNotIn("Disable did not persist", text)
+        # Asked while the wait went on, and nobody unplugged it.
+        self.assertIn("Unplug the device, wait 10 seconds and plug it back in.", text)
         finished = self.telemetry_payload("set_ssh_finished")
         self.assertEqual(finished["result"], "failure")
         self.assertIn("stage=wait_for_reboot_up", finished["error"])

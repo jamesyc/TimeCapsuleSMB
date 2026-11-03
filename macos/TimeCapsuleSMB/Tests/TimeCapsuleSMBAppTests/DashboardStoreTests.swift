@@ -781,6 +781,45 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: checked).displayStatus, .readyToInstall)
     }
 
+    func testCheckupDuringARestartKeepsWhatTheDashboardKnew() async throws {
+        // Another operation's restart was under way: the device was not checked.
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(fatal: true, checks: [
+                    testDoctorCheck(
+                        status: "FAIL",
+                        message: "The device is restarting: TimeCapsuleSMB asked it to restart 6 seconds ago. Check again in a few minutes.",
+                        domain: "device",
+                        code: DoctorSummary.deviceRestartingResultCode
+                    )
+                ]))
+            ])
+        ])
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
+
+        session.runCheckup(profile: profile)
+
+        try await waitUntilStoreState { session.doctorStore.state == .failed }
+        XCTAssertEqual(session.doctorStore.summary?.deviceRestarting, true)
+        // The Checkup tab shows the catalog's line, in the app's language.
+        XCTAssertEqual(session.doctorStore.summary?.checks.first?.localizedMessage(),
+                       L10n.string("doctor.check.device_restarting"))
+        var drained = false
+        fixture.registry.enqueueOperationUpdate { drained = true }
+        try await waitUntilStoreState { drained }
+        let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertNil(checked.lastCheckup)
+        XCTAssertNil(checked.runtimeState)
+    }
+
     func testSuccessfulUninstallClearsInstalledSnapshot() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [

@@ -177,13 +177,14 @@ def apple_acpd_healthy(monkeypatch: pytest.MonkeyPatch):
     # Reboots, flash and doctor ask the device over SSH whether Apple's ACPd
     # answers syUT, has no stuck fork and ran the last restart requested, and
     # a reboot marks the restart on the device first (timecapsulesmb.device.acpd).
-    # Tests answer "healthy" and "marked", and a silent listener's evidence
-    # read finds nothing; a test that needs another answer patches that function.
+    # Tests answer "healthy", "no restart marked" and "marked", and a silent
+    # listener's evidence read finds nothing; a test that needs another answer
+    # patches that function.
     from timecapsulesmb.device import acpd
 
     monkeypatch.setattr(acpd, "acpd_answers", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(acpd, "read_processes", lambda *_args, **_kwargs: "")
-    monkeypatch.setattr(acpd, "restart_never_happened", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(acpd, "restart_verdict", lambda *_args, **_kwargs: acpd.RestartVerdict("none"))
     monkeypatch.setattr(acpd, "mark_restart", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(acpd, "network_silent_details", lambda *_args, **_kwargs: {})
     # A listing without ACPd is read again after a pause; tests do not wait.

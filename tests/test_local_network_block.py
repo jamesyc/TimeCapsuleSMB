@@ -40,6 +40,7 @@ from timecapsulesmb.transport.errors import (
     SshNetworkError,
 )
 from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.device.acpd import RestartVerdict
 
 NO_ROUTE = "[Errno 65] No route to host"
 ACP_NO_ROUTE_READ = f"Could not connect to ACP on 10.0.0.2:5009: {NO_ROUTE}"
@@ -290,7 +291,7 @@ class RequireAcpdReadyBlockTests(unittest.TestCase):
         reading = AirportAcpReading(password_matches=None, error=read_error)
         with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True), \
                 mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=""), \
-                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("none")), \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=True), \
                 mock.patch("timecapsulesmb.services.runtime.client_networks_if_off_network", return_value=off_network), \
                 mock.patch("timecapsulesmb.checks.network.local_lan_networks", return_value=networks), \

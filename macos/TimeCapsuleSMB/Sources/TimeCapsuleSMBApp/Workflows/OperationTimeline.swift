@@ -106,8 +106,8 @@ enum OperationTimelineBuilder {
     }
 
     /// The text of a progress event: "Files checked: N" for a migration, the
-    /// fsck_hfs step for Disk Repair, and whether this Mac left the device's
-    /// network during a restart.
+    /// fsck_hfs step for Disk Repair, and for a restart whether this Mac left
+    /// the device's network and whether the device needs unplugging.
     static func progressDetail(for event: BackendEvent) -> String? {
         guard event.type == "progress" else {
             return nil
@@ -118,16 +118,21 @@ enum OperationTimelineBuilder {
         if let phase = event.phase {
             return fsckPhaseDetail(phase, recheck: event.recheck == true)
         }
-        // A restart wait: this Mac left the device's network, or is back, when
-        // the stage's own text applies again.
-        if let away = event.clientAway {
-            guard away else {
-                return stageDetail(for: event.operation, stage: event.stage)
-            }
+        // A restart wait. Away from the device's network this Mac sees nothing
+        // else, so that comes first; then an ACPd that stopped without
+        // restarting the device; back on the network, or the device back up,
+        // the stage's own text.
+        if event.clientAway == true {
             if let name = event.networkName, !name.isEmpty {
                 return L10n.format("timeline.progress.client_away_named", name)
             }
             return L10n.string("timeline.progress.client_away")
+        }
+        if event.acpdHung == true {
+            return L10n.string("timeline.progress.acpd_hung")
+        }
+        if event.clientAway == false || event.acpdHung == false {
+            return stageDetail(for: event.operation, stage: event.stage)
         }
         return nil
     }

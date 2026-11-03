@@ -160,6 +160,7 @@ from timecapsulesmb.transport.errors import (
     SshNetworkError,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError, parse_ssh_client_diagnostics
+from timecapsulesmb.device.acpd import RestartVerdict
 
 
 DEFAULT_SMB_PORT_CHECK = object()
@@ -3458,10 +3459,11 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
 
     def test_run_doctor_checks_fails_a_restart_that_never_happened_while_the_device_starts(self) -> None:
-        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True) as marker:
+        with mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("hung")) as marker:
             run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW, manager_started_seconds_ago=41.0)
 
-        marker.assert_called_once()
+        # Before the process listing, then by the ACPd step.
+        self.assertEqual(marker.call_count, 2)
         failures = self.apple_acpd_failures(run)
         self.assertEqual([result.details["acpd_problem"] for result in failures], ["restart_never_happened"])
         # The app reads this flag, not the problem's name, to say ACPd is gone.
@@ -3471,10 +3473,43 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(run.debug_fields["acpd_problems"], ["restart_never_happened"])
         self.assertTrue(run.fatal)
 
+    def test_run_doctor_checks_stops_at_a_restart_under_way_and_reads_nothing_more(self) -> None:
+        # Another command's restart: the device is about to go down, and
+        # nothing about ACPd is broken.
+        restarting = RestartVerdict("restarting", 6.0, {"restart_verdict": "restarting", "restart_marker_age_sec": 6.0})
+        with mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=restarting), \
+                mock.patch("timecapsulesmb.checks.doctor_steps.read_disk_errors_conn") as disk_errors:
+            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
+
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual([result.details["code"] for result in failures], ["device_restarting"])
+        self.assertEqual(
+            failures[0].message,
+            "The device is restarting: TimeCapsuleSMB asked it to restart 6 seconds ago. Check again in a few minutes.",
+        )
+        self.assertEqual(self.apple_acpd_failures(run), [])
+        self.assertEqual((run.debug_fields["restart_verdict"], run.debug_fields["restart_marker_age_sec"]), ("restarting", 6.0))
+        self.assertTrue(run.fatal)
+        disk_errors.assert_not_called()
+        run.log_tails.assert_not_called()
+        run.mocks.check_authenticated_smb_listing.assert_not_called()
+        # Read before the process listing, which a device going down leaves to time out.
+        run.snapshot.assert_not_called()
+
+    def test_run_doctor_checks_stops_at_a_restart_that_starts_after_its_first_look(self) -> None:
+        # The marker appears between the early look and the ACPd step's own.
+        restarting = RestartVerdict("restarting", 1.0, {"restart_verdict": "restarting", "restart_marker_age_sec": 1.0})
+        with mock.patch("timecapsulesmb.device.acpd.restart_verdict", side_effect=[RestartVerdict("none"), restarting]):
+            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
+
+        self.assertEqual([result.details.get("code") for result in run.results if result.status == "FAIL"], ["device_restarting"])
+        run.snapshot.assert_called_once()
+        run.log_tails.assert_not_called()
+
     def test_run_doctor_checks_gives_a_hung_restart_one_failure(self) -> None:
         # The torn-down ACPd also fails syUT and may leave its fork: one cause,
         # one fix, so one FAIL.
-        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True), \
+        with mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("hung")), \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False):
             run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, self.STUCK_ACPD_ROWS]))
 
@@ -3564,7 +3599,7 @@ class CheckTests(unittest.TestCase):
         for restart in (False, True):
             for errors in (self.DISK_ERRORS, (), None):
                 with self.subTest(restart=restart, errors=errors), \
-                        mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=restart), \
+                        mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("hung" if restart else "none")), \
                         mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=self.QUIT_LISTING), \
                         mock.patch("timecapsulesmb.checks.doctor_steps.read_disk_errors_conn", return_value=errors) as read:
                     run = self.run_doctor_with_process_snapshot(self.QUIT_LISTING)
@@ -3579,7 +3614,7 @@ class CheckTests(unittest.TestCase):
 
     def test_run_doctor_checks_stops_at_a_restart_that_never_happened_while_samba_is_off(self) -> None:
         # ACPd is gone as when it quit: one FAIL is the whole verdict.
-        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True):
+        with mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("hung")):
             run = self.run_doctor_with_process_snapshot(self.TORN_DOWN_LISTING)
 
         failures = self.apple_acpd_failures(run)
@@ -3600,7 +3635,7 @@ class CheckTests(unittest.TestCase):
         # smbd still runs, or the listing cannot say: the checks after it run.
         serving = f"  107 1 15 S 0 select 0:00.32 sshd\n{self.HEALTHY_SMBD_ROW}\ntcapsule-ps: end"
         for name, listing in (("smbd running", serving), ("listing cut short", "  107 1 15 S 0 select 0:00.32 sshd")):
-            with self.subTest(name), mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True):
+            with self.subTest(name), mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("hung")):
                 run = self.run_doctor_with_process_snapshot(listing)
 
                 failures = self.apple_acpd_failures(run)
@@ -3796,7 +3831,7 @@ class CheckTests(unittest.TestCase):
 
     def test_run_doctor_checks_still_reports_an_acpd_problem_a_stuck_disk_does_not_cause(self) -> None:
         # A restart that never happened is ACPd's own, stuck disk or not.
-        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True):
+        with mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("hung")):
             run = self.run_doctor_with_process_snapshot(self.STALLED_DISK_ROWS)
 
         self.assertEqual([result.details["acpd_problem"] for result in self.apple_acpd_failures(run)],
@@ -3865,18 +3900,19 @@ class CheckTests(unittest.TestCase):
 
     def test_run_doctor_checks_asks_apple_acpd_nothing_when_ps_did_not_answer(self) -> None:
         with mock.patch("timecapsulesmb.device.acpd.acpd_answers") as answer, \
-                mock.patch("timecapsulesmb.device.acpd.restart_never_happened") as marker:
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict") as marker:
             run = self.run_doctor_with_process_snapshot(SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/ps"))
 
         answer.assert_not_called()
-        marker.assert_not_called()
+        # Only the look for a restart under way, before the listing.
+        marker.assert_called_once()
         self.assertEqual(self.apple_acpd_failures(run), [])
         self.assertNotIn("acpd_problems", run.debug_fields)
 
     def test_run_doctor_checks_skips_apple_acpd_when_ssh_cannot_ask(self) -> None:
         from timecapsulesmb.transport.errors import SshError
 
-        for read in ("acpd_answers", "restart_never_happened"):
+        for read in ("acpd_answers", "restart_verdict"):
             with self.subTest(read=read):
                 with mock.patch(f"timecapsulesmb.device.acpd.{read}", side_effect=SshError("Connection reset")):
                     run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)

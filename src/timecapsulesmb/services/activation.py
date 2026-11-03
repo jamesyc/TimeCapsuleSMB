@@ -14,7 +14,7 @@ from timecapsulesmb.device.disk_errors import (
     disk_stall_code,
     read_disk_errors_conn,
 )
-from timecapsulesmb.device.errors import AcpdQuitError, DeviceError
+from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, DeviceRestartingError
 from timecapsulesmb.device.probe import (
     ACPD_QUIT_STEP,
     ManagedRuntimeProbeResult,
@@ -27,7 +27,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.deploy.commands import RemoteAction
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.runtime import DiskCheckRunningError, acpd_problems_and_disk_stalls
+from timecapsulesmb.services.runtime import DeviceAccessError, DiskCheckRunningError, acpd_problems_and_disk_stalls
 from timecapsulesmb.services.runtime_verification import runtime_failure_error, verify_managed_runtime_ready
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -300,7 +300,8 @@ def require_acpd_for_start(
     stage nothing from that disk. So does a disk checker that keeps running,
     such as a Disk Repair, before that: Disk Repair stops the managed
     processes so that nothing uses its disk until it ends, and a start would
-    run them again."""
+    run them again. A restart under way refuses it too (code
+    device_restarting): the device is about to go down."""
     if runtime is not None and any(step.id == ACPD_QUIT_STEP for step in runtime.steps):
         callbacks.debug(acpd_problems=["quit"])
         raise AcpdQuitError(ACPD_QUIT_START_MESSAGE)
@@ -310,6 +311,8 @@ def require_acpd_for_start(
         raise DiskCheckRunningError(
             exc.checks, unanswered=exc.unanswered, prefix="NetBSD 4 activation failed.", suffix="Nothing was started.",
         ) from None
+    except DeviceRestartingError as exc:
+        raise DeviceAccessError(f"NetBSD 4 activation failed. {exc.message} Nothing was started.", code=exc.code) from None
     if stalls:
         raise DiskNotRespondingError(
             stalls, prefix="NetBSD 4 activation failed.", suffix="Nothing was started.", code=disk_stall_code(stalls),

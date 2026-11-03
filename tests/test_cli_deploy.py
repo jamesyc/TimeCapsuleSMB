@@ -47,6 +47,7 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from tests.cli_support import CliTestCase
 from tests.reboot_support import FakeAcpDevice, acp_password_answer
 from timecapsulesmb.integrations.acp import ACPConnectionError
+from timecapsulesmb.device.acpd import RestartVerdict
 
 
 class CliDeployTests(CliTestCase):
@@ -1113,7 +1114,7 @@ class CliDeployTests(CliTestCase):
         # and never restart the device either.
         input_mock = mock.Mock(side_effect=AssertionError("deploy must not ask before the ACPd check"))
         device = FakeAcpDevice()
-        device.restart_never_happened = lambda connection: True
+        device.restart_verdict = lambda connection: RestartVerdict("hung")
         result = self.run_deploy_cli(
             [],
             device=device,

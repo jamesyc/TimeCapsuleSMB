@@ -216,6 +216,10 @@ enum DeviceDashboardSnapshotMapper {
         // The helper's English text; the dashboard translates it when shown.
         let errorMessage = error?.diagnosticMessage ?? error?.message ?? L10n.string("install.state.deploy_failed")
         let recovery = error?.recovery.map(DeviceRecoverySnapshot.init)
+        // A restart under way refused the deploy before it changed anything:
+        // the install is as it was, which only a Checkup can tell.
+        let runtime: DeviceRuntimeState = errorCode == DoctorSummary.deviceRestartingResultCode
+            ? .unknown : .installFailed
         return (
             deployState: DeviceDeployStateSnapshot(
                 operationID: operation.id.uuidString,
@@ -234,7 +238,7 @@ enum DeviceDashboardSnapshotMapper {
                 diagnosticText: error?.diagnosticText
             ),
             runtimeState: DeviceRuntimeStateSnapshot(
-                state: .installFailed,
+                state: runtime,
                 source: .deploy,
                 stage: stage,
                 payloadFamily: payloadFamily,

@@ -96,6 +96,32 @@ final class OperationTimelineBuilderTests: XCTestCase {
                        OperationTimelineBuilder.stageDetail(for: "deploy", stage: "wait_for_reboot_up"))
     }
 
+    func testARestartThatHungAsksForAnUnplugUnlessThisMacIsAway() throws {
+        let data = """
+        {"schema_version":1,"type":"progress","operation":"deploy","stage":"wait_for_reboot_up","acpd_hung":true}
+        """.data(using: .utf8)!
+        let hung = try JSONDecoder().decode(BackendEvent.self, from: data)
+        XCTAssertEqual(hung.acpdHung, true)
+        let stage = BackendEvent(type: "stage", operation: "deploy", stage: "wait_for_reboot_up")
+        let unplug = L10n.string("timeline.progress.acpd_hung")
+
+        XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, hung])[0].detail, unplug)
+        // Away from the device's network this Mac sees nothing else; back on
+        // it, the unplug again rather than the stage's own text.
+        let away = BackendEvent(type: "progress", operation: "deploy", stage: "wait_for_reboot_up",
+                                clientAway: true, networkName: "", acpdHung: true)
+        let back = BackendEvent(type: "progress", operation: "deploy", stage: "wait_for_reboot_up",
+                                clientAway: false, acpdHung: true)
+        XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, hung, away])[0].detail,
+                       L10n.string("timeline.progress.client_away"))
+        XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, hung, away, back])[0].detail, unplug)
+        // The device came back: the finished step keeps its own text, not the unplug.
+        let upAgain = BackendEvent(type: "progress", operation: "deploy", stage: "wait_for_reboot_up", acpdHung: false)
+        let next = BackendEvent(type: "stage", operation: "deploy", stage: "post_reboot_activation")
+        XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, hung, upAgain, next])[0].detail,
+                       OperationTimelineBuilder.stageDetail(for: "deploy", stage: "wait_for_reboot_up"))
+    }
+
     func testStageWithoutProgressKeepsItsDetail() {
         let events = [
             BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy"),

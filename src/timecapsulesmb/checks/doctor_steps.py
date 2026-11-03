@@ -126,6 +126,7 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
 from timecapsulesmb.device import acpd
+from timecapsulesmb.device.errors import DeviceRestartingError
 from timecapsulesmb.device.processes import (
     LOCK_WAIT_READ_SECONDS,
     STUCK_SLEEP_SECONDS,
@@ -2301,6 +2302,33 @@ def _doctor_report_unanswered_device(inputs: DoctorInputs, target: DoctorTarget,
     sink.add(CheckResult("INFO", f"AirPorts this computer sees: {listed}", {"airports": seen}))
 
 
+def _add_restarting_result(sink: DoctorSink, exc: DeviceRestartingError) -> StepDecision:
+    """One FAIL for a restart under way, which stops doctor: the device is
+    about to go down, and nothing on it is broken."""
+    if sink.debug_fields is not None:
+        sink.debug_fields.update(exc.details)
+    sink.add(CheckResult("FAIL", f"{exc.message} Check again in a few minutes.", {"code": exc.code.value}))
+    return StepDecision(stop=True, restarting=True)
+
+
+def _doctor_check_restart_under_way(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
+    """A restart TimeCapsuleSMB asked for, often from another command, that is
+    under way (device.acpd.restart_verdict). Read before the process listing,
+    which a device going down leaves to wait out its timeout. A marker past the
+    grace is the ACPd step's to judge."""
+    if not remote.remote_checks_enabled:
+        return StepDecision()
+    try:
+        verdict = acpd.restart_verdict(target.connection)
+    except TransportError:
+        return StepDecision()
+    if verdict.state != "restarting":
+        return StepDecision()
+    return _add_restarting_result(
+        sink, DeviceRestartingError(acpd.restarting_message(verdict.age_seconds), details=verdict.details),
+    )
+
+
 def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> ProcessSnapshotState:
     """List the device's processes before any check touches the data disk."""
     if not remote.remote_checks_enabled:
@@ -2498,7 +2526,9 @@ def _doctor_check_apple_acpd(
     whole verdict: without it the manager reads no disk and no setting, so
     every check after it would only restate it. With smbd still running, the
     checks after it say how sharing is. A stuck disk while Samba is off is
-    the whole verdict the same way (_disk_stall_stops)."""
+    the whole verdict the same way (_disk_stall_stops). A restart under way,
+    such as another command's, is one FAIL that stops doctor: the device is
+    about to go down."""
     if not remote.remote_checks_enabled or processes.timed_out or processes.snapshot is None:
         return StepDecision()
     disk_stalls, listing = processes.disk_stalls, processes.snapshot
@@ -2506,6 +2536,8 @@ def _doctor_check_apple_acpd(
         problems = acpd.acpd_problems(target.connection, processes.snapshot, network_reading=network_reading)
     except TransportError:
         return StepDecision(stop=_disk_stall_stops(disk_stalls, listing))
+    except DeviceRestartingError as exc:
+        return _add_restarting_result(sink, exc)
     if sink.debug_fields is not None:
         sink.debug_fields["acpd_problems"] = [problem.code for problem in problems]
         for problem in problems:

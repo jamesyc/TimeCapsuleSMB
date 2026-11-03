@@ -335,6 +335,7 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ turns off SMB 3 for the server [%2$@]. If that is this device, delete that line, then remove the disk in Time Machine settings and add it again.";
 "doctor.check.ssh_disabled" = "SSH is turned off on this device.";
 "doctor.check.device_unreachable" = "The device isn't answering on SSH or AirPort ACP.";
+"doctor.check.device_restarting" = "The device is restarting, so it was not checked. Wait a few minutes, then run “Checkup” again.";
 "doctor.check.acp_no_route" = "macOS is refusing this Mac's connections to the device, although SSH reaches it. In “System Settings” > “Privacy & Security” > “Local Network”, turn TimeCapsuleSMB off and on, then quit and reopen TimeCapsuleSMB.";
 "doctor.check.link_local_interface_gone" = "The device's saved address is a link-local address on a network connection this Mac no longer has, such as an unplugged USB Ethernet adapter. Reconnect it, or refresh discovery and reconnect the saved device.";
 "doctor.domain.this_mac" = "This Mac";
@@ -998,6 +999,9 @@
 "backend.recovery.reboot_not_finished.action.1" = "Wait a few more minutes.";
 "backend.recovery.reboot_not_finished.action.2" = "Make sure you are connected to the same network or Wi-Fi as the device.";
 "backend.recovery.reboot_not_finished.action.3" = "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.";
+"backend.recovery.device_restarting.title" = "Device is restarting";
+"backend.recovery.device_restarting.message" = "The device is restarting, so nothing was done.";
+"backend.recovery.device_restarting.action.1" = "Wait a few minutes for the device to start up, then try again.";
 "backend.recovery.acpd_broken.title" = "Apple ACPd is broken";
 "backend.recovery.acpd_broken.message" = "Apple's AirPort service (ACPd) on the device is stuck or no longer running. This is a bug in Apple's firmware, not TimeCapsuleSMB.";
 "backend.recovery.acpd_broken.action.1" = "Unplug the device, wait 10 seconds and plug it back in.";
@@ -1364,6 +1368,7 @@
 "timeline.progress.migration_files" = "Files checked: %lld";
 "timeline.progress.client_away" = "This Mac left the device's network. Reconnect it; the device is still restarting.";
 "timeline.progress.client_away_named" = "This Mac left the device's network (Wi-Fi “%@”). Reconnect it; the device is still restarting.";
+"timeline.progress.acpd_hung" = "Apple's AirPort service stopped without restarting the device. Unplug it, wait 10 seconds and plug it back in; this continues when it starts up.";
 "timeline.operation.saving_device" = "Saving Device";
 "toggle.internal_share_use_disk_root" = "Share internal disk root";
 "toggle.smb_browse_compatibility" = "Allow SMB share browsing";

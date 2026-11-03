@@ -279,15 +279,6 @@ def test_only_a_listing_that_shows_this_logins_sshd_says_acpd_quit():
         assert acpd_running(unparsed) is None, unparsed
 
 
-def test_a_listing_taken_during_a_shutdown_never_says_acpd_quit():
-    # A real restart's shutdown stops ACPd before sshd, its last step.
-    sshd = ps_row(107, "sshd")
-    for ucomm in ("shutdown", "reboot"):
-        assert acpd_running(f"{sshd}\n{ps_row(901, ucomm)}\n{PS_LISTING_END}") is None, ucomm
-    # ACPd still listed: it runs, shutdown or not.
-    assert acpd_running(f"{sshd}\n{ps_row(190, 'ACPd')}\n{ps_row(901, 'shutdown')}\n{PS_LISTING_END}") is True
-
-
 def test_smbd_running_says_whether_samba_outlived_acpd_by_the_same_rules():
     # Samba is the manager's child, so it can outlive ACPd: only a listing
     # that finished and shows this login's sshd can say it is gone.

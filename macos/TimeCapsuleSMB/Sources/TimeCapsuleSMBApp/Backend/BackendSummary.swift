@@ -282,6 +282,9 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.ssh_disabled")
         case "device_unreachable":
             return L10n.string("doctor.check.device_unreachable")
+        // The helper's line says how long ago the restart was asked for.
+        case "device_restarting":
+            return L10n.string("doctor.check.device_restarting")
         // What the app sees about itself goes after the line's own steps. A
         // Checkup result has no recovery card to carry the helper's
         // local_network_block mark, so the line goes by its code.

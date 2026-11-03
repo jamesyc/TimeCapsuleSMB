@@ -183,20 +183,12 @@ def _running(output: str, ucomm: str) -> bool | None:
     return False if any(p.ucomm == "sshd" for p in rows) else None
 
 
-# A real restart runs /sbin/shutdown (ACPd's reboot path), which stops ACPd
-# before sshd, its last step.
-SHUTDOWN_UCOMMS = frozenset({"shutdown", "reboot"})
-
-
 def acpd_running(output: str) -> bool | None:
     """Whether Apple's ACPd runs (_running). sshd and the other daemons are
     ACPd's children, so a device that answers SSH started ACPd. NetBSD 4
-    does not start it again when it exits. A listing taken while the device
-    shuts down (SHUTDOWN_UCOMMS) cannot say ACPd quit either."""
-    running = _running(output, "ACPd")
-    if running is False and any(p.ucomm in SHUTDOWN_UCOMMS for p in parse_ps_rows(output)):
-        return None
-    return running
+    does not start it again when it exits. A restart keeps ACPd running until
+    the kernel stops."""
+    return _running(output, "ACPd")
 
 
 def smbd_running(output: str) -> bool | None:

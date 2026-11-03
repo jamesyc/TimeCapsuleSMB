@@ -63,16 +63,21 @@ SSH_CLOSED_CHECK_UPTIME_SECONDS = 60
 # starts 47-175 s after the request, so earlier looks find nothing.
 FOLLOW_AFTER_DOWN_SECONDS = 60
 FOLLOW_INTERVAL_SECONDS = 30
-# Apple's ACPd can take a reboot request, tear itself down and never run
-# shutdown (build/native/README.md, "Apple ACPd"): ACP goes
-# quiet as in a reboot, but the old kernel and its sshd keep running. The
-# restart marker written before the request tells: a real restart clears it.
-# The hang tells the user to unplug the device, which during a real restart
-# could cut ACPd's own flash writes, so the marker must be seen on two checks
-# in a row before anything is reported.
-HANG_CHECK_AFTER_DOWN_SECONDS = 90
-HANG_CHECK_INTERVAL_SECONDS = 30
-HANG_CHECK_MARKED_CHECKS = 2
+# Apple's ACPd can take a reboot request, tear itself down and never restart
+# the kernel (build/native/README.md, "Apple ACPd"): ACP goes quiet as in a
+# reboot, but the old kernel and its sshd keep running. The restart marker
+# written before the request tells (device.acpd.restart_verdict). The wait
+# looks only once the marker is old enough to judge, while ACP is down and
+# SSH answers: a real restart has closed SSH by then. A hang asks the user to
+# unplug the device and the wait goes on, its limit (up_timeout_seconds)
+# counted again from that request: the power-on is a new boot like any other,
+# and a restart that was only slow ends the wait the same way.
+HANG_CHECK_AFTER_REQUEST_SECONDS = acpd.RESTART_HANG_SECONDS
+HANG_CHECK_INTERVAL_SECONDS = 15
+UNPLUG_MESSAGE = (
+    "Apple's AirPort service stopped without restarting the device. Unplug the device, wait 10 seconds "
+    "and plug it back in. TimeCapsuleSMB keeps waiting and carries on when it starts up."
+)
 # The device's restart drops this Mac's link to it, and macOS can then join
 # another known network (a neighbour's Wi-Fi, an iPhone's hotspot) and stay
 # there. Most Macs are back within about 70 s of the request and the slowest
@@ -135,7 +140,10 @@ def reboot_device(
     the new boot being seen (`expect_ssh`), or must stay closed.
     `ssh`, when SSH works before the request, marks the restart on the
     device (device.acpd.RESTART_MARKER), and the wait watches for a reboot
-    that never happens: ACPd quiet while the marker is still there.
+    that never happens: ACPd quiet while the marker is still there. It then
+    asks the user to unplug the device (wait_for_reboot_up's progress,
+    acpd_hung) and waits on for the new boot; one that never comes is
+    reported as ACPd's hang.
     Returns the device's SSH target when the new boot came up at another
     address (see services.locate), else None. Raises RebootFlowError.
     When this Mac shared a network with the device before the request, the
@@ -412,7 +420,8 @@ def _wait(
     down_since: float | None = None
     next_follow = 0.0
     next_hang_check = 0.0
-    marked_checks = 0
+    # When a look found the hang and the user was asked to unplug the device.
+    hang_seen_at: float | None = None
     asked_ssh = False
     up_stage = False
     # Polls in a row with this Mac on another network, what it joined, and
@@ -462,7 +471,10 @@ def _wait(
                 ):
                     hinting = True
                     fields["client_hinted"] = True
-                    callbacks.progress("wait_for_reboot_up", client_away=True, network_name=wifi_name or "")
+                    callbacks.progress(
+                        "wait_for_reboot_up", client_away=True, network_name=wifi_name or "",
+                        acpd_hung=hang_seen_at is not None,
+                    )
                     callbacks.message(client_away_message(joined, wifi_name))
             else:
                 if away_polls:
@@ -470,32 +482,35 @@ def _wait(
                 away_polls = 0
                 if hinting:
                     hinting = False
-                    callbacks.progress("wait_for_reboot_up", client_away=False)
+                    callbacks.progress("wait_for_reboot_up", client_away=False, acpd_hung=hang_seen_at is not None)
                     callbacks.message(client_back_message())
         if (
-            ssh is not None and restart_marker == "written"
-            and now - down_since >= HANG_CHECK_AFTER_DOWN_SECONDS and now >= next_hang_check
+            ssh is not None and restart_marker == "written" and hang_seen_at is None
+            and now - started >= HANG_CHECK_AFTER_REQUEST_SECONDS and now >= next_hang_check
         ):
             next_hang_check = now + HANG_CHECK_INTERVAL_SECONDS
-            fields["acpd_hang_checks"] = int(fields.get("acpd_hang_checks", 0)) + 1
-            # SSH closed, as in a real restart, ends a run of marked checks. The
-            # port check ends at once where SSH to a device that is off would
-            # wait out the marker read's timeout. A read that fails with the
-            # port open shows nothing either way and leaves the run alone.
+            fields["restart_looks"] = int(fields.get("restart_looks", 0)) + 1
+            # The port check ends at once where SSH to a device that is off would
+            # wait out the marker read's timeout. A read that fails with the port
+            # open shows nothing either way.
             if not tcp_open(host, SSH_PORT):
-                check = "ssh_closed"
+                look = "ssh_closed"
             else:
                 asked_ssh = True
                 try:
-                    check = "marked" if acpd.restart_never_happened(ssh) else "restarting"
+                    verdict = acpd.restart_verdict(ssh)
                 except TransportError:
-                    check = "ssh_failed"
-            if check != "ssh_failed":
-                marked_checks = marked_checks + 1 if check == "marked" else 0
-            fields["hang_check_last"] = check
-            fields["acpd_marked_checks_max"] = max(int(fields.get("acpd_marked_checks_max", 0)), marked_checks)
-            if marked_checks >= HANG_CHECK_MARKED_CHECKS:
-                finish("acpd_stopped_without_reboot", ErrorCode.ACPD_BROKEN, stopped_message)
+                    look = "ssh_failed"
+                else:
+                    look = verdict.state
+                    # What the latest look saw, for a restart that outlives the grace.
+                    fields.update(verdict.details)
+            fields["restart_look_last"] = look
+            if look == "hung":
+                hang_seen_at = now
+                fields["acpd_hang_seen_after_sec"] = round(now - started, 3)
+                callbacks.progress("wait_for_reboot_up", acpd_hung=True)
+                callbacks.message(UNPLUG_MESSAGE)
         if airport_mac and now - down_since >= FOLLOW_AFTER_DOWN_SECONDS and now >= next_follow:
             next_follow = now + FOLLOW_INTERVAL_SECONDS
             # One read per candidate: a device still booting fails every read,
@@ -517,11 +532,15 @@ def _wait(
                     callbacks.message(f"The device came back at {candidate}; the saved address is out of date.")
                     callbacks.update(current_host=located.host)
                     break
-        if now - down_since >= up_timeout_seconds:
+        # The user gets the whole limit to unplug the device and for it to start up.
+        limit_from = down_since if hang_seen_at is None else max(down_since, hang_seen_at)
+        if now - limit_from >= up_timeout_seconds:
             if away_polls >= CLIENT_AWAY_POLLS:
                 # Nothing showed whether the device came back: this Mac was
                 # not on its network to see it.
                 finish("client_left_network", ErrorCode.CLIENT_LEFT_NETWORK, client_left_message(joined))
+            if hang_seen_at is not None:
+                finish("acpd_stopped_without_reboot", ErrorCode.ACPD_BROKEN, stopped_message)
             message = up_timeout_message if rejected is None else f"{up_timeout_message} {rejected.rejected_note}"
             finish("did_not_come_back_up", ErrorCode.REBOOT_NOT_FINISHED, message)
 
@@ -532,6 +551,9 @@ def _wait(
     if hinting:
         callbacks.progress("wait_for_reboot_up", client_away=False)
         callbacks.message(client_back_message())
+    if hang_seen_at is not None:
+        # The device came back: the step no longer asks for an unplug.
+        callbacks.progress("wait_for_reboot_up", acpd_hung=False)
     if asked_ssh:
         # A look may have opened a shared SSH connection to the old kernel,
         # which the restart left dead: the next command logs in afresh.

@@ -49,9 +49,10 @@ class FakeAcpDevice:
     # after shutdown_after) and never runs shutdown: the old kernel and its
     # sshd keep running (build/native/README.md, "Apple ACPd").
     acpd_hangs: bool = False
-    # Host seconds after the request during which a shutdown process is listed
-    # while the old kernel still runs (a slow but real restart).
-    shutdown_listed_until: float = 0.0
+    # Whether ACPd's teardown runs once ACP stops answering: its daemons stop
+    # and its own acp gets no syUT. False: ACPd still serves the device while
+    # this computer's ACP reads go unanswered.
+    teardown_runs: bool = True
     # Whether the restart marker can be written on the RAM disk.
     marker_writable: bool = True
     # Host seconds each SSH read of device.acpd takes.
@@ -63,6 +64,10 @@ class FakeAcpDevice:
     # a real restart, while ACPd tears down before shutdown; None: shutdown_after.
     old_ssh_until: float | None = None
     kernel_after: float = 40.0
+    # Seconds from the request at which the user unplugs a device whose ACPd
+    # hung and plugs it back in: the new kernel starts then, and the old one's
+    # sshd answers until then. None: nobody unplugs it.
+    unplugged_after: float | None = None
     # Seconds after the new kernel starts that ACP and SSH answer (measured on
     # the devices: ACPd at 4-5 s, sshd at 7-10 s). None: SSH never opens.
     acp_up_after_boot: float = 5.0
@@ -125,8 +130,10 @@ class FakeAcpDevice:
 
     # Device state.
     def _new_kernel_at(self) -> float | None:
-        if self.requested_at is None or not self.reboots or self.acpd_hangs:
+        if self.requested_at is None:
             return None
+        if not self.reboots or self.acpd_hangs:
+            return None if self.unplugged_after is None else self.requested_at + self.unplugged_after
         return self.requested_at + self.kernel_after
 
     def _acp_up(self) -> bool:
@@ -236,7 +243,11 @@ class FakeAcpDevice:
         return self.now >= kernel + self.ssh_up_after_boot
 
     def _old_ssh_until(self) -> float:
-        return self.shutdown_after if self.old_ssh_until is None else self.old_ssh_until
+        if self.old_ssh_until is not None:
+            return self.old_ssh_until
+        if self.acpd_hangs and self.unplugged_after is not None:
+            return self.unplugged_after
+        return self.shutdown_after
 
     def _ssh_answers(self, host: str) -> bool:
         kernel = self._new_kernel_at()
@@ -259,17 +270,28 @@ class FakeAcpDevice:
         self.now += self.ssh_read_seconds
         return written
 
-    def restart_never_happened(self, connection) -> bool:
-        """device.acpd.restart_never_happened: the marker is still there and no
-        shutdown is listed, while SSH answers."""
+    def restart_verdict(self, connection):
+        """device.acpd.restart_verdict, while SSH answers: the marker's age on
+        the device's clock, and whether ACPd's teardown ran."""
+        from timecapsulesmb.device.acpd import RESTART_HANG_SECONDS, RestartVerdict
         from timecapsulesmb.transport.errors import SshError
 
         self.ssh_reads.append(("marker", self.requested_at is not None))
         if not self._ssh_answers(connection.host.removeprefix("root@")):
             raise SshError("Connection refused")
-        shutting_down = self.requested_at is not None and self.now < self.requested_at + self.shutdown_listed_until
         self.now += self.ssh_read_seconds
-        return self._marker_present() and not shutting_down
+        if not self._marker_present():
+            return RestartVerdict("none")
+        age = (self.now - self.marked_at) * self.device_rate
+        if age < RESTART_HANG_SECONDS:
+            state = "restarting"
+        else:
+            # ACPd tore itself down only for a request it took.
+            took = self.reboots or self.acpd_hangs
+            torn_down = (took and self.teardown_runs and self.requested_at is not None
+                         and self.now >= self.requested_at + self.shutdown_after)
+            state = "hung" if torn_down else "not_taken"
+        return RestartVerdict(state, age, {"restart_verdict": state, "restart_marker_age_sec": round(age, 1)})
 
     @contextlib.contextmanager
     def patched(self):
@@ -288,7 +310,7 @@ class FakeAcpDevice:
             mock.patch("timecapsulesmb.services.reboot.local_lan_networks", side_effect=self.local_lan_networks),
             mock.patch("timecapsulesmb.services.reboot.mac_default_gateway", side_effect=lambda: self.mac_gateway),
             mock.patch("timecapsulesmb.device.acpd.mark_restart", side_effect=self.mark_restart),
-            mock.patch("timecapsulesmb.device.acpd.restart_never_happened", side_effect=self.restart_never_happened),
+            mock.patch("timecapsulesmb.device.acpd.restart_verdict", side_effect=self.restart_verdict),
             mock.patch(
                 "timecapsulesmb.services.reboot.close_ssh_masters",
                 side_effect=lambda host: self.ssh_master_closes.append((host, self.requested_at is not None)),

@@ -335,6 +335,15 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
+    # A restart TimeCapsuleSMB asked for, often by another command, was under
+    # way (device.acpd.restart_verdict): commands refused before changing
+    # anything (services.runtime.require_acpd_ready, services.activation).
+    ErrorCode.DEVICE_RESTARTING: RecoveryInfo(
+        "Device is restarting",
+        "The device is restarting, so nothing was done.",
+        ("Wait a few minutes for the device to start up, then try again.",),
+        retryable=True,
+    ),
     # Apple's firmware, not ours: a stuck ACPd refused before anything changed,
     # tore itself down without restarting the device, stopped answering
     # syUT (services.runtime.require_acpd_ready, services.reboot), or left its
@@ -1305,8 +1314,9 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         suggested_operation="deploy",
         action_ids=("run_checkup",),
     ),
-    # ACPd tore itself down at the deploy's reboot request: unlike the
-    # refusal before the upload, the update is on the device already.
+    # ACPd tore itself down at the deploy's reboot request and the device was
+    # not unplugged while the wait asked: unlike the refusal before the
+    # upload, the update is on the device already.
     ("deploy", ErrorCode.ACPD_BROKEN, "wait_for_reboot_up"): RecoveryInfo(
         "Apple ACPd is broken",
         (

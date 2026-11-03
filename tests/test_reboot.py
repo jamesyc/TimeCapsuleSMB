@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from timecapsulesmb.core.keep_awake import keep_system_awake
+from timecapsulesmb.device import acpd
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.services import reboot as reboot_service
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
@@ -591,12 +592,25 @@ class AcpdHangTests(unittest.TestCase):
                 self.assertEqual((error.code, str(error)), ("acpd_broken", reboot_service.ACPD_STOPPED_MESSAGE))
                 cycle = recorder.measurement("reboot_cycle")
                 self.assertEqual(cycle["result"], "acpd_stopped_without_reboot")
-                # Two looks in a row, from 90 s after ACP went quiet, 30 s apart.
-                self.assertEqual(cycle["acpd_hang_checks"], 2)
-                self.assertEqual((cycle["hang_check_last"], cycle["acpd_marked_checks_max"]), ("marked", 2))
-                self.assertEqual(device.ssh_reads, [("mark", False), ("marker", True), ("marker", True)])
+                # One look, once the marker is past the grace.
+                self.assertEqual((cycle["restart_looks"], cycle["restart_look_last"]), (1, "hung"))
+                self.assertGreaterEqual(cycle["restart_marker_age_sec"], acpd.RESTART_HANG_SECONDS)
+                self.assertEqual(device.ssh_reads, [("mark", False), ("marker", True)])
                 self.assertEqual(cycle["restart_marker"], "written")
-                self.assertLess(device.now - started, 150)
+                # The user was asked to unplug it once the marker was past the
+                # grace, and the wait went on until its usual limit.
+                self.assertLess(
+                    cycle["acpd_hang_seen_after_sec"],
+                    acpd.RESTART_HANG_SECONDS + reboot_service.HANG_CHECK_INTERVAL_SECONDS,
+                )
+                self.assertEqual(recorder.stages[-1], "wait_for_reboot_up")
+                self.assertEqual([(stage, fields) for _at, stage, fields in recorder.progress],
+                                 [("wait_for_reboot_up", {"acpd_hung": True})])
+                self.assertIn(reboot_service.UNPLUG_MESSAGE, recorder.messages)
+                # The whole limit again from the request to unplug.
+                self.assertGreaterEqual(
+                    device.now - started, cycle["acpd_hang_seen_after_sec"] + reboot_service.REBOOT_UP_TIMEOUT_SECONDS,
+                )
                 self.assertEqual(device.calls.count("request"), 1)
                 self.assertNotIn("device_came_back_after_reboot", recorder.fields)
 
@@ -632,31 +646,70 @@ class AcpdHangTests(unittest.TestCase):
         self.assertEqual(recorder.debug["acp_reboot_succeeded"], False)
         self.assertEqual(recorder.measurement("reboot_cycle")["result"], "acpd_stopped_without_reboot")
 
-    def test_one_marked_check_while_acpd_tears_down_is_not_the_hang(self) -> None:
-        # A real restart whose old sshd outlives the first check: the marker is
-        # still there then, but SSH is gone by the second, and the device returns.
-        device = FakeAcpDevice(old_ssh_until=110.0, kernel_after=200.0)
+    def test_an_old_kernel_that_stops_within_the_grace_is_never_looked_at(self) -> None:
+        # A real restart closes SSH within seconds: no look reaches the device.
+        device = FakeAcpDevice(old_ssh_until=acpd.RESTART_HANG_SECONDS - 5, kernel_after=200.0)
         error, recorder = run(device, ssh=self.SSH)
 
         self.assertIsNone(error)
         cycle = recorder.measurement("reboot_cycle")
         self.assertEqual(cycle["result"], "success")
-        self.assertGreaterEqual(cycle["acpd_hang_checks"], 2)
-        self.assertEqual(device.ssh_reads.count(("marker", True)), 1)
-        # That look's shared connection went to the old kernel: it is closed
-        # once the new boot is seen, so the next command logs in afresh.
-        self.assertEqual(device.ssh_master_closes, [("10.0.0.2", False), ("10.0.0.2", True)])
-        # Telemetry shows the one marked check, so a real teardown this slow is seen.
-        self.assertEqual((cycle["hang_check_last"], cycle["acpd_marked_checks_max"]), ("ssh_closed", 1))
+        self.assertEqual(cycle["restart_look_last"], "ssh_closed")
+        self.assertNotIn(("marker", True), device.ssh_reads)
+
+    def test_an_old_kernel_alive_past_the_grace_gets_the_unplug_advice_and_still_succeeds(self) -> None:
+        # Its teardown ran and its sshd still answers: the user is asked to
+        # unplug it, and the wait goes on, so a restart that was only slow
+        # ends it as any other.
+        device = FakeAcpDevice(old_ssh_until=110.0, kernel_after=200.0)
+        error, recorder = run(device, ssh=self.SSH)
+
+        self.assertIsNone(error)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual((cycle["result"], cycle["restart_look_last"]), ("success", "hung"))
+        self.assertIn("acpd_hang_seen_after_sec", cycle)
+        # Asked once the hang was seen, and cleared when the device came back.
+        self.assertEqual([(stage, fields) for _at, stage, fields in recorder.progress],
+                         [("wait_for_reboot_up", {"acpd_hung": True}), ("wait_for_reboot_up", {"acpd_hung": False})])
+
+    def test_a_hung_device_unplugged_during_the_wait_comes_back_as_a_restart(self) -> None:
+        device = FakeAcpDevice(acpd_hangs=True, unplugged_after=180.0)
+        error, recorder = run(device, ssh=self.SSH)
+
+        self.assertIsNone(error)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["result"], "success")
+        # One look: once the hang is seen, only the new boot is waited for.
+        self.assertEqual((cycle["restart_looks"], cycle["restart_look_last"]), (1, "hung"))
+        self.assertLess(cycle["acpd_hang_seen_after_sec"], cycle["reset_seen_after_sec"])
+        self.assertEqual(recorder.fields.get("device_came_back_after_reboot"), True)
+        self.assertEqual([fields for _at, _stage, fields in recorder.progress], [{"acpd_hung": True}, {"acpd_hung": False}])
+        # The look opened a shared connection to the old kernel, which the
+        # power-off left dead.
+        self.assertIn(("10.0.0.2", True), device.ssh_master_closes)
+
+    def test_an_unplug_late_in_the_wait_still_ends_it_as_a_restart(self) -> None:
+        # Past the limit counted from when the device went down, but within
+        # the one counted again from the request to unplug.
+        device = FakeAcpDevice(acpd_hangs=True, unplugged_after=640.0)
+        started = device.now
+        error, recorder = run(device, ssh=self.SSH)
+
+        self.assertIsNone(error)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["result"], "success")
+        self.assertGreater(cycle["reset_seen_after_sec"], cycle["down_seen_after_sec"] + reboot_service.REBOOT_UP_TIMEOUT_SECONDS)
+        self.assertLess(device.now - started, cycle["acpd_hang_seen_after_sec"] + reboot_service.REBOOT_UP_TIMEOUT_SECONDS)
 
     def test_a_request_the_device_ignored_keeps_its_marker(self) -> None:
-        # The restart never happened, so the next command finds the marker.
+        # The next command finds the marker past the grace beside a healthy
+        # ACPd: a request never taken, which blames nothing.
         device = FakeAcpDevice(reboots=False)
         error, recorder = run(device, ssh=self.SSH)
 
         self.assertEqual(error.code, "reboot_not_started")
         self.assertEqual(recorder.measurement("reboot_cycle")["result"], "did_not_go_down")
-        self.assertTrue(device.restart_never_happened(self.SSH))
+        self.assertEqual(device.restart_verdict(self.SSH).state, "not_taken")
 
     def test_a_failed_request_without_waiting_keeps_its_marker(self) -> None:
         device = FakeAcpDevice(request_error=ACPAuthError("wrong password"))
@@ -664,7 +717,11 @@ class AcpdHangTests(unittest.TestCase):
 
         self.assertEqual(error.code, "auth_failed")
         self.assertEqual(recorder.debug["restart_marker"], "written")
-        self.assertTrue(device.restart_never_happened(self.SSH))
+        # Commands right after it wait for a restart; once past the grace,
+        # the marker beside a healthy ACPd blames nothing.
+        self.assertEqual(device.restart_verdict(self.SSH).state, "restarting")
+        device.now += acpd.RESTART_HANG_SECONDS
+        self.assertEqual(device.restart_verdict(self.SSH).state, "not_taken")
 
     def test_the_caller_names_what_the_unplug_finishes(self) -> None:
         device = FakeAcpDevice(acpd_hangs=True)
@@ -683,8 +740,8 @@ class AcpdHangTests(unittest.TestCase):
                 self.assertEqual(error.code, "reboot_not_finished")
                 cycle = recorder.measurement("reboot_cycle")
                 self.assertEqual(cycle["result"], "did_not_come_back_up")
-                self.assertNotIn("acpd_hang_checks", cycle)
-                self.assertNotIn("hang_check_last", cycle)
+                self.assertNotIn("restart_looks", cycle)
+                self.assertNotIn("restart_look_last", cycle)
                 self.assertEqual(device.ssh_reads, [("mark", False)])
                 # Recorded on every wait, so the share of unwritten markers is known.
                 self.assertEqual(cycle["restart_marker"], "unwritten")
@@ -697,7 +754,7 @@ class AcpdHangTests(unittest.TestCase):
         self.assertEqual(error.code, "reboot_not_finished")
         self.assertEqual(recorder.measurement("reboot_cycle")["result"], "did_not_come_back_up")
         self.assertEqual(device.ssh_reads, [])
-        self.assertNotIn("acpd_hang_checks", recorder.measurement("reboot_cycle"))
+        self.assertNotIn("restart_looks", recorder.measurement("reboot_cycle"))
         self.assertNotIn("restart_marker", recorder.measurement("reboot_cycle"))
 
     def test_an_ssh_failure_reading_the_marker_is_not_a_hang(self) -> None:
@@ -706,46 +763,43 @@ class AcpdHangTests(unittest.TestCase):
         def ssh_drops(connection) -> bool:
             raise SshError("Connection reset by peer")
 
-        device.restart_never_happened = ssh_drops
+        device.restart_verdict = ssh_drops
         error, recorder = run(device, ssh=self.SSH)
 
         self.assertEqual(error.code, "reboot_not_finished")
         cycle = recorder.measurement("reboot_cycle")
-        self.assertGreater(cycle["acpd_hang_checks"], 1)
-        self.assertEqual((cycle["hang_check_last"], cycle["acpd_marked_checks_max"]), ("ssh_failed", 0))
+        self.assertGreater(cycle["restart_looks"], 1)
+        self.assertEqual(cycle["restart_look_last"], "ssh_failed")
 
-    def test_a_failed_read_between_two_marked_checks_leaves_the_run_alone(self) -> None:
-        # The read in between shows nothing either way: the marker was seen
-        # twice with no sign of a restart, which is the hang.
+    def test_a_failed_read_is_looked_at_again(self) -> None:
+        # The read shows nothing either way; the next look finds the hang.
         device = FakeAcpDevice(acpd_hangs=True)
-        read = device.restart_never_happened
+        read = device.restart_verdict
         answers: list[str] = []
 
-        def second_read_fails(connection) -> bool:
-            if len(answers) == 1:
+        def first_read_fails(connection):
+            if not answers:
                 answers.append("failed")
                 raise SshError("Connection reset by peer")
             answers.append("read")
             return read(connection)
 
-        device.restart_never_happened = second_read_fails
+        device.restart_verdict = first_read_fails
         error, recorder = run(device, ssh=self.SSH)
 
         self.assertEqual(error.code, "acpd_broken")
-        self.assertEqual(answers, ["read", "failed", "read"])
+        self.assertEqual(answers, ["failed", "read"])
         cycle = recorder.measurement("reboot_cycle")
-        self.assertEqual((cycle["acpd_hang_checks"], cycle["hang_check_last"], cycle["acpd_marked_checks_max"]), (3, "marked", 2))
+        self.assertEqual((cycle["restart_looks"], cycle["restart_look_last"]), (2, "hung"))
 
-    def test_a_shutdown_under_way_is_never_reported_as_a_hang(self) -> None:
-        # The old kernel still runs a long shutdown, and its sshd still answers.
-        device = FakeAcpDevice(acpd_hangs=True, shutdown_listed_until=10_000.0)
+    def test_an_acpd_that_still_serves_the_device_is_never_reported_as_a_hang(self) -> None:
+        # This computer's reads go unanswered, but ACPd's teardown never ran.
+        device = FakeAcpDevice(acpd_hangs=True, teardown_runs=False)
         error, recorder = run(device, ssh=self.SSH)
 
         self.assertEqual(error.code, "reboot_not_finished")
-        self.assertEqual(recorder.measurement("reboot_cycle")["result"], "did_not_come_back_up")
-        self.assertIn(("marker", True), device.ssh_reads)
         cycle = recorder.measurement("reboot_cycle")
-        self.assertEqual((cycle["hang_check_last"], cycle["acpd_marked_checks_max"]), ("restarting", 0))
+        self.assertEqual((cycle["result"], cycle["restart_look_last"]), ("did_not_come_back_up", "not_taken"))
 
     def test_a_device_whose_ssh_is_down_is_not_asked(self) -> None:
         # A slow real reboot: the old sshd is gone and the new kernel is minutes away.
@@ -754,8 +808,8 @@ class AcpdHangTests(unittest.TestCase):
 
         self.assertIsNone(error)
         cycle = recorder.measurement("reboot_cycle")
-        self.assertGreater(cycle["acpd_hang_checks"], 1)
-        self.assertEqual(cycle["hang_check_last"], "ssh_closed")
+        self.assertGreater(cycle["restart_looks"], 1)
+        self.assertEqual(cycle["restart_look_last"], "ssh_closed")
         self.assertNotIn(("marker", True), device.ssh_reads)
         # No look reached sshd, so no connection was opened to close again.
         self.assertEqual(device.ssh_master_closes, [("10.0.0.2", False)])
@@ -770,7 +824,7 @@ class AcpdHangTests(unittest.TestCase):
         self.assertEqual(recorder.measurement("reboot_cycle")["result"], "success")
         self.assertIn(("marker", True), device.ssh_reads)
         # The new kernel's RAM disk has no marker.
-        self.assertEqual(recorder.measurement("reboot_cycle")["hang_check_last"], "restarting")
+        self.assertEqual(recorder.measurement("reboot_cycle")["restart_look_last"], "none")
 
     def test_a_successful_wait_records_the_marker(self) -> None:
         moved, recorder = run_returning(FakeAcpDevice(), ssh=self.SSH)
@@ -829,7 +883,7 @@ class ClientLeftNetworkTests(unittest.TestCase):
         # naming the device's Wi-Fi in the app and the CLI.
         self.assertEqual(len(recorder.progress), 1)
         at, stage, fields = recorder.progress[0]
-        self.assertEqual((stage, fields), ("wait_for_reboot_up", {"client_away": True, "network_name": "Apple Network 619b7d"}))
+        self.assertEqual((stage, fields), ("wait_for_reboot_up", {"client_away": True, "network_name": "Apple Network 619b7d", "acpd_hung": False}))
         self.assertGreaterEqual(at - start, cycle["down_seen_after_sec"] + reboot_service.CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS)
         hint = [message for message in recorder.messages if " left the device's network and is now on " in message]
         self.assertEqual(len(hint), 1)
@@ -961,16 +1015,30 @@ class ClientLeftNetworkTests(unittest.TestCase):
         self.assertTrue(recorder.measurement("reboot_cycle")["client_watched"])
 
     def test_the_acpd_hang_check_does_not_fire_while_the_mac_is_away(self) -> None:
-        # SSH to the device reads as closed from another network, which ends a
-        # run of marked checks: a real restart is never taken for ACPd's hang.
+        # SSH to the device reads as closed from another network: a real
+        # restart is never taken for ACPd's hang.
         device = FakeAcpDevice(mac_network_changes=((20, HOTSPOT), (400, ("10.0.0.0/24",))))
         ssh = SshConnection("root@10.0.0.2", "pw", "")
         error, recorder, _start = self.wait(device, ssh=ssh)
 
         self.assertIsNone(error)
         cycle = recorder.measurement("reboot_cycle")
-        self.assertGreaterEqual(cycle["acpd_hang_checks"], 2)
-        self.assertEqual(cycle["acpd_marked_checks_max"], 0)
+        self.assertGreaterEqual(cycle["restart_looks"], 2)
+        self.assertNotIn("acpd_hang_seen_after_sec", cycle)
+        self.assertFalse(any(fields.get("acpd_hung") for _at, _stage, fields in recorder.progress))
+
+    def test_a_mac_that_leaves_after_the_unplug_advice_keeps_it(self) -> None:
+        # Unplugging a device that is this Mac's Wi-Fi sends the Mac to
+        # another network: its hint says the device still needs the unplug.
+        device = FakeAcpDevice(
+            acpd_hangs=True, unplugged_after=300.0, mac_network_changes=((90, HOTSPOT), (420, ("10.0.0.0/24",))),
+        )
+        error, recorder, _start = self.wait(device, ssh=SshConnection("root@10.0.0.2", "pw", ""))
+
+        self.assertIsNone(error)
+        hints = [fields for _at, stage, fields in recorder.progress if stage == "wait_for_reboot_up"]
+        self.assertEqual(hints[0], {"acpd_hung": True})
+        self.assertEqual(hints[1], {"client_away": True, "network_name": "", "acpd_hung": True})
 
     def test_whether_the_device_is_this_macs_router_is_recorded_on_success(self) -> None:
         # Telemetry weighs how often a router-mode restart loses the Mac. It is
@@ -996,7 +1064,7 @@ class ClientLeftNetworkTests(unittest.TestCase):
         device = FakeAcpDevice(mac_network_changes=((20, ("192.168.50.0/24",)),))
         error, recorder, _start = self.wait(device)
 
-        self.assertEqual(recorder.progress[0][2], {"client_away": True, "network_name": ""})
+        self.assertEqual(recorder.progress[0][2], {"client_away": True, "network_name": "", "acpd_hung": False})
         hint = next(message for message in recorder.messages if " left the device's network" in message)
         self.assertIn("Reconnect it to the device's network;", hint)
         self.assertIn("192.168.50.0/24", hint)

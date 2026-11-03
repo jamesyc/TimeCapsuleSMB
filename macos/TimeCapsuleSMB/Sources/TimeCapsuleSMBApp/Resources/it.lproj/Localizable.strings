@@ -335,6 +335,7 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ disattiva SMB 3 per il server [%2$@]. Se è questo dispositivo, elimina quella riga, poi rimuovi il disco nelle impostazioni di Time Machine e aggiungilo di nuovo.";
 "doctor.check.ssh_disabled" = "SSH è disabilitato su questo dispositivo.";
 "doctor.check.device_unreachable" = "Il dispositivo non risponde né tramite SSH né tramite AirPort ACP.";
+"doctor.check.device_restarting" = "Il dispositivo si sta riavviando, quindi non è stato controllato. Attendi qualche minuto, poi esegui di nuovo “Controllo”.";
 "doctor.check.acp_no_route" = "macOS rifiuta le connessioni di questo Mac al dispositivo, anche se SSH lo raggiunge. In “Impostazioni di Sistema” > “Privacy e Sicurezza” > “Rete locale”, disabilita e abilita di nuovo TimeCapsuleSMB, poi esci da TimeCapsuleSMB e riaprilo.";
 "doctor.check.link_local_interface_gone" = "L’indirizzo salvato del dispositivo è un indirizzo link-local su una connessione di rete che questo Mac non ha più, per esempio un adattatore USB Ethernet scollegato. Ricollegalo, oppure aggiorna la ricerca e riconnetti il dispositivo salvato.";
 "doctor.domain.this_mac" = "Questo Mac";
@@ -998,6 +999,9 @@
 "backend.recovery.reboot_not_finished.action.1" = "Aspetta ancora qualche minuto.";
 "backend.recovery.reboot_not_finished.action.2" = "Assicurati di essere connesso alla stessa rete o Wi-Fi del dispositivo.";
 "backend.recovery.reboot_not_finished.action.3" = "Se il dispositivo continua a non rispondere, scollegalo, attendi 10 secondi, quindi ricollegalo.";
+"backend.recovery.device_restarting.title" = "Il dispositivo si sta riavviando";
+"backend.recovery.device_restarting.message" = "Il dispositivo si sta riavviando, quindi non è stato fatto nulla.";
+"backend.recovery.device_restarting.action.1" = "Attendi qualche minuto che il dispositivo si avvii, quindi riprova.";
 "backend.recovery.acpd_broken.title" = "Apple ACPd non funziona";
 "backend.recovery.acpd_broken.message" = "Il servizio AirPort di Apple (ACPd) è bloccato o non è più in esecuzione sul dispositivo. È un bug del firmware di Apple, non di TimeCapsuleSMB.";
 "backend.recovery.acpd_broken.action.1" = "Scollega il dispositivo, attendi 10 secondi, quindi ricollegalo.";
@@ -1364,6 +1368,7 @@
 "timeline.progress.migration_files" = "File controllati: %lld";
 "timeline.progress.client_away" = "Questo Mac ha lasciato la rete del dispositivo. Ricollegalo; il dispositivo si sta ancora riavviando.";
 "timeline.progress.client_away_named" = "Questo Mac ha lasciato la rete del dispositivo (Wi-Fi “%@”). Ricollegalo; il dispositivo si sta ancora riavviando.";
+"timeline.progress.acpd_hung" = "Il servizio AirPort di Apple si è fermato senza riavviare il dispositivo. Scollegalo, attendi 10 secondi e ricollegalo; l’operazione riprenderà all’avvio.";
 "timeline.operation.saving_device" = "Salvataggio del dispositivo";
 "toggle.internal_share_use_disk_root" = "Condividi la radice del disco interno";
 "toggle.smb_browse_compatibility" = "Consenti l’esplorazione delle condivisioni SMB";

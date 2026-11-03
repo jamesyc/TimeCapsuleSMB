@@ -42,6 +42,7 @@ from tests.cli_support import app_config, valid_env
 from timecapsulesmb.checks.network import PORT_CHECK_TIMEOUT_SECONDS
 from timecapsulesmb.services.credentials import overlay_request_airport_mac, saved_airport_mac
 from timecapsulesmb.services.locate import LocateResult
+from timecapsulesmb.device.acpd import RestartVerdict
 from tests.reboot_support import DEVICE_AIRPORT_MAC, RecordingCallbacks, acp_password_answer, acp_reading
 
 
@@ -677,7 +678,7 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         callbacks = OperationCallbacks(add_debug_fields=debug.update)
         with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as answer, \
                 mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing) as processes, \
-                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=never_happened), \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("hung" if never_happened else "none")), \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=network_answers) as network, \
                 mock.patch("timecapsulesmb.services.runtime.client_networks_if_off_network", return_value=off_network):
             try:
@@ -720,6 +721,26 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         # acpd_broken's next steps say to unplug it.
         self.assertIn("Unplug the device, wait 10 seconds and plug it back in.", cli_steps("deploy", error.code))
         self.assertEqual(debug["acpd_problems"], ["restart_never_happened"])
+
+    def test_a_restart_under_way_is_refused_without_blaming_acpd(self) -> None:
+        # Another command's restart: the device is about to go down.
+        restarting = RestartVerdict("restarting", 4.2, {"restart_verdict": "restarting", "restart_marker_age_sec": 4.2})
+        debug: dict[str, object] = {}
+        callbacks = OperationCallbacks(add_debug_fields=debug.update)
+        with mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=restarting), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers") as answer:
+            # A refusal like any other preflight's, which the app and CLI catch.
+            with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+                service_runtime.require_acpd_ready(self.CONNECTION, callbacks, reading=acp_reading(True))
+        self.assertEqual(raised.exception.code, "device_restarting")
+        self.assertEqual(
+            str(raised.exception),
+            "The device is restarting: TimeCapsuleSMB asked it to restart 4 seconds ago. Nothing was changed.",
+        )
+        self.assertIn("Wait a few minutes for the device to start up, then try again.", cli_steps("deploy", raised.exception.code))
+        self.assertEqual((debug["restart_verdict"], debug["restart_marker_age_sec"]), ("restarting", 4.2))
+        self.assertNotIn("acpd_problems", debug)
+        answer.assert_not_called()
 
     def test_the_first_problem_is_named_and_every_one_is_reported(self) -> None:
         error, debug, _answer, _processes = self.gate(answers=False, listing=self.STUCK_LISTING)
@@ -770,7 +791,7 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False) as answer, \
                 mock.patch("timecapsulesmb.device.acpd.read_processes",
                            side_effect=[young, self.STALLED_DISK_LISTING]) as processes, \
-                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("none")), \
                 mock.patch("timecapsulesmb.device.acpd.pause"):
             with self.assertRaises(service_runtime.DeviceAccessError) as raised:
                 service_runtime.require_acpd_ready(self.CONNECTION, callbacks, reading=acp_reading(True))
@@ -898,13 +919,13 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         # A slow device or a dropped session is not Apple's fault: the SSH
         # error goes up, where the caller reports a slow or unreachable device.
         unanswered = AirportAcpReading(password_matches=None, error="ACP receive failed: timed out")
-        for read in ("acpd_answers", "restart_never_happened", "acpd_answers_network"):
+        for read in ("acpd_answers", "restart_verdict", "acpd_answers_network"):
             for failure in (SshCommandTimeout("Timed out waiting for ssh command to finish"), SshError("Connection reset")):
                 with self.subTest(read=read, failure=type(failure).__name__):
                     callbacks = OperationCallbacks()
                     reads = {
                         "acpd_answers": mock.Mock(return_value=True),
-                        "restart_never_happened": mock.Mock(return_value=False),
+                        "restart_verdict": mock.Mock(return_value=RestartVerdict("none")),
                         "read_processes": mock.Mock(return_value=""),
                         read: mock.Mock(side_effect=failure),
                     }
@@ -956,7 +977,7 @@ class RequireAcpdReadyDiskCheckTests(unittest.TestCase):
         )
         with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as answer, \
                 mock.patch("timecapsulesmb.device.acpd.read_processes", side_effect=list(listings)) as processes, \
-                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("none")), \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=True), \
                 mock.patch("timecapsulesmb.device.acpd.pause") as pause:
             try:
@@ -1138,7 +1159,7 @@ class RequireAcpdReadyDiskCheckTests(unittest.TestCase):
         debug: dict[str, object] = {}
         with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True), \
                 mock.patch("timecapsulesmb.device.acpd.read_processes", side_effect=list(listings)) as processes, \
-                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=False), \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("none")), \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=True), \
                 mock.patch("timecapsulesmb.device.acpd.pause") as pause:
             try:

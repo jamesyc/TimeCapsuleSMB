@@ -1,5 +1,5 @@
-"""Apple ACPd health, read over SSH, and the marker that shows a restart
-ACPd took but never ran (RESTART_MARKER).
+"""Apple ACPd health, read over SSH, and the marker that tells a restart under
+way from one ACPd took but never ran (RESTART_MARKER, restart_verdict).
 
 ACPd serves both network ACP (port 5009) and the device's own /usr/bin/acp.
 It can hang (build/native/README.md, "Apple ACPd"), and
@@ -18,11 +18,12 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 
+from timecapsulesmb.device.errors import DeviceRestartingError
 from timecapsulesmb.device.probe import AirportAcpReading, read_kern_limits_conn
 from timecapsulesmb.device.processes import (
     PROCESS_SNAPSHOT_COMMAND,
-    SHUTDOWN_UCOMMS,
     STUCK_PROCESS_PS_COMMAND,
     acpd_running,
     parse_ps_rows,
@@ -55,14 +56,46 @@ ACPD_SSH_TIMEOUT_SECONDS = ACPD_READ_DEADLINE_SECONDS + 15
 _HEX_LINE = re.compile(r"0x[0-9A-Fa-f]+")
 # Written over SSH just before every ACP restart request that SSH can see. A
 # real restart empties Apple's RAM disk, so a marker that is still there proves
-# the kernel never restarted: ACPd took the request and stopped without
-# running shutdown. Nothing on the device reads it.
+# the kernel has not restarted yet. It holds the kernel's tick count
+# (RESTART_TICKS_COMMAND), so any process tells from one read how long ago the
+# restart was asked for, without trusting the device's clock, which NTP steps
+# by weeks just after boot. Nothing on the device reads it.
 RESTART_MARKER = "/mnt/Memory/acp-reboot"
 RESTART_MARKER_TIMEOUT_SECONDS = 15
-# A real restart runs /sbin/shutdown, whose last step stops sshd, so SSH can
-# still see the marker while a slow shutdown runs. The process table is read
-# without any command line, so it never waits (see UNREADABLE_COMMAND).
-_RESTART_MARKER_READ = f"[ -e {RESTART_MARKER} ] && {STUCK_PROCESS_PS_COMMAND}"
+# The statistics clock's ticks since this kernel booted, as five counters
+# (user, nice, sys, intr, idle) whose sum grows 100 a second on these
+# single-CPU devices. ACPd plays no part in it.
+RESTART_TICKS_COMMAND = "/sbin/sysctl -n kern.cp_time"
+RESTART_TICKS_PER_SECOND = 100
+# NetBSD 4's counters are 32-bit longs on these CPUs: the idle one wraps,
+# printed negative, after about 248 days of uptime.
+_TICK_COUNTER_WRAP = 2**32
+_TICK_COUNTER = re.compile(r"=\s*(-?\d+)")
+# A real restart stops the old kernel within about 10 s of the request on both
+# families, loaded or not (build/native/README.md, "Apple ACPd"). A marker
+# older than this on a kernel that still runs is a restart that hung, and
+# unplugging the device is its fix, harmless even if the restart was only slow.
+RESTART_HANG_SECONDS = 60
+# A tick read that fails writes no marker, so the restart counts as unmarked,
+# never as one whose age is unknown.
+_RESTART_MARK = f't=$({RESTART_TICKS_COMMAND}) && [ -n "$t" ] && echo "$t" > {RESTART_MARKER}'
+# The marker, the tick count now, the marker's time and the device's clock
+# (for a marker without a tick count to compare, _clock_age_seconds) and the
+# process table, read without any command line so it never waits (see
+# UNREADABLE_COMMAND). No output without the marker.
+_RESTART_MARKER_READ = (
+    f'[ -e {RESTART_MARKER} ] || exit 1; echo "marked: $(cat {RESTART_MARKER})"; '
+    f'echo "now: $({RESTART_TICKS_COMMAND})"; echo "written: $(ls -lT {RESTART_MARKER})"; '
+    f'echo "clock: $(date \'+%b %e %H:%M:%S %Y\')"; {STUCK_PROCESS_PS_COMMAND}'
+)
+# A time as `ls -lT` and the date format above print it: "Nov  3 01:40:12 2026".
+_DEVICE_TIME = re.compile(r"([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}:\d{2}:\d{2})\s+(\d{4})")
+# The last daemon ACPd stops before the kernel goes down, about 0.3 s before
+# on both families. Nothing else stops it and ACPd never starts it again, so
+# a listing without it shows ACPd's teardown ran.
+TEARDOWN_LAST_DAEMON = "mDNSResponder"
+# Processes waiting in the kernel that a restart's telemetry lists, at most.
+RESTART_WAITING_PROCESSES_MAX = 10
 # ps's wait channel for nanosleep: NetBSD 6 names it nanoslp, and NetBSD 4's
 # ps cuts nanosleep to eight characters.
 NANOSLEEP_WCHANS = frozenset({"nanoslp", "nanoslee"})
@@ -200,23 +233,160 @@ def network_silent_details(connection: SshConnection) -> dict[str, object]:
 def mark_restart(connection: SshConnection) -> bool:
     """Write RESTART_MARKER; False when it could not be written."""
     try:
-        proc = run_ssh(connection, f": > {RESTART_MARKER}", check=False, timeout=RESTART_MARKER_TIMEOUT_SECONDS)
+        proc = run_ssh(connection, _RESTART_MARK, check=False, timeout=RESTART_MARKER_TIMEOUT_SECONDS)
     except TransportError:
         return False
     return proc.returncode == 0
 
 
-def restart_never_happened(connection: SshConnection) -> bool:
-    """True when RESTART_MARKER outlived its restart request and no shutdown runs.
+def _tick_counters(text: str) -> tuple[int, ...] | None:
+    counters = tuple(int(value) for value in _TICK_COUNTER.findall(text))
+    return counters if len(counters) == 5 else None
 
-    False also when the marker is there but ps fails: that can only delay a
-    hang being reported, never report one that did not happen. Raises
-    TransportError.
+
+def _device_time(text: str) -> datetime | None:
+    match = _DEVICE_TIME.search(text)
+    if match is None:
+        return None
+    try:
+        return datetime.strptime(" ".join(match.groups()), "%b %d %H:%M:%S %Y")
+    except ValueError:
+        return None
+
+
+def _clock_age_seconds(written: str, clock: str) -> float | None:
+    """Seconds between the marker's time and the device's clock, both in the
+    device's local time; None when either cannot be read or the clock went
+    back. Only when the ticks cannot tell: a marker an older version wrote
+    empty, or a tick count that could not be read now. NTP steps the clock by
+    weeks just after boot, which can make such a marker look older than it
+    is, as an empty one always counted."""
+    marked, now = _device_time(written), _device_time(clock)
+    if marked is None or now is None or now < marked:
+        return None
+    return (now - marked).total_seconds()
+
+
+def _elapsed_seconds(marked: tuple[int, ...] | None, now: tuple[int, ...] | None) -> float | None:
+    """Seconds between two RESTART_TICKS_COMMAND readings of one kernel; None
+    when either is missing or they do not add up."""
+    if marked is None or now is None:
+        return None
+    ticks = 0
+    for before, after in zip(marked, now):
+        delta = after - before
+        if delta < 0:
+            delta += _TICK_COUNTER_WRAP
+        if delta < 0:
+            return None
+        ticks += delta
+    return ticks / RESTART_TICKS_PER_SECOND
+
+
+@dataclass(frozen=True)
+class RestartMarker:
+    """RESTART_MARKER as read_restart_marker found it."""
+
+    # Seconds since it was written; None when neither clock tells.
+    age_seconds: float | None
+    # The process table read with it; no rows when ps failed.
+    listing: str
+    # What age_seconds came from: "ticks", the kernel's (RESTART_TICKS_COMMAND),
+    # or "device_clock" when they cannot tell (_clock_age_seconds).
+    age_clock: str | None = None
+
+    @property
+    def teardown_done(self) -> bool | None:
+        """Whether ACPd's teardown ran: TEARDOWN_LAST_DAEMON is gone from a
+        listing that shows sshd. None when the listing cannot say."""
+        rows = [p for p in parse_ps_rows(self.listing) if not p.zombie]
+        if not any(p.ucomm == "sshd" for p in rows):
+            return None
+        return not any(p.ucomm == TEARDOWN_LAST_DAEMON for p in rows)
+
+
+def read_restart_marker(connection: SshConnection) -> RestartMarker | None:
+    """RESTART_MARKER, its age and the process table; None without it.
+    Raises TransportError."""
+    output = run_ssh(connection, _RESTART_MARKER_READ, check=False, timeout=RESTART_MARKER_TIMEOUT_SECONDS).stdout or ""
+    values: dict[str, str] = {}
+    for line in output.splitlines():
+        label, _, value = line.partition(": ")
+        if label in ("marked", "now", "written", "clock"):
+            values.setdefault(label, value)
+    if "marked" not in values:
+        return None
+    age = _elapsed_seconds(_tick_counters(values["marked"]), _tick_counters(values.get("now", "")))
+    if age is not None:
+        return RestartMarker(age, output, "ticks")
+    age = _clock_age_seconds(values.get("written", ""), values.get("clock", ""))
+    return RestartMarker(age, output, None if age is None else "device_clock")
+
+
+def restart_evidence(marker: RestartMarker) -> dict[str, object]:
+    """The marker's debug fields: its age, whether ACPd's teardown ran, ACPd's
+    own processes and every process waiting in the kernel (state D, kernel
+    threads aside), as a disk flush that slows a restart would. They show
+    what a restart that outlives RESTART_HANG_SECONDS was doing."""
+    rows = parse_ps_rows(marker.listing)
+    waiting = [p for p in rows if p.stat.startswith("D") and "K" not in p.stat]
+    return {
+        "restart_marker_age_sec": None if marker.age_seconds is None else round(marker.age_seconds, 1),
+        "restart_marker_clock": marker.age_clock,
+        "restart_teardown_done": marker.teardown_done,
+        "restart_acpd_processes": [f"{p.pid}/{p.ppid}/{p.wchan}" for p in rows if p.ucomm == "ACPd"],
+        "restart_waiting_processes": [f"{p.ucomm}/{p.wchan}" for p in waiting][:RESTART_WAITING_PROCESSES_MAX],
+    }
+
+
+@dataclass(frozen=True)
+class RestartVerdict:
+    """restart_verdict's answer."""
+
+    # "none", "restarting", "hung" or "not_taken" (restart_verdict).
+    state: str
+    age_seconds: float | None = None
+    # restart_evidence's fields and the verdict, when there is a marker.
+    details: dict[str, object] = field(default_factory=dict)
+    # acpd_answers' answer, when the verdict needed it.
+    acpd_answers: bool | None = None
+
+
+def restart_verdict(connection: SshConnection) -> RestartVerdict:
+    """What RESTART_MARKER says about the last restart asked for in this boot.
+
+    none: no marker. restarting: written less than RESTART_HANG_SECONDS ago.
+    Older, or of unknown age: hung when ACPd's teardown ran or the device's
+    own acp gets no syUT from ACPd, as ACPd tore itself down without
+    restarting the kernel; not_taken when ACPd answers and its daemons run, as
+    the request never started a restart, and the marker waits harmlessly for
+    the next one. Raises TransportError. A read in a real restart's last
+    seconds outlives the old kernel and fails that way, never as a hang.
     """
-    proc = run_ssh(connection, _RESTART_MARKER_READ, check=False, timeout=RESTART_MARKER_TIMEOUT_SECONDS)
-    if proc.returncode != 0:
-        return False
-    return not {p.ucomm for p in parse_ps_rows(proc.stdout or "")} & SHUTDOWN_UCOMMS
+    marker = read_restart_marker(connection)
+    if marker is None:
+        return RestartVerdict("none")
+    details = restart_evidence(marker)
+
+    def verdict(state: str, answers: bool | None = None) -> RestartVerdict:
+        details["restart_verdict"] = state
+        return RestartVerdict(state, marker.age_seconds, details, answers)
+
+    if marker.age_seconds is not None and marker.age_seconds < RESTART_HANG_SECONDS:
+        return verdict("restarting")
+    if marker.teardown_done:
+        return verdict("hung")
+    answers = acpd_answers(connection)
+    return verdict("not_taken" if answers else "hung", answers)
+
+
+def restarting_message(age_seconds: float | None) -> str:
+    """Every caller's words for a restart under way (restart_verdict)."""
+    seconds = round(age_seconds or 0)
+    return (
+        f"The device is restarting: TimeCapsuleSMB asked it to restart {seconds} "
+        f"second{'' if seconds == 1 else 's'} ago."
+    )
 
 
 def read_processes(connection: SshConnection) -> str:
@@ -272,8 +442,10 @@ def acpd_problems(
 ) -> list[AcpdProblem]:
     """Every reason ACPd cannot take a restart now.
 
-    A restart that never happened is the whole story: ACPd tore itself down,
-    so it is reported alone, with one fix, and nothing more is read.
+    A restart under way raises DeviceRestartingError before anything else is
+    read: nothing is broken, and the device is about to go down. A restart
+    that never happened is the whole story: ACPd tore itself down, so it is
+    reported alone, with one fix, and nothing more is read.
 
     An ACPd that quit is the whole story too: every other read would only
     fail the same way. Either one says whether file sharing is off
@@ -288,13 +460,17 @@ def acpd_problems(
     """
     # The marker first: an SSH failure reading it is raised before a listing,
     # which says nothing when SSH fails, waits out its own timeout.
-    if restart_never_happened(connection):
+    restart = restart_verdict(connection)
+    if restart.state == "restarting":
+        raise DeviceRestartingError(restarting_message(restart.age_seconds), details=restart.details)
+    if restart.state == "hung":
         if ps_output is None:
             ps_output = read_processes(connection)
         return [AcpdProblem(
             "restart_never_happened",
             "the device did not restart when TimeCapsuleSMB last asked it to",
             note="Restarting it again would fail the same way. ",
+            details=restart.details,
             gone=True,
             sharing_off=smbd_running(ps_output) is False,
         )]
@@ -304,7 +480,7 @@ def acpd_problems(
     if gone is not None:
         return [gone]
     problems = []
-    answers = acpd_answers(connection)
+    answers = acpd_answers(connection) if restart.acpd_answers is None else restart.acpd_answers
     if not answers:
         # The device's own acp gets no uptime (syUT) from ACPd.
         problems.append(AcpdProblem("syut_silent", "the AirPort service on this device is stuck"))

@@ -48,6 +48,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_runtime_naming_identity,
     _doctor_check_runtime_ram_root,
     _doctor_check_ssh_login,
+    _doctor_check_restart_under_way,
     _doctor_check_stuck_processes,
     _doctor_check_apple_acpd,
     _doctor_check_unshared_network,
@@ -110,8 +111,15 @@ def run_doctor_checks(
     # The device, measured on the device over SSH: its verdict does not depend
     # on the network between this computer and the device.
     _doctor_report_device_not_checked(remote, sink)
+    if _doctor_check_restart_under_way(target, remote, sink).restarting:
+        # Every later read would only wait on a device going down.
+        return sink.results, sink.fatal()
     processes = _doctor_check_stuck_processes(target, remote, sink)
-    if _doctor_check_apple_acpd(target, remote, processes, sink, inputs.device_reading).stop:
+    acpd_decision = _doctor_check_apple_acpd(target, remote, processes, sink, inputs.device_reading)
+    if acpd_decision.restarting:
+        # Every later read would only wait on a device going down.
+        return sink.results, sink.fatal()
+    if acpd_decision.stop:
         # Kernel disk errors remain meaningful without ACPd. Its missing
         # inventory makes manager verdicts unreliable, so do not use them.
         _doctor_check_disk_errors_after_failure(target, remote, None, sink, samba_serving=False)

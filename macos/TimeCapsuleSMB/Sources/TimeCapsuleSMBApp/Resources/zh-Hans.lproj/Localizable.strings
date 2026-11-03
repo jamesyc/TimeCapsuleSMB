@@ -335,6 +335,7 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ 为服务器 [%2$@] 关闭了 SMB 3。如果它就是此设备，请删除该行，然后在时间机器设置中移除该磁盘并重新添加。";
 "doctor.check.ssh_disabled" = "此设备上的 SSH 已禁用。";
 "doctor.check.device_unreachable" = "设备在 SSH 和 AirPort ACP 上都没有响应。";
+"doctor.check.device_restarting" = "设备正在重启，因此未检查。等待几分钟，然后再次运行“检查”。";
 "doctor.check.acp_no_route" = "macOS 拒绝了此 Mac 到该设备的连接，但 SSH 能连接到该设备。请在“系统设置”>“隐私与安全”>“本地网络”中将 TimeCapsuleSMB 禁用后再重新启用，然后退出并重新打开 TimeCapsuleSMB。";
 "doctor.check.link_local_interface_gone" = "设备保存的地址是一个链路本地地址，所在的网络连接此 Mac 已经没有了，例如已拔下的 USB 以太网转接器。请重新连接它，或刷新搜索并重新连接已保存的设备。";
 "doctor.domain.this_mac" = "此 Mac";
@@ -998,6 +999,9 @@
 "backend.recovery.reboot_not_finished.action.1" = "再等待几分钟。";
 "backend.recovery.reboot_not_finished.action.2" = "确认你连接在与设备相同的网络或 Wi-Fi 上。";
 "backend.recovery.reboot_not_finished.action.3" = "如果设备仍无响应，请拔掉设备电源，等待 10 秒，然后重新插上。";
+"backend.recovery.device_restarting.title" = "设备正在重启";
+"backend.recovery.device_restarting.message" = "设备正在重启，因此未执行任何操作。";
+"backend.recovery.device_restarting.action.1" = "等待几分钟让设备启动，然后重试。";
 "backend.recovery.acpd_broken.title" = "苹果 ACPd 出现故障";
 "backend.recovery.acpd_broken.message" = "设备上的苹果 AirPort 服务（ACPd）已卡住或不再运行。这是苹果固件的缺陷，不是 TimeCapsuleSMB 的问题。";
 "backend.recovery.acpd_broken.action.1" = "拔掉设备电源，等待 10 秒，然后重新插上。";
@@ -1364,6 +1368,7 @@
 "timeline.progress.migration_files" = "已检查文件：%lld";
 "timeline.progress.client_away" = "此 Mac 离开了设备的网络。请重新连接；设备仍在重启。";
 "timeline.progress.client_away_named" = "此 Mac 离开了设备的网络（Wi-Fi“%@”）。请重新连接；设备仍在重启。";
+"timeline.progress.acpd_hung" = "苹果 AirPort 服务已停止，却没有重启设备。请拔掉设备电源，等待 10 秒后重新插上；设备启动后将继续。";
 "timeline.operation.saving_device" = "正在保存设备";
 "toggle.internal_share_use_disk_root" = "共享内置磁盘根目录";
 "toggle.smb_browse_compatibility" = "允许浏览 SMB 共享";

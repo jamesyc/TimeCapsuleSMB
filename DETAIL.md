@@ -1088,7 +1088,9 @@ These failures come from Apple's firmware. TimeCapsuleSMB detects them and says 
 
 ACPd is Apple's AirPort management service. On some devices it accepts a restart request, shuts down its own services, and never restarts the system. SSH may still answer, but AirPort Utility, file sharing and Bonjour are gone until the device is unplugged. The warning sign is a second ACPd process stuck under the first.
 
-Before every restart and every flash write, TimeCapsuleSMB checks ACPd. It refuses with `acpd_broken` ("Nothing was changed") on the warning sign, on an ACPd that does not answer, and after a restart that never happened. When a restart it requested does not happen, it reports that about two minutes after the request. Doctor reports the same problems. TimeCapsuleSMB never retries the restart itself.
+Before every restart and every flash write, TimeCapsuleSMB checks ACPd. It refuses with `acpd_broken` ("Nothing was changed") on the warning sign, on an ACPd that does not answer, and after a restart that never happened. When a restart it requested has not happened a minute after the request, it asks you to unplug the device, wait 10 seconds and plug it back in, and keeps waiting. The operation carries on when the device starts up again. If the device has not come back 10 minutes after it went down, the operation fails with `acpd_broken`. Doctor reports the same problems. TimeCapsuleSMB never retries the restart itself.
+
+A command or Checkup that starts in the first minute of another command's restart changes nothing and reports `device_restarting`. After such a Checkup the dashboard shows what it showed before, and after such an install it shows the install as unchecked.
 
 Unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, and try again.
 

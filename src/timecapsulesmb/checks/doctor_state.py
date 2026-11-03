@@ -160,3 +160,6 @@ class DirectSmbState:
 @dataclass(frozen=True)
 class StepDecision:
     stop: bool = False
+    # The device is about to go down (a restart under way): a stop reads
+    # nothing more from it.
+    restarting: bool = False

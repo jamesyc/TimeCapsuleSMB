@@ -115,6 +115,11 @@ final class DeviceDashboardStateSynchronizer {
         guard appStore.operationCoordinator.activeOperation(for: .deviceWorkflow(profileID, .deploy)) == nil else {
             return
         }
+        // A device going down for a restart was not checked: the dashboard
+        // keeps what it knew. The Checkup tab still shows why.
+        guard !summary.deviceRestarting else {
+            return
+        }
         let observedAt = Date()
         let skipSSH = doctorStore.skipSSH
         let observedMAC = doctorStore.payload?.airportMAC

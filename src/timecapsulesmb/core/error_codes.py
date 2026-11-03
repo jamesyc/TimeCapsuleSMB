@@ -70,6 +70,9 @@ class ErrorCode(str, Enum):
     # This Mac left the device's network during the restart wait and never
     # came back to it (services.reboot): whether the device restarted is unknown.
     CLIENT_LEFT_NETWORK = "client_left_network"
+    # A restart TimeCapsuleSMB asked for, often by another command, is under
+    # way: the command stopped before doing anything.
+    DEVICE_RESTARTING = "device_restarting"
 
     # The installed runtime.
     RUNTIME_NOT_INSTALLED = "runtime_not_installed"

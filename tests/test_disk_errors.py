@@ -48,6 +48,7 @@ from timecapsulesmb.services.runtime import DiskCheckRunningError
 from timecapsulesmb.services.runtime_verification import runtime_failure_error, verify_managed_runtime_ready
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshNetworkError
 from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.device.acpd import RestartVerdict
 
 
 NETBSD6_BANNER = "NetBSD 6.0 (build.kernel-target.conf) #0: Mon Apr 29 18:35:13 PDT 2019"
@@ -392,7 +393,7 @@ class RuntimeFailureTests(unittest.TestCase):
                         mock.patch("timecapsulesmb.services.activation.require_compatible_install"), \
                         mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=verification), \
                         mock.patch("timecapsulesmb.services.activation.read_disk_errors_conn", return_value=errors) as read, \
-                        mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=restart), \
+                        mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("hung" if restart else "none")), \
                         mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers), \
                         mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=quit_listing if answers else ""), \
                         mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as start:
@@ -425,7 +426,7 @@ class RuntimeFailureTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.services.activation.require_compatible_install"), \
                 mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=runtime()), \
                 mock.patch("timecapsulesmb.services.activation.read_disk_errors_conn", return_value=errors), \
-                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=False) as marker, \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("none")) as marker, \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as syut, \
                 mock.patch("timecapsulesmb.device.acpd.read_processes", side_effect=listings) as listing, \
                 mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as start:

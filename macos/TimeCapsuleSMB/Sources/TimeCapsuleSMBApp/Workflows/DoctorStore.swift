@@ -74,6 +74,9 @@ struct DoctorSummary: Equatable {
     /// The disk's own SMART check says it is failing; Samba still serves.
     static let diskSmartFailingResultCode = "disk_smart_failing"
     static let acpdBrokenResultCode = "apple_acpd_broken"
+    /// A restart TimeCapsuleSMB asked for, often from another operation, was
+    /// under way: the Checkup stopped before checking the device.
+    static let deviceRestartingResultCode = "device_restarting"
     /// The installed files are missing from every disk, as after an Erase in
     /// AirPort Utility, the disk's copy of Samba is damaged, or the disk could
     /// not read it (a failing disk); or rsync's files are missing,
@@ -125,6 +128,8 @@ struct DoctorSummary: Equatable {
     /// tore it down without restarting the device. Only unplugging the device
     /// brings it back, and the device's disks go with it.
     let acpdGone: Bool
+    /// The device was restarting (deviceRestartingResultCode).
+    let deviceRestarting: Bool
     let checks: [DoctorCheckPayload]
     let sections: [DoctorCheckDomain: DoctorSection]
     /// nil only for a payload without one, which the bundled helper never sends.
@@ -157,6 +162,7 @@ struct DoctorSummary: Equatable {
             guard case .object(let details) = check.details else { return false }
             return details["acpd_gone"] == .bool(true)
         }
+        self.deviceRestarting = Self.containsResultCode(Self.deviceRestartingResultCode, in: payload)
         self.checks = payload.results
         self.sections = Dictionary(
             (payload.sections ?? [:]).map { (DoctorCheckDomainPolicy.domain(for: $0.key), $0.value) },
