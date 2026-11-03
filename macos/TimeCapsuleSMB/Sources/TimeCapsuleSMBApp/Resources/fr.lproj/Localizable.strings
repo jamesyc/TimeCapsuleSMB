@@ -324,6 +324,7 @@
 "doctor.check.disk_not_mounting" = "Un disque de l’appareil ne peut pas être monté : le partage de fichiers et Time Machine sont indisponibles. Redémarrez l’appareil ; s’il ne revient pas, débranchez-le pendant 10 secondes. Si le disque n’est toujours pas monté, lancez « Réparation de disque » ; si le problème persiste, il faudra peut-être le remplacer.";
 "doctor.check.disk_size_misreported" = "L’appareil signale son disque interne comme beaucoup plus petit qu’il n’est, si bien que rien ne peut y être installé. Redémarrez l’appareil ; s’il continue de signaler une taille erronée, le disque doit être remplacé.";
 "doctor.check.disk_no_hfs_partition" = "Un disque de l’appareil ne contient aucun volume HFS utilisable par TimeCapsuleSMB. S’il s’agit du disque interne et qu’il ne contient rien dont vous avez besoin, utilisez « Reformater le disque interne » pour le formater pour l’appareil.";
+"doctor.check.debug_logging_on" = "Les journaux de débogage sont activés et ralentissent l’appareil. Désactivez-les, sauf si vous êtes en train de diagnostiquer un problème.";
 "doctor.check.disk_volumes_in_memory" = "Un volume de l’appareil n’existe que jusqu’au prochain redémarrage : la commande « Effacer le disque » d’Utilitaire AirPort n’a pas pu remplacer la table de partitions de son disque. Tout ce qui y a été enregistré depuis cet effacement, sauvegardes Time Machine comprises, sera perdu au prochain redémarrage. Copiez tout ce dont vous avez besoin avant que l’appareil ne redémarre. Ensuite, pour le disque interne, utilisez « Reformater le disque interne » ; débranchez un disque USB de l’appareil et, avant de le rebrancher, effacez-le sur un Mac dans Utilitaire de disque au format « Mac OS étendu (journalisé) ».";
 "doctor.check.acpd_gone" = "Le service AirPort d’Apple (ACPd) s’est arrêté sur l’appareil. Débranchez l’appareil, attendez 10 secondes, puis rebranchez-le.";
 "doctor.check.disk_failing" = "Le disque de l’appareil a signalé des erreurs qu’il n’a pas pu corriger : il est probablement défaillant et le partage de fichiers est arrêté. Une réinstallation ne réparera pas le disque, et Utilitaire AirPort peut encore l’afficher comme en bon état. Copiez les fichiers dont vous avez besoin, remplacez le disque, puis effacez le nouveau disque dans Utilitaire AirPort et lancez « Installer / mettre à jour Samba ».";
@@ -1442,7 +1443,7 @@
 
 "settings.note.aio" = "Processus supplémentaires pour les E/S disque ; consommation de mémoire potentiellement accrue.";
 
-"settings.note.debug" = "Les journaux détaillés peuvent occuper beaucoup d’espace.";
+"settings.note.debug" = "Les journaux détaillés ralentissent l’appareil et peuvent occuper beaucoup d’espace.";
 
 "settings.mount" = "Attente du montage";
 

@@ -41,9 +41,10 @@ enum DeviceDashboardSnapshotMapper {
             text: countSummary
         )
         let payloadFamily = profile.runtimeState?.payloadFamily ?? profile.payloadFamily
-        // A disk whose SMART check says it is failing leaves Samba serving:
-        // the Checkup row shows the warning, the runtime stays verified.
-        let status = device.status == .warn && onlyDiskSmartWarnings(summary) ? .pass : device.status
+        // A disk whose SMART check says it is failing, or debug logging left
+        // on, leaves Samba serving: the Checkup row shows the warning, the
+        // runtime stays verified.
+        let status = device.status == .warn && onlyWarningsThatLeaveSambaServing(summary) ? .pass : device.status
         switch status {
         case .notChecked:
             // Nothing ran on the device: keep what was known about it.
@@ -128,12 +129,14 @@ enum DeviceDashboardSnapshotMapper {
         }
     }
 
-    private static func onlyDiskSmartWarnings(_ summary: DoctorSummary) -> Bool {
+    private static func onlyWarningsThatLeaveSambaServing(_ summary: DoctorSummary) -> Bool {
         let warnings = summary.checks.filter {
             DoctorCheckDomainPolicy.normalizedStatus($0.status) == "WARN"
                 && DoctorCheckDomainPolicy.domain(for: $0) == .device
         }
-        return !warnings.isEmpty && warnings.allSatisfy { $0.code == DoctorSummary.diskSmartFailingResultCode }
+        return !warnings.isEmpty && warnings.allSatisfy {
+            $0.code == DoctorSummary.diskSmartFailingResultCode || $0.code == DoctorSummary.debugLoggingOnResultCode
+        }
     }
 
     static func startedDeploySnapshots(

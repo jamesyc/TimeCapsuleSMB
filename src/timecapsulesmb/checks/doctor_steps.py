@@ -84,6 +84,7 @@ from timecapsulesmb.core.smb_config import (
     apple_precompose,
     parse_active_netbios_name,
     parse_active_share_names,
+    parse_global_option,
     parse_xattr_tdb_paths,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
@@ -314,6 +315,9 @@ DISK_NOT_MOUNTING_MESSAGE = (
 # A disk's own SMART check says it is failing. Samba still serves, so it is a
 # warning, as AirPort Utility's amber status is.
 DOCTOR_CODE_DISK_SMART_FAILING = "disk_smart_failing"
+# Samba is writing a level 10 log to the data disk. It still serves, so the app
+# keeps the runtime verified, as for a failing SMART status.
+DOCTOR_CODE_DEBUG_LOGGING_ON = "debug_logging_on"
 # Any other disk: its SMART status, or that it reports none, and its space.
 DOCTOR_CODE_DISK_INFO = "disk_info"
 # INFO, not WARN: a WARN would mark the runtime unverified in the app.
@@ -3580,6 +3584,14 @@ def _doctor_check_active_smb_conf(target: DoctorTarget, remote: RemoteAccess, si
         else:
             reason = ""
         sink.add(check_xattr_tdb_persistence(target.connection, active_smb_conf))
+        # The manager writes "log level" only with debug logging on.
+        if parse_global_option(active_smb_conf, "log level"):
+            sink.add(CheckResult(
+                "WARN",
+                "debug logging is on, which slows the device down; "
+                "disable debug logging unless you are troubleshooting a problem",
+                details={"code": DOCTOR_CODE_DEBUG_LOGGING_ON},
+            ))
         return SmbConfigState(text=active_smb_conf, reason=reason)
     except Exception as e:
         sink.add(CheckResult("WARN", f"xattr_tdb:file check skipped: {e}"))

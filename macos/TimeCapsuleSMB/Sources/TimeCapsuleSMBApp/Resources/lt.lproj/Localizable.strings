@@ -324,6 +324,7 @@
 "doctor.check.disk_not_mounting" = "Nepavyksta prijungti įrenginio disko, todėl failų bendrinimas ir Time Machine neveikia. Paleiskite įrenginį iš naujo; jei jis neatsiranda, 10 sekundžių atjunkite jį nuo maitinimo. Jei diskas vis tiek neprijungiamas, paleiskite operaciją „Disko taisymas“; jei tai kartojasi, diską gali reikėti pakeisti.";
 "doctor.check.disk_size_misreported" = "Įrenginys praneša, kad jo vidinis diskas daug mažesnis, nei yra iš tikrųjų, todėl į jį nieko negalima įdiegti. Paleiskite įrenginį iš naujo; jei diskas ir toliau praneša neteisingą dydį, jį reikia pakeisti.";
 "doctor.check.disk_no_hfs_partition" = "Viename įrenginio diske nėra HFS tomo, kurį galėtų naudoti TimeCapsuleSMB. Jei tai vidinis diskas ir jame nėra nieko, ko jums reikia, naudokite „Performatuoti vidinį diską“, kad suformatuotumėte jį įrenginiui.";
+"doctor.check.debug_logging_on" = "Derinimo žurnalas įjungtas ir lėtina įrenginį. Išjunkite jį, jei nesprendžiate problemos.";
 "doctor.check.disk_volumes_in_memory" = "Vienas įrenginio tomas egzistuos tik iki kito paleidimo iš naujo: AirPort Utility komanda „Erase Disk“ negalėjo pakeisti jo disko skaidinių lentelės. Viskas, kas jame išsaugota nuo to ištrynimo, įskaitant Time Machine atsargines kopijas, bus prarasta per kitą paleidimą iš naujo. Nukopijuokite viską, ko jums reikia, kol įrenginys dar nepaleistas iš naujo. Tada, jei tai vidinis diskas, paleiskite „Performatuoti vidinį diską“; USB diską ištraukite iš įrenginio ir, prieš vėl jį įkišdami, ištrinkite jį Mac kompiuteryje su Disk Utility kaip „Mac OS Extended (Journaled)“.";
 "doctor.check.acpd_gone" = "Apple AirPort tarnyba (ACPd) įrenginyje sustojo. Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
 "doctor.check.disk_failing" = "Įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda, o failų bendrinimas sustabdytas. Įdiegimas iš naujo disko nesutaisys, o AirPort Utility jį vis dar gali rodyti kaip tvarkingą. Nukopijuokite reikalingus failus, pakeiskite diską, tada AirPort Utility ištrinkite naująjį diską ir paleiskite „Įdiegti / atnaujinti Samba“.";
@@ -1442,7 +1443,7 @@
 
 "settings.note.aio" = "Papildomi disko įvesties ir išvesties procesai gali naudoti daugiau atminties.";
 
-"settings.note.debug" = "Išsamūs žurnalai gali užimti daug vietos diske.";
+"settings.note.debug" = "Išsamūs žurnalai lėtina įrenginį ir gali užimti daug vietos diske.";
 
 "settings.mount" = "Prijungimo laukimas";
 

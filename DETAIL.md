@@ -488,7 +488,7 @@ On by default. Selects `fruit:metadata = netatalk`; off selects `fruit:metadata 
 
 ### Enable debug logging
 
-Off by default. Sets Samba to `log level = 10`, rotates `log.smbd` at about 2 GiB and lets the other payload logs grow without limit. Use it only while troubleshooting: it slows the device down.
+Off by default. Sets Samba to `log level = 10`, rotates `log.smbd` at about 2 GiB and lets the other payload logs grow without limit. Use it only while troubleshooting: it slows the device down, and doctor warns while it is on.
 
 ### Enable vfs_aio_fork
 
@@ -901,6 +901,7 @@ Where to start:
 - the manager's verdicts (`payload=missing`, `damaged`, `unreadable`, `unmounted=`; see [Native manager](#native-manager)); any of them is doctor's whole result
 - this boot's kernel disk errors, reported as the cause (`disk_failing`) when Samba is off
 - each disk's SMART status and volume sizes as AirPort Utility shows them; a failing SMART status is a warning
+- debug logging: a warning while it is on, because it slows the device down
 - processes stuck in the kernel, and a disk that has stopped responding (`disk_not_responding`)
 - Apple ACPd's health (see [Firmware problems](#firmware-problems))
 - volumes that exist only in memory (`disk_volumes_in_memory`)

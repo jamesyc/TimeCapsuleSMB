@@ -262,6 +262,8 @@ extension DoctorCheckPayload {
         // The helper's line quotes the kernel's; the catalog's says what it means.
         case "disk_failing":
             return L10n.string("doctor.check.disk_failing")
+        case "debug_logging_on":
+            return L10n.string("doctor.check.debug_logging_on")
         // The helper's line names the stuck processes; the catalog's says
         // what it means and what to do. A stuck disk check gives a running
         // repair a few more minutes before the unplug.

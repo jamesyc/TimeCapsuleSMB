@@ -386,6 +386,41 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(runtimeState?.state, .unhealthy)
     }
 
+    func testDebugLoggingWarningAloneKeepsTheRuntimeVerified() throws {
+        let debugLogging = testDoctorCheck(status: "WARN", message: "debug logging is on", domain: "device",
+                                           code: DoctorSummary.debugLoggingOnResultCode)
+
+        for checks in [[debugLogging], [debugLogging, smartFailing()]] {
+            let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .warning,
+                summary: try makeDoctorSummary(checks: checks))
+            XCTAssertEqual(runtimeState?.state, .installedVerified)
+        }
+    }
+
+    func testDebugLoggingWarningShowsItsCatalogText() throws {
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "WARN", message: "debug logging is on", domain: "device",
+                            code: DoctorSummary.debugLoggingOnResultCode)
+        ])
+
+        XCTAssertNotEqual(L10n.string("doctor.check.debug_logging_on"), "doctor.check.debug_logging_on")
+        XCTAssertEqual(summary.checks.first?.localizedMessage(), L10n.string("doctor.check.debug_logging_on"))
+    }
+
+    func testDebugLoggingWarningBesideAnotherWarningLeavesTheRuntimeUnverified() throws {
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "WARN", message: "debug logging is on", domain: "device",
+                            code: DoctorSummary.debugLoggingOnResultCode),
+            testDoctorCheck(status: "WARN", message: "something else", domain: "device")
+        ])
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .warning, summary: summary)
+
+        XCTAssertEqual(runtimeState?.state, .installedUnverified)
+    }
+
     func testASmartWarningsStatusIsReadAsTheHelperMeansIt() throws {
         var payload = try testDoctorPayload(checks: [
             testDoctorCheck(status: " warn ", message: "Disk 1 (internal) reports that it is failing (SMART)",

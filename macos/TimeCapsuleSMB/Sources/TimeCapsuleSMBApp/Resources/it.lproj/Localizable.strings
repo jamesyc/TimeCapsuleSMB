@@ -324,6 +324,7 @@
 "doctor.check.disk_not_mounting" = "Non è possibile montare un disco del dispositivo, quindi la condivisione dei file e Time Machine non funzionano. Riavvia il dispositivo; se non ricompare, scollegalo dall’alimentazione per 10 secondi. Se il disco continua a non essere montato, esegui “Riparazione disco”; se il problema persiste, potrebbe essere necessario sostituirlo.";
 "doctor.check.disk_size_misreported" = "Il dispositivo segnala il disco interno come molto più piccolo di quanto sia, quindi non è possibile installarvi nulla. Riavvia il dispositivo; se continua a segnalare una dimensione errata, il disco va sostituito.";
 "doctor.check.disk_no_hfs_partition" = "Un disco del dispositivo non contiene un volume HFS utilizzabile da TimeCapsuleSMB. Se è il disco interno e non contiene nulla che ti serva, usa “Riformatta disco interno” per formattarlo per il dispositivo.";
+"doctor.check.debug_logging_on" = "I log di debug sono attivi e rallentano il dispositivo. Disattivali, a meno che tu non stia diagnosticando un problema.";
 "doctor.check.disk_volumes_in_memory" = "Un volume del dispositivo esiste solo fino al prossimo riavvio: “Inizializza disco” in Utility AirPort non è riuscito a sostituire la tabella delle partizioni del suo disco. Tutto ciò che vi è stato salvato da quell’inizializzazione, inclusi i backup di Time Machine, andrà perso al prossimo riavvio. Copia tutto ciò che ti serve prima che il dispositivo si riavvii. Poi, per il disco interno, usa “Riformatta disco interno”; scollega un disco USB dal dispositivo e, prima di ricollegarlo, inizializzalo su un Mac con Utility Disco come “Mac OS esteso (journaled)”.";
 "doctor.check.acpd_gone" = "Il servizio AirPort di Apple (ACPd) si è fermato sul dispositivo. Scollega il dispositivo, attendi 10 secondi, quindi ricollegalo.";
 "doctor.check.disk_failing" = "Il disco del dispositivo ha segnalato errori che non è riuscito a correggere, quindi è probabilmente guasto e la condivisione dei file è ferma. Reinstallare non ripara il disco, e Utility AirPort potrebbe ancora mostrarlo come funzionante. Copia i file che ti servono, sostituisci il disco, poi cancella il nuovo disco in Utility AirPort ed esegui “Installa/aggiorna Samba”.";
@@ -1442,7 +1443,7 @@
 
 "settings.note.aio" = "Processi aggiuntivi per l’I/O del disco; possibile maggiore uso di memoria.";
 
-"settings.note.debug" = "I log dettagliati possono occupare molto spazio.";
+"settings.note.debug" = "I log dettagliati rallentano il dispositivo e possono occupare molto spazio.";
 
 "settings.mount" = "Attesa montaggio";
 

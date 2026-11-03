@@ -324,6 +324,7 @@
 "doctor.check.disk_not_mounting" = "Een schijf op het apparaat kan niet worden gekoppeld, waardoor bestandsdeling en Time Machine niet werken. Start het apparaat opnieuw op; als het niet terugkomt, haal dan 10 seconden de stekker eruit. Wordt de schijf daarna nog steeds niet gekoppeld, voer dan ‘Schijfreparatie’ uit; bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
 "doctor.check.disk_size_misreported" = "Het apparaat meldt de interne schijf als veel kleiner dan hij is, dus er kan niets op worden geïnstalleerd. Herstart het apparaat; als de schijf een verkeerde grootte blijft melden, moet hij worden vervangen.";
 "doctor.check.disk_no_hfs_partition" = "Een schijf van het apparaat heeft geen HFS-volume dat TimeCapsuleSMB kan gebruiken. Als het de interne schijf is en er niets op staat dat u nodig hebt, gebruik dan ‘Interne schijf opnieuw formatteren’ om de schijf voor het apparaat te formatteren.";
+"doctor.check.debug_logging_on" = "Het debuglogboek staat aan en maakt het apparaat trager. Schakel het uit, tenzij u een probleem aan het oplossen bent.";
 "doctor.check.disk_volumes_in_memory" = "Een volume van het apparaat bestaat alleen tot de volgende herstart: ‘Wis schijf’ in AirPort-configuratieprogramma kon de partitietabel van de schijf niet vervangen. Alles wat sinds dat wissen erop is bewaard, ook Time Machine-reservekopieën, gaat bij de volgende herstart verloren. Kopieer alles wat u nodig hebt voordat het apparaat opnieuw opstart. Gebruik daarna voor de interne schijf ‘Interne schijf opnieuw formatteren’; verwijder een USB-schijf van het apparaat en wis hem, voordat u hem weer aansluit, op een Mac in Schijfhulpprogramma als ‘Mac OS uitgebreid (journaled)’.";
 "doctor.check.acpd_gone" = "De AirPort-dienst van Apple (ACPd) op het apparaat is gestopt. Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
 "doctor.check.disk_failing" = "De schijf van het apparaat meldde fouten die niet konden worden hersteld, dus de schijf is waarschijnlijk defect en bestandsdeling staat uit. Opnieuw installeren repareert de schijf niet, en het AirPort-configuratieprogramma kan de schijf nog steeds als in orde tonen. Kopieer de bestanden die u nodig hebt, vervang de schijf, wis daarna de nieuwe schijf in het AirPort-configuratieprogramma en voer ‘Samba installeren / bijwerken’ uit.";
@@ -1442,7 +1443,7 @@
 
 "settings.note.aio" = "Extra processen voor schijf-I/O; mogelijk meer geheugengebruik.";
 
-"settings.note.debug" = "Uitgebreide logs kunnen veel schijfruimte gebruiken.";
+"settings.note.debug" = "Uitgebreide logs maken het apparaat trager en kunnen veel schijfruimte gebruiken.";
 
 "settings.mount" = "Wachttijd voor koppelen";
 

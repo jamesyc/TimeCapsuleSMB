@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import plistlib
+import re
 import sys
 import socket
 import struct
@@ -48,6 +49,7 @@ from timecapsulesmb.checks.doctor_steps import (
     DOCTOR_CODE_HOSTNAME_UNMAPPED,
     DOCTOR_STARTUP_WINDOW_SECONDS,
     DISK_NOT_MOUNTING_MESSAGE,
+    DOCTOR_CODE_DEBUG_LOGGING_ON,
     DOCTOR_CODE_DISK_INFO,
     DOCTOR_CODE_DISK_INFO_UNAVAILABLE,
     DOCTOR_CODE_DISK_NOT_MOUNTING,
@@ -4316,7 +4318,8 @@ class CheckTests(unittest.TestCase):
         messages = [result.message for result in run.results]
         passed = messages.index("device hostname capsule is mapped in /etc/hosts")
         self.assertEqual(run.results[passed].status, "PASS")
-        samba = [index for index, message in enumerate(messages) if "smbd" in message]
+        # The word, not a path: a checkout's folder name may hold "smbd".
+        samba = [index for index, message in enumerate(messages) if re.search(r"(?<![\w/-])smbd\b", message)]
         self.assertTrue(samba and passed < min(samba))
         self.assertFalse(any(result.status == "INFO" and "hostname" in result.message for result in run.results))
 
@@ -9739,6 +9742,35 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
         self.assertEqual([row.status for row in self.disk_rows(run)], ["WARN", "INFO"])
         self.assertEqual(run.fatal, baseline.fatal)
         self.assertIn(DOCTOR_CODE_DISK_SMART_FAILING, doctor_report(run.results)["sections"]["device"]["warn_codes"])
+
+    # Debug logging: the running Samba's config decides, not the saved profile.
+
+    def debug_rows(self, run) -> list[CheckResult]:
+        return [result for result in run.results if result.details.get("code") == DOCTOR_CODE_DEBUG_LOGGING_ON]
+
+    def test_debug_logging_on_the_device_warns_without_failing_the_checkup(self) -> None:
+        baseline = self.run_healthy_doctor()
+        run = self.run_healthy_doctor(
+            read_active_smb_conf=DEFAULT_ACTIVE_SMB_CONF.replace("[global]\n", "[global]\n    log level = 10\n"),
+        )
+
+        self.assertEqual([row.status for row in self.debug_rows(run)], ["WARN"])
+        self.assertEqual(
+            self.debug_rows(run)[0].message,
+            "debug logging is on, which slows the device down; "
+            "disable debug logging unless you are troubleshooting a problem",
+        )
+        self.assertEqual(run.fatal, baseline.fatal)
+        self.assertIn(DOCTOR_CODE_DEBUG_LOGGING_ON, doctor_report(run.results)["sections"]["device"]["warn_codes"])
+
+    def test_no_debug_warning_without_a_global_log_level(self) -> None:
+        for name, conf in (
+            ("debug logging off", DEFAULT_ACTIVE_SMB_CONF),
+            ("only in a share", DEFAULT_ACTIVE_SMB_CONF + "    log level = 10\n"),
+            ("unreadable", ""),
+        ):
+            with self.subTest(name):
+                self.assertEqual(self.debug_rows(self.run_healthy_doctor(read_active_smb_conf=conf)), [])
 
     def test_doctor_says_when_mast_cannot_be_read_and_goes_on(self) -> None:
         prefix = "Attempt to read Apple ACPd's MaSt to get disk information failed: "

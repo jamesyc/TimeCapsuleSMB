@@ -73,6 +73,8 @@ struct DoctorSummary: Equatable {
     static let diskVolumesInMemoryResultCode = "disk_volumes_in_memory"
     /// The disk's own SMART check says it is failing; Samba still serves.
     static let diskSmartFailingResultCode = "disk_smart_failing"
+    /// Debug logging is on, which slows the device; Samba still serves.
+    static let debugLoggingOnResultCode = "debug_logging_on"
     static let acpdBrokenResultCode = "apple_acpd_broken"
     /// A restart TimeCapsuleSMB asked for, often from another operation, was
     /// under way: the Checkup stopped before checking the device.
