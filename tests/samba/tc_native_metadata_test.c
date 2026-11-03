@@ -1392,6 +1392,27 @@ static void test_finderinfo_views(struct vfs_handle_struct *handle,
 			      handle, &dir, &leaf, read_back) == 1);
 		CHECK(test_pathref_opens == 1 && test_lcomp_opens == 1);
 	}
+
+	/* A symlink stat'ed with AT_SYMLINK_NOFOLLOW has no AFP_AfpInfo,
+	 * even under the share root, where opening its name would follow it
+	 * to the target's FinderInfo: nothing is opened. A file there still
+	 * reports its own. */
+	reset_stores();
+	seed_store(&native_store, TC_FINDERINFO_XATTR,
+		   finderinfo, sizeof(finderinfo));
+	test_fstatat_base_mode = S_IFLNK | 0777;
+	errno = 0;
+	CHECK(fruit_fstatat_meta(handle, &config, handle->conn->cwd_fsp,
+				 &stream_name, &sbuf,
+				 AT_SYMLINK_NOFOLLOW) == -1);
+	CHECK(errno == ENOENT);
+	CHECK(test_pathref_opens == 0 && test_lcomp_opens == 0);
+	test_fstatat_base_mode = S_IFREG | 0600;
+	CHECK(fruit_fstatat_meta(handle, &config, handle->conn->cwd_fsp,
+				 &stream_name, &sbuf,
+				 AT_SYMLINK_NOFOLLOW) == 0);
+	CHECK(sbuf.st_ex_size == AFP_INFO_SIZE);
+	CHECK(test_pathref_opens == 1);
 }
 
 static void test_resource_backend(struct vfs_handle_struct *handle,
