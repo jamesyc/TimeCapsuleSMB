@@ -100,6 +100,7 @@ final class AppCloseGuardTests: XCTestCase {
         XCTAssertEqual(delegate.applicationShouldTerminate(.shared), .terminateNow)
         XCTAssertTrue(guardController.shouldCloseWindow(NSWindow()))
         XCTAssertTrue(presenter.requests.isEmpty)
+        XCTAssertFalse(guardController.hasBlockingActivity)
         // A gate exists only once its call is recorded; finishing earlier would be lost.
         try await waitUntilStoreState { runner.calls.count == 1 }
         runner.finish(.init("set-ssh", profileID: "device-one"))
@@ -116,9 +117,11 @@ final class AppCloseGuardTests: XCTestCase {
         XCTAssertEqual(delegate.applicationShouldTerminate(.shared), .terminateLater)
         XCTAssertFalse(guardController.shouldCloseWindow(NSWindow()))
         XCTAssertEqual(presenter.requests, [.appQuit, .windowClose])
+        XCTAssertTrue(guardController.hasBlockingActivity)
         try await waitUntilStoreState { runner.calls.count == 2 }
         runner.finish(.init("set-ssh"))
         try await waitUntilStoreState { !coordinator.isDeviceBusy(profile.id) }
+        XCTAssertFalse(guardController.hasBlockingActivity)
     }
 
     func testAttachedWindowDelegateForwardsUninterceptedCallbacks() {

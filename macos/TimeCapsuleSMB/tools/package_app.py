@@ -425,6 +425,9 @@ def write_info_plist(contents_dir: Path, *, languages: list[str], icon_name: str
         # On by default without Sparkle's second-launch prompt; the Settings
         # toggle overrides it per user.
         "SUEnableAutomaticChecks": True,
+        # Downloads updates in the background; the checkbox in Sparkle's update
+        # window overrides it per user.
+        "SUAutomaticallyUpdate": True,
         "SUVerifyUpdateBeforeExtraction": True,
     }
     if icon_name:

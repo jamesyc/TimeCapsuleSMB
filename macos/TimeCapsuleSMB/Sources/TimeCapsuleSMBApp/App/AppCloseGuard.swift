@@ -82,6 +82,10 @@ public final class AppCloseGuard: NSObject {
         policy = AppCloseGuardPolicy(hasBlockingActivity: hasBlockingActivity)
     }
 
+    var hasBlockingActivity: Bool {
+        policy.requiresConfirmation
+    }
+
     func shouldCloseWindow(_ window: NSWindow) -> Bool {
         guard policy.requiresConfirmation else {
             return true

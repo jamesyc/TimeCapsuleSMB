@@ -49,6 +49,29 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(offText.contains("- Last Update Check: never"))
     }
 
+    func testExportSaysWhereTheUpdateFlowIsAndWhatItRemembers() {
+        let text = DiagnosticsExportBuilder().build(context: makeContext())
+        XCTAssertTrue(text.contains("- Update Flow: not started"))
+        XCTAssertTrue(text.contains("- Update Memory: none"))
+        XCTAssertTrue(text.contains("- Skipped Update: none"))
+        XCTAssertTrue(text.contains("- Last Update Error: none"))
+
+        var updating = makeContext()
+        updating.updateChecks.flow = "windowHeld installing 30900 for 12 min, 1 drift"
+        updating.updateChecks.memory = .needsAuthorization(version: "30900")
+        updating.updateChecks.skippedVersion = "30803"
+        updating.updateChecks.lastFailure = UpdateFailure(
+            message: "The signature is invalid.",
+            date: Date(timeIntervalSince1970: 1_779_790_000),
+            appVersion: "30803"
+        )
+        let updatingText = DiagnosticsExportBuilder().build(context: updating)
+        XCTAssertTrue(updatingText.contains("- Update Flow: windowHeld installing 30900 for 12 min, 1 drift"))
+        XCTAssertTrue(updatingText.contains("- Update Memory: needs authorization 30900"))
+        XCTAssertTrue(updatingText.contains("- Skipped Update: 30803"))
+        XCTAssertTrue(updatingText.contains("- Last Update Error: 2026-05-26T10:06:40Z, app 30803: The signature is invalid."))
+    }
+
     func testExportShowsTheLastCheckupAndEachSection() {
         var context = makeContext()
         context.selectedProfile?.lastCheckup = DeviceCheckupSnapshot(

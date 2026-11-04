@@ -107,9 +107,9 @@ A pushed `v*` tag builds the release in CI (`.github/workflows/ci.yml`), after t
 
 Nothing reaches users until the draft is published. Never push a `v*` tag to try the workflow: every one starts a release. A run that fails or builds something wrong publishes nothing; fix it, delete the draft (and the tag, if the fix needs a new commit) and push the tag again.
 
-The app checks `https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/appcast.xml`, which follows the newest published release that is not a prerelease. Publishing a release with "Set as the latest release" ticked is what offers it to the apps; drafts and prereleases are never offered.
+The app checks `https://github.com/jamesyc/TimeCapsuleSMB/releases/latest/download/appcast.xml`, which follows the newest published release that is not a prerelease. Publishing a release with "Set as the latest release" ticked is what offers it to the apps; drafts and prereleases are never offered. Most apps then download it in the background at their next launch, without asking.
 
-The update window shows the release's notes from its `release-notes.md`, which `appcast.xml` links to. Sparkle shows a `.md` file in its own text view, with headings, lists and links, where a link to the release page would show GitHub's whole page. `.github/workflows/release-notes.yml` writes that file from the notes in the release form when the release is published and again after every edit, so edit the notes only there. An update check in the seconds between publishing and the upload finds no notes.
+The update window shows the release's notes from its `release-notes.md`, which `appcast.xml` links to. Sparkle shows a `.md` file in its own text view, with headings, lists and links, where a link to the release page would show GitHub's whole page. `.github/workflows/release-notes.yml` writes that file from the notes in the release form when the release is published and again after every edit, so edit the notes only there. An update window opened in the seconds between publishing and the upload shows no notes.
 
 The Homebrew tap, `jamesyc/homebrew-tap`, updates itself. Its own workflow, `update.yml`, runs daily: when the latest release has a `TimeCapsuleSMB.dmg` the tap does not have yet, it writes the version and the SHA256 of the disk image and of the tag's source tarball into the cask and formula in this repo's `homebrew/`, taken from `main`, adds the formula's Python packages with `brew update-python-resources`, and commits both to the tap once `brew audit --strict --online`, a source install of the formula and `brew test` pass. It needs no secret. Run it by hand after publishing so the tap gets the release at once, and with a tag to write a release again after fixing `homebrew/` on `main`:
 
@@ -125,6 +125,7 @@ GitHub turns a public repository's schedule off after 60 days without a commit. 
 - A `release` environment in the repository settings whose deployment rule admits only `v*` tags, so only tag runs get its secrets.
 - Its secrets: `MACOS_CERTIFICATE_P12` (base64 of the Developer ID Application certificate and key, exported as `.p12`) and `MACOS_CERTIFICATE_PASSWORD`; `NOTARY_KEY_P8` (base64 of an App Store Connect team API key with the Developer role), `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID`; `SPARKLE_ED_PRIVATE_KEY`, the one line `generate_keys -x` exported. Set each with `gh secret set NAME --env release` and paste the value at its prompt, or pipe it in with `printf '%s'`. `echo` adds a newline. Build Release strips whitespace from `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID`; of the other secrets, a trailing newline breaks only `MACOS_CERTIFICATE_PASSWORD`.
 - Keep the exported Sparkle key backed up outside GitHub. Without it no release can ever update the installed apps again; a new key would need a new `SUPublicEDKey` that installed apps do not trust.
+- Keep that key as private as the Developer ID certificate. Apps download an update and install it when they quit, with no click, so anyone with the key who can also change the feed reaches every app that opens with automatic download on.
 - A tag ruleset that lets only admins create, move or delete `v*` tags, since pushing one is what reaches the `release` environment's secrets.
 
 The Developer ID Application certificate expires. Renew it in the Apple Developer account before then, under the same team, export the new one as `.p12`, and set `MACOS_CERTIFICATE_P12` and `MACOS_CERTIFICATE_PASSWORD` again. Apps signed with the old one keep working: their signatures are timestamped. Build Release fails at its signing keychain step when the secret holds no valid identity, and lists what the keychain got under "Signing keychain contents": a certificate with another name means the wrong certificate was exported, a certificate with no identity means the `.p12` lacks its private key, and an identity listed with a reason such as `CSSMERR_TP_CERT_EXPIRED` is expired or untrusted.
@@ -152,14 +153,49 @@ A universal build on Apple silicon runs the smoke test (the helper's requests, t
 - Rebuild any changed NetBSD artifacts and update `artifact-manifest.json`.
 - For Samba changes, run the device regression tests on NetBSD 6 (full suite) and NetBSD 4 LE (the cases that fit).
 - Push the release commit to `main`, then push its tag (`git tag v<version> && git push origin v<version>`).
-- When the run has made the draft, download its `TimeCapsuleSMB.dmg`, open it, drag the app to Applications, open it from there, and check that Check for Updates... is enabled. An app run from the disk image itself is read-only, and Sparkle cannot update it.
+- When the run has made the draft, download its `TimeCapsuleSMB.dmg`, open it, drag the app to Applications, open it from there, wait a few seconds for its launch check, and check that Check for Updates... is enabled. An app run from the disk image itself is read-only, and Sparkle cannot update it.
 - Write the release notes in the draft, with compatibility or flash-safety warnings when applicable.
 - Publish with "Set as the latest release" ticked. A hidden build's draft is a prerelease: publish it as a prerelease, never as the latest release, so it never becomes the feed.
 - Confirm the asset SHA256 digests are visible on GitHub, and that the Release notes workflow added `release-notes.md`.
+- Open an older copy of the app with `open TimeCapsuleSMB.app --args -SUAutomaticallyUpdate YES` and check that it downloads the release and opens the update window. Without that argument, a Mac whose box was ever unticked tests only the ask-first path. The feed serves only published releases, so a problem found here needs a fixed release.
 - Run the tap's `update.yml` (above) and check that it committed the release to `jamesyc/homebrew-tap`.
 
 ## Updating And Pulling Releases
 
-Sparkle offers a release whose `CFBundleVersion` (`CLI_VERSION_CODE`) is above the running app's. Its Install and Relaunch quits the app the normal way, so during a device operation the app asks first. After Keep Open, Sparkle installs the update when the app next quits, and relaunches it. While one of the app's own confirmation dialogs is open, such as Install / Update's, macOS refuses the quit without asking, and the update likewise waits for the next quit.
+Sparkle offers a release whose `CFBundleVersion` (`CLI_VERSION_CODE`) is above the running app's. The app checks at every launch and once a day while it stays open, or once a week while an installer waits. Unless the user unticks "Automatically download and install updates in the future", the update downloads silently, then a window offers Install and Relaunch, Install on Quit and Skip This Version, and quitting without an answer installs it. With the box unticked, the window asks before downloading, and Remind Me Later lasts until the next launch, or the next daily check if the app stays open, because each launch clears Sparkle's last check time.
 
-To pull a bad release, delete it, or mark the previous release as the latest: the feed then follows that release. That only stops new installs. Sparkle never downgrades, so apps that already installed the bad release need a fixed release with a higher `CLI_VERSION_CODE`.
+If the user cannot write to the app's folder, the silent download cannot install. Sparkle shows Install Update, Remind Me Later and Skip This Version instead, it asks for authorization on Install Update, and quitting installs nothing. Sparkle keeps that download only in memory, so every launch then asks before downloading until the app reaches that version. The rest of that launch asks too, so declining the password prompt does not download again at the next daily check. The cost is one silent download per release.
+
+Either window waits while the app is behind other apps, while a text field has focus, while a dialog is open and while a device operation runs. The app rechecks every 5 seconds, and Check for Updates... opens it at once. There is no time limit, because a held window loses nothing: quitting still installs, and a window with nothing ready returns at the next launch. Sparkle cannot resume a download, so if the app quits during a silent one, or it fails, the next launch asks first and shows its progress, once, unless the app already reached that version.
+
+`UpdateFlow` (`macos/TimeCapsuleSMB/Sources/TimeCapsuleSMBApp/App/UpdateFlow.swift`) is the app's side of an update, as one state machine. Sparkle owns the session and the installer process. Each Sparkle callback is an event, and only the flow's actions start a follow-up check, open the window, run the recheck timer or write `UpdateMemory`, which is what a launch remembers about a silent update that reached no installer. Window phases carry Sparkle's stage (`notDownloaded`, `downloaded` or `installing`), so the flow knows from Sparkle what a window's buttons do and what quitting does. Its `step` function has no default case, so a new phase or event does not compile until every pair has an answer.
+
+| Phase | Meaning | Leaves when |
+| --- | --- | --- |
+| `idle` | Nothing in progress | A silent download starts, or Sparkle has a window |
+| `downloading` | Silent download, then the installer unpacking and validating it, memory says interrupted | The installer is ready, the cycle ends, or the app needs authorization and Sparkle has a `downloaded` window |
+| `installerReady` | Installer ready, memory and last failure cleared, cycle still ending | The cycle ends |
+| `reprobing` | The one follow-up check that finds the installer | Sparkle has a window, or the check ends without one: to `idle` if it found no update, otherwise `installerWaiting` |
+| `windowHeld` | Sparkle built a window and left opening it to the app | It is shown, or the session ends: to `installerWaiting` at `installing`, otherwise `idle` |
+| `windowOpen` | The window or Sparkle's progress window is up | Install on Quit, a relaunch request, Skip This Version, or the session ends |
+| `installerWaiting` | The installer runs when the app quits. Includes a relaunch that Keep Open or a dialog cancelled, when Sparkle closes its window but keeps the session | The weekly reminder, Check for Updates..., a new download if the installer died, or a check that finds no update, because Sparkle resumes a live installer without looking for one |
+
+The doc comment on `UpdateFlow` lists the rules it keeps for any order of events.
+
+Sparkle is the truth. A window, cycle or install event the model did not predict corrects the phase, because a dropped window event would leave a window nothing opens. A download event it did not predict says nothing about the phase, so the flow ignores it. Both count as drift and log a fault. The diagnostics export shows `Update Flow`, such as `windowHeld installing 30900 for 12 min, 1 drift`, with the age worked out at export, plus `Update Memory`, `Skipped Update` and `Last Update Error`. `Automatic Update Installs` is the user's saved choice even on a launch that asks first. `Skipped Update` shows a version only while the app has not passed it. `Last Update Error` keeps the last real failure across launches, with its date and app version, until an installer is ready or a newer app starts. Phase changes stay in the system log, so `log show` works after the fact. To watch them live:
+
+```bash
+log stream --predicate 'subsystem == "com.timecapsulesmb.TimeCapsuleSMB" AND category == "updates"'
+```
+
+`UpdateFlowTests` checks every phase against every event from a table, and thousands of seeded random event orders against the rules. Change the table with the code, and add a rule there when you add one to `UpdateFlow`.
+
+Reopening the app within about a second of quitting, while the installer swaps the bundle, can do nothing: `open` reports success and no process starts. The install still finishes, and reopening 2 seconds after quitting worked.
+
+A change to any of this reaches users only from the release after the one that ships it, because the installed app runs each update.
+
+After any Sparkle bump, run these flows again on a packaged build. The app depends on Sparkle's `SULastCheckTime` key, on `checkForUpdates()` opening a waiting window and on its gentle reminder delegate methods, and the tests catch only a changed method signature or stage name. Package the app, lower `CFBundleVersion` and `CFBundleShortVersionString` with `plutil`, sign it with `codesign --force --sign -`, and open it with `--args -SUAutomaticallyUpdate YES`: it takes the real feed. Check that the window opens by itself, waits with a text field focused, and that Install and Relaunch, Install on Quit and Skip This Version work. Skip This Version saves `SUSkippedVersion`, so delete that key afterwards.
+
+Install and Relaunch quits the app the normal way, so during a device operation the app asks first. After Keep Open, Sparkle closes its window and keeps the session, and it installs the update when the app next quits, and relaunches it. While one of the app's own confirmation dialogs is open, such as Install / Update's, macOS refuses the quit without asking, and the update likewise waits for the next quit.
+
+To pull a bad release, delete it, or mark the previous release as the latest: the feed then follows that release. That only stops new installs, and by then apps with automatic download on that were opened since publishing have the bad release downloaded. Sparkle never downgrades, so apps that installed it need a fixed release with a higher `CLI_VERSION_CODE`.

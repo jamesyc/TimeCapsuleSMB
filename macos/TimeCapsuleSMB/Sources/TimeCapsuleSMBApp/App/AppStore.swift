@@ -276,7 +276,7 @@ final class AppStore: ObservableObject {
             applicationSupportPath: appSettingsStore.settingsURL.deletingLastPathComponent().path,
             helperPath: backend.helperPath,
             appSettings: appSettingsStore.settings,
-            updateChecks: UpdateCheckDiagnostics.read(),
+            updateChecks: UpdateCheckDiagnostics.read(flow: UpdateFlowBoard.summary(at: Date())),
             readinessState: appReadinessStore.state.kind,
             readinessVersionPayload: appReadinessStore.versionCheckPayload,
             capabilities: appReadinessStore.capabilities,

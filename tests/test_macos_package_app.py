@@ -3348,6 +3348,7 @@ def test_info_plist_names_the_sparkle_feed_and_key(tmp_path: Path) -> None:
     assert info["SUFeedURL"] == package_app.SPARKLE_FEED_URL
     assert info["SUPublicEDKey"] == package_app.SPARKLE_PUBLIC_ED_KEY
     assert info["SUEnableAutomaticChecks"] is True
+    assert info["SUAutomaticallyUpdate"] is True
     assert info["SUVerifyUpdateBeforeExtraction"] is True
 
 

@@ -31,23 +31,42 @@ struct DiagnosticsExportContext {
 struct UpdateCheckDiagnostics: Equatable {
     var automaticChecks: Bool
     /// The checkbox in Sparkle's update window, "Automatically download and
-    /// install updates in the future".
+    /// install updates in the future", which Sparkle ignores while automatic
+    /// checks are off. This is the user's choice: a launch that asks first
+    /// overrides it without changing it, and `memory` says when one does.
     var automaticInstalls = false
     var lastCheck: Date?
+    /// Where this launch is in `UpdateFlow`.
+    var flow = "not started"
+    /// A skipped version the app has not passed.
+    var skippedVersion: String?
+    var memory = UpdateMemory.none
+    var lastFailure: UpdateFailure?
 
     /// Each setting is the user's own choice when they made one, else the
     /// packaged default from the Info.plist, else off.
     static func read(
         defaults: UserDefaults = .standard,
-        info: [String: Any]? = Bundle.main.infoDictionary
+        domain: String? = Bundle.main.bundleIdentifier,
+        info: [String: Any]? = Bundle.main.infoDictionary,
+        flow: String = "not started",
+        installedVersion: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
     ) -> UpdateCheckDiagnostics {
         func setting(_ key: String) -> Bool {
             defaults.object(forKey: key) as? Bool ?? info?[key] as? Bool ?? false
         }
+        let automaticChecks = setting("SUEnableAutomaticChecks")
+        let store = UpdateMemoryStore(defaults: defaults)
+        let savedInstalls = domain.flatMap { defaults.persistentDomain(forName: $0) }?["SUAutomaticallyUpdate"] as? Bool
+        let skipped = defaults.string(forKey: "SUSkippedVersion")
         return UpdateCheckDiagnostics(
-            automaticChecks: setting("SUEnableAutomaticChecks"),
-            automaticInstalls: setting("SUAutomaticallyUpdate"),
-            lastCheck: defaults.object(forKey: "SULastCheckTime") as? Date
+            automaticChecks: automaticChecks,
+            automaticInstalls: automaticChecks && (savedInstalls ?? info?["SUAutomaticallyUpdate"] as? Bool ?? false),
+            lastCheck: defaults.object(forKey: "SULastCheckTime") as? Date,
+            flow: flow,
+            skippedVersion: skipped.flatMap { UpdateVersion.isNewer($0, than: installedVersion) ? $0 : nil },
+            memory: store.memory,
+            lastFailure: store.lastFailure
         )
     }
 }
@@ -76,6 +95,14 @@ struct DiagnosticsExportBuilder {
             append("Automatic Update Checks", value: context.updateChecks.automaticChecks ? "on" : "off", to: &lines)
             append("Automatic Update Installs", value: context.updateChecks.automaticInstalls ? "on" : "off", to: &lines)
             append("Last Update Check", value: context.updateChecks.lastCheck.map { format(date: $0) } ?? "never", to: &lines)
+            append("Update Flow", value: context.updateChecks.flow, to: &lines)
+            append("Update Memory", value: context.updateChecks.memory.diagnosticsDescription, to: &lines)
+            append("Skipped Update", value: context.updateChecks.skippedVersion ?? "none", to: &lines)
+            append(
+                "Last Update Error",
+                value: context.updateChecks.lastFailure.map { "\(format(date: $0.date)), app \($0.appVersion): \($0.message)" } ?? "none",
+                to: &lines
+            )
             appendDeviceSettings(context.appSettings.defaultDeviceSettings, prefix: "Default", to: &lines)
         }
 
