@@ -43,6 +43,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
 from package_app import APP_NAME, DEFAULT_ARCHITECTURES, PRODUCT_NAME, swift_scratch_path  # noqa: E402
+from timecapsulesmb.core.release import CRITICAL_BELOW_VERSION_CODE  # noqa: E402
 
 
 SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
@@ -200,6 +201,7 @@ def appcast_xml(
     length: int,
     published: datetime,
     arm64_only: bool = False,
+    critical_below: int = 0,
 ) -> bytes:
     ElementTree.register_namespace("sparkle", SPARKLE_NAMESPACE)
 
@@ -217,6 +219,10 @@ def appcast_xml(
     ElementTree.SubElement(item, sparkle("minimumSystemVersion")).text = info["LSMinimumSystemVersion"]
     if arm64_only:
         ElementTree.SubElement(item, sparkle("hardwareRequirements")).text = "arm64"
+    # The version attribute makes this critical only for apps below it, so an
+    # app past that release sees later releases as ordinary ones.
+    if critical_below:
+        ElementTree.SubElement(item, sparkle("criticalUpdate"), {sparkle("version"): str(critical_below)})
     ElementTree.SubElement(item, sparkle("releaseNotesLink")).text = f"{REPOSITORY_URL}/releases/download/{tag}/{RELEASE_NOTES_NAME}"
     ElementTree.SubElement(item, "enclosure", {
         "url": f"{REPOSITORY_URL}/releases/download/{tag}/{ZIP_NAME}",
@@ -255,6 +261,7 @@ def main(argv: list[str] | None = None) -> int:
             length=length,
             published=datetime.now(timezone.utc),
             arm64_only=args.arm64_only,
+            critical_below=CRITICAL_BELOW_VERSION_CODE,
         ))
     except (OSError, RuntimeError) as exc:
         print(f"sparkle_appcast: {exc}", file=sys.stderr)

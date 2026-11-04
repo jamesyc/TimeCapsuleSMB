@@ -4,6 +4,10 @@ from __future__ import annotations
 CLI_VERSION = "3.8.3"
 RELEASE_TAG = f"v{CLI_VERSION}"
 CLI_VERSION_CODE = 30803
+# Apps below this code see the update as critical, without Skip or Remind Me
+# Later. 0 for none. The appcast holds one release, so the floor stays set across
+# releases: lowering it forgets the apps that missed that release.
+CRITICAL_BELOW_VERSION_CODE = 0
 SAMBA_VERSION = "4.25.0"
 
 

@@ -316,6 +316,31 @@ def test_a_universal_app_in_a_fat64_header_is_accepted(tmp_path: Path) -> None:
     assert run(module, release, stub_sign_update(tmp_path, release)) == 0
 
 
+def test_an_ordinary_release_has_no_update_floor(tmp_path: Path) -> None:
+    module = load_module()
+    release = make_release(tmp_path)
+
+    assert run(module, release, stub_sign_update(tmp_path, release)) == 0
+
+    item = ElementTree.parse(release.out).getroot().find("channel/item")
+    assert item is not None
+    assert item.find(f"{SPARKLE}criticalUpdate") is None
+
+
+def test_a_critical_floor_marks_the_release_for_apps_below_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_module()
+    monkeypatch.setattr(module, "CRITICAL_BELOW_VERSION_CODE", 30800)
+    release = make_release(tmp_path)
+
+    assert run(module, release, stub_sign_update(tmp_path, release)) == 0
+
+    item = ElementTree.parse(release.out).getroot().find("channel/item")
+    assert item is not None
+    critical = item.find(f"{SPARKLE}criticalUpdate")
+    assert critical is not None
+    assert critical.attrib == {f"{SPARKLE}version": "30800"}
+
+
 def test_arm64_only_offers_the_update_to_apple_silicon_only(tmp_path: Path) -> None:
     module = load_module()
     release = make_release(tmp_path, executable=thin_executable(ARM64))

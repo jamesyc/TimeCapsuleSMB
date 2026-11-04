@@ -81,7 +81,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     try:
-        current = read_release(args.release_py, {"CLI_VERSION": str, "CLI_VERSION_CODE": int})
+        current = read_release(
+            args.release_py,
+            {"CLI_VERSION": str, "CLI_VERSION_CODE": int, "CRITICAL_BELOW_VERSION_CODE": int},
+        )
     except ValueError as exc:
         report(False, f"release.py: {exc}")
         return 1
@@ -103,6 +106,14 @@ def main(argv: list[str] | None = None) -> int:
             results.append((True, f"version code: {code} is above the newest release's {newest}"))
         else:
             results.append((False, f"version code: {code} is not above the newest release's {newest}"))
+
+    # A floor above this release would apply to this release's own app, and
+    # to every app until a later release reached it.
+    floor = current["CRITICAL_BELOW_VERSION_CODE"]
+    if floor > code:
+        results.append((False, f"update floor: {floor} is above this release's {code}"))
+    elif floor:
+        results.append((True, f"update floor: {floor} is at or below this release's {code}"))
 
     for passed, line in results:
         report(passed, line)

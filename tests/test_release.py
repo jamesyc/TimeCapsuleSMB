@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from timecapsulesmb.core.release import CLI_VERSION, CLI_VERSION_CODE, RELEASE_TAG
+from timecapsulesmb.core.release import (
+    CLI_VERSION,
+    CLI_VERSION_CODE,
+    CRITICAL_BELOW_VERSION_CODE,
+    RELEASE_TAG,
+)
 from timecapsulesmb.services.version_check import DEFAULT_DOWNLOAD_URL, parse_version_metadata
 
 
@@ -42,12 +47,13 @@ def load_check_release_module():
     return module
 
 
-def release_source(*, version: str = '"4.1.0"', code: str = "40100") -> str:
+def release_source(*, version: str = '"4.1.0"', code: str = "40100", floor: str = "0") -> str:
     return (
         "from __future__ import annotations\n\n"
         f"CLI_VERSION = {version}\n"
         'RELEASE_TAG = f"v{CLI_VERSION}"\n'
         f"CLI_VERSION_CODE = {code}\n"
+        f"CRITICAL_BELOW_VERSION_CODE = {floor}\n"
     )
 
 
@@ -59,6 +65,42 @@ def run_check(tmp_path: Path, tag: str, *, current_source: str | None = None,
     newest.write_text(newest_source, encoding="utf-8")
     module = load_check_release_module()
     return module.main([tag, "--newest-release-py", str(newest), "--release-py", str(current)])
+
+
+@pytest.mark.parametrize(("floor", "passes"), [(40000, True), (40100, True), (40101, False)])
+def test_the_update_floor_cannot_pass_this_release(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], floor: int, passes: bool
+) -> None:
+    source = release_source(floor=str(floor))
+
+    assert run_check(tmp_path, "v4.1.0", current_source=source) == (0 if passes else 1)
+
+    word = "PASS" if passes else "FAIL"
+    assert f"{word} update floor: {floor}" in capsys.readouterr().out
+
+
+def test_no_update_floor_prints_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run_check(tmp_path, "v4.1.0") == 0
+
+    assert "update floor" not in capsys.readouterr().out
+
+
+def test_an_update_floor_that_is_not_a_number_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run_check(tmp_path, "v4.1.0", current_source=release_source(floor='"40100"')) == 1
+
+    assert "CRITICAL_BELOW_VERSION_CODE" in capsys.readouterr().out
+
+
+def test_a_release_py_without_the_update_floor_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = release_source().replace("CRITICAL_BELOW_VERSION_CODE = 0\n", "")
+
+    assert run_check(tmp_path, "v4.1.0", current_source=source) == 1
+
+    assert "CRITICAL_BELOW_VERSION_CODE is not assigned" in capsys.readouterr().out
+
+
+def test_this_checkouts_update_floor_is_valid() -> None:
+    assert 0 <= CRITICAL_BELOW_VERSION_CODE <= CLI_VERSION_CODE
 
 
 def test_release_tag_is_derived_from_cli_version() -> None:

@@ -148,7 +148,7 @@ A universal build on Apple silicon runs the smoke test (the helper's requests, t
 
 ## Release Checklist
 
-- Set `CLI_VERSION` and bump `CLI_VERSION_CODE` in `src/timecapsulesmb/core/release.py`.
+- Set `CLI_VERSION` and bump `CLI_VERSION_CODE` in `src/timecapsulesmb/core/release.py`. If this release needs a critical prompt, set the update floor there too (see Updating And Pulling Releases).
 - Optionally bump `current_version` and `latest_tag` in `version.json` to the release, never for a hidden build. Bump it in the release commit, not earlier, or older apps announce a release that is not published yet.
 - Rebuild any changed NetBSD artifacts and update `artifact-manifest.json`.
 - For Samba changes, run the device regression tests on NetBSD 6 (full suite) and NetBSD 4 LE (the cases that fit).
@@ -197,5 +197,12 @@ A change to any of this reaches users only from the release after the one that s
 After any Sparkle bump, run these flows again on a packaged build. The app depends on Sparkle's `SULastCheckTime` key, on `checkForUpdates()` opening a waiting window and on its gentle reminder delegate methods, and the tests catch only a changed method signature or stage name. Package the app, lower `CFBundleVersion` and `CFBundleShortVersionString` with `plutil`, sign it with `codesign --force --sign -`, and open it with `--args -SUAutomaticallyUpdate YES`: it takes the real feed. Check that the window opens by itself, waits with a text field focused, and that Install and Relaunch, Install on Quit and Skip This Version work. Skip This Version saves `SUSkippedVersion`, so delete that key afterwards.
 
 Install and Relaunch quits the app the normal way, so during a device operation the app asks first. After Keep Open, Sparkle closes its window and keeps the session, and it installs the update when the app next quits, and relaunches it. While one of the app's own confirmation dialogs is open, such as Install / Update's, macOS refuses the quit without asking, and the update likewise waits for the next quit.
+
+`release.py` holds one update floor, 0 for none, and every app with Sparkle (v3.8.0 and later) already understands it.
+
+- `CRITICAL_BELOW_VERSION_CODE` makes the update critical for apps below that code. Sparkle says "An important update" and drops Skip This Version and Remind Me Later, and closing the window leaves the install for the next quit. Use it for data loss and security fixes. The window still waits for typing, dialogs and device operations.
+- `min_supported_version` in `version.json` is the hard stop. Raise it only once the fix has been out for a while.
+
+The appcast holds one release, so the floor stays set across releases: lowering it makes an app that missed that release treat the next one as ordinary. `check_release.py` refuses a floor above the release's own code.
 
 To pull a bad release, delete it, or mark the previous release as the latest: the feed then follows that release. That only stops new installs, and by then apps with automatic download on that were opened since publishing have the bad release downloaded. Sparkle never downgrades, so apps that installed it need a fixed release with a higher `CLI_VERSION_CODE`.
