@@ -247,6 +247,24 @@ class SummaryProducerTests(unittest.TestCase):
         self.assertEqual(volumes(1), "Found 1 mounted HFS volume.")
         self.assertEqual(volumes(2), "Found 2 mounted HFS volumes.")
 
+    def test_discover_summary_counts_what_nearby_devices_shows(self) -> None:
+        from timecapsulesmb.app import contracts
+
+        capsule = {"name": "Capsule", "supported_model": True}
+        unknown = {"name": "Unknown", "supported_model": None}
+        express = {"name": "Express", "supported_model": False}
+
+        mixed = contracts.discover_payload({"devices": [capsule, express, unknown]})
+        self.assertEqual(mixed["summary"], "Discovered 2 devices.")
+        self.assertEqual(mixed["summary_args"], [2])
+        # Add Device and telemetry still get all of them.
+        self.assertEqual(mixed["counts"]["devices"], 3)
+        self.assertEqual(mixed["devices"], [capsule, express, unknown])
+
+        alone = contracts.discover_payload({"devices": [express]})
+        self.assertEqual(alone["summary"], "Discovered 0 devices.")
+        self.assertEqual(alone["counts"]["devices"], 1)
+
     def test_some_banks_match_agrees_with_the_matched_count(self) -> None:
         def some_match(matched: list[bool]) -> str:
             matches = [{"bank": f"bank{i}", "match": {"matched": m, "template_version": None}} for i, m in enumerate(matched)]

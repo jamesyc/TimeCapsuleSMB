@@ -375,19 +375,9 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     }
 
     func testResetAfterUnsupportedModelClearsTheExplanation() async throws {
-        let express = testDiscoveredDevice(
-            id: "bonjour:express",
-            name: "Living Room Express",
-            host: "10.0.0.40",
-            syap: "115",
-            model: "AirPort10,115",
-            supportedModel: false,
-            fullname: "Living Room Express._airport._tcp.local."
-        )
+        let express = testExpressDevice()
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [express]))
-            ])
+            testDiscoverResponse(devices: [express])
         ])
         fixture.store.runDiscover()
         try await waitUntilStoreState { fixture.store.state == .discoveryReady }
@@ -1003,7 +993,6 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         let device = try XCTUnwrap(clicked.device)
         XCTAssertEqual(fixture.store.state, .passwordEntry)
         XCTAssertEqual(fixture.store.selectedDeviceID, device.id)
-        XCTAssertEqual(fixture.store.manualHost, device.connectionTarget)
         fixture.store.password = "secret"
         XCTAssertTrue(fixture.store.canConfigure)
     }
@@ -1033,6 +1022,301 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.selectedDeviceID, left.id)
     }
 
+    func testALoneDeviceBesideAnUnsupportedModelIsPreselected() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [testExpressDevice(), officeCapsule()])
+        ])
+
+        fixture.store.runDiscover()
+
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady && fixture.store.selectedDeviceID != nil }
+        XCTAssertEqual(fixture.store.selectedDeviceID, "bonjour:office")
+        XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.2")
+        XCTAssertEqual(fixture.store.devices.count, 2)
+    }
+
+    func testTwoDevicesBesideAnUnsupportedModelWaitForAChoice() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [testExpressDevice(), officeCapsule(), denCapsule()])
+        ])
+
+        fixture.store.runDiscover()
+
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        XCTAssertNil(fixture.store.selectedDeviceID)
+    }
+
+    func testASavedAirPortBesideAnUnsupportedModelIsNotPreselected() async throws {
+        let record = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let capsule = testDiscoveredDevice(
+            id: "bonjour:office capsule._airport._tcp.local.",
+            name: "Office Capsule",
+            host: "10.0.0.2",
+            supportedModel: true,
+            selectedRecord: record
+        )
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse([record], devices: [testExpressDevice(), officeCapsule()])
+        ])
+        _ = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: record.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "existing-device"
+        )
+
+        fixture.store.runDiscover()
+
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        XCTAssertNil(fixture.store.selectedDeviceID)
+    }
+
+    func testUnsupportedModelLeavesNoAddressForManualEntry() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [testExpressDevice(), officeCapsule()])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.selectedDeviceID == "bonjour:office" }
+
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first { $0.isUnsupportedModel }))
+        XCTAssertEqual(fixture.store.state, .unsupported)
+        fixture.store.setEntryMode(.manual)
+        fixture.store.password = "pw"
+
+        // A typed host has no Bonjour record, so configure could not stop this
+        // one before it enabled SSH and rebooted the Express.
+        XCTAssertEqual(fixture.store.hostFieldText, "")
+        XCTAssertFalse(fixture.store.canConfigure)
+        fixture.store.runConfigure()
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover"])
+    }
+
+    func testManualEntryStartsFromTheClickedDevice() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [officeCapsule(), denCapsule()]),
+            testConfigureResponse(host: "root@10.0.0.9")
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.last))
+
+        fixture.store.setEntryMode(.manual)
+
+        XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.3")
+        XCTAssertNil(fixture.store.selectedDeviceID)
+        // It is only where editing starts: Save uses what the field holds.
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "pw"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 }
+        XCTAssertEqual(fixture.runner.calls[1].params["host"], .string("root@10.0.0.9"))
+    }
+
+    func testManualEntryStartsFromThePreselectedDevice() async throws {
+        let fixture = try await makeStore(responses: [testDiscoverResponse(devices: [testExpressDevice(), officeCapsule()])])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.selectedDeviceID != nil }
+
+        fixture.store.setEntryMode(.manual)
+
+        XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.2")
+    }
+
+    func testManualEntryStartsEmptyWithNothingChosen() async throws {
+        let fixture = try await makeStore(responses: [testDiscoverResponse(devices: [officeCapsule(), denCapsule()])])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+
+        fixture.store.setEntryMode(.manual)
+
+        XCTAssertEqual(fixture.store.hostFieldText, "")
+    }
+
+    func testTheDeviceChosenNextReplacesATypedAddress() async throws {
+        let fixture = try await makeStore(responses: [testDiscoverResponse(devices: [officeCapsule(), denCapsule()])])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.setEntryMode(.manual)
+        fixture.store.manualHost = "10.0.0.77"
+
+        fixture.store.select(try XCTUnwrap(fixture.store.discovery.devices.last))
+        fixture.store.setEntryMode(.manual)
+
+        XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.3")
+    }
+
+    func testADeviceThatVanishesBesideAnUnsupportedModelLeavesNoAddress() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [testExpressDevice(), officeCapsule()]),
+            testDiscoverResponse(devices: [testExpressDevice()])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.selectedDeviceID != nil }
+
+        fixture.store.discovery.refresh()
+
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady && fixture.store.selectedDeviceID == nil }
+        XCTAssertEqual(fixture.store.devices.count, 1)
+        fixture.store.setEntryMode(.manual)
+        XCTAssertEqual(fixture.store.hostFieldText, "")
+    }
+
+    func testAClickedDeviceThatVanishesBesideAnUnsupportedModelLeavesItsPasswordEntry() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [testExpressDevice(), officeCapsule(), denCapsule()]),
+            testDiscoverResponse(devices: [testExpressDevice(), denCapsule()])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first { $0.id == "bonjour:office" }))
+        XCTAssertEqual(fixture.store.state, .passwordEntry)
+
+        fixture.store.discovery.refresh()
+
+        // The one device left is ready to add, not the one the prompt was for.
+        try await waitUntilStoreState { fixture.store.selectedDeviceID == "bonjour:den" }
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
+    }
+
+    func testAnEmptySearchLeavesNoAddress() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [officeCapsule()]),
+            testDiscoverResponse()
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.selectedDeviceID != nil }
+
+        fixture.store.discovery.refresh()
+
+        try await waitUntilStoreState { fixture.store.state == .discoveryEmpty }
+        fixture.store.setEntryMode(.manual)
+        XCTAssertEqual(fixture.store.hostFieldText, "")
+    }
+
+    func testASelectedIdThatTurnsUnsupportedIsDropped() async throws {
+        // Without a MAC an id describes a Bonjour record, not a device.
+        let express = testDiscoveredDevice(id: "bonjour:office", name: "Office Capsule", host: "10.0.0.40", syap: "115", supportedModel: false)
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [officeCapsule()]),
+            testDiscoverResponse(devices: [express])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.selectedDeviceID == "bonjour:office" }
+        fixture.store.password = "pw"
+
+        fixture.store.discovery.refresh()
+
+        try await waitUntilStoreState { fixture.store.selectedDeviceID == nil }
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
+        XCTAssertEqual(fixture.store.devices.count, 1)
+        XCTAssertFalse(fixture.store.canConfigure)
+        fixture.store.setEntryMode(.manual)
+        XCTAssertEqual(fixture.store.hostFieldText, "")
+    }
+
+    func testAFailedAddKeepsItsAddressForManualEntry() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [officeCapsule(), denCapsule()]),
+            failedConfigureResponse()
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.last))
+        fixture.store.password = "pw"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .failed }
+
+        fixture.store.setEntryMode(.manual)
+
+        XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.3")
+    }
+
+    func testADeviceThatVanishesBehindAFailedAddLeavesNoAddress() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [officeCapsule(), denCapsule()]),
+            failedConfigureResponse(),
+            testDiscoverResponse(devices: [officeCapsule()])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.last))
+        fixture.store.password = "pw"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .failed && !fixture.store.isRunning }
+
+        fixture.store.discovery.refresh()
+
+        // Discovery updates leave a failed add on screen, selection included.
+        try await waitUntilStoreState { fixture.store.discovery.state == .ready && fixture.store.discovery.devices.count == 1 }
+        await runQueuedStoreUpdates()
+        XCTAssertEqual(fixture.store.state, .failed)
+        fixture.store.setEntryMode(.manual)
+        XCTAssertEqual(fixture.store.hostFieldText, "")
+    }
+
+    func testAnIdThatTurnsUnsupportedBehindAFailedAddLeavesNoAddress() async throws {
+        let express = testDiscoveredDevice(id: "bonjour:den", name: "Den Capsule", host: "10.0.0.40", syap: "115", supportedModel: false)
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [officeCapsule(), denCapsule()]),
+            failedConfigureResponse(),
+            testDiscoverResponse(devices: [officeCapsule(), express])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.last))
+        fixture.store.password = "pw"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .failed && !fixture.store.isRunning }
+
+        fixture.store.discovery.refresh()
+
+        try await waitUntilStoreState { fixture.store.discovery.state == .ready && fixture.store.discovery.nearbyDevices.count == 1 }
+        await runQueuedStoreUpdates()
+        XCTAssertEqual(fixture.store.selectedDeviceID, "bonjour:den")
+        fixture.store.setEntryMode(.manual)
+        XCTAssertEqual(fixture.store.hostFieldText, "")
+    }
+
+    func testAModelConfigureRejectsLeavesNoAddress() async throws {
+        // No verdict from Bonjour, so only configure can find out.
+        let unknown = testDiscoveredDevice(id: "bonjour:unknown", name: "Unknown AirPort", host: "10.0.0.5", syap: nil, supportedModel: nil)
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [unknown]),
+            .init(events: [
+                BackendEvent(type: "error", operation: "configure", code: "unsupported_device", message: "unsupported")
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.selectedDeviceID == "bonjour:unknown" }
+        fixture.store.password = "pw"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .unsupported }
+
+        fixture.store.setEntryMode(.manual)
+
+        XCTAssertEqual(fixture.store.hostFieldText, "")
+    }
+
+    func testDiscoveryLeavesTheManualPageAlone() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [officeCapsule(), denCapsule()]),
+            testDiscoverResponse(devices: [denCapsule()])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.setEntryMode(.manual)
+        fixture.store.manualHost = "10.0.0.77"
+
+        // A lone device, which the discover page would preselect.
+        fixture.store.discovery.refresh()
+
+        try await waitUntilStoreState { fixture.store.discovery.state == .ready && fixture.store.discovery.devices.count == 1 }
+        await runQueuedStoreUpdates()
+        XCTAssertEqual(fixture.store.state, .manualEntry)
+        XCTAssertNil(fixture.store.selectedDeviceID)
+        XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.77")
+    }
+
     func testALoneSavedAirPortIsNotPreselectedForAdding() async throws {
         let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
         let fixture = try await makeStore(responses: [
@@ -1050,7 +1334,6 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         // Its row opens its page, so nothing is set up to add it again.
         XCTAssertNil(fixture.store.selectedDeviceID)
-        XCTAssertEqual(fixture.store.manualHost, "")
         fixture.store.password = "secret"
         XCTAssertFalse(fixture.store.canConfigure)
         fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
@@ -1076,7 +1359,6 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.savedProfile?.displayName, "Den Capsule")
         XCTAssertEqual(fixture.store.state, .discoveryReady)
         XCTAssertNil(fixture.store.selectedDeviceID)
-        XCTAssertEqual(fixture.store.manualHost, "")
         fixture.store.password = "secret"
         XCTAssertFalse(fixture.store.canConfigure)
     }
@@ -1211,19 +1493,9 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     }
 
     func testSelectingUnsupportedModelExplainsAndNeverRunsConfigure() async throws {
-        let express = testDiscoveredDevice(
-            id: "bonjour:express",
-            name: "Living Room Express",
-            host: "10.0.0.40",
-            syap: "115",
-            model: "AirPort10,115",
-            supportedModel: false,
-            fullname: "Living Room Express._airport._tcp.local."
-        )
+        let express = testExpressDevice()
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [express]))
-            ])
+            testDiscoverResponse(devices: [express])
         ])
         fixture.store.runDiscover()
         try await waitUntilStoreState { fixture.store.state == .discoveryReady }
@@ -1267,9 +1539,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             selectedRecord: record
         )
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record], devices: [unsupported]))
-            ])
+            testDiscoverResponse([record], devices: [unsupported])
         ])
         let existing = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -1291,15 +1561,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     }
 
     func testSelectingSupportedDeviceAfterUnsupportedClearsTheExplanation() async throws {
-        let express = testDiscoveredDevice(
-            id: "bonjour:express",
-            name: "Living Room Express",
-            host: "10.0.0.40",
-            hostname: "express.local.",
-            syap: "115",
-            supportedModel: false,
-            fullname: "Living Room Express._airport._tcp.local."
-        )
+        let express = testExpressDevice()
         let capsule = testDiscoveredDevice(
             id: "bonjour:capsule",
             name: "Office Capsule",
@@ -1315,9 +1577,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             fullname: "Unknown AirPort._airport._tcp.local."
         )
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [express, capsule, unknown]))
-            ])
+            testDiscoverResponse(devices: [express, capsule, unknown])
         ])
         fixture.store.runDiscover()
         try await waitUntilStoreState { fixture.store.state == .discoveryReady }
@@ -1756,9 +2016,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             model: "TimeCapsule6,116"
         )
         let fixture = try await makeStore(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [discovered]))
-            ])
+            testDiscoverResponse(devices: [discovered])
         ])
         fixture.store.discovery.refresh(timeout: 6)
         try await waitUntilStoreState { fixture.store.discovery.state == .ready }
@@ -1879,6 +2137,48 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.savedProfile?.id, original.id)
         XCTAssertEqual(fixture.runner.calls[1].context?.profileID, original.id)
         XCTAssertEqual(fixture.registry.profiles.count, 2)
+    }
+
+    func testAnUnsupportedModelSharingASavedNameIsNeverSuggested() async throws {
+        let moved = testDeviceRecord(ipv4: ["10.0.0.9"])
+        let express = testDiscoveredDevice(id: "bonjour:express", host: "10.0.0.9", syap: "115", supportedModel: false, selectedRecord: moved)
+        let fixture = try await makeStore(responses: [testDiscoverResponse([moved], devices: [express])])
+        let original = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: DiscoveredDevice(record: try testDeviceRecord().decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available, preferredID: "existing")
+        XCTAssertNil(original.network.airportMAC)
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
+        XCTAssertEqual(fixture.store.state, .unsupported)
+
+        XCTAssertNil(fixture.store.suggestedProfile)
+        fixture.store.reconnectSuggestedProfile()
+        XCTAssertNil(fixture.store.reconnectProfileID)
+        // The saved device's page must not offer to move it onto the Express.
+        XCTAssertNil(fixture.store.discovery.staleEndpointNotice(for: original))
+    }
+
+    func testAnUnsupportedModelSharingTheNameLeavesAMovedDeviceUnsuggested() async throws {
+        // Two devices answering to the name means the name proves neither.
+        let moved = testDeviceRecord(ipv4: ["10.0.0.9"])
+        let twin = testDeviceRecord(ipv4: ["10.0.0.40"])
+        let express = testDiscoveredDevice(id: "bonjour:express", host: "10.0.0.40", syap: "115", supportedModel: false, selectedRecord: twin)
+        let capsule = testDiscoveredDevice(id: "bonjour:office", host: "10.0.0.9", supportedModel: true, selectedRecord: moved)
+        let fixture = try await makeStore(responses: [testDiscoverResponse([moved, twin], devices: [capsule, express])])
+        let original = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: DiscoveredDevice(record: try testDeviceRecord().decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available, preferredID: "existing")
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first { !$0.isUnsupportedModel }))
+
+        XCTAssertNil(fixture.store.suggestedProfile)
+        XCTAssertNil(fixture.store.discovery.staleEndpointNotice(for: original))
     }
 
     func testNameOnlyReconnectRequiresChoiceAndPreservesProfileArtifacts() async throws {
@@ -2039,6 +2339,20 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             }
         }
         return clicked
+    }
+
+    private func failedConfigureResponse() -> StoreTestRunner.Response {
+        .init(events: [
+            BackendEvent(type: "error", operation: "configure", code: "remote_error", message: "not reachable")
+        ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+    }
+
+    private func officeCapsule() -> JSONValue {
+        testDiscoveredDevice(id: "bonjour:office", name: "Office Capsule", host: "10.0.0.2", supportedModel: true)
+    }
+
+    private func denCapsule() -> JSONValue {
+        testDiscoveredDevice(id: "bonjour:den", name: "Den Capsule", host: "10.0.0.3", supportedModel: true)
     }
 
     private func makeStore(

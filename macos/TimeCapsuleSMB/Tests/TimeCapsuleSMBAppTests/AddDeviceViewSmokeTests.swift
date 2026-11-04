@@ -40,10 +40,8 @@ final class AddDeviceViewSmokeTests: XCTestCase {
         try assertRendersNonBlank(AddDeviceView(store: empty.store), size: CGSize(width: 900, height: 700))
 
         let ready = try await makeFixture(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [
-                    testDiscoveredDevice(name: "Office Capsule", host: "10.0.0.2")
-                ]))
+            testDiscoverResponse(devices: [
+                testDiscoveredDevice(name: "Office Capsule", host: "10.0.0.2")
             ])
         ])
         ready.store.runDiscover()
@@ -58,19 +56,9 @@ final class AddDeviceViewSmokeTests: XCTestCase {
 
     func testRendersUnsupportedModelRowAndExplanation() async throws {
         let fixture = try await makeFixture(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [
-                    testDiscoveredDevice(name: "Office Capsule", host: "10.0.0.2", supportedModel: true),
-                    testDiscoveredDevice(
-                        id: "bonjour:express",
-                        name: "Living Room Express",
-                        host: "10.0.0.40",
-                        hostname: "express.local.",
-                        syap: "115",
-                        supportedModel: false,
-                        fullname: "Living Room Express._airport._tcp.local."
-                    )
-                ]))
+            testDiscoverResponse(devices: [
+                testDiscoveredDevice(name: "Office Capsule", host: "10.0.0.2", supportedModel: true),
+                testExpressDevice()
             ])
         ])
         fixture.store.runDiscover()

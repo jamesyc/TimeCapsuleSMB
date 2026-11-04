@@ -29,9 +29,39 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         try await waitUntilStoreState { fixture.monitor.state == .ready }
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["capabilities", "validate-install", "discover"])
         XCTAssertEqual(fixture.monitor.devices.map(\.host), ["10.0.0.2"])
-        XCTAssertEqual(fixture.monitor.unsavedDevices.count, 1)
+        XCTAssertEqual(fixture.monitor.nearbyUnsavedDevices.count, 1)
         XCTAssertTrue(fixture.registry.profiles.isEmpty)
         XCTAssertEqual(fixture.monitor.currentStage?.stage, "bonjour_discovery")
+    }
+
+    func testNearbyDevicesLeaveOutUnsupportedModelsOnly() async throws {
+        let fixture = try await makeReadyFixture(responses: [
+            testDiscoverResponse(devices: [
+                testDiscoveredDevice(id: "bonjour:office", name: "Office Capsule", host: "10.0.0.2", supportedModel: true),
+                testDiscoveredDevice(id: "bonjour:unknown", name: "Unknown AirPort", host: "10.0.0.3", supportedModel: nil),
+                testExpressDevice()
+            ])
+        ])
+
+        fixture.monitor.startMonitoring()
+
+        try await waitUntilStoreState { fixture.monitor.state == .ready }
+        XCTAssertEqual(fixture.monitor.nearbyUnsavedDevices.map(\.host), ["10.0.0.2", "10.0.0.3"])
+        XCTAssertEqual(fixture.monitor.nearbySavedDevices, [])
+        XCTAssertEqual(fixture.monitor.nearbyState, .ready)
+        // Add Device reads this list, and explains an unsupported model when clicked.
+        XCTAssertEqual(fixture.monitor.devices.map(\.host), ["10.0.0.2", "10.0.0.3", "10.0.0.40"])
+    }
+
+    func testNearbyStateIsTheStateOutsideReady() async throws {
+        let fixture = try await makeReadyFixture(responses: [
+            .init(events: [BackendEvent.error(operation: "discover", code: "bonjour_failed", message: "Bonjour failed.")])
+        ])
+        fixture.monitor.startMonitoring()
+        try await waitUntilStoreState { fixture.monitor.state == .failed }
+
+        // No devices here must not read as an empty search.
+        XCTAssertEqual(fixture.monitor.nearbyState, .failed)
     }
 
     func testDiscoveryEmptyFailedAndMalformedPayloadStatesAreExplicit() async throws {
@@ -73,8 +103,8 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         fixture.monitor.startMonitoring()
 
         try await waitUntilStoreState { fixture.monitor.state == .ready }
-        XCTAssertEqual(fixture.monitor.unsavedDevices, [])
-        XCTAssertEqual(fixture.monitor.savedDevices.map(\.host), ["10.0.0.2"])
+        XCTAssertEqual(fixture.monitor.nearbyUnsavedDevices, [])
+        XCTAssertEqual(fixture.monitor.nearbySavedDevices.map(\.host), ["10.0.0.2"])
         XCTAssertEqual(fixture.monitor.lastSeenText(for: profile), "Seen now")
     }
 
@@ -110,7 +140,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         XCTAssertEqual(current.fullname, "Office Capsule._airport._tcp.local.")
         XCTAssertEqual(notice.configuredHost, "10.0.0.2")
         XCTAssertEqual(notice.currentHost, "10.0.0.80")
-        XCTAssertEqual(fixture.monitor.savedDevices.map(\.host), ["10.0.0.80"])
+        XCTAssertEqual(fixture.monitor.nearbySavedDevices.map(\.host), ["10.0.0.80"])
     }
 
     func testCurrentDiscoveredDeviceReportsStaleIPv6AddressChange() async throws {
@@ -147,7 +177,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         XCTAssertEqual(current.fullname, "IPv6 Capsule._airport._tcp.local.")
         XCTAssertEqual(notice.configuredHost, "fd00::2")
         XCTAssertEqual(notice.currentHost, "fd00::80")
-        XCTAssertEqual(fixture.monitor.savedDevices.map(\.host), ["fd00::80"])
+        XCTAssertEqual(fixture.monitor.nearbySavedDevices.map(\.host), ["fd00::80"])
     }
 
     func testRefreshPausesBehindActiveOperationAndResumesWhenRunnerIsFree() async throws {

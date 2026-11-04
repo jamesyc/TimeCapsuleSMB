@@ -532,32 +532,117 @@ final class ContentViewSmokeTests: XCTestCase {
         }
     }
 
-    func testRendersOverviewWithUnsupportedDiscoveredDevice() async throws {
+    func testOverviewLeavesOutUnsupportedDeviceAndAddDeviceKeepsIt() async throws {
         let fixture = try await AppViewFixture(
             responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [
-                        testDiscoveredDevice(name: "Office Capsule", host: "10.0.0.2", supportedModel: true),
-                        testDiscoveredDevice(
-                            id: "bonjour:express",
-                            name: "Living Room Express",
-                            host: "10.0.0.40",
-                            hostname: "express.local.",
-                            syap: "115",
-                            supportedModel: false,
-                            fullname: "Living Room Express._airport._tcp.local."
-                        )
-                    ]))
+                testDiscoverResponse(devices: [
+                    testDiscoveredDevice(name: "Office Capsule", host: "10.0.0.2", supportedModel: true),
+                    testExpressDevice()
                 ])
+            ],
+            discoveryWaitsForReadiness: false
+        )
+        let flow = fixture.composition.addDeviceStore
+        flow.runDiscover()
+        try await waitUntilStoreState { flow.state == .discoveryReady }
+        fixture.appStore.navigate(to: .allDevices)
+
+        let overview = accessibleElements(fixture.contentView).map(\.text)
+        XCTAssertTrue(overview.contains("Office Capsule"))
+        XCTAssertTrue(overview.contains(L10n.string("discovery_monitor.state.ready")))
+        XCTAssertFalse(overview.contains { $0.contains("Living Room Express") })
+        XCTAssertFalse(overview.contains { $0.contains(L10n.string("add_device.state.unsupported")) })
+
+        fixture.appStore.showAddDevice()
+
+        // A row is one button, so its texts read as one label.
+        let addDevice = accessibleElements(fixture.contentView).map(\.text)
+        let expressRow = try XCTUnwrap(addDevice.first { $0.contains("Living Room Express") })
+        XCTAssertTrue(expressRow.contains(L10n.string("add_device.state.unsupported")))
+    }
+
+    func testOverviewReadsAsEmptyWhenOnlyAnUnsupportedDeviceAnswered() async throws {
+        let fixture = try await AppViewFixture(
+            responses: [
+                testDiscoverResponse(devices: [testExpressDevice()])
             ],
             discoveryWaitsForReadiness: false
         )
         fixture.appStore.deviceDiscovery.refresh(timeout: 6)
         try await waitUntilStoreState { fixture.appStore.deviceDiscovery.state == .ready }
-        XCTAssertEqual(fixture.appStore.deviceDiscovery.unsavedDevices.filter(\.isUnsupportedModel).count, 1)
         fixture.appStore.navigate(to: .allDevices)
 
-        try assertRendersNonBlank(fixture.contentView)
+        let overview = accessibleElements(fixture.contentView).map(\.text)
+        XCTAssertTrue(overview.contains(L10n.string("discovery_monitor.state.empty")))
+        XCTAssertTrue(overview.contains(L10n.string("overview.discovery.empty")))
+        XCTAssertFalse(overview.contains(L10n.string("discovery_monitor.state.ready")))
+        XCTAssertFalse(overview.contains { $0.contains("Living Room Express") })
+    }
+
+    func testNearbyRowsOfferAddOnlyForUnsavedDevices() async throws {
+        let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
+        let den = testDeviceRecord(name: "Den Capsule", ipv4: ["10.0.0.3"], fullname: "Den Capsule._airport._tcp.local.")
+        let attic = testDeviceRecord(name: "Attic Capsule", ipv4: ["10.0.0.4"], fullname: "Attic Capsule._airport._tcp.local.")
+        let fixture = try await AppViewFixture(responses: [testDiscoverResponse([office, den, attic])], discoveryWaitsForReadiness: false)
+        _ = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: office.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        fixture.appStore.deviceDiscovery.refresh(timeout: 6)
+        try await waitUntilStoreState { fixture.appStore.deviceDiscovery.state == .ready }
+
+        let elements = overviewElements(fixture)
+        func count(_ key: String) -> Int {
+            elements.filter { $0.text == L10n.string(key) }.count
+        }
+        // Unequal counts, so swapped labels cannot pass.
+        XCTAssertEqual(count("overview.discovery.saved"), 1)
+        XCTAssertEqual(count("overview.discovery.unsaved"), 2)
+        XCTAssertEqual(count("overview.discovery.add"), 2)
+    }
+
+    func testSavedUnsupportedDeviceStaysSavedAndLeavesNearbyDevices() async throws {
+        let record = testDeviceRecord(
+            name: "Living Room Express",
+            ipv4: ["10.0.0.40"],
+            syap: "115",
+            fullname: "Living Room Express._airport._tcp.local."
+        )
+        let express = testDiscoveredDevice(
+            id: "bonjour:living room express._airport._tcp.local.",
+            name: "Living Room Express",
+            host: "10.0.0.40",
+            syap: "115",
+            supportedModel: false,
+            fullname: "Living Room Express._airport._tcp.local.",
+            selectedRecord: record
+        )
+        let fixture = try await AppViewFixture(
+            responses: [
+                testDiscoverResponse([record], devices: [
+                    express
+                ])
+            ],
+            discoveryWaitsForReadiness: false
+        )
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.40"),
+            discoveredDevice: try DiscoveredDevice(record: record.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        fixture.appStore.deviceDiscovery.refresh(timeout: 6)
+        try await waitUntilStoreState { fixture.appStore.deviceDiscovery.state == .ready }
+        XCTAssertNotNil(fixture.appStore.deviceDiscovery.currentDiscoveredDevice(for: profile))
+
+        let texts = overviewElements(fixture).map(\.text)
+        // One row, the saved one: a Nearby row would name the device again.
+        XCTAssertEqual(texts.filter { $0.contains(profile.title) }.count, 1)
+        XCTAssertTrue(texts.contains(L10n.string("discovery_monitor.state.empty")))
+        XCTAssertTrue(texts.contains(L10n.string("overview.discovery.empty")))
+        XCTAssertFalse(texts.contains(L10n.string("overview.discovery.saved")))
     }
 
     func testRendersDeviceDashboardRoute() async throws {
@@ -639,6 +724,18 @@ final class ContentViewSmokeTests: XCTestCase {
 
         XCTAssertNotNil(fixture.appStore.operationCoordinator.pendingConfirmation)
         try assertRendersNonBlank(fixture.contentView)
+    }
+
+    /// The overview alone: the shell's sidebar also names saved devices.
+    private func overviewElements(_ fixture: AppViewFixture) -> [AccessibleElement] {
+        accessibleElements(DeviceListOverviewView(
+            appStore: fixture.appStore,
+            deviceRegistry: fixture.registry,
+            deviceDiscovery: fixture.appStore.deviceDiscovery,
+            backend: fixture.appStore.backend,
+            canAddDevice: true,
+            addDiscoveredDevice: { _ in }
+        ))
     }
 }
 

@@ -210,6 +210,7 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     func startManualEntry() {
+        manualHost = manualEntryAddress
         entryMode = .manual
         state = .manualEntry
         reconnectProfileID = nil
@@ -217,6 +218,18 @@ final class AddDeviceFlowStore: ObservableObject {
         clearHandoffs()
         error = nil
         currentStage = nil
+    }
+
+    /// Where Manual Address starts: the chosen device's address, to correct it
+    /// after a failed add. It is read from the live selection when the page
+    /// opens, so a device that has since gone leaves no address behind. A model
+    /// on screen as unsupported is not offered: a typed host has no Bonjour
+    /// record for configure to reject before it enables SSH and reboots it.
+    private var manualEntryAddress: String {
+        guard state != .unsupported, let device = selectedDevice, !device.isUnsupportedModel else {
+            return ""
+        }
+        return device.connectionTarget
     }
 
     func runDiscover() {
@@ -289,7 +302,6 @@ final class AddDeviceFlowStore: ObservableObject {
         reconnectProfileID = nil
         entryMode = .discover
         selectedDeviceID = device.id
-        manualHost = device.connectionTarget
         clearHandoffs()
         if device.isUnsupportedModel {
             rejectUnsupportedModel()
@@ -364,8 +376,8 @@ final class AddDeviceFlowStore: ObservableObject {
         appliedDefaultDeviceSettings = settings.defaultDeviceSettings
     }
 
-    /// Stops before the password prompt: configure would only turn on SSH and
-    /// reboot this AirPort to find out that it cannot run TimeCapsuleSMB.
+    /// Stops before the password prompt: configure would only refuse this
+    /// model by its Bonjour syAP, so the password would be asked for nothing.
     private func rejectUnsupportedModel() {
         clearHandoffs()
         password = ""
@@ -505,13 +517,14 @@ final class AddDeviceFlowStore: ObservableObject {
         case .empty:
             reconnectProfileID = nil
             selectedDeviceID = nil
-            manualHost = ""
             state = .discoveryEmpty
             currentStage = nil
             error = nil
         case .ready:
-            if let selectedDeviceID,
-               !discovery.devices.contains(where: { $0.id == selectedDeviceID }) {
+            let nearby = discovery.nearbyDevices
+            // Gone, or its id now names an unsupported model: without a MAC an
+            // id describes a Bonjour record, not a device.
+            if let selectedDeviceID, !nearby.contains(where: { $0.id == selectedDeviceID }) {
                 self.reconnectProfileID = nil
                 self.selectedDeviceID = nil
             }
@@ -519,13 +532,12 @@ final class AddDeviceFlowStore: ObservableObject {
             // clicked in between is already waiting for its password; it keeps
             // waiting while the list still has it.
             let keepsPasswordEntry = state == .passwordEntry && selectedDeviceID != nil
-            // A lone device is preselected only when it can be added. An unsupported
-            // model's row explains why when clicked, instead of leaving Save
-            // silently disabled; a saved device's row opens its page.
-            if selectedDeviceID == nil, discovery.devices.count == 1, !discovery.devices[0].isUnsupportedModel,
-               registry.matchingProfile(for: discovery.devices[0]) == nil {
-                selectedDeviceID = discovery.devices[0].id
-                manualHost = discovery.devices[0].connectionTarget
+            // A lone device is preselected when it can be added, and unsupported
+            // models do not count towards that. An unsupported model's row
+            // explains why when clicked, instead of leaving Save silently
+            // disabled; a saved device's row opens its page.
+            if selectedDeviceID == nil, nearby.count == 1, registry.matchingProfile(for: nearby[0]) == nil {
+                selectedDeviceID = nearby[0].id
             }
             if !keepsPasswordEntry {
                 state = discovery.devices.isEmpty ? .discoveryEmpty : .discoveryReady

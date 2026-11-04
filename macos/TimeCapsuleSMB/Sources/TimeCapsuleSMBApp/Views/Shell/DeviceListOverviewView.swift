@@ -73,7 +73,7 @@ struct DeviceListOverviewView: View {
                 Text(L10n.string("overview.discovery.title"))
                     .font(.headline)
                 Spacer()
-                Text(deviceDiscovery.state.title)
+                Text(deviceDiscovery.nearbyState.title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button {
@@ -95,7 +95,7 @@ struct DeviceListOverviewView: View {
 
     @ViewBuilder
     private var discoveryContent: some View {
-        switch deviceDiscovery.state {
+        switch deviceDiscovery.nearbyState {
         case .idle, .waitingForReadiness:
             Text(L10n.string("overview.discovery.waiting"))
                 .foregroundStyle(.secondary)
@@ -131,31 +131,17 @@ struct DeviceListOverviewView: View {
             Text(L10n.string("overview.discovery.empty"))
                 .foregroundStyle(.secondary)
         case .ready:
-            let unsaved = deviceDiscovery.unsavedDevices
-            let saved = deviceDiscovery.savedDevices
-            if unsaved.isEmpty && saved.isEmpty {
-                Text(L10n.string("overview.discovery.empty"))
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(unsaved) { device in
-                        OverviewDiscoveredDeviceRow(
-                            device: device,
-                            presentation: OverviewDiscoveredDevicePresentation(device: device, isSaved: false)
-                        ) {
-                            addDiscoveredDevice(device)
-                        }
-                        .disabled(!canAddDevice)
-                        Divider()
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(deviceDiscovery.nearbyUnsavedDevices) { device in
+                    OverviewDiscoveredDeviceRow(device: device) {
+                        addDiscoveredDevice(device)
                     }
-                    ForEach(saved) { device in
-                        OverviewDiscoveredDeviceRow(
-                            device: device,
-                            presentation: OverviewDiscoveredDevicePresentation(device: device, isSaved: true),
-                            action: nil
-                        )
-                        Divider()
-                    }
+                    .disabled(!canAddDevice)
+                    Divider()
+                }
+                ForEach(deviceDiscovery.nearbySavedDevices) { device in
+                    OverviewDiscoveredDeviceRow(device: device, add: nil)
+                    Divider()
                 }
             }
         }
@@ -164,8 +150,8 @@ struct DeviceListOverviewView: View {
 
 private struct OverviewDiscoveredDeviceRow: View {
     let device: DiscoveredDevice
-    let presentation: OverviewDiscoveredDevicePresentation
-    let action: (() -> Void)?
+    /// nil for a saved device, whose row offers no Add button.
+    let add: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -184,17 +170,11 @@ private struct OverviewDiscoveredDeviceRow: View {
                 .foregroundStyle(.secondary)
             }
             Spacer()
-            if presentation.isUnsupported {
-                Label(presentation.statusText, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            } else {
-                Text(presentation.statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if let actionTitle = presentation.actionTitle, let action {
-                Button(actionTitle, action: action)
+            Text(add == nil ? L10n.string("overview.discovery.saved") : L10n.string("overview.discovery.unsaved"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let add {
+                Button(L10n.string("overview.discovery.add"), action: add)
             }
         }
         .padding(.vertical, 8)

@@ -362,9 +362,9 @@
         }
       ],
       "schema_version": 1,
-      "summary": "Discovered 1 device.",
+      "summary": "Discovered 0 devices.",
       "summary_args": [
-        1
+        0
       ],
       "summary_key": "discovered_devices"
     }

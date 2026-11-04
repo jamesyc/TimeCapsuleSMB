@@ -306,12 +306,14 @@ final class DeviceRegistryStore: ObservableObject {
 
     /// The one saved profile a device no profile matches by MAC or address
     /// names (DeviceNetworkIdentity.nameEvidence). `devices` is what
-    /// discovery sees now: a name another of them shares names neither.
+    /// discovery sees now: a name another of them shares names neither. A name
+    /// never makes an unsupported model a saved device, so it is not suggested;
+    /// it still counts as a competitor for the name it shares.
     func suggestedProfile(for device: DiscoveredDevice, among devices: [DiscoveredDevice] = []) -> DeviceProfile? {
-        guard case .none = profileMatch(for: device) else { return nil }
+        guard !device.isUnsupportedModel, case .none = profileMatch(for: device) else { return nil }
         let names = device.observedIdentity.savedNames
-        // Another record of the device itself (its MAC) is no competitor. Ids
-        // come from the Bonjour full name, which two devices can share.
+        // Another record of the device itself (its MAC) is no competitor.
+        // Without a MAC an id describes a Bonjour record, not a device.
         let otherDevices = devices.filter { other in
             other != device && !(other.airportMAC != nil && other.airportMAC == device.airportMAC)
         }.map(\.observedIdentity.savedNames)

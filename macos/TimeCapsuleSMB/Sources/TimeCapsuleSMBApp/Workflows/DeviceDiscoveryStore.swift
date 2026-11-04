@@ -113,12 +113,25 @@ final class DeviceDiscoveryStore: ObservableObject {
             .store(in: &cancellables)
     }
 
-    var unsavedDevices: [DiscoveredDevice] {
-        devices.filter { matchingProfile(for: $0) == nil }
+    /// Every discovered device but the models that cannot run TimeCapsuleSMB,
+    /// such as an AirPort Express. Add Device's list still shows those, from
+    /// `devices`, and explains why when one is clicked.
+    var nearbyDevices: [DiscoveredDevice] {
+        devices.filter { !$0.isUnsupportedModel }
     }
 
-    var savedDevices: [DiscoveredDevice] {
-        devices.filter { matchingProfile(for: $0) != nil }
+    var nearbyUnsavedDevices: [DiscoveredDevice] {
+        nearbyDevices.filter { matchingProfile(for: $0) == nil }
+    }
+
+    var nearbySavedDevices: [DiscoveredDevice] {
+        nearbyDevices.filter { matchingProfile(for: $0) != nil }
+    }
+
+    /// `state` as Nearby Devices shows it. `state` itself stays `.ready` when
+    /// only unsupported models answered, because Add Device lists them.
+    var nearbyState: DeviceDiscoveryState {
+        state == .ready && nearbyDevices.isEmpty ? .empty : state
     }
 
     func startMonitoring() {

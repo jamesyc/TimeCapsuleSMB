@@ -655,6 +655,20 @@ func testDeviceRecord(
     ])
 }
 
+/// An AirPort Express as discovery reports it: a model the helper's table rejects.
+func testExpressDevice() -> JSONValue {
+    testDiscoveredDevice(
+        id: "bonjour:express",
+        name: "Living Room Express",
+        host: "10.0.0.40",
+        hostname: "express.local.",
+        syap: "115",
+        model: "AirPort10,115",
+        supportedModel: false,
+        fullname: "Living Room Express._airport._tcp.local."
+    )
+}
+
 func testDiscoveredDevice(
     id: String = "bonjour:office-capsule._airport._tcp.local",
     name: String = "Office Capsule",
@@ -841,9 +855,9 @@ func testConfigureResponse(
 }
 
 /// discover's answer listing these Bonjour records.
-func testDiscoverResponse(_ records: [JSONValue]) -> StoreTestRunner.Response {
+func testDiscoverResponse(_ records: [JSONValue] = [], devices: [JSONValue]? = nil) -> StoreTestRunner.Response {
     StoreTestRunner.Response(events: [
-        BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: records))
+        BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: records, devices: devices))
     ])
 }
 

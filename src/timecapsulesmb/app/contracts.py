@@ -53,6 +53,9 @@ def discover_payload(raw: Mapping[str, object]) -> dict[str, object]:
     instances = list(raw.get("instances", [])) if isinstance(raw.get("instances"), list) else []
     resolved = list(raw.get("resolved", [])) if isinstance(raw.get("resolved"), list) else []
     devices = list(raw.get("devices", [])) if isinstance(raw.get("devices"), list) else []
+    # The summary counts what Nearby Devices shows, which leaves out unsupported
+    # models. counts stays complete: telemetry reports it.
+    listed = sum(1 for device in devices if not (isinstance(device, dict) and device.get("supported_model") is False))
     return _with_schema({
         **raw,
         "counts": {
@@ -60,7 +63,7 @@ def discover_payload(raw: Mapping[str, object]) -> dict[str, object]:
             "resolved": len(resolved),
             "devices": len(devices),
         },
-        **Summary("discovered_devices", f"Discovered {english_count(len(devices), 'device', 'devices')}.", (len(devices),)).fields(),
+        **Summary("discovered_devices", f"Discovered {english_count(listed, 'device', 'devices')}.", (listed,)).fields(),
     })
 
 
