@@ -413,6 +413,130 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertNil(fixture.store.error)
     }
 
+    func testFailedSearchClearsWhenDiscoveryRecovers() async throws {
+        let fixture = try await makeStore(responses: [
+            Self.discoverFailure(),
+            Self.discoverSuccess()
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .failed && !fixture.store.coordinator.appLane.isBusy }
+        XCTAssertEqual(fixture.store.error?.code, "bonjour_failed")
+
+        fixture.store.discovery.refresh()
+        try await waitUntilStoreState { fixture.store.discovery.state == .ready }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
+        XCTAssertNil(fixture.store.error)
+        XCTAssertEqual(fixture.store.devices.count, 1)
+    }
+
+    func testFailedSearchClearsWhenDiscoveryFindsNothing() async throws {
+        let fixture = try await makeStore(responses: [
+            Self.discoverFailure(),
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
+            ])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .failed && !fixture.store.coordinator.appLane.isBusy }
+
+        fixture.store.discovery.refresh()
+        try await waitUntilStoreState { fixture.store.discovery.state == .empty }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.state, .discoveryEmpty)
+        XCTAssertNil(fixture.store.error)
+    }
+
+    func testFailedAddStaysOnScreenWhenDiscoveryUpdates() async throws {
+        let fixture = try await makeStore(responses: [
+            Self.discoverSuccess(),
+            Self.configureFailure(),
+            Self.discoverSuccess()
+        ])
+        try await failAnAdd(in: fixture)
+
+        fixture.store.discovery.refresh()
+        try await waitUntilStoreState { fixture.runner.calls.count == 3 && fixture.store.discovery.state == .ready }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.state, .failed)
+        XCTAssertEqual(fixture.store.error?.operation, "configure")
+    }
+
+    func testFailedAddKeepsItsErrorWhenDiscoveryFailsAndRecovers() async throws {
+        let fixture = try await makeStore(responses: [
+            Self.discoverSuccess(),
+            Self.configureFailure(),
+            Self.discoverFailure(),
+            Self.discoverSuccess()
+        ])
+        try await failAnAdd(in: fixture)
+
+        fixture.store.discovery.refresh()
+        try await waitUntilStoreState {
+            fixture.store.discovery.state == .failed && !fixture.store.coordinator.appLane.isBusy
+        }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.state, .failed)
+        XCTAssertEqual(fixture.store.error?.operation, "configure")
+
+        fixture.store.discovery.refresh()
+        try await waitUntilStoreState { fixture.runner.calls.count == 4 && fixture.store.discovery.state == .ready }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.state, .failed)
+        XCTAssertEqual(fixture.store.error?.operation, "configure")
+    }
+
+    /// The workflow still reports the earlier failed add here, so only the
+    /// page's own error says which failure it is showing.
+    func testFailedSearchAfterAFailedAddClearsWhenDiscoveryRecovers() async throws {
+        let fixture = try await makeStore(responses: [
+            Self.discoverSuccess(),
+            Self.configureFailure(),
+            Self.discoverFailure(),
+            Self.discoverSuccess()
+        ])
+        try await failAnAdd(in: fixture)
+
+        fixture.store.runDiscover()
+        try await waitUntilStoreState {
+            fixture.store.error?.operation == "discover" && !fixture.store.coordinator.appLane.isBusy
+        }
+        XCTAssertEqual(fixture.store.state, .failed)
+        XCTAssertEqual(fixture.store.setupWorkflow.state, .failed)
+
+        fixture.store.discovery.refresh()
+        try await waitUntilStoreState { fixture.runner.calls.count == 4 && fixture.store.discovery.state == .ready }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.state, .discoveryReady)
+        XCTAssertNil(fixture.store.error)
+    }
+
+    func testValidationFailureStaysOnScreenWhenDiscoveryUpdates() async throws {
+        let fixture = try await makeStore(responses: [
+            Self.discoverSuccess(),
+            Self.discoverSuccess()
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState {
+            fixture.store.state == .discoveryReady && !fixture.store.coordinator.appLane.isBusy
+        }
+        fixture.store.runConfigure()
+        XCTAssertEqual(fixture.store.state, .failed)
+
+        fixture.store.discovery.refresh()
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 && fixture.store.discovery.state == .ready }
+        await runQueuedStoreUpdates()
+
+        XCTAssertEqual(fixture.store.state, .failed)
+        XCTAssertEqual(fixture.store.error?.code, "validation_failed")
+    }
+
     func testManualHostConfigureSuccessSavesProfileAndPassword() async throws {
         let fixture = try await makeStore(responses: [
             testConfigureResponse(host: "root@10.0.0.2")
@@ -571,8 +695,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         try await waitUntilStoreState {
             fixture.store.state == .awaitingConfirmation &&
-            fixture.store.coordinator.pendingConfirmation != nil &&
-            !fixture.store.coordinator.lane(for: .candidateHost("10.0.0.2")).backend.isRunning
+            fixture.store.coordinator.readyConfirmation != nil
         }
         XCTAssertFalse(fixture.store.canConfigure)
         XCTAssertEqual(fixture.registry.profiles, [])
@@ -597,8 +720,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         fixture.store.runConfigure()
         try await waitUntilStoreState {
             fixture.store.state == .awaitingConfirmation &&
-            fixture.store.coordinator.pendingConfirmation != nil &&
-            !fixture.store.coordinator.lane(for: .candidateHost("10.0.0.2")).backend.isRunning
+            fixture.store.coordinator.readyConfirmation != nil
         }
 
         fixture.store.coordinator.cancelPendingConfirmation()
@@ -1317,6 +1439,84 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.77")
     }
 
+    func testAnAddOfADiscoveredDeviceKeepsTheEntryMode() async throws {
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [officeCapsule(), denCapsule()]),
+            testConfigureResponse(host: "root@10.0.0.3", pauseBeforeEvents: true)
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.last))
+        fixture.store.password = "pw"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 && fixture.store.state == .configuring }
+
+        fixture.store.setEntryMode(.manual)
+
+        XCTAssertEqual(fixture.store.entryMode, .discover)
+        XCTAssertEqual(fixture.store.state, .configuring)
+        XCTAssertEqual(fixture.store.selectedDeviceID, "bonjour:den")
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+        fixture.store.setEntryMode(.manual)
+        XCTAssertEqual(fixture.store.entryMode, .manual)
+    }
+
+    func testAnAddOfATypedAddressKeepsTheEntryMode() async throws {
+        let fixture = try await makeStore(responses: [
+            testConfigureResponse(host: "root@10.0.0.9", pauseBeforeEvents: true)
+        ])
+        fixture.store.setEntryMode(.manual)
+        fixture.store.manualHost = "10.0.0.9"
+        fixture.store.password = "pw"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 && fixture.store.state == .configuring }
+
+        fixture.store.setEntryMode(.discover)
+
+        XCTAssertEqual(fixture.store.entryMode, .manual)
+        XCTAssertEqual(fixture.store.state, .configuring)
+        XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.9")
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { fixture.store.savedProfile != nil && !fixture.store.isRunning }
+    }
+
+    func testAnAddWaitingForConfirmationKeepsTheEntryMode() async throws {
+        // Unlike the progress states, this one has no overlay, and the alert
+        // appears only once the helper has exited.
+        let fixture = try await makeStore(responses: [Self.sshConfirmationRequired()])
+        fixture.store.setEntryMode(.manual)
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .awaitingConfirmation }
+
+        fixture.store.setEntryMode(.discover)
+
+        XCTAssertEqual(fixture.store.entryMode, .manual)
+        XCTAssertEqual(fixture.store.state, .awaitingConfirmation)
+        XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.2")
+    }
+
+    func testAFailedAddLetsTheEntryModeChange() async throws {
+        // The add is over, though its helper may still be exiting.
+        let fixture = try await makeStore(responses: [
+            testDiscoverResponse(devices: [officeCapsule(), denCapsule()]),
+            failedConfigureResponse()
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.last))
+        fixture.store.password = "pw"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .failed && !fixture.store.isAdding }
+
+        fixture.store.setEntryMode(.manual)
+
+        XCTAssertEqual(fixture.store.entryMode, .manual)
+        XCTAssertEqual(fixture.store.state, .manualEntry)
+    }
+
     func testALoneSavedAirPortIsNotPreselectedForAdding() async throws {
         let office = testDeviceRecord(name: "Office Capsule", ipv4: ["10.0.0.2"], fullname: "Office Capsule._airport._tcp.local.")
         let fixture = try await makeStore(responses: [
@@ -1828,8 +2028,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         fixture.store.runConfigure()
         try await waitUntilStoreState {
             fixture.store.state == .awaitingConfirmation &&
-            fixture.store.coordinator.pendingConfirmation != nil &&
-            !fixture.store.coordinator.lane(for: .candidateHost("10.0.0.9")).backend.isRunning
+            fixture.store.coordinator.readyConfirmation != nil
         }
 
         fixture.store.coordinator.confirmPending()
@@ -1975,6 +2174,39 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     }
 
     /// Configure's answer while SSH is off: it asks to turn SSH on, which restarts the AirPort.
+    private static func discoverFailure() -> StoreTestRunner.Response {
+        .init(events: [
+            BackendEvent(type: "error", operation: "discover", code: "bonjour_failed", message: "mDNS failed")
+        ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+    }
+
+    private static func discoverSuccess() -> StoreTestRunner.Response {
+        .init(events: [
+            BackendEvent(type: "result", operation: "discover", ok: true,
+                payload: testDiscoverPayload(records: [testDeviceRecord(ipv4: ["10.0.0.5"])]))
+        ])
+    }
+
+    private static func configureFailure() -> StoreTestRunner.Response {
+        .init(events: [
+            BackendEvent(type: "error", operation: "configure", code: "ssh_failed", message: "SSH failed")
+        ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+    }
+
+    /// Finds the lone device and fails adding it, leaving the page on `.failed`.
+    private func failAnAdd(in fixture: StoreFixture) async throws {
+        fixture.store.runDiscover()
+        try await waitUntilStoreState {
+            fixture.store.state == .discoveryReady && !fixture.store.coordinator.appLane.isBusy
+        }
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState {
+            fixture.store.state == .failed && !fixture.store.isRunning && !fixture.store.coordinator.appLane.isBusy
+        }
+        XCTAssertEqual(fixture.store.error?.operation, "configure")
+    }
+
     private static func sshConfirmationRequired() -> StoreTestRunner.Response {
         .init(events: [
             BackendEvent(

@@ -192,7 +192,8 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     func setEntryMode(_ mode: AddDeviceEntryMode) {
-        guard entryMode != mode else {
+        // Like a device click: an add stays on screen until it ends.
+        guard entryMode != mode, !isAdding else {
             return
         }
         switch mode {
@@ -435,7 +436,8 @@ final class AddDeviceFlowStore: ObservableObject {
         discovery.$error
             .sink { [weak self] discoveryError in
                 Task { @MainActor in
-                    guard let self, self.entryMode == .discover, self.discovery.state == .failed else {
+                    guard let self, self.entryMode == .discover, self.discovery.state == .failed,
+                          !self.isSetupState else {
                         return
                     }
                     self.error = discoveryError
@@ -479,11 +481,17 @@ final class AddDeviceFlowStore: ObservableObject {
             .store(in: &cancellables)
     }
 
+    /// The page is showing an add, which discovery updates must leave alone.
+    /// A failed search is discovery's own and follows its next update; the
+    /// error says which it is, since the workflow keeps an earlier add's state
+    /// through a later search.
     private var isSetupState: Bool {
         switch state {
         case .checkingLocalNetwork:
             return setupWorkflow.state == .checkingLocalNetwork
-        case .configuring, .awaitingConfirmation, .savingProfile, .authFailed, .unsupported, .failed:
+        case .failed:
+            return error?.operation != "discover"
+        case .configuring, .awaitingConfirmation, .savingProfile, .authFailed, .unsupported:
             return true
         default:
             return false
