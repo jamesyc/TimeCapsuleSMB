@@ -17,7 +17,22 @@ diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_x
  	bool store_stream_type;
  };
  
-@@ -83,13 +85,30 @@ static char *streams_xattr_ext_name(TALLOC_CTX *mem_ctx,
+@@ -46,6 +48,14 @@ struct stream_io {
+ 	void *fsp_name_ptr;
+ 	files_struct *fsp;
+ 	vfs_handle_struct *handle;
++	/*
++	 * This handle created a stream kept as one HFS attribute or truncated
++	 * it to nothing, and has stored nothing in it since; and what the
++	 * truncate replaced (NULL if it created the stream). See
++	 * streams_xattr_undo_replace().
++	 */
++	bool replacing;
++	char *replaced;
+ };
+ 
+ /*
+@@ -83,13 +93,30 @@ static char *streams_xattr_ext_name(TALLOC_CTX *mem_ctx,
  	return name;
  }
  
@@ -49,7 +64,7 @@ diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_x
  	uint8_t *value = NULL;
  	size_t valuelen;
  	ssize_t ret = -1;
-@@ -221,12 +240,25 @@ static int fsetxattr_multi(const struct streams_xattr_config *config,
+@@ -221,12 +248,25 @@ static int fsetxattr_multi(const struct streams_xattr_config *config,
  			   size_t size,
  			   int flags)
  {
@@ -76,7 +91,33 @@ diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_x
  	if (size < 1) {
  		errno = EINVAL;
  		return -1;
-@@ -1501,6 +1533,7 @@ static int streams_xattr_connect(vfs_handle_struct *handle,
+@@ -883,6 +923,7 @@ static int streams_xattr_openat(struct vfs_handle_struct *handle,
+ 	char *raw_stream_name = NULL;
+ 	int fakefd = -1;
+ 	bool set_empty_xattr = false;
++	bool created = false;
+ 	int ret;
+ 	bool is_default = false;
+ 
+@@ -951,6 +992,8 @@ static int streams_xattr_openat(struct vfs_handle_struct *handle,
+ 
+ 	TALLOC_FREE(val);
+ 
++	created = set_empty_xattr;
++
+ 	if (how->flags & O_TRUNC) {
+ 		set_empty_xattr = true;
+ 	}
+@@ -1019,6 +1062,8 @@ static int streams_xattr_openat(struct vfs_handle_struct *handle,
+ 	sio->fsp_name_ptr = fsp->fsp_name;
+ 	sio->handle = handle;
+ 	sio->fsp = fsp;
++	sio->replacing = created &&
++		streams_xattr_native_apple(config, raw_stream_name);
+ 
+ 	return fakefd;
+ 
+@@ -1501,6 +1546,7 @@ static int streams_xattr_connect(vfs_handle_struct *handle,
  		return -1;
  	}
  	config->max_extents = max_xattrs - 1;
@@ -84,3 +125,136 @@ diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_x
  
  	SMB_VFS_HANDLE_SET_DATA(handle, config,
  				NULL, struct stream_xattr_config,
+@@ -1509,6 +1555,74 @@ static int streams_xattr_connect(vfs_handle_struct *handle,
+ 	return 0;
+ }
+ 
++static void streams_xattr_replace_done(struct stream_io *sio)
++{
++	sio->replacing = false;
++	TALLOC_FREE(sio->replaced);
++}
++
++/*
++ * A Mac replaces an xattr by opening its stream with overwrite and writing it.
++ * smbd truncates the stream after the open, but one HFS attribute may not hold
++ * the new value, which fsetxattr_multi() refuses only when the write comes. AFP
++ * sets an attribute in one call, so a refusal leaves what was there: put that
++ * back, or remove the stream this handle created. Called with errno set, on a
++ * set that failed for any reason.
++ *
++ * A handle is replacing from the truncate to 0 or its creation of the stream
++ * until the first of:
++ * - it stores data: the client was told that worked, so nothing is undone;
++ * - a set fails: this function, once;
++ * - close.
++ *
++ * Another writer, AFP above all, can store or remove the attribute at any time,
++ * and no lock keeps AFP out. So undo only an attribute still empty, as this
++ * handle left it; a change in the moment between that check and the restore
++ * is lost, which takes AFP landing in those few instructions.
++ */
++static void streams_xattr_undo_replace(
++	const struct streams_xattr_config *config,
++	struct stream_io *sio)
++{
++	int error = errno;
++	char *val = NULL;
++	int ret;
++
++	if (!sio->replacing) {
++		return;
++	}
++	ret = streams_xattr_get_ea_value_fsp(talloc_tos(),
++					     config,
++					     sio->fsp->base_fsp,
++					     sio->raw_stream_name,
++					     &val);
++	if (ret != 0 || talloc_get_size(val) != 1) {
++		DBG_NOTICE("xattr [%s] on file [%s] changed since this handle "
++			   "emptied it; leaving it\n",
++			   sio->xattr_name, sio->base);
++	} else {
++		if (sio->replaced != NULL) {
++			ret = fsetxattr_multi(config,
++					      sio->fsp->base_fsp,
++					      sio->raw_stream_name,
++					      sio->replaced,
++					      talloc_get_size(sio->replaced),
++					      0);
++		} else {
++			ret = fremovexattr_multi(config,
++						 sio->fsp->base_fsp,
++						 sio->raw_stream_name);
++		}
++		if (ret != 0) {
++			DBG_ERR("restoring xattr [%s] on file [%s] failed: %s\n",
++				sio->xattr_name, sio->base, strerror(errno));
++		}
++	}
++	TALLOC_FREE(val);
++	streams_xattr_replace_done(sio);
++	errno = error;
++}
++
+ static ssize_t streams_xattr_pwrite(vfs_handle_struct *handle,
+ 				    files_struct *fsp, const void *data,
+ 				    size_t n, off_t offset)
+@@ -1563,6 +1677,7 @@ static ssize_t streams_xattr_pwrite(vfs_handle_struct *handle,
+ 			"filesystem manpages prior to increasing this limit.\n",
+ 			sio->xattr_name, sio->base);
+ 		errno = EOVERFLOW;
++		streams_xattr_undo_replace(config, sio);
+ 		return -1;
+ 	}
+ 
+@@ -1606,8 +1721,12 @@ static ssize_t streams_xattr_pwrite(vfs_handle_struct *handle,
+ 	TALLOC_FREE(val);
+ 
+ 	if (ret == -1) {
++		streams_xattr_undo_replace(config, sio);
+ 		return -1;
+ 	}
++	if (n != 0) {
++		streams_xattr_replace_done(sio);
++	}
+ 
+ 	return n;
+ }
+@@ -1887,6 +2006,23 @@ static int streams_xattr_ftruncate(struct vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
++	if (offset == 0 &&
++	    !sio->replacing &&
++	    talloc_get_size(val) > 1 &&
++	    streams_xattr_native_apple(config, sio->raw_stream_name))
++	{
++		sio->replaced = talloc_memdup(
++			VFS_MEMCTX_FSP_EXTENSION(handle, fsp),
++			val,
++			talloc_get_size(val));
++		if (sio->replaced == NULL) {
++			TALLOC_FREE(val);
++			errno = ENOMEM;
++			return -1;
++		}
++		sio->replacing = true;
++	}
++
+ 	tmp = talloc_realloc_zero(talloc_tos(), val, char, offset + 1);
+ 	if (tmp == NULL) {
+ 		TALLOC_FREE(val);
+@@ -1906,8 +2042,12 @@ static int streams_xattr_ftruncate(struct vfs_handle_struct *handle,
+ 	TALLOC_FREE(val);
+ 
+ 	if (ret == -1) {
++		streams_xattr_undo_replace(config, sio);
+ 		return -1;
+ 	}
++	if (offset != 0) {
++		streams_xattr_replace_done(sio);
++	}
+ 
+ 	return 0;
+ }
