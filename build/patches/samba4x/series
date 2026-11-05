@@ -236,9 +236,9 @@
 # client's own smbd, which slows that client instead of failing its I/O. An
 # fsync, which can take long, queues past the bound. A fork() that fails counts
 # like the limit while a helper runs; only with none left does a request, of any
-# kind, run in smbd, since nothing would free to run it. The
-# first request past it logs the saturation at level 0, once until the FIFO
-# drains. Each helper's shared buffer is 8 MiB, Samba's default SMB2 read and
+# kind, run in smbd, since nothing would free to run it. The first request past
+# the bound logs the saturation at level 0, once until the FIFO drains. Each
+# helper's shared buffer is 8 MiB, Samba's default SMB2 read and
 # write size: stock aio_fork refuses anything over 128 KiB with EINVAL. Stock's
 # name for WRITE_CMD in debug output, "PRITE", becomes "WRITE". The man page
 # documents aio_fork:max_children.
@@ -473,7 +473,9 @@
 # opens finish closing, but grant the timeout the client asked for, as upstream
 # does (at most 300 seconds, 60 for none): macOS fails Time Machine's reconnect
 # timeout setting unless the grant matches its request, and never uses the
-# grant to decide a reconnect.
+# grant to decide a reconnect. These retries can take an open over before the
+# scavenger hears it was disconnected, so its "not marked disconnected" line,
+# level 0 in stock, moves to level 3: that is a normal reconnect.
 0024-durable-open-live-retry.patch|defer live durable-open reconnects for up to 90 seconds
 # Workaround for a macOS bug: macOS sends each request through a kernel call
 # with a 5 s send timeout that reports success when the timeout cuts the send
