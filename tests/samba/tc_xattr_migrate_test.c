@@ -3,6 +3,7 @@
 #include "includes.h"
 #include "system/filesys.h"
 #include "lib/dbwrap/dbwrap.h"
+#include "lib/util/sys_rw.h"
 #if defined(__NetBSD__)
 #include <sys/statvfs.h>
 #endif
@@ -336,6 +337,19 @@ static void *migration_test_talloc_realloc_array(
 	}
 	return _talloc_realloc_array(ctx, ptr, el_size, count, name);
 }
+/* Bytes the kernel takes but a later read does not give back. */
+static bool corrupt_writes;
+static ssize_t migration_test_pwrite_full(int fd, const void *buf, size_t count, off_t offset)
+{
+	ssize_t written = sys_pwrite_full(fd, buf, count, offset);
+
+	if (corrupt_writes && written > 0) {
+		uint8_t flipped = ~((const uint8_t *)buf)[0];
+		CHECK(pwrite(fd, &flipped, 1, offset) == 1);
+	}
+	return written;
+}
+#define sys_pwrite_full migration_test_pwrite_full
 #define pread migration_test_pread
 #define readdir migration_test_readdir
 #define TC_MIGRATE_LSTAT(path, st) migration_test_lstat((path), (st))
@@ -360,6 +374,7 @@ static ino_t test_folder_inode;
 #include "../utils/tc_xattr_hfs_migrate.c"
 #undef main
 #undef talloc_realloc
+#undef sys_pwrite_full
 #undef pread
 #undef readdir
 #undef TC_MIGRATE_LSTAT
@@ -393,6 +408,33 @@ static int child_exit_status(pid_t child)
 	CHECK(waitpid(child, &status, 0) == child);
 	CHECK(WIFEXITED(status));
 	return WEXITSTATUS(status);
+}
+
+/* Send stderr to a scratch file until stderr_capture_end() reads it back. */
+static int stderr_capture_begin(int *saved)
+{
+	char capture[PATH_MAX] = "/tmp/tc-migrate-stderr.XXXXXX";
+	int capture_fd = mkstemp(scratch_path(capture, sizeof(capture)));
+
+	*saved = dup(STDERR_FILENO);
+	CHECK(capture_fd != -1 && *saved != -1);
+	unlink(capture);
+	fflush(stderr);
+	CHECK(dup2(capture_fd, STDERR_FILENO) != -1);
+	return capture_fd;
+}
+
+static void stderr_capture_end(int capture_fd, int saved, char *buffer, size_t size)
+{
+	ssize_t got;
+
+	fflush(stderr);
+	CHECK(dup2(saved, STDERR_FILENO) != -1);
+	close(saved);
+	got = pread(capture_fd, buffer, size - 1, 0);
+	CHECK(got >= 0);
+	buffer[got] = '\0';
+	close(capture_fd);
 }
 
 static void test_guard(void)
@@ -668,6 +710,24 @@ static void test_resource(void)
 	base_fd = open(base, O_RDONLY);
 	CHECK(base_fd != -1);
 	reset_xattrs();
+	/* A copy that reads back different fails as EIO, not with whatever
+	 * errno an earlier call left. */
+	{
+		char log[512];
+		int saved_stderr, capture_fd = stderr_capture_begin(&saved_stderr);
+
+		corrupt_writes = true;
+		errno = ENOENT;
+		CHECK(tc_migrate_appledouble(&migration, base_fd, base) == -1);
+		corrupt_writes = false;
+		CHECK(errno == EIO);
+		stderr_capture_end(capture_fd, saved_stderr, log, sizeof(log));
+		CHECK(strstr(log, "resource verification failed path=") != NULL);
+		CHECK(strstr(log, "error=Input/output error\n") != NULL);
+		CHECK(strstr(log, "resource migration failed path=") != NULL);
+	}
+	CHECK(truncate(native, 0) == 0);
+	reset_xattrs();
 	progress_resets = 0;
 	/* Interrupted and short reads of the sidecar still copy the whole fork. */
 	interrupted_reads = 2; partial_reads = true;
@@ -906,6 +966,63 @@ static void test_tdb_migration(void)
 	unlink(object);
 	rmdir(root);
 	TALLOC_FREE(frame);
+}
+
+/* The value ends at the first missing extent: an extent past the gap is not
+ * part of what smbd reads. The cut is logged, and cleanup verifies the same
+ * cut value, so the record completes and its database can retire. */
+static void test_stream_cut(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char root[PATH_MAX] = "/tmp/tc-migrate-cut.XXXXXX";
+	char object[PATH_MAX + 16], tdb_path[PATH_MAX + 16], log[512];
+	struct stat st;
+	struct file_id id;
+	struct db_context *db;
+	struct tc_migration m = {
+		.mem_ctx = frame,
+		.legacy_metadata = "stream",
+		.phase = TC_PHASE_COPY,
+	};
+	const uint8_t anchor[] = {'a', 3}, first[] = {'b'}, third[] = {'d'};
+	struct test_xattr *stored;
+	int fd, capture_fd, saved_stderr;
+
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
+	snprintf(object, sizeof(object), "%s/object", root);
+	snprintf(tdb_path, sizeof(tdb_path), "%s/xattr.tdb", root);
+	fd = open(object, O_RDWR | O_CREAT | O_TRUNC, 0600);
+	CHECK(fd != -1 && fstat(fd, &st) == 0);
+	id = tc_file_id(&st);
+	db = dbwrap_local_open(frame, tdb_path, 0, TDB_DEFAULT, O_RDWR | O_CREAT, 0600,
+			       DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+	CHECK(db != NULL);
+	CHECK(xattr_tdb_setattr(db, &id, "user.DosStream.gap:$DATA", anchor, sizeof(anchor), 0) == 0);
+	CHECK(xattr_tdb_setattr(db, &id, "user.DosStreamExt.1.gap:$DATA", first, sizeof(first), 0) == 0);
+	CHECK(xattr_tdb_setattr(db, &id, "user.DosStreamExt.3.gap:$DATA", third, sizeof(third), 0) == 0);
+	m.db = db;
+	CHECK(tc_collect_tdb_keys(&m) == 0);
+	reset_xattrs();
+
+	capture_fd = stderr_capture_begin(&saved_stderr);
+	CHECK(tc_migrate_tdb_record(&m, fd, object, &st) == 0);
+	stderr_capture_end(capture_fd, saved_stderr, log, sizeof(log));
+	CHECK(strstr(log, "stream cut at a missing extent path=") != NULL);
+	CHECK(strstr(log, " name=user.DosStream.gap:$DATA extents=1 of 3\n") != NULL);
+	stored = find_xattr("user.DosStream.gap:$DATA");
+	CHECK(stored != NULL && stored->size == 3 && memcmp(stored->value, "ab\0", 3) == 0);
+
+	m.phase = TC_PHASE_CLEANUP;
+	m.tdb_keys[0].matched = false;
+	m.counts.tdb_matched = 0;
+	CHECK(tc_migrate_tdb_record(&m, fd, object, &st) == 0);
+	CHECK(m.counts.tdb_matched == 1);
+	stored = find_xattr("user.DosStream.gap:$DATA");
+	CHECK(stored != NULL && stored->size == 3);
+
+	close(fd);
+	TALLOC_FREE(frame);
+	unlink(object); unlink(tdb_path); rmdir(root);
 }
 
 static void test_errors(void)
@@ -1172,33 +1289,6 @@ static int read_stdout_capture(int (*call)(const char *), const char *argument,
 	close(capture_fd);
 	unlink(capture);
 	return rc;
-}
-
-/* Send stderr to a scratch file until stderr_capture_end() reads it back. */
-static int stderr_capture_begin(int *saved)
-{
-	char capture[PATH_MAX] = "/tmp/tc-migrate-stderr.XXXXXX";
-	int capture_fd = mkstemp(scratch_path(capture, sizeof(capture)));
-
-	*saved = dup(STDERR_FILENO);
-	CHECK(capture_fd != -1 && *saved != -1);
-	unlink(capture);
-	fflush(stderr);
-	CHECK(dup2(capture_fd, STDERR_FILENO) != -1);
-	return capture_fd;
-}
-
-static void stderr_capture_end(int capture_fd, int saved, char *buffer, size_t size)
-{
-	ssize_t got;
-
-	fflush(stderr);
-	CHECK(dup2(saved, STDERR_FILENO) != -1);
-	close(saved);
-	got = pread(capture_fd, buffer, size - 1, 0);
-	CHECK(got >= 0);
-	buffer[got] = '\0';
-	close(capture_fd);
 }
 
 static void test_fingerprint(void)
@@ -1556,9 +1646,9 @@ static void test_multi(void)
     multi_value(newer, &id, "user.DosStream.sample:$DATA", anchor_high, sizeof(anchor_high));
     CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
     multi_prepare(&multi, frame, root, old, newer); reset_xattrs();
-    /* The newer value's missing extent ends it, as stock fgetxattr_multi()
-     * reads it (an interrupted write), and says so; the older value's
-     * extent is not used. */
+    /* The newer value's missing extent ends it, as smbd's fgetxattr_multi()
+     * reads it with 0035 (an interrupted write), and says so; the older
+     * value's extent is not used. */
     capture_fd = stderr_capture_begin(&saved_stderr);
     CHECK(tc_multi_scan(&multi, &counts) == 0);
     stderr_capture_end(capture_fd, saved_stderr, log, sizeof(log));
@@ -1570,6 +1660,11 @@ static void test_multi(void)
     CHECK(find_xattr("user.DosStream.sample:$DATA")->value[1] == 0);
     CHECK(find_xattr("user.DosStreamExt.1.sample:$DATA") == NULL);
     CHECK(access(old, F_OK) == 0 && access(newer, F_OK) == 0);
+    /* Cleanup verifies the same cut value, so both databases retire. */
+    multi.phase = TC_PHASE_CLEANUP;
+    CHECK(tc_multi_scan(&multi, &counts) == 0);
+    CHECK(tc_multi_retire(&multi) == 0);
+    CHECK(access(old, F_OK) != 0 && access(newer, F_OK) != 0);
     TALLOC_FREE(frame); unlink(old); unlink(newer);
 
     frame = talloc_stackframe();
@@ -3259,6 +3354,9 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "cleanup") == 0 || strcmp(argv[1], "all") == 0) {
 		test_cleanup();
 	}
+	if (strcmp(argv[1], "stream_cut") == 0 || strcmp(argv[1], "all") == 0) {
+		test_stream_cut();
+	}
 	if (strcmp(argv[1], "tdb") == 0 || strcmp(argv[1], "all") == 0) {
 		test_tdb_migration();
 		test_tdb_collection_failures();
@@ -3303,6 +3401,7 @@ int main(int argc, char **argv)
 	    strcmp(argv[1], "embedded_xattrs") != 0 &&
 	    strcmp(argv[1], "resource") != 0 &&
 	    strcmp(argv[1], "cleanup") != 0 &&
+	    strcmp(argv[1], "stream_cut") != 0 &&
 	    strcmp(argv[1], "tdb") != 0 &&
 	    strcmp(argv[1], "errors") != 0 &&
 	    strcmp(argv[1], "oversized") != 0 &&
