@@ -511,6 +511,34 @@ static void test_failures(struct vfs_handle_struct *h, const char *scenario)
 	finish(submit(h, buf, 4, 0, READ_CMD), 4, 0);
 }
 
+/*
+ * A fork() that fails counts like the limit while a helper runs: nothing runs
+ * in this process, above all no fsync, which would stop it reading its socket.
+ * queued_fork_failure covers the case with no helper left.
+ */
+static void test_fork_failure_waits(struct vfs_handle_struct *h)
+{
+	char buffers[2][4];
+	struct tevent_req *first, *waiting_read, *waiting_flush;
+	struct aio_child_list *list;
+	((struct aio_fork_config *)h->data)->max_children = 2;
+	first = submit(h, buffers[0], 4, 0, READ_CMD);
+	list = pool(h);
+	CHECK(list->num_children == 1 && worker_count == 1);
+	fail_fork = 1;
+	waiting_read = submit(h, buffers[1], 4, 0, READ_CMD);
+	waiting_flush = submit(h, NULL, 0, 0, FSYNC_CMD);
+	CHECK(request_state(waiting_read)->queued && calls_of(waiting_read) == 0);
+	CHECK(request_state(waiting_flush)->queued && calls_of(waiting_flush) == 0);
+	CHECK(list->num_pending == 2 && list->num_children == 1);
+	/* The helper takes them in turn once it frees, fork() still failing. */
+	finish(first, 4, 0);
+	finish(waiting_read, 4, 0);
+	finish(waiting_flush, 0, 0);
+	CHECK(list->num_pending == 0 && list->num_children == 1 && worker_count == 1);
+	fail_fork = 0;
+}
+
 static void test_limits(TALLOC_CTX *ctx, struct vfs_handle_struct *h, bool unlimited)
 {
 	char buffers[4][4];
@@ -796,6 +824,7 @@ int main(int argc, char **argv)
 	if (queue_case(argv[1])) test_queue(h, argv[1]);
 	else if (!strcmp(argv[1], "teardown")) test_teardown(h);
 	else if (!strcmp(argv[1], "orphan_error")) test_orphan_error(h);
+	else if (!strcmp(argv[1], "fork_failure_waits")) test_fork_failure_waits(h);
 	else if (strstr(argv[1], "failure")) test_failures(h, argv[1]);
 	else if (!strcmp(argv[1], "limits") || !strcmp(argv[1], "unlimited")) test_limits(frame, h, !strcmp(argv[1], "unlimited"));
 	else if (!strcmp(argv[1], "cleanup")) test_cleanup(h);
