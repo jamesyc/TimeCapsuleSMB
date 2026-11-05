@@ -51,6 +51,40 @@ diff --git a/source3/rpc_server/srv_pipe_hnd.c b/source3/rpc_server/srv_pipe_hnd
  	ret = local_np_connect(
  		name,
  		NCACN_NP,
+diff --git a/source3/rpc_server/srvsvc/srv_srvsvc_nt.c b/source3/rpc_server/srvsvc/srv_srvsvc_nt.c
+--- a/source3/rpc_server/srvsvc/srv_srvsvc_nt.c
++++ b/source3/rpc_server/srvsvc/srv_srvsvc_nt.c
+@@ -657,19 +657,22 @@ static WERROR init_srv_share_info_ctr(struct pipes_struct *p,
+ 	DEBUG(5,("init_srv_share_info_ctr\n"));
+ 
+ 	/*
+-	 * We need to make sure to reload the services for the connecting user.
+-	 * It is possible that we have includes with substitutions.
+-	 *
+-	 *  include = /etc/samba/%U.conf
++	 * smbd serves this pipe in the worker that holds the client's trees
++	 * (tc_embedded_srvsvc.c), so this share table is live. Modules set
++	 * options on it in memory at tree connect, such as fruit's "posix
++	 * locking = no", and open files depend on them: a lock taken under
++	 * one value and released under the other panics or leaves a POSIX
++	 * lock that blocks this worker's own flock(). Stock Samba runs
++	 * lp_kill_all_services() and lp_load_with_shares() here for "include =
++	 * /etc/samba/%U.conf", in rpcd_classic, which holds no trees. The
++	 * appliance's smb.conf has no includes, and this worker already
++	 * follows smb.conf (MSG_SMB_CONF_UPDATED, check_reload()).
+ 	 *
+ 	 * We also need all printers and usershares.
+ 	 *
+-	 * We need to be root in order to have access to registry shares
+-	 * and root only smb.conf files.
++	 * We need to be root in order to have access to registry shares.
+ 	 */
+ 	become_root();
+-	lp_kill_all_services();
+-	lp_load_with_shares(get_dyn_CONFIGFILE());
+ 	delete_and_reload_printers();
+ 	load_usershare_shares(NULL, connections_snum_used);
+ 	load_registry_shares();
 diff --git a/source3/wscript_build b/source3/wscript_build
 --- a/source3/wscript_build
 +++ b/source3/wscript_build

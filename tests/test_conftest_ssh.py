@@ -51,7 +51,8 @@ def test_a_tests_own_fake_ssh_runs(tmp_path, monkeypatch, block_real_ssh_connect
 @needs_ssh
 @pytest.mark.real_ssh
 def test_a_test_marked_real_ssh_is_not_guarded() -> None:
-    # The real ssh starts; its argument error shows it ran.
-    result = subprocess.run(["ssh", "-Z"], capture_output=True, text=True, check=False)
+    # The real ssh starts; with no destination it prints its usage. Any one
+    # flag may become valid in a later OpenSSH.
+    result = subprocess.run(["ssh"], capture_output=True, text=True, check=False)
     assert result.returncode != 0
-    assert "illegal option" in result.stderr or "unknown option" in result.stderr
+    assert "usage: ssh" in result.stderr

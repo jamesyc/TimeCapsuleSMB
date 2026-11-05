@@ -341,6 +341,16 @@ After changing the conversion path, run the suite several times in a row and
 check `/mnt/Flash/dmesg.panic` on the device: without the journal commit, the
 HFS panic appeared within one to three runs, while each run on its own passed.
 
+`srvsvc_device.py` enumerates shares on a connection that holds a tree and
+locks, from smbprotocol and from macOS's own client with a share mounted
+(`smbutil view` finds that session). Patch 0005 serves srvsvc in that worker, so
+a lock must survive the enumeration and the new share of a SIGHUP must appear
+without one. `tc_srvsvc_enum_test` runs the same call on the real loadparm table.
+
+```sh
+.venv/bin/python -m tests.samba.srvsvc_device --env .env
+```
+
 `durable_device.py` checks durable-handle reconnect against a deployed device
 from a Mac (it needs `smbprotocol` on the host):
 
@@ -679,7 +689,8 @@ and `smb2.oplock`, about 14 minutes on NetBSD 4).
 built smbd on a device without deploying (quick) or the full tier deploys,
 and each device then runs the regression drivers from RAM, doctor,
 `dir_device.py`, `growth_device.py` (both with `--quick` in the quick
-tier), in the full tier also `durable_device.py` and `links_device.py`, and
+tier), `srvsvc_device.py`, in the full tier also `durable_device.py` and
+`links_device.py`, and
 `torture.py`, which runs smbtorture in Docker and reports only failures
 missing from `smbtorture/known_failures.txt`. Every `*_device.py` tool runs on a Mac against
 a device and needs that device's lock row; `cut_device.py` is the one

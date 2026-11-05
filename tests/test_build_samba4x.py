@@ -245,7 +245,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                                    "tc_streams_xattr_test", "tc_native_metadata_test",
                                    "tc_xattr_migrate_test", "tc_storage_reload_test",
                                    "tc_native_links_test", "tc_catia_links_test", "tc_at_emulation_test",
-                                   "tc_file_growth_test", "tc_fork_repair_test", "tc_short_write_test"):
+                                   "tc_file_growth_test", "tc_fork_repair_test", "tc_short_write_test",
+                                   "tc_srvsvc_enum_test"):
                         if target in targets:
                             if os.environ.get("TEST_MISSING_REGRESSION_BINARY") != target:
                                 binary = pathlib.Path("bin/default/source3/modules") / target
@@ -1303,6 +1304,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         self.assertIn("tc_file_growth_test", built)
                         self.assertIn("tc_fork_repair_test", built)
                         self.assertIn("tc_short_write_test", built)
+                        self.assertIn("tc_srvsvc_enum_test", built)
                         self.assertFalse(calls.exists())
                         continue
                     self.assertEqual(calls.read_text().splitlines(), [
