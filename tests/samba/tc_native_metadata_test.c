@@ -50,6 +50,7 @@ static unsigned next_xattr_sets;
 static unsigned next_xattr_removes;
 static bool native_set_returns_size;
 static ssize_t native_shrink_on_read;
+static int native_fail_next_set;
 static int native_second_read_error;
 static bool tdb_create_tags_on_list;
 static off_t next_streaminfo_size;
@@ -124,6 +125,7 @@ static void reset_stores(void)
 	next_xattr_gets = next_xattr_sets = next_xattr_removes = 0;
 	native_set_returns_size = false;
 	native_shrink_on_read = -1;
+	native_fail_next_set = 0;
 	native_second_read_error = 0;
 	tdb_create_tags_on_list = false;
 	next_streaminfo_size = -1;
@@ -300,6 +302,11 @@ static long test_native_syscall_377(int fd,
 	record_mutation('N');
 	if (native_store.set_error != 0) {
 		errno = native_store.set_error;
+		return -1;
+	}
+	if (native_fail_next_set != 0) {
+		errno = native_fail_next_set;
+		native_fail_next_set = 0;
 		return -1;
 	}
 	seed_store(&native_store, name, value, size);
@@ -966,6 +973,243 @@ static void remove_fio(struct vfs_handle_struct *handle,
 	VFS_REMOVE_FSP_EXTENSION(handle, fsp);
 }
 
+
+static void refused_rewrite_open(struct vfs_handle_struct *handle,
+				 TALLOC_CTX *mem_ctx,
+				 files_struct *base_fsp,
+				 files_struct *stream_fsp,
+				 struct smb_filename *stream_name,
+				 const char *name,
+				 int flags)
+{
+	struct vfs_open_how how = {.flags = flags};
+	int fd;
+
+	ZERO_STRUCTP(stream_fsp);
+	ZERO_STRUCTP(stream_name);
+	init_stream_file(mem_ctx, base_fsp->conn, base_fsp, stream_fsp, stream_name);
+	stream_name->stream_name = discard_const_p(char, name);
+	fd = streams_xattr_openat(handle, NULL, stream_name, stream_fsp, &how);
+	CHECK(fd >= 0);
+	fsp_set_fd(stream_fsp, fd);
+}
+
+static void refused_rewrite_close(struct vfs_handle_struct *handle,
+				  files_struct *stream_fsp)
+{
+	CHECK(streams_xattr_close(handle, stream_fsp) == 0);
+	VFS_REMOVE_FSP_EXTENSION(handle, stream_fsp);
+}
+
+/* A Mac replaces an xattr with an overwriting open and a WRITE. smbd opens the
+ * stream without O_TRUNC and truncates it after the open, and a value one HFS
+ * attribute cannot hold is refused only at that WRITE. As with AFP's one
+ * call, the refusal must leave what was there before the open. */
+static void test_refused_rewrite(files_struct *fsp, TALLOC_CTX *mem_ctx)
+{
+	static uint8_t big[140000];
+	struct xattr_tdb_config backend = {.native_hfs = true};
+	struct streams_xattr_config config = {
+		.prefix = "user.DosStream.", .ext_prefix = "user.DosStreamExt.",
+		.max_extents = 34, .store_stream_type = true, .native_hfs = true,
+	};
+	struct vfs_handle_struct handle = {.conn = fsp->conn, .data = &config};
+	const int overwrite = O_RDWR | O_CREAT;
+	struct smb_filename name;
+	files_struct stream;
+	struct stream_io *sio = NULL;
+	uint8_t old_value[200], newer_value[300];
+
+	stream_backend_handle = (struct vfs_handle_struct) {.conn = fsp->conn, .data = &backend};
+	fsp->fsp_name->st.st_ex_nlink = 1;	/* a valid stat of the base file */
+	memset(old_value, 'a', sizeof(old_value));
+	memset(newer_value, 'n', sizeof(newer_value));
+	memset(big, 'b', sizeof(big));
+#define CHECK_OLD_VALUE() \
+	CHECK(native_store.exists && native_store.size == sizeof(old_value) && \
+	      memcmp(native_store.data, old_value, sizeof(old_value)) == 0)
+/* The handle has truncated the old value when another writer, such as AFP,
+ * stores or removes the attribute. */
+#define OPEN_AND_TRUNCATE() do { \
+	reset_stores(); \
+	seed_store(&native_store, "com.apple.test", old_value, sizeof(old_value)); \
+	refused_rewrite_open(&handle, mem_ctx, fsp, &stream, &name, ":com.apple.test", overwrite); \
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 0) == 0); \
+} while (0)
+#define ANOTHER_WRITER_STORES() \
+	seed_store(&native_store, "com.apple.test", newer_value, sizeof(newer_value))
+#define CHECK_NEWER_VALUE() \
+	CHECK(native_store.exists && native_store.size == sizeof(newer_value) && \
+	      memcmp(native_store.data, newer_value, sizeof(newer_value)) == 0)
+
+	/* Replaced, whether the write or a truncate asks for too much. */
+	reset_stores();
+	seed_store(&native_store, "com.apple.test", old_value, sizeof(old_value));
+	refused_rewrite_open(&handle, mem_ctx, fsp, &stream, &name, ":com.apple.test", overwrite);
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 0) == 0);
+	CHECK(native_store.exists && native_store.size == 0);
+	errno = 0;
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 0) == -1);
+	CHECK(errno == EINVAL);
+	CHECK_OLD_VALUE();
+	refused_rewrite_close(&handle, &stream);
+
+	reset_stores();
+	seed_store(&native_store, "com.apple.test", old_value, sizeof(old_value));
+	refused_rewrite_open(&handle, mem_ctx, fsp, &stream, &name, ":com.apple.test", overwrite);
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 0) == 0);
+	errno = 0;
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 5000) == -1);
+	CHECK(errno == EINVAL);
+	CHECK_OLD_VALUE();
+	refused_rewrite_close(&handle, &stream);
+
+	/* Past what the module serves at all, with its own error. */
+	reset_stores();
+	seed_store(&native_store, "com.apple.test", old_value, sizeof(old_value));
+	refused_rewrite_open(&handle, mem_ctx, fsp, &stream, &name, ":com.apple.test", overwrite);
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 0) == 0);
+	errno = 0;
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, sizeof(big), 0) == -1);
+	CHECK(errno == EOVERFLOW);
+	CHECK_OLD_VALUE();
+	refused_rewrite_close(&handle, &stream);
+
+	/* A write that fit was answered: a later refusal leaves it in place. */
+	OPEN_AND_TRUNCATE();
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 100, 0) == 100);
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 100) == -1);
+	CHECK(native_store.size == 100 && native_store.data[99] == 'b');
+	refused_rewrite_close(&handle, &stream);
+
+	/* So is a truncate that left data. */
+	OPEN_AND_TRUNCATE();
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 50) == 0);
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 0) == -1);
+	CHECK(native_store.size == 50);
+	refused_rewrite_close(&handle, &stream);
+
+	/* A write of nothing stores nothing: the old value still comes back,
+	 * and a second truncate to 0 keeps it. */
+	OPEN_AND_TRUNCATE();
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 0, 0) == 0);
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 0) == 0);
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 0) == -1);
+	CHECK_OLD_VALUE();
+	refused_rewrite_close(&handle, &stream);
+
+	/* A truncate to 0 of a shorter value keeps that value. */
+	reset_stores();
+	seed_store(&native_store, "com.apple.test", old_value, sizeof(old_value));
+	refused_rewrite_open(&handle, mem_ctx, fsp, &stream, &name, ":com.apple.test", overwrite);
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 100) == 0);
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 0) == 0);
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 0) == -1);
+	CHECK(native_store.size == 100);
+	refused_rewrite_close(&handle, &stream);
+
+	/* Any failed set puts the old value back, not only a refused size. */
+	OPEN_AND_TRUNCATE();
+	native_fail_next_set = ENOSPC;
+	errno = 0;
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 100, 0) == -1);
+	CHECK(errno == ENOSPC);
+	CHECK_OLD_VALUE();
+	refused_rewrite_close(&handle, &stream);
+
+	/* It is put back once: an attribute emptied after that stays empty. */
+	OPEN_AND_TRUNCATE();
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 0) == -1);
+	CHECK_OLD_VALUE();
+	native_store.size = 0;
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 0) == -1);
+	CHECK(native_store.exists && native_store.size == 0);
+	refused_rewrite_close(&handle, &stream);
+
+	/* A value another writer stored after the truncate stays, whichever
+	 * way the handle's own write is refused. */
+	OPEN_AND_TRUNCATE();
+	ANOTHER_WRITER_STORES();
+	errno = 0;
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 0) == -1);
+	CHECK(errno == EINVAL);
+	CHECK_NEWER_VALUE();
+	refused_rewrite_close(&handle, &stream);
+
+	OPEN_AND_TRUNCATE();
+	ANOTHER_WRITER_STORES();
+	errno = 0;
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 5000) == -1);
+	CHECK(errno == EINVAL);
+	CHECK_NEWER_VALUE();
+	refused_rewrite_close(&handle, &stream);
+
+	OPEN_AND_TRUNCATE();
+	ANOTHER_WRITER_STORES();
+	errno = 0;
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, sizeof(big), 0) == -1);
+	CHECK(errno == EOVERFLOW);
+	CHECK_NEWER_VALUE();
+	refused_rewrite_close(&handle, &stream);
+
+	/* So does a removal: the attribute is not brought back. */
+	OPEN_AND_TRUNCATE();
+	native_store.exists = false;
+	errno = 0;
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, sizeof(big), 0) == -1);
+	CHECK(errno == EOVERFLOW);
+	CHECK(!native_store.exists);
+	refused_rewrite_close(&handle, &stream);
+
+	/* And a stream the handle created is not removed once another writer
+	 * has stored a value in it. */
+	reset_stores();
+	refused_rewrite_open(&handle, mem_ctx, fsp, &stream, &name, ":com.apple.test", overwrite);
+	ANOTHER_WRITER_STORES();
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 0) == -1);
+	CHECK_NEWER_VALUE();
+	refused_rewrite_close(&handle, &stream);
+
+	/* A stream the open created goes away again. */
+	reset_stores();
+	refused_rewrite_open(&handle, mem_ctx, fsp, &stream, &name, ":com.apple.test", overwrite);
+	CHECK(native_store.exists);
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 0) == -1);
+	CHECK(!native_store.exists);
+	refused_rewrite_close(&handle, &stream);
+
+	/* A value that fits replaces the old one, and closing keeps it. */
+	reset_stores();
+	seed_store(&native_store, "com.apple.test", old_value, sizeof(old_value));
+	refused_rewrite_open(&handle, mem_ctx, fsp, &stream, &name, ":com.apple.test", overwrite);
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 0) == 0);
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 300, 0) == 300);
+	refused_rewrite_close(&handle, &stream);
+	CHECK(native_store.size == 300 && native_store.data[0] == 'b');
+
+	/* A handle that truncated nothing has nothing to put back: the write
+	 * splices into the value, which stays as it was when refused. */
+	reset_stores();
+	seed_store(&native_store, "com.apple.test", old_value, sizeof(old_value));
+	refused_rewrite_open(&handle, mem_ctx, fsp, &stream, &name, ":com.apple.test", O_RDWR);
+	sio = VFS_FETCH_FSP_EXTENSION(&handle, &stream);
+	CHECK(sio != NULL && !sio->replacing && sio->replaced == NULL);
+	CHECK(streams_xattr_pwrite(&handle, &stream, big, 5000, 0) == -1);
+	CHECK_OLD_VALUE();
+	refused_rewrite_close(&handle, &stream);
+
+	/* Windows streams keep their extents and are never refused this way. */
+	reset_stores();
+	refused_rewrite_open(&handle, mem_ctx, fsp, &stream, &name, ":windows", overwrite);
+	CHECK(streams_xattr_ftruncate(&handle, &stream, 0) == 0);
+	sio = VFS_FETCH_FSP_EXTENSION(&handle, &stream);
+	CHECK(sio != NULL && !sio->replacing && sio->replaced == NULL);
+	refused_rewrite_close(&handle, &stream);
+#undef CHECK_NEWER_VALUE
+#undef ANOTHER_WRITER_STORES
+#undef OPEN_AND_TRUNCATE
+#undef CHECK_OLD_VALUE
+}
 
 static void test_syscall_abi(void)
 {
@@ -1927,6 +2171,7 @@ int main(int argc, char **argv)
 		test_resource_backend(&handle, conn, &file, frame);
 		test_resource_views(&handle, &file, &smb_fname, frame);
 		test_native_stream_boundary(&file);
+		test_refused_rewrite(&file, frame);
 		test_link_xattrs(&handle, conn, frame);
 		test_list_normalization();
 	} else if (strcmp(argv[1], "link_xattrs") == 0) {
@@ -1945,6 +2190,8 @@ int main(int argc, char **argv)
 		test_finderinfo_views(&handle, &file, &smb_fname, frame);
 	} else if (strcmp(argv[1], "stream_boundary") == 0) {
 		test_native_stream_boundary(&file);
+	} else if (strcmp(argv[1], "refused_rewrite") == 0) {
+		test_refused_rewrite(&file, frame);
 	} else if (strcmp(argv[1], "resource_backend") == 0) {
 		test_resource_backend(&handle, conn, &file, frame);
 	} else if (strcmp(argv[1], "resource_views") == 0) {

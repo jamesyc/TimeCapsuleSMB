@@ -251,7 +251,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
 diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_xattr.c
 --- a/source3/modules/vfs_streams_xattr.c
 +++ b/source3/modules/vfs_streams_xattr.c
-@@ -680,9 +680,19 @@ static int streams_xattr_fstat(vfs_handle_struct *handle, files_struct *fsp,
+@@ -688,9 +688,19 @@ static int streams_xattr_fstat(vfs_handle_struct *handle, files_struct *fsp,
  		return -1;
  	}
  

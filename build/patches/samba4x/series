@@ -541,6 +541,17 @@
 # byte that streams_xattr stores, so allow that byte and refuse a larger value
 # instead of splitting it across extents: AFP must see the whole attribute. The
 # refusal is EINVAL, as for 0038's. Windows streams keep their extent layout.
+# A Mac replaces an xattr with an overwriting open and a WRITE, and smbd truncates
+# the stream after the open, so the attribute is empty by the time the WRITE is
+# refused, and macOS hides an empty one. AFP sets an attribute in one call and a
+# refusal keeps the old value, so a truncate to 0 keeps it, and a failed set puts
+# it back (or removes a stream the handle created) until the handle stores data.
+# Only an attribute still empty is undone: AFP or another client may have stored
+# a newer value meanwhile, and no lock keeps AFP out. Not atomic like AFP's call:
+# the empty value is there between the open and the WRITE, but it is the same end
+# state for far less code than delaying the empty value through every read and
+# stat. A set that did store part of a value stays, as stock leaves it; macOS
+# sends such a value in one WRITE.
 # streams_xattr, xattr_tdb and the migrator tell the streams apart with one
 # classifier (tc_apple_stream_native_len() in airport_native_xattr.h).
 0054-streams-xattr-native-apple-streams.patch|whole native attributes for Apple streams
