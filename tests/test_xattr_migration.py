@@ -188,6 +188,24 @@ def test_no_tdb_never_invokes_native_scanner(device):
     assert not device.calls
 
 
+def test_a_receipt_left_without_its_database_is_removed(device):
+    # A deploy stopped after retire, before migrate_phase removed the receipt.
+    receipt = Path(str(device.source) + m.RECEIPT_SUFFIX)
+    receipt.write_text("{}")
+    device.source.unlink()
+    inv = device.inventory()
+    assert not inv.candidates and not receipt.exists()
+    assert "no_legacy_tdb" in device.phase(inv, "copy")
+
+
+def test_inventory_keeps_the_receipt_beside_its_database(device):
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    receipt = Path(str(device.source) + m.RECEIPT_SUFFIX)
+    assert receipt.is_file()
+    device.inventory()
+    assert receipt.is_file()
+
+
 def test_completed_disk_survives_absent_disk_and_native_edits(device):
     device.mounted.remove(UUID_B)
     inv = device.inventory(); device.inspect(inv)
