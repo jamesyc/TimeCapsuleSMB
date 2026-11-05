@@ -33,6 +33,7 @@ AIO_CASES = (
     "sync_read", "sync_read_error", "sync_pwrite", "sync_pwrite_error",
     "sync_append", "sync_append_error", "sync_fsync", "sync_fsync_error",
     "queue", "cancel_queued", "cancel_active", "queued_fork_failure", "fsync_past_bound",
+    "fork_failure_waits",
     "queue+fast_reply", "cancel_queued+fast_reply", "cancel_active+fast_reply", "queued_fork_failure+fast_reply",
     "teardown", "orphan_error",
     "dispatch_failure", "allocation_failure", "response_failure",

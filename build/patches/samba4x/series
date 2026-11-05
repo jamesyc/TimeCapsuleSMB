@@ -232,9 +232,11 @@
 0053-aio-fork-single-request-path.patch|one request path for pread, pwrite and fsync
 # aio_fork:max_children bounds each tree connection's helpers (0 keeps
 # upstream's no limit). Requests wait in a short FIFO for a free helper and are
-# dispatched oldest first; past the FIFO bound, or when fork() fails, a read or
-# write runs in the client's own smbd, which slows that client instead of
-# failing its I/O. An fsync, which can take long, queues past the bound. The
+# dispatched oldest first; past the FIFO bound a read or write runs in the
+# client's own smbd, which slows that client instead of failing its I/O. An
+# fsync, which can take long, queues past the bound. A fork() that fails counts
+# like the limit while a helper runs; only with none left does a request, of any
+# kind, run in smbd, since nothing would free to run it. The
 # first request past it logs the saturation at level 0, once until the FIFO
 # drains. Each helper's shared buffer is 8 MiB, Samba's default SMB2 read and
 # write size: stock aio_fork refuses anything over 128 KiB with EINVAL. Stock's
