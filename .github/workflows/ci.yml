@@ -60,6 +60,67 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ${{ steps.samba-ccache-key.outputs.key }}
 
+  # Sections 1 and 2 of the series are what goes upstream: they must build
+  # alone on pristine Samba with --enable-developer (warnings as errors, no
+  # overlay, no later patch). This takes minutes, so a marker in the cache
+  # skips the build until something it depends on changes.
+  samba-stock-sections:
+    name: Stock Samba sections build alone
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Look for a passed build of these patches
+        id: stock-passed
+        uses: actions/cache/restore@v6
+        with:
+          path: .stock-sections-passed
+          key: samba-stock-sections-v1-${{ hashFiles('build/env.sh', 'build/patches/samba4x/*', 'tests/samba/run.py') }}
+          lookup-only: true
+
+      - name: Install Samba build dependencies
+        if: steps.stock-passed.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          # --enable-developer turns on selftest, which needs libarchive.
+          sudo apt-get install -y build-essential pkg-config python3 git bison flex libparse-yapp-perl libgnutls28-dev zlib1g-dev libpopt-dev gdb libarchive-dev ccache
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+
+      - name: Restore ccache
+        if: steps.stock-passed.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: samba-stock-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            samba-stock-ccache-v1-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build sections 1 and 2 with --enable-developer
+        if: steps.stock-passed.outputs.cache-hit != 'true'
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+          CCACHE_MAXSIZE: 1G
+        run: python3 -m tests.samba.run stock --work "$RUNNER_TEMP/samba-stock" --jobs "$(nproc)"
+
+      - name: Save ccache
+        if: steps.stock-passed.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: samba-stock-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+
+      - name: Mark these patches as passed
+        if: steps.stock-passed.outputs.cache-hit != 'true'
+        run: touch .stock-sections-passed
+
+      - name: Save the marker
+        if: steps.stock-passed.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .stock-sections-passed
+          key: samba-stock-sections-v1-${{ hashFiles('build/env.sh', 'build/patches/samba4x/*', 'tests/samba/run.py') }}
+
   # Checks against known advisories what users install: pyproject.toml's
   # dependencies, resolved for every Python it allows. Dev tools are left out,
   # as no user runs them. A known vulnerability marks this job failed on every
