@@ -7,6 +7,13 @@ LOCKS_ROOT=/mnt/Locks
 
 [ "$#" -eq 0 ] || { echo 'boot.sh takes no arguments' >&2; exit 2; }
 
+# Optional user hook. TimeCapsuleSMB never installs, changes or removes
+# /mnt/Flash/rc.user, so additions survive deploy, update and uninstall.
+# It runs in the background and cannot delay Samba.
+if [ -x /mnt/Flash/rc.user ]; then
+    /mnt/Flash/rc.user </dev/null >/dev/null 2>&1 &
+fi
+
 # Only one-time platform preparation belongs in shell. These operations must
 # preserve an already running installation: the C manager takes its singleton
 # lock and reconciles old process groups before clearing any Samba lock files.
