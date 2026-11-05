@@ -1,7 +1,7 @@
 diff --git a/source3/modules/util_reparse.c b/source3/modules/util_reparse.c
 --- a/source3/modules/util_reparse.c
 +++ b/source3/modules/util_reparse.c
-@@ -365,6 +365,11 @@ NTSTATUS fsctl_set_reparse_point(struct files_struct *fsp,
+@@ -369,6 +369,11 @@ NTSTATUS fsctl_set_reparse_point(struct files_struct *fsp,
  		  reparse_tag,
  		  reparse_data_length);
  

@@ -540,6 +540,32 @@ static void case_arriving(void)
 	CHECK(check_arriving(&pdu, 1, false, &resume, &seen) == TC_WRITE_WHOLE);
 }
 
+/*
+ * After a short WRITE, what is left to read is the rest of its PDU, then
+ * whatever the feed still held from an earlier short WRITE: a WRITE read from
+ * that feed was cut too, and the requests in its data came after it.
+ */
+static void case_feed_replace(void)
+{
+	TALLOC_CTX *ctx = talloc_new(NULL);
+	static const uint8_t tail[] = "next requests";
+	uint8_t *feed = NULL;
+	size_t feed_len = 0, feed_ofs = 0;
+
+	CHECK(ctx != NULL);
+	/* No feed yet: the tail alone. */
+	CHECK(tc_desync_feed_replace(ctx, &feed, &feed_len, &feed_ofs, tail, 13));
+	CHECK(feed != NULL && feed_len == 13 && feed_ofs == 0);
+	CHECK(talloc_get_size(feed) == 13 && memcmp(feed, tail, 13) == 0);
+	/* Four bytes of that feed read: the new tail, then its other nine. */
+	feed_ofs = 4;
+	CHECK(tc_desync_feed_replace(ctx, &feed, &feed_len, &feed_ofs,
+				     (const uint8_t *)"cut", 3));
+	CHECK(feed_len == 12 && feed_ofs == 0 && talloc_get_size(feed) == 12);
+	CHECK(memcmp(feed, "cut requests", 12) == 0);
+	TALLOC_FREE(ctx);
+}
+
 int main(int argc, const char **argv)
 {
 	static const struct {
@@ -558,6 +584,7 @@ int main(int argc, const char **argv)
 		{ "compound", case_compound },
 		{ "cap", case_cap },
 		{ "read_idle", case_read_idle },
+		{ "feed_replace", case_feed_replace },
 	};
 	size_t i;
 

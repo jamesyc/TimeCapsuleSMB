@@ -288,6 +288,38 @@ static void deliver_sync_fallbacks(struct tevent_req **requests, unsigned count)
 		}
 }
 
+/* aio_fork logs to stderr (setup_logging() in main): send it to a scratch
+ * file between saturation_log_start() and saturation_log_lines(), which
+ * counts the saturation lines logged in between. */
+static FILE *saturation_log;
+static int saturation_saved_fd = -1;
+
+static void saturation_log_start(void)
+{
+	saturation_log = tmpfile();
+	saturation_saved_fd = dup(2);
+	CHECK(saturation_log != NULL && saturation_saved_fd >= 0);
+	CHECK(dup2(fileno(saturation_log), 2) == 2);
+}
+
+static unsigned saturation_log_lines(void)
+{
+	char line[512];
+	unsigned lines = 0;
+
+	CHECK(dup2(saturation_saved_fd, 2) == 2);
+	close(saturation_saved_fd);
+	rewind(saturation_log);
+	while (fgets(line, sizeof(line), saturation_log) != NULL) {
+		if (strstr(line, "aio_fork saturated with") != NULL) {
+			lines++;
+		}
+	}
+	fclose(saturation_log);
+	saturation_log = NULL;
+	return lines;
+}
+
 /* The scenarios test_queue() runs; NAME+fast_reply names one of them too. */
 static bool queue_case(const char *name)
 {
@@ -302,9 +334,11 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 	unsigned i, count = ARRAY_SIZE(requests);
 	struct aio_child_list *list;
 	struct aio_child *worker;
+	saturation_log_start();
 	for (i = 0; i < count; i++) {
 		requests[i] = submit(h, buffers[i], 4, 0, READ_CMD);
 	}
+	CHECK(saturation_log_lines() == 1);
 	list = pool(h);
 	worker = list->children;
 	CHECK(list->num_children == 1 && worker_count == 1);
@@ -314,6 +348,8 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 		CHECK(request_state(requests[i])->queued);
 	}
 	CHECK(!tevent_req_is_in_progress(requests[count - 1]));
+	/* The two past the bound ran here; the saturation was logged once. */
+	CHECK(list->saturated);
 	if (!strcmp(scenario, "cancel_queued")) {
 		TALLOC_FREE(requests[2]);
 		CHECK(list->num_pending == AIO_FORK_MAX_PENDING - 1);
@@ -371,9 +407,42 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 		if (i == 0) deliver_sync_fallbacks(requests, count);
 	}
 	CHECK(list->num_pending == 0 && list->pending == NULL);
+	/* The FIFO drained: the next saturation is logged again. */
+	CHECK(!list->saturated);
 	fail_fork = 0;
 	finish(submit(h, buffers[0], 4, 0, READ_CMD), 4, 0);
 	CHECK(list->num_children == 1 && !list->children->busy);
+}
+
+/*
+ * Past the FIFO bound reads and writes run synchronously in this process, but
+ * an fsync, which can take long, still waits its turn for a helper, without
+ * counting as a saturation.
+ */
+static void test_fsync_past_bound(struct vfs_handle_struct *h)
+{
+	struct tevent_req *requests[AIO_FORK_MAX_PENDING + 3];
+	char buffers[AIO_FORK_MAX_PENDING + 3][4];
+	unsigned i, queued_fsync = AIO_FORK_MAX_PENDING + 1, late_read = AIO_FORK_MAX_PENDING + 2;
+	struct aio_child_list *list;
+	for (i = 0; i <= AIO_FORK_MAX_PENDING; i++) {
+		requests[i] = submit(h, buffers[i], 4, 0, READ_CMD);
+	}
+	list = pool(h);
+	CHECK(list->num_children == 1 && list->num_pending == AIO_FORK_MAX_PENDING);
+	requests[queued_fsync] = submit(h, NULL, 0, 0, FSYNC_CMD);
+	CHECK(request_state(requests[queued_fsync])->queued);
+	CHECK(list->num_pending == AIO_FORK_MAX_PENDING + 1 && !list->saturated);
+	/* A read past the bound still runs here, and that saturation is logged. */
+	saturation_log_start();
+	requests[late_read] = submit(h, buffers[late_read], 4, 0, READ_CMD);
+	CHECK(saturation_log_lines() == 1);
+	CHECK(!tevent_req_is_in_progress(requests[late_read]) && list->saturated);
+	finish(requests[late_read], 4, 0);
+	for (i = 0; i <= queued_fsync; i++) {
+		finish(requests[i], i == queued_fsync ? 0 : 4, 0);
+	}
+	CHECK(list->num_pending == 0 && !list->saturated && worker_count == 1);
 }
 
 /*
@@ -442,6 +511,34 @@ static void test_failures(struct vfs_handle_struct *h, const char *scenario)
 	finish(submit(h, buf, 4, 0, READ_CMD), 4, 0);
 }
 
+/*
+ * A fork() that fails counts like the limit while a helper runs: nothing runs
+ * in this process, above all no fsync, which would stop it reading its socket.
+ * queued_fork_failure covers the case with no helper left.
+ */
+static void test_fork_failure_waits(struct vfs_handle_struct *h)
+{
+	char buffers[2][4];
+	struct tevent_req *first, *waiting_read, *waiting_flush;
+	struct aio_child_list *list;
+	((struct aio_fork_config *)h->data)->max_children = 2;
+	first = submit(h, buffers[0], 4, 0, READ_CMD);
+	list = pool(h);
+	CHECK(list->num_children == 1 && worker_count == 1);
+	fail_fork = 1;
+	waiting_read = submit(h, buffers[1], 4, 0, READ_CMD);
+	waiting_flush = submit(h, NULL, 0, 0, FSYNC_CMD);
+	CHECK(request_state(waiting_read)->queued && calls_of(waiting_read) == 0);
+	CHECK(request_state(waiting_flush)->queued && calls_of(waiting_flush) == 0);
+	CHECK(list->num_pending == 2 && list->num_children == 1);
+	/* The helper takes them in turn once it frees, fork() still failing. */
+	finish(first, 4, 0);
+	finish(waiting_read, 4, 0);
+	finish(waiting_flush, 0, 0);
+	CHECK(list->num_pending == 0 && list->num_children == 1 && worker_count == 1);
+	fail_fork = 0;
+}
+
 static void test_limits(TALLOC_CTX *ctx, struct vfs_handle_struct *h, bool unlimited)
 {
 	char buffers[4][4];
@@ -500,8 +597,8 @@ static void test_cleanup(struct vfs_handle_struct *h)
  * talloc_magic at startup (on NetBSD, derived from its own address) and
  * checks every chunk header against it, so a reverted talloc_magic made the
  * next talloc call abort with "Bad talloc magic value - unknown value". Here
- * the since-removed fork_stack and listener_handoff cases (for the old Samba
- * patch 0022 and for 0044) failed only on the devices, in forked children; later
+ * the since-removed fork_stack and listener_handoff cases (for a since-removed
+ * talloc stack patch and for 0044) failed only on the devices, in forked children; later
  * tc_native_links_test's convert_created aborted the same way in a single
  * process. The allocator corruption seen in create_aio_child()
  * (issue #295) fits too: jemalloc's own state lives in .data. Which global
@@ -510,20 +607,11 @@ static void test_cleanup(struct vfs_handle_struct *h)
  * binary but comes and goes with unrelated code changes, while padding .data,
  * padding the environment or junk-filling the heap changes nothing.
  *
- * How it was found (2026-09-25). Source edits hid it, so the failing
- * executable itself was binary-patched (layout unchanged): abort() replaced
- * with _exit(<byte of lr>) to find the caller, talloc_abort() replaced with a
- * write of its message and 1 KB of stack to stderr (a backtrace without a
- * debugger), then a dump of the chunk header next to talloc_magic. The header
- * held the randomized magic and the global held its file value: the whole
- * page matched the executable. Logging trampolines on all 107 syscall stubs
- * showed the value was intact at chdir() and gone by the next open(). What
- * ran in between was one user-space store to a global two pages away,
- * the first write to its page. Removing that single store fixed the run;
- * removing a different store did not. A 60-line static C program (a
- * page-aligned initialized array: change page 8, make the first write at
- * distance d, re-read page 8) then showed pages -4..+3 reverting on both
- * kernels, in one process and across fork(), with nothing but libc.
+ * What goes wrong. A store to a global makes the first write to its page,
+ * and fault-ahead maps that page's neighbours back to the executable's file
+ * contents: a static program with one page-aligned initialized array shows
+ * pages -4..+3 reverting on both kernels, in one process and across fork(),
+ * with nothing but libc.
  *
  * The mitigation. madvise(MADV_RANDOM) on the writable segment turns
  * fault-ahead off there, and fork() children inherit it. Touching every page
@@ -619,10 +707,10 @@ static void test_data_page_writes(void)
 }
 
 /* A process that exits with talloc frames still open, as every forked smbd
- * child does, reports them only at debug level (Samba patch 0064). pthread
- * builds never run that report at exit(); upstream's no-pthread atexit
- * handler logged "Dangling frame" lines at level 0 for each of them. With
- * debug set, the report is still made: 0064 lowers it, it does not drop it. */
+ * child does, reports nothing about them, at any debug level (Samba patch
+ * 0022): pthread builds never check frames at exit(), and upstream's
+ * no-pthread atexit handler logged "Dangling frame" lines at level 0 for
+ * each of them. */
 static void test_exit_frames(bool debug)
 {
 	char out[4096];
@@ -653,17 +741,17 @@ static void test_exit_frames(bool debug)
 	out[used] = '\0';
 	close(fds[0]);
 	CHECK(waitpid(pid, &status, 0) == pid);
-	if ((strstr(out, "Dangling frame") != NULL) != debug) {
+	if (strstr(out, "Dangling frame") != NULL) {
 		fprintf(stderr, "%s", out);
 	}
 	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-	CHECK((strstr(out, "Dangling frame") != NULL) == debug);
+	CHECK(strstr(out, "Dangling frame") == NULL);
 }
 
-/* Registered before the talloc stack is first used, so it runs after the
- * talloc stack's handler has freed the tracker (atexit handlers run in reverse order). With a
- * dangling tracker pointer this would be a use-after-free, which the host
- * run's AddressSanitizer reports. */
+/* Registered before the talloc stack is first used. Upstream's talloc stack
+ * handler, registered after it, ran first (atexit handlers run in reverse
+ * order) and freed the tracker, so this frame was a use-after-free, which the
+ * host run's AddressSanitizer reports. With no handler (0022) it just works. */
 static void late_stackframe(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
@@ -679,9 +767,9 @@ static void late_stackframe(void)
 static bool test_exit_handlers(const char *scenario)
 {
 	if (!strcmp(scenario, "exit_no_frames")) {
-		/* talloc_stackframe_exists() registers the atexit handler
-		 * before any frame exists; upstream's handler then
-		 * dereferenced the NULL tracker (fixed by Samba patch 0022). */
+		/* Upstream's talloc_stackframe_exists() registers its atexit
+		 * handler before any frame exists, and the handler then
+		 * dereferences the NULL tracker; 0022 registers none. */
 		CHECK(!talloc_stackframe_exists());
 		return true;
 	}
@@ -736,10 +824,12 @@ int main(int argc, char **argv)
 	if (queue_case(argv[1])) test_queue(h, argv[1]);
 	else if (!strcmp(argv[1], "teardown")) test_teardown(h);
 	else if (!strcmp(argv[1], "orphan_error")) test_orphan_error(h);
+	else if (!strcmp(argv[1], "fork_failure_waits")) test_fork_failure_waits(h);
 	else if (strstr(argv[1], "failure")) test_failures(h, argv[1]);
 	else if (!strcmp(argv[1], "limits") || !strcmp(argv[1], "unlimited")) test_limits(frame, h, !strcmp(argv[1], "unlimited"));
 	else if (!strcmp(argv[1], "cleanup")) test_cleanup(h);
 	else if (!strcmp(argv[1], "full_buffer") || !strcmp(argv[1], "over_buffer")) test_sizes(h, argv[1]);
+	else if (!strcmp(argv[1], "fsync_past_bound")) test_fsync_past_bound(h);
 	else if (!strcmp(argv[1], "exit_frames")) test_exit_frames(false);
 	else if (!strcmp(argv[1], "exit_frames_debug")) test_exit_frames(true);
 	else if (!strcmp(argv[1], "data_page_writes")) test_data_page_writes();

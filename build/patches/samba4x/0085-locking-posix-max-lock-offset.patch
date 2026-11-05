@@ -1,0 +1,19 @@
+diff --git a/source3/locking/posix.c b/source3/locking/posix.c
+--- a/source3/locking/posix.c
++++ b/source3/locking/posix.c
+@@ -108,9 +108,12 @@ static bool posix_lock_in_range(off_t *offset_out, off_t *count_out,
+ 	 * and the underlying system can handle 64 bit signed locks.
+ 	 */
+ 
+-	off_t mask2 = ((off_t)0x4) << (SMB_OFF_T_BITS-4);
+-	off_t mask = (mask2<<1);
+-	off_t max_positive_lock_offset = ~mask;
++	/*
++	 * The largest positive off_t, computed unsigned: shifting a signed
++	 * value into its sign bit is undefined.
++	 */
++	off_t max_positive_lock_offset =
++		(off_t)((((uint64_t)1) << (SMB_OFF_T_BITS - 1)) - 1);
+ 
+ #endif
+ 	/*

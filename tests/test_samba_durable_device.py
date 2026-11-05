@@ -668,7 +668,7 @@ class OrphanCaseTest(unittest.TestCase):
         client.conns[0].disconnect.assert_called()
 
     def test_superseded_leases_that_stay_fail_after_the_release_wait(self) -> None:
-        # Before 0077 the dropped entries' leases stayed in leases.tdb for good.
+        # Before 0081 the dropped entries' leases stayed in leases.tdb for good.
         results, _, _, clock = self.superseded(released=False)
         self.assertEqual(results.failed, [SUPERSEDED_CHECKS[1]])
         self.assertGreaterEqual(clock.now - 1000, durable_device.ORPHAN_RELEASE_SECONDS)
@@ -713,12 +713,12 @@ class OrphanCaseTest(unittest.TestCase):
         self.assertEqual(results.failed, [FAILED_CHECKS[3]])
 
     def test_an_open_stored_with_disconnect_time_0_fails_its_check(self) -> None:
-        # Before 0077 the failed reconnect's TALLOC_FREE stored it with 0.
+        # Before 0082 the failed reconnect's TALLOC_FREE stored it with 0.
         results, _, _, _ = self.failed_reconnect(time_after=0)
         self.assertEqual(results.failed, [FAILED_CHECKS[4]])
 
     def test_a_lock_kept_by_the_failed_reconnect_fails_the_other_clients_check(self) -> None:
-        # Before 0077 the reconnecting smbd kept the lock it took over.
+        # Before 0082 the reconnecting smbd kept the lock it took over.
         results, _, _, _ = self.failed_reconnect(lock_kept=True)
         self.assertEqual(results.failed, [FAILED_CHECKS[5]])
 
@@ -1085,6 +1085,31 @@ class SmbdLogSinceTests(unittest.TestCase):
                             new=b"tc_desync after\nnoise\n")
             logged = durable_device._smbd_log_since(self.Local(), log, 4096, keep="sed -n -e '/tc_desync/p'")
         self.assertEqual(logged, "tc_desync before\ntc_desync after\n")
+
+
+class MainCleanupTests(unittest.TestCase):
+    def test_a_mount_left_behind_does_not_hide_the_result(self) -> None:
+        # The stall case's mount stayed, so its folder cannot be removed: every
+        # check still counts and the result line still prints.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "work"
+            (work / "smb").mkdir(parents=True)
+            (work / "smb" / "file on the mount").write_text("")
+            device = mock.Mock(root="/Volumes/dk2/ShareRoot")
+            out = io.StringIO()
+            logger = logging.getLogger("smbprotocol.connection")
+            filters = list(logger.filters)
+            with mock.patch.object(durable_device, "Device", return_value=device), \
+                    mock.patch.object(durable_device, "parse_env_file", return_value={}), \
+                    mock.patch.object(durable_device.tempfile, "mkdtemp", return_value=str(work)), \
+                    mock.patch.object(durable_device.threading, "excepthook"), \
+                    mock.patch("sys.argv", ["durable_device", "--stall", "0", "--case", "mac"]), \
+                    contextlib.redirect_stdout(out):
+                status = durable_device.main()
+            logger.filters[:] = filters
+            self.assertEqual(status, 0)
+            self.assertIn("RESULT pass=0 fail=0", out.getvalue())
+            self.assertTrue((work / "smb").exists())
 
 
 if __name__ == "__main__":

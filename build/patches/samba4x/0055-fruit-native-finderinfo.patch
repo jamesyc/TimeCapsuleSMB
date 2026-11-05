@@ -55,7 +55,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  static bool readdir_attr_meta_finderi_stream(
  	struct vfs_handle_struct *handle,
  	const struct smb_filename *smb_fname,
-@@ -1021,6 +1038,24 @@ static bool readdir_attr_meta_finderi(struct vfs_handle_struct *handle,
+@@ -1021,6 +1038,25 @@ static bool readdir_attr_meta_finderi(struct vfs_handle_struct *handle,
  	SMB_VFS_HANDLE_GET_DATA(handle, config,
  				struct fruit_config_data,
  				return false);
@@ -65,6 +65,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
 +			handle,
 +			handle->conn->cwd_fsp,
 +			smb_fname,
++			AT_SYMLINK_NOFOLLOW,
 +			native_finderinfo);
 +
 +		if (native_state != 1 ||
@@ -80,7 +81,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (config->meta) {
  	case FRUIT_META_NETATALK:
-@@ -1043,6 +1078,7 @@ static bool readdir_attr_meta_finderi(struct vfs_handle_struct *handle,
+@@ -1043,6 +1079,7 @@ static bool readdir_attr_meta_finderi(struct vfs_handle_struct *handle,
  		return true;
  	}
  
@@ -88,7 +89,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  	if (S_ISREG(smb_fname->st.st_ex_mode)) {
  		/* finder_type */
  		memcpy(&attr_data->attr_data.aapl.finder_info[0],
-@@ -1518,6 +1554,10 @@ static int fruit_open_meta(vfs_handle_struct *handle,
+@@ -1518,6 +1555,10 @@ static int fruit_open_meta(vfs_handle_struct *handle,
  
  	SMB_VFS_HANDLE_GET_DATA(handle, config,
  				struct fruit_config_data, return -1);
@@ -99,7 +100,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (config->meta) {
  	case FRUIT_META_STREAM:
-@@ -1535,6 +1575,7 @@ static int fruit_open_meta(vfs_handle_struct *handle,
+@@ -1535,6 +1576,7 @@ static int fruit_open_meta(vfs_handle_struct *handle,
  		return -1;
  	}
  
@@ -107,7 +108,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  	DBG_DEBUG("path [%s] fd [%d]\n", smb_fname_str_dbg(smb_fname), fd);
  
  	return fd;
-@@ -1816,6 +1857,11 @@ static int fruit_close_meta(vfs_handle_struct *handle,
+@@ -1816,6 +1858,11 @@ static int fruit_close_meta(vfs_handle_struct *handle,
  
  	SMB_VFS_HANDLE_GET_DATA(handle, config,
  				struct fruit_config_data, return -1);
@@ -119,7 +120,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (config->meta) {
  	case FRUIT_META_STREAM:
-@@ -2034,6 +2080,11 @@ static int fruit_unlink_meta(vfs_handle_struct *handle,
+@@ -2034,6 +2081,11 @@ static int fruit_unlink_meta(vfs_handle_struct *handle,
  
  	SMB_VFS_HANDLE_GET_DATA(handle, config,
  				struct fruit_config_data, return -1);
@@ -131,7 +132,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (config->meta) {
  	case FRUIT_META_STREAM:
-@@ -2438,6 +2489,9 @@ static ssize_t fruit_pread_meta(vfs_handle_struct *handle,
+@@ -2438,6 +2490,9 @@ static ssize_t fruit_pread_meta(vfs_handle_struct *handle,
  		DBG_ERR("Failed to fetch fsp extension\n");
  		return -1;
  	}
@@ -141,7 +142,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	/* Yes, macOS always reads from offset 0 */
  	offset = 0;
-@@ -2903,6 +2957,14 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
+@@ -2903,6 +2958,14 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
  	if (to_write != AFP_INFO_SIZE) {
  		to_write = AFP_INFO_SIZE;
  	}
@@ -156,28 +157,34 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (fio->config->meta) {
  	case FRUIT_META_STREAM:
-@@ -3264,6 +3326,10 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
+@@ -3264,6 +3327,10 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
  	}
  
  	ino = hash_inode(sbuf, _smb_relname->stream_name);
 +	if (config->native_hfs) {
 +		return fruit_fstatat_meta_native(
-+			handle, dirfsp, _smb_relname, sbuf, ino);
++			handle, dirfsp, _smb_relname, sbuf, flags, ino);
 +	}
  
  	if (config->meta == FRUIT_META_STREAM) {
  		ret = SMB_VFS_NEXT_FSTATAT(
-@@ -3648,6 +3714,9 @@ static int fruit_fstat_meta(vfs_handle_struct *handle,
+@@ -3648,6 +3715,15 @@ static int fruit_fstat_meta(vfs_handle_struct *handle,
  	int ret;
  
  	DBG_DEBUG("Path [%s]\n", fsp_str_dbg(fsp));
 +	if (fio->config->native_hfs) {
-+		return fruit_fstat_meta_netatalk(handle, fsp, sbuf);
++		ret = fruit_fstat_meta_netatalk(handle, fsp, sbuf);
++		if (ret == 0) {
++			/* The attribute's own size, as a path stat reports. */
++			sbuf->st_ex_blocks =
++				sbuf->st_ex_size / STAT_ST_BLOCKSIZE + 1;
++		}
++		return ret;
 +	}
  
  	switch (fio->config->meta) {
  	case FRUIT_META_STREAM:
-@@ -3932,6 +4001,10 @@ static NTSTATUS fruit_streaminfo_meta(vfs_handle_struct *handle,
+@@ -3932,6 +4008,10 @@ static NTSTATUS fruit_streaminfo_meta(vfs_handle_struct *handle,
  
  	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
  				return NT_STATUS_INTERNAL_ERROR);
@@ -188,7 +195,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (config->meta) {
  	case FRUIT_META_NETATALK:
-@@ -4375,7 +4448,8 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
+@@ -4375,7 +4455,8 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
  	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
  				return NT_STATUS_UNSUCCESSFUL);
  
@@ -198,7 +205,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  	    !internal_open &&
  	    config->convert_adouble)
  	{
-@@ -4494,7 +4568,7 @@ static NTSTATUS fruit_freaddir_attr(struct vfs_handle_struct *handle,
+@@ -4494,7 +4575,7 @@ static NTSTATUS fruit_freaddir_attr(struct vfs_handle_struct *handle,
  
  	DBG_DEBUG("Path [%s]\n", fsp_str_dbg(fsp));
  

@@ -3,7 +3,7 @@
 for name in ('tc_pthreadpool_sync_test', 'tc_aio_fork_test', 'tc_durable_reconnect_test', 'tc_streams_xattr_test',
              'tc_native_metadata_test', 'tc_xattr_migrate_test', 'tc_storage_reload_test',
              'tc_native_links_test', 'tc_catia_links_test', 'tc_at_emulation_test',
-             'tc_file_growth_test', 'tc_fork_repair_test', 'tc_short_write_test'):
+             'tc_file_growth_test', 'tc_fork_repair_test', 'tc_short_write_test', 'tc_srvsvc_enum_test'):
     # Shared-module host builds do not inherit the stream module's dependencies
     # through smbd_base, unlike the static appliance build.
     if name == 'tc_streams_xattr_test':
@@ -13,6 +13,9 @@ for name in ('tc_pthreadpool_sync_test', 'tc_aio_fork_test', 'tc_durable_reconne
     elif name == 'tc_catia_links_test':
         # Includes vfs_catia.c, whose name mapping lives in STRING_REPLACE.
         deps = 'smbd_base STRING_REPLACE'
+    elif name == 'tc_srvsvc_enum_test':
+        # Calls the real srvsvc server code directly, not through the pipe.
+        deps = 'smbd_base RPC_SRVSVC'
     elif name == 'tc_pthreadpool_sync_test':
         deps = 'PTHREADPOOL'
     elif name == 'tc_xattr_migrate_test':

@@ -9,22 +9,22 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
  #include "smbd/globals.h"
  #include "smbd/smbXsrv_open.h"
  #include "smbd/scavenger.h"
-@@ -166,10 +167,34 @@ static bool scavenger_say_hello(int fd, struct server_id self)
+@@ -166,25 +167,56 @@ static bool scavenger_say_hello(int fd, struct server_id self)
  	return true;
  }
  
 -static bool scavenger_wait_hello(int fd, struct server_id *child)
-+#ifndef TC_SCAVENGER_HELLO_SECONDS
++#ifndef SCAVENGER_HELLO_TIMEOUT_SECONDS
 +/*
 + * How long the parent waits for a new scavenger's hello. The parent serves
 + * nothing while it waits: no new connections, no reaping. A child that never
-+ * says hello (Apple's NetBSD 6 fork bug can leave one spinning) would stop it
-+ * for good, so give up and kill the child. The expiry that started it is lost:
-+ * that handle stays disconnected until another open of its file finds it
-+ * stale. Later expiries start another scavenger. The child opens its logs on
-+ * the data disk before its hello, so this allows for a disk spinning up.
++ * says hello would stop it for good, so give up and kill the child. The
++ * expiry that started it is lost: that handle stays disconnected until
++ * another open of its file finds it stale. Later expiries start another
++ * scavenger. The child opens its log file before its hello, so this allows
++ * for a disk spinning up.
 + */
-+#define TC_SCAVENGER_HELLO_SECONDS 30
++#define SCAVENGER_HELLO_TIMEOUT_SECONDS 30
 +#endif
 +
 +static bool scavenger_wait_hello(int fd, pid_t pid, struct server_id *child)
@@ -34,18 +34,42 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
  	ssize_t ret;
 +	int ready;
 +
-+	ready = sys_poll_intr(&pfd, 1, TC_SCAVENGER_HELLO_SECONDS * 1000);
++	ready = sys_poll_intr(&pfd, 1, SCAVENGER_HELLO_TIMEOUT_SECONDS * 1000);
 +	if (ready != 1) {
-+		DBG_ERR("scavenger %d sent no hello within %d seconds (%s); "
-+			"killing it\n", (int)pid, TC_SCAVENGER_HELLO_SECONDS,
++		DBG_ERR("scavenger %d sent no hello within %d seconds (%s)\n",
++			(int)pid, SCAVENGER_HELLO_TIMEOUT_SECONDS,
 +			ready == 0 ? "timeout" : strerror(errno));
-+		kill(pid, SIGKILL);
-+		return false;
++		goto fail;
 +	}
  
  	ret = read_data(fd, child, sizeof(struct server_id));
  	if (ret == -1) {
-@@ -293,7 +318,7 @@ static bool smbd_scavenger_start(struct smbd_scavenger_state *state)
+ 		DEBUG(2, ("Failed to read from pipe: %s\n",
+ 			  strerror(errno)));
+-		return false;
++		goto fail;
+ 	}
+ 	if (ret < sizeof(struct server_id)) {
+ 		DBG_WARNING("Could not read serverid\n");
+-		return false;
++		goto fail;
+ 	}
+ 
+ 	DEBUG(4, ("scavenger_say_hello: child[%s]\n",
+ 		  server_id_str_buf(*child, &tmp)));
+ 	return true;
++
++fail:
++	/*
++	 * Nothing will talk to a child without a hello, and one that is
++	 * still running would serve no one.
++	 */
++	kill(pid, SIGKILL);
++	return false;
+ }
+ 
+ static bool smbd_scavenger_start(struct smbd_scavenger_state *state)
+@@ -293,7 +325,7 @@ static bool smbd_scavenger_start(struct smbd_scavenger_state *state)
  	/* parent */
  	close(fds[1]);
  

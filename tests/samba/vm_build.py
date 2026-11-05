@@ -15,7 +15,8 @@ fails is not built, and a failed lane's outputs are not copied); wait for
 it, reporting each lane's result and ccache hits; fetch the
 stripped outputs into DIR as smbd.<lane>, migrate.<lane> and <driver>.<lane>. With
 --install, copy smbd and the migrator into bin/ and update
-artifact-manifest.json. The VM rows of the lock file are held throughout.
+artifact-manifest.json. The VM rows of the lock file are held throughout, and
+every step goes over one SSH connection, so a run normally logs in to the VM once.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import shlex
 import subprocess
 import sys
@@ -34,8 +36,18 @@ ROOT = Path(__file__).resolve().parents[2]
 VM = "james@192.168.64.4"
 VM_REPO = "TimeCapsuleSMB"
 PATCHES = "build/patches/samba4x"
+# All calls share one connection (Vm adds its ControlPath): the first logs in
+# and stays behind as the master, so a run logs in once rather than at every
+# poll and copy, each a chance for the VM to refuse the password. ssh ends the
+# master ControlPersist seconds after the last call and removes its socket.
+# ServerAlive ends a master whose VM stopped answering, so a call exits 255
+# (and is retried on a new master) instead of waiting on a dead link. One
+# password prompt makes a refused password exit 255 too: on a second prompt
+# sshpass would give up with its own 5.
 SSH_OPTS = ["-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password",
-            "-o", "StrictHostKeyChecking=no", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=15"]
+            "-o", "StrictHostKeyChecking=no", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=15",
+            "-o", "NumberOfPasswordPrompts=1", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=2",
+            "-o", "ControlMaster=auto", "-o", "ControlPersist=120"]
 
 LANES = {
     "6": dict(download="downloadsamba4x.sh", build="samba4x.sh", tree="/root/tc-samba4x-netbsd7/samba",
@@ -113,15 +125,18 @@ def job_script(lanes: list[str], out: str, lock: str, driver_names: tuple[str, .
 
 
 # expect script: su to root on the VM and run $VMCMD there, exiting with its
-# status. A braced pattern list must span lines: on one line expect takes the
-# whole list as a single pattern.
+# status. It exits 3 (password refused) or 4 (timeout, or the connection ended)
+# before the shell prompt, when nothing has run, and Vm.root() retries those.
+# A braced pattern list must span lines: on one line expect takes the whole
+# list as a single pattern.
 EXPECT = r'''set timeout 60
 log_user 0
-spawn sshpass -e ssh -tt -o PubkeyAuthentication=no -o PreferredAuthentications=password -o StrictHostKeyChecking=no {vm}
+spawn sshpass -e ssh -tt {opts} {vm}
 expect {{
   "$ " {{}}
   "denied" {{ exit 3 }}
   timeout {{ exit 4 }}
+  eof {{ exit 4 }}
 }}
 send "su\r"
 expect "assword"
@@ -177,13 +192,19 @@ class Vm:
     def __init__(self, password: str, run=subprocess.run, sleep=time.sleep) -> None:
         self.env = dict(os.environ, SSHPASS=password, VMPASS=password)
         self.run, self.sleep = run, sleep
+        # The master's socket is this object's own, with a random name: ssh
+        # does not check who owns a socket it connects to, and /tmp is shared.
+        # It is in /tmp because macOS caps a socket path at 104 bytes.
+        self.control = f"/tmp/tc-vm-{os.getpid()}-{secrets.token_hex(4)}"
+        self.opts = [*SSH_OPTS, "-o", f"ControlPath={self.control}"]
 
     def _retry(self, argv: list[str], copy: bool = False, **kwargs):
         # Password SSH to the VM sometimes refuses a good password; retry. ssh
-        # reports that as 255, scp as 1 like any failed copy (seen 2026-09-29),
-        # so a copy, which is safe to repeat, is retried after any failure.
+        # reports that as 255. scp reports it as 1 like any failed copy, and
+        # rsync with some nonzero code that depends on its version, so a copy,
+        # which is safe to repeat, is retried after any failure.
         for attempt in range(4):
-            proc = self.run(argv, env=self.env, capture_output=True, text=kwargs.pop("text", True), **kwargs)
+            proc = self.run(argv, env=self.env, capture_output=True, text=True, **kwargs)
             refused = proc.returncode != 0 if copy else proc.returncode == 255
             if not refused or attempt == 3:
                 return proc
@@ -191,24 +212,24 @@ class Vm:
         return proc
 
     def ssh(self, command: str) -> str:
-        proc = self._retry(["sshpass", "-e", "ssh", *SSH_OPTS, VM, command])
+        proc = self._retry(["sshpass", "-e", "ssh", *self.opts, VM, command])
         if proc.returncode != 0:
             raise RuntimeError(f"VM command failed ({proc.returncode}): {command}\n{proc.stderr}")
         return proc.stdout
 
     def put(self, local: Path, remote: str) -> None:
-        proc = self._retry(["sshpass", "-e", "scp", "-O", "-q", *SSH_OPTS, str(local), f"{VM}:{remote}"], copy=True)
+        proc = self._retry(["sshpass", "-e", "scp", "-O", "-q", *self.opts, str(local), f"{VM}:{remote}"], copy=True)
         if proc.returncode != 0:
             raise RuntimeError(f"copy to the VM failed: {remote}")
 
     def get(self, remote: str, local: Path) -> None:
-        proc = self._retry(["sshpass", "-e", "scp", "-O", "-q", *SSH_OPTS, f"{VM}:{remote}", str(local)], copy=True)
+        proc = self._retry(["sshpass", "-e", "scp", "-O", "-q", *self.opts, f"{VM}:{remote}", str(local)], copy=True)
         if proc.returncode != 0:
             raise RuntimeError(f"copy from the VM failed: {remote}")
 
     def root(self, command: str) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".exp", delete=False) as script:
-            script.write(EXPECT.format(vm=VM))
+            script.write(EXPECT.format(vm=VM, opts=" ".join(self.opts)))
         try:
             for attempt in range(4):
                 proc = self.run(["expect", "-f", script.name], env=dict(self.env, VMCMD=command),
@@ -222,12 +243,28 @@ class Vm:
             os.unlink(script.name)
 
     def sync(self, root: Path) -> None:
-        listed = "\0".join(checkout_files(root)).encode()
-        proc = self.run(["rsync", "-ac", "--from0", "--files-from=-", "-e",
-                         "sshpass -e ssh " + " ".join(SSH_OPTS), "./", f"{VM}:{VM_REPO}/"],
-                        cwd=root, env=self.env, input=listed, capture_output=True)
+        listed = "\0".join(checkout_files(root))
+        proc = self._retry(["rsync", "-ac", "--from0", "--files-from=-", "-e",
+                            "sshpass -e ssh " + " ".join(self.opts), "./", f"{VM}:{VM_REPO}/"],
+                           copy=True, cwd=root, input=listed)
         if proc.returncode != 0:
-            raise RuntimeError("rsync to the VM failed")
+            raise RuntimeError(f"rsync to the VM failed ({proc.returncode})\n{proc.stderr}".rstrip())
+
+
+def aside_command(repo: str, stash: str, files: list[str]) -> str:
+    """Move files out of the VM checkout into stash. Vm.ssh retries a dropped
+    connection even if the command ran, so a second run must keep what the
+    first moved: it never empties stash and skips files already gone."""
+    names = " ".join(shlex.quote(name) for name in files)
+    return (f"cd {repo} && mkdir -p {stash} && for f in {names}; do if [ -e \"$f\" ]; then "
+            f"mkdir -p {stash}/$(dirname \"$f\") && mv \"$f\" {stash}/\"$f\" || exit 1; fi; done")
+
+
+def restore_command(repo: str, stash: str) -> str:
+    """Put the stash back, but never over a file in the checkout: one there
+    is newer than a stash that a crashed run left."""
+    return (f"cd {stash} && for f in $(find . -type f); do if [ ! -e {repo}/\"$f\" ]; then "
+            f"mkdir -p {repo}/$(dirname \"$f\") && mv \"$f\" {repo}/\"$f\"; fi; done; cd / && rm -rf {stash}")
 
 
 def build(root: Path, lanes: list[str], out: Path, password: str, tag: str, install: bool,
@@ -238,8 +275,7 @@ def build(root: Path, lanes: list[str], out: Path, password: str, tag: str, inst
     aside = aside_files(local, remote)
     stash = f"/tmp/{tag}-aside"
     if aside:
-        vm.ssh(f"cd {VM_REPO} && rm -rf {stash} && mkdir -p {stash} && for f in "
-               f"{' '.join(shlex.quote(a) for a in aside)}; do mkdir -p {stash}/$(dirname $f) && mv $f {stash}/$f; done")
+        vm.ssh(aside_command(f"~/{VM_REPO}", stash, aside))
     try:
         vm.sync(root)
         vm_out, lock = f"/tmp/{tag}-out", f"/tmp/{tag}-lock"
@@ -280,8 +316,7 @@ def build(root: Path, lanes: list[str], out: Path, password: str, tag: str, inst
         except RuntimeError as error:
             log(f"could not remove /tmp/{tag}-out on the VM: {error}")
         if aside:
-            vm.ssh(f"cd {stash} && for f in $(find . -type f); do mkdir -p ~/{VM_REPO}/$(dirname $f) && "
-                   f"mv $f ~/{VM_REPO}/$f; done; cd / && rm -rf {stash}")
+            vm.ssh(restore_command(f"~/{VM_REPO}", stash))
     if install:
         for lane in lanes:
             (root / LANES[lane]["smbd"]).write_bytes((out / f"smbd.{lane}").read_bytes())

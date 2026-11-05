@@ -159,7 +159,7 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
         (tmp_path / filename).write_text("static int before;\n\n" + region + "\n\nstatic void after(void)\n{\n}\n")
     # The scavenger hello wait comes with the timeout block above it, and only
     # its own column-0 closing brace ends the cut.
-    hello = ("#ifndef TC_SCAVENGER_HELLO_SECONDS\n#define TC_SCAVENGER_HELLO_SECONDS 30\n#endif\n\n"
+    hello = ("#ifndef SCAVENGER_HELLO_TIMEOUT_SECONDS\n#define SCAVENGER_HELLO_TIMEOUT_SECONDS 30\n#endif\n\n"
              "static bool scavenger_wait_hello(int fd, pid_t pid, struct server_id *child)\n{\n"
              "\tif (fd) {\n\t\treturn false;\n\t}\n\treturn true;\n}")
     # The rescan after an unclean exit (0077) comes with the message it
@@ -168,8 +168,12 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     message = "struct scavenger_message {\n\tuint64_t open_persistent_id;\n};"
     rescan = ("struct scavenger_rescan_rec {\n\tstruct scavenger_message msg;\n};\n\n"
               "static size_t scavenger_rescan(void)\n{\n\tif (before) {\n\t\treturn;\n\t}\n}")
+    # The one-open expiry the walk calls sits between them, alone in its cut.
+    cleanup = ("static bool scavenger_cleanup(const struct scavenger_message *msg)\n{\n"
+               "\tif (msg) {\n\t\treturn true;\n\t}\n\treturn false;\n}")
     (smbd / "scavenger.c").write_text("static int before;\n\n" + message + "\n\nstatic int between;\n\n" + hello
-                                      + "\n\n" + rescan + "\n\nstatic void after(void)\n{\n}\n")
+                                      + "\n\n" + cleanup + "\n\nstatic void timer(void)\n{\n}\n\n"
+                                      + rescan + "\n\nstatic void after(void)\n{\n}\n")
     # The brlock cut: the private struct, the parse definition (not its
     # declaration, which comes first), the store, the read, the reconnect
     # steps and the wrapper, each ending at its last function's column-0
@@ -196,6 +200,12 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
               "NTSTATUS rename_open_files_below(void)\n{\n    return NT_STATUS_OK;\n}")
     (smbd / "smb2_reply.c").write_text(rename)
     (smbd / "open.c").write_text("void msg_file_was_renamed(void)\n{\n}\n")
+    # The reparse tag lookup, alone in its cut, hook included.
+    tag = ("NTSTATUS fsctl_get_reparse_tag(struct files_struct *fsp,\n\t\t\t       uint32_t *_reparse_tag)\n{\n"
+           "\tif (tc_native_links_reparse_tag(fsp, _reparse_tag)) {\n\t\treturn NT_STATUS_OK;\n\t}\n"
+           "\treturn NT_STATUS_OK;\n}")
+    (modules / "util_reparse.c").write_text("static int before;\n\n" + tag
+                                            + "\n\nNTSTATUS fsctl_set_reparse_point(void)\n{\n}\n")
     util = tmp_path / "lib/util"
     util.mkdir(parents=True)
     conversion = ("struct timespec nt_time_to_unix_timespec_raw(NTTIME nt)\n{\n"
@@ -211,9 +221,11 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     run.stage(tmp_path)
     run.stage(tmp_path)
     assert (modules / "tc_short_write.inc").read_text() == length + "\n\n" + short_write + "\n"
+    assert (modules / "tc_reparse_tag.inc").read_text() == tag + "\n"
     assert (modules / "tc_file_growth_callers.inc").read_text() == "\n\n".join(regions) + "\n"
     assert (modules / "tc_scavenger_hello.inc").read_text() == hello + "\n"
     assert (modules / "tc_scavenger_rescan.inc").read_text() == message + "\n\n" + rescan + "\n"
+    assert (modules / "tc_scavenger_cleanup.inc").read_text() == cleanup + "\n"
     assert (modules / "tc_brlock_reconnect.inc").read_text() == "\n\n".join(
         (lock_struct, parse, flush, read, reconnect, wrapper)) + "\n"
     calls = []
@@ -239,6 +251,8 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
             "tc_at_emulation_test": ["replace"],
             # So does the NetBSD 6 fork repair (patch 0070).
             "tc_fork_repair_test": ["replace"],
+            # Calls the real srvsvc server code.
+            "tc_srvsvc_enum_test": ["smbd_base", "RPC_SRVSVC"],
         }.get(name, ["smbd_base"])
         assert arguments["deps"].split() == expected_deps
         assert arguments["install"] is False
@@ -464,3 +478,160 @@ def test_host_cli_keeps_build_errors_fatal_and_tests_strict_by_default(
     assert fake.runs == ([] if build_only or failure == "build" else [source])
     if cached:
         assert (cache / "build-key").exists() == (failure != "build")
+
+
+# Sections 1 and 2 of the series go upstream, so build_host() checks that they
+# apply in order to the pristine clone, before the overlay or any later patch.
+
+def _repo_with_patches(tmp_path, series_text, patches):
+    repo = tmp_path / "samba"
+    repo.mkdir()
+    (repo / "file.txt").write_text("one\ntwo\nthree\n")
+    for args in (["init", "-q"], ["add", "file.txt"],
+                 ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "pristine"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    pdir = tmp_path / "patches"
+    pdir.mkdir()
+    (pdir / "series").write_text(series_text)
+    for name, (old, new) in patches.items():
+        (pdir / name).write_text(
+            "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n"
+            f"@@ -1,3 +1,3 @@\n one\n-{old}\n+{new}\n three\n")
+    return repo, pdir
+
+
+SERIES = """# header
+#
+# 1. Fixes to stock Samba.
+# a note
+0001-first.patch|first
+0002-second.patch|second
+# 2. Upstream proposals.
+0003-third.patch|third
+# 3. Build and toolchain.
+0004-needs-overlay.patch|not for upstream
+"""
+
+
+def test_stock_sections_are_sections_1_and_2_in_order(tmp_path):
+    series = tmp_path / "series"
+    series.write_text(SERIES)
+    assert run.stock_sections(series) == ["0001-first.patch", "0002-second.patch", "0003-third.patch"]
+
+
+def test_stock_sections_of_this_series():
+    names = run.stock_sections(run.ROOT / "build/patches/samba4x/series")
+    assert names[0].startswith("0063-") and names[-1].startswith("0031-")
+    assert any(n.startswith("0084-") for n in names) and any(n.startswith("0085-") for n in names)
+    assert not any(n.startswith(("0001-", "0038-", "0072-")) for n in names)
+
+
+def test_check_stock_sections_applies_them_in_order_and_resets(tmp_path):
+    # 0002 changes what 0001 wrote; 0004, in section 3, applies to nothing.
+    repo, pdir = _repo_with_patches(tmp_path, SERIES, {
+        "0001-first.patch": ("two", "2"), "0002-second.patch": ("2", "deux"),
+        "0003-third.patch": ("deux", "zwei"), "0004-needs-overlay.patch": ("missing", "x")})
+    run.check_stock_sections(repo, pdir)
+    staged = subprocess.run(["git", "-C", str(repo), "diff", "--cached", "--name-only"],
+                            capture_output=True, text=True, check=True).stdout
+    assert staged == "" and (repo / "file.txt").read_text() == "one\ntwo\nthree\n"
+
+
+class RecordedRuns:
+    """subprocess.run that records every command, and fails one on request."""
+
+    def __init__(self, monkeypatch, fail_on=None):
+        self.commands = []
+        self.fail_on = fail_on
+        monkeypatch.setattr(run.subprocess, "run", self)
+
+    def __call__(self, command, **_):
+        self.commands.append([str(word) for word in command])
+        if self.fail_on and self.fail_on in " ".join(self.commands[-1]):
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0)
+
+    def indexes(self, word):
+        return [i for i, command in enumerate(self.commands) if word in " ".join(command)]
+
+
+def test_the_host_build_applies_nothing_until_the_stock_sections_passed(tmp_path, monkeypatch):
+    runs = RecordedRuns(monkeypatch)
+
+    def refuse(source):
+        raise SystemExit("0002 does not apply")
+
+    monkeypatch.setattr(run, "check_stock_sections", refuse)
+    with pytest.raises(SystemExit, match="0002"):
+        run.build_host("url", "ref", tmp_path / "source", 2, {})
+    assert runs.indexes("git clone") == [0] and not runs.indexes("patch_apply_series")
+
+
+def test_the_host_build_checks_the_stock_sections_on_the_clone_first(tmp_path, monkeypatch):
+    runs = RecordedRuns(monkeypatch)
+    checked = []
+    monkeypatch.setattr(run, "check_stock_sections",
+                        lambda source: checked.append((source, len(runs.commands))))
+    monkeypatch.setattr(run, "stage", lambda source: None)
+    monkeypatch.setattr(run, "host_flags", lambda source: None)
+    source = tmp_path / "source"
+    run.build_host("url", "ref", source, 2, {})
+    assert checked == [(source, 1)] and runs.indexes("patch_apply_series")[0] == 1
+
+
+def test_build_stock_builds_the_sections_alone_with_warnings_as_errors(tmp_path, monkeypatch):
+    runs = RecordedRuns(monkeypatch)
+    pdir = tmp_path / "patches"
+    pdir.mkdir()
+    (pdir / "series").write_text(SERIES)
+    run.build_stock("url", "ref", tmp_path / "source", 3, {}, pdir)
+    applied = [command[-1] for command in runs.commands if command[3:4] == ["apply"]]
+    assert applied == [str(pdir / name) for name in ("0001-first.patch", "0002-second.patch", "0003-third.patch")]
+    configure = next(command for command in runs.commands if command[0] == "./configure")
+    assert "--enable-developer" in configure
+    assert not [word for word in configure if "pthread" in word]
+    assert runs.indexes("--targets=smbd/smbd") == [len(runs.commands) - 1]
+    # Only the patches: nothing copies the overlay in.
+    assert not [command for command in runs.commands if "overlay" in " ".join(command)]
+
+
+def test_build_stock_stops_at_a_section_that_does_not_apply(tmp_path, monkeypatch):
+    runs = RecordedRuns(monkeypatch, fail_on="0002-second.patch")
+    pdir = tmp_path / "patches"
+    pdir.mkdir()
+    (pdir / "series").write_text(SERIES)
+    with pytest.raises(subprocess.CalledProcessError):
+        run.build_stock("url", "ref", tmp_path / "source", 3, {}, pdir)
+    assert not runs.indexes("./configure")
+
+
+def test_build_stock_fails_when_the_developer_build_does(tmp_path, monkeypatch):
+    RecordedRuns(monkeypatch, fail_on="--targets=smbd/smbd")
+    pdir = tmp_path / "patches"
+    pdir.mkdir()
+    (pdir / "series").write_text(SERIES)
+    with pytest.raises(subprocess.CalledProcessError):
+        run.build_stock("url", "ref", tmp_path / "source", 3, {}, pdir)
+
+
+def test_the_stock_cli_starts_from_an_empty_tree(tmp_path, monkeypatch):
+    builds = []
+    monkeypatch.setattr(run, "samba_source", lambda: ("url", "ref"))
+    monkeypatch.setattr(run, "build_stock", lambda url, ref, source, jobs, env: builds.append(
+        (url, ref, source.exists(), jobs, env["PYTHONHASHSEED"])))
+    work = tmp_path / "work"
+    (work / "stock").mkdir(parents=True)
+    monkeypatch.setattr(sys, "argv", ["run.py", "stock", "--work", str(work), "--jobs", "4"])
+    run.main()
+    assert builds == [("url", "ref", False, 4, "1")]
+
+
+def test_check_stock_sections_refuses_one_that_needs_a_later_patch(tmp_path):
+    repo, pdir = _repo_with_patches(tmp_path, SERIES, {
+        "0001-first.patch": ("two", "2"), "0002-second.patch": ("missing", "x"),
+        "0003-third.patch": ("2", "3"), "0004-needs-overlay.patch": ("two", "x")})
+    with pytest.raises(SystemExit, match="0002-second.patch"):
+        run.check_stock_sections(repo, pdir)
+    staged = subprocess.run(["git", "-C", str(repo), "diff", "--cached", "--name-only"],
+                            capture_output=True, text=True, check=True).stdout
+    assert staged == ""

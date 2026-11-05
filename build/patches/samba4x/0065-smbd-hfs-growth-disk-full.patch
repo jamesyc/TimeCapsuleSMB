@@ -5,7 +5,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  		return tevent_req_post(req, ev);
  	}
  
-+	/* HFS allocates every block up to dst_off: see tc_file_growth.c. */
++	/* HFS allocates every block up to the copy's end: see tc_file_growth.c. */
 +	if (tc_file_growth_check(dest_fsp, state->dst_off + to_copy) == -1) {
 +		tevent_req_nterror(req, map_nt_error_from_unix(errno));
 +		return tevent_req_post(req, ev);

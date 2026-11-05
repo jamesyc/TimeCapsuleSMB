@@ -1,0 +1,22 @@
+diff --git a/libcli/smb/smb2_signing.c b/libcli/smb/smb2_signing.c
+--- a/libcli/smb/smb2_signing.c
++++ b/libcli/smb/smb2_signing.c
+@@ -247,9 +247,15 @@ static NTSTATUS smb2_signing_key_create(TALLOC_CTX *mem_ctx,
+ 		TALLOC_FREE(key);
+ 		return NT_STATUS_NO_MEMORY;
+ 	}
+-	memcpy(key->blob.data,
+-	       master_key->data,
+-	       MIN(key->blob.length, master_key->length));
++	/*
++	 * An empty master key (a session setup that has none yet) may have
++	 * no data: memcpy() must not get a NULL source even for 0 bytes.
++	 */
++	if (master_key->length != 0) {
++		memcpy(key->blob.data,
++		       master_key->data,
++		       MIN(key->blob.length, master_key->length));
++	}
+ 
+ 	if (d == NULL) {
+ 		*_key = key;

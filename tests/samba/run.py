@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
@@ -21,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 TARGETS = ("tc_pthreadpool_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
            "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test", "tc_storage_reload_test",
            "tc_native_links_test", "tc_catia_links_test", "tc_at_emulation_test", "tc_file_growth_test",
-           "tc_fork_repair_test", "tc_short_write_test")
+           "tc_fork_repair_test", "tc_short_write_test", "tc_srvsvc_enum_test")
 MIGRATOR_TARGET = "tc_xattr_hfs_migrate"
 SMBD_TARGET = "smbd/smbd"
 # Compile the production accept/fork call site as well as the extracted helper.
@@ -31,7 +32,8 @@ AIO_CASES = (
     "pwrite_error", "append_error", "fsync_error",
     "sync_read", "sync_read_error", "sync_pwrite", "sync_pwrite_error",
     "sync_append", "sync_append_error", "sync_fsync", "sync_fsync_error",
-    "queue", "cancel_queued", "cancel_active", "queued_fork_failure",
+    "queue", "cancel_queued", "cancel_active", "queued_fork_failure", "fsync_past_bound",
+    "fork_failure_waits",
     "queue+fast_reply", "cancel_queued+fast_reply", "cancel_active+fast_reply", "queued_fork_failure+fast_reply",
     "teardown", "orphan_error",
     "dispatch_failure", "allocation_failure", "response_failure",
@@ -39,14 +41,15 @@ AIO_CASES = (
     "exit_frames", "exit_frames_debug", "exit_no_frames", "exit_late_frames", "data_page_writes",
 )
 DURABLE_CASES = (
-    "transition", "live", "already_disconnected", "client_mismatch",
+    "transition", "live", "live_self", "already_disconnected", "client_mismatch",
     "create_mismatch", "owner_mismatch", "not_durable", "database_failure", "v1_reconnect",
     "v1_transition", "rename_open_descendants", "rename_allocation_failure",
     "rename_case_sensitive", "rename_case_sensitive_match", "rename_unicode", "rename_emoji",
-    "rename_message", "rename_message_other_share", "rename_case_only",
+    "rename_message", "rename_message_other_share", "rename_message_chdir_failure", "rename_case_only",
     "rename_message_reused_path", "rename_stat_failure",
-    "scavenger_hello_sent", "scavenger_hello_exited", "scavenger_hello_silent",
+    "scavenger_hello_sent", "scavenger_hello_exited", "scavenger_hello_half", "scavenger_hello_silent",
     "rescan_dead_owners", "rescan_nothing_dead", "cleanup_dead_owner", "cleanup_live_owner",
+    "cleanup_file_id", "cleanup_zero_file_id",
     "brlock_reconnect", "brlock_reconnect_dropped", "brlock_reconnect_foreign",
     "brlock_reconnect_foreign_first",
 )
@@ -57,10 +60,10 @@ STREAM_CASES = ("hfs_windows_boundary", "charset_types", "root_delete", "nested_
 NATIVE_METADATA_CASES = (
     "syscall_abi", "native_xattrs", "native_xattr_list", "non_hfs_tdb",
     "finderinfo", "finderinfo_views", "resource_backend", "resource_views", "stream_boundary",
-    "link_xattrs", "list_normalization",
+    "refused_rewrite", "link_xattrs", "list_normalization",
 )
 XATTR_MIGRATE_CASES = (
-    "guard", "appledouble", "embedded_xattrs", "resource", "cleanup", "tdb", "errors", "resume", "scan",
+    "guard", "appledouble", "embedded_xattrs", "resource", "cleanup", "stream_cut", "tdb", "errors", "resume", "scan",
     "orphans", "multi", "oversized", "long_names", "folder_forks", "drop_verified", "skips", "hfs",
 )
 NATIVE_LINKS_CASES = ("apple_format", "format_limits", "parse_rejects", "convert_created", "convert_write_only",
@@ -78,10 +81,11 @@ FILE_GROWTH_CASES = ("unchecked", "stale_size", "fits", "exceeds", "boundary", "
 # unless a plain fork() still leaks there, so the other cases test something.
 # Skipped where the build does not link it.
 FORK_REPAIR_CASES = ("kernel", "bounds", "registry", "regions", "read_after_repair", "nested", "fallback",
-                     "stack_below", "stack_deep", "needscopy")
+                     "free_then_fork", "stack_below", "stack_deep", "needscopy")
 # Patch 0072's check for a short macOS WRITE, its frame walk and end decision.
 SHORT_WRITE_CASES = ("whole", "short", "several", "keepalive", "false_match", "ids_and_offset",
-                     "partial_tail", "end_now", "arriving", "compound", "cap", "read_idle")
+                     "partial_tail", "end_now", "arriving", "compound", "cap", "read_idle", "feed_replace")
+SRVSVC_ENUM_CASES = ("options", "table")
 STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks",
                         "root", "root_widen", "root_rename", "root_no_fds", "root_aio", "root_failed", "root_unchanged")
 
@@ -133,13 +137,16 @@ def stage(source: Path) -> None:
     # tc_durable_reconnect_test (patch 0075).
     scavenger = (source / "source3/smbd/scavenger.c").read_text()
     (modules / "tc_scavenger_hello.inc").write_text(
-        cut(scavenger, "#ifndef TC_SCAVENGER_HELLO_SECONDS", "static bool scavenger_wait_hello(") + "\n")
+        cut(scavenger, "#ifndef SCAVENGER_HELLO_TIMEOUT_SECONDS", "static bool scavenger_wait_hello(") + "\n")
     # The walk after an unclean exit (patch 0077) and the message it builds.
     message = scavenger.index("struct scavenger_message {")
     (modules / "tc_scavenger_rescan.inc").write_text(
         scavenger[message:scavenger.index("};", message) + 2] + "\n\n"
         + cut(scavenger, "struct scavenger_rescan_rec {", "static size_t scavenger_rescan(void)") + "\n")
-    # The durable reconnect's byte-range lock steps (patch 0077),
+    # The expiry of one open (patch 0077), which the walk calls.
+    head = "static bool scavenger_cleanup(const struct scavenger_message *msg)"
+    (modules / "tc_scavenger_cleanup.inc").write_text(cut(scavenger, head, head) + "\n")
+    # The durable reconnect's byte-range lock steps (patches 0080 and 0082),
     # with the record parse and store and the locked-record wrapper that owns
     # their br_lck, for tc_durable_reconnect_test. Each piece is in the order
     # its callers need; brl_parse_data()'s definition, not its declaration.
@@ -158,6 +165,10 @@ def stage(source: Path) -> None:
     reply = (source / "source3/smbd/smb2_reply.c").read_text()
     (modules / "tc_rename_open_files.inc").write_text(
         cut(reply, "static void rename_open_files(", "NTSTATUS rename_open_files_below(") + "\n")
+    # fsctl_get_reparse_tag() with patch 0045's native link hook in front.
+    reparse = (modules / "util_reparse.c").read_text()
+    head = "NTSTATUS fsctl_get_reparse_tag("
+    (modules / "tc_reparse_tag.inc").write_text(cut(reparse, head, head) + "\n")
     opened = (source / "source3/smbd/open.c").read_text()
     (modules / "tc_rename_message.inc").write_text(
         cut(opened, "void msg_file_was_renamed(", "void msg_file_was_renamed(") + "\n")
@@ -183,6 +194,10 @@ def host_flags(source: Path) -> None:
     for cache in (source / "bin/c4che").glob("*_cache.py"):
         with cache.open("a") as stream:
             stream.write("HOST_CFLAGS = ['-D__STDC_WANT_LIB_EXT1__=1']\n")
+            # Links srvsvc's server code into smbd_base, for tc_srvsvc_enum_test.
+            # Serving the pipe also needs the C macro of that name, which only
+            # build/_samba4x.sh sets: a host smbd has no embedded srvsvc.
+            stream.write("TC_SAMBA4X_EMBEDDED_SRVSVC = True\n")
     (source / "bin/c4che/sambadeps").unlink(missing_ok=True)
 
 
@@ -212,11 +227,13 @@ def cases():
         yield TARGETS[11], (case,)
     for case in SHORT_WRITE_CASES:
         yield TARGETS[12], (case,)
+    for case in SRVSVC_ENUM_CASES:
+        yield TARGETS[13], (case,)
 
 
 def execution_cases(cross_exec: bool):
     """Upload each large native fixture once on storage-constrained devices."""
-    combined_targets = (TARGETS[4], TARGETS[5], TARGETS[6], TARGETS[7], TARGETS[10])
+    combined_targets = (TARGETS[4], TARGETS[5], TARGETS[6], TARGETS[7], TARGETS[10], TARGETS[13])
     seen: set[str] = set()
     for target, arguments in cases():
         if target in combined_targets:
@@ -297,18 +314,23 @@ def host_build_key(url: str, ref: str, env: dict[str, str], root: Path = ROOT) -
     return digest.hexdigest()
 
 
+def samba_source() -> tuple[str, str]:
+    """The build's source pin, including deliberate environment overrides.
+    Loading only defaults keeps host tests independent of device credentials."""
+    config = str(ROOT / "build/env.sh")
+    url, ref = subprocess.check_output(
+        ["sh", "-c", '. "$1"; printf "%s\\n%s\\n" "$SAMBA4X_GIT_URL" "$SAMBA4X_GIT_REF"',
+         config, config], env=dict(os.environ, TC_ENV_FILE="/dev/null"), text=True,
+    ).splitlines()
+    return url, ref
+
+
 def host(work: Path, jobs: int, sanitizers: bool, tree_cache: Path | None = None,
          *, build_only: bool = False) -> None:
     # --work must be a new directory. This command never resets a user's tree.
     work.mkdir(parents=True, exist_ok=False)
     source = work / "source"
-    config = str(ROOT / "build/env.sh")
-    # Use the build's source pin, including deliberate environment overrides.
-    # Loading only defaults keeps host tests independent of device credentials.
-    url, ref = subprocess.check_output(
-        ["sh", "-c", '. "$1"; printf "%s\\n%s\\n" "$SAMBA4X_GIT_URL" "$SAMBA4X_GIT_REF"',
-         config, config], env=dict(os.environ, TC_ENV_FILE="/dev/null"), text=True,
-    ).splitlines()
+    url, ref = samba_source()
     env = dict(os.environ, PYTHONHASHSEED="1", PYTHON=sys.executable)
     if sanitizers:
         flags = "-fsanitize=address,undefined -fno-omit-frame-pointer"
@@ -347,9 +369,38 @@ def run_host_tests(source: Path, env: dict[str, str]) -> None:
                    cwd=ROOT, env=env, check=True)
 
 
+def stock_sections(series: Path) -> list[str]:
+    """The patches in the series' sections 1 and 2 (fixes to stock Samba and
+    upstream proposals), in series order."""
+    names, section = [], 0
+    for line in series.read_text().splitlines():
+        heading = re.match(r"# (\d+)\. ", line)
+        if heading:
+            section = int(heading.group(1))
+        elif line and not line.startswith("#") and section in (1, 2):
+            names.append(line.split("|", 1)[0])
+    return names
+
+
+def check_stock_sections(source: Path, patches: Path = ROOT / "build/patches/samba4x") -> None:
+    """Sections 1 and 2 must apply, in order, to pristine Samba without the
+    overlay or any later patch: they are what goes upstream (AGENTS.md).
+    Applied to source's index only, which is reset afterwards."""
+    try:
+        for name in stock_sections(patches / "series"):
+            result = subprocess.run(["git", "-C", str(source), "apply", "--cached", str(patches / name)],
+                                    capture_output=True, text=True)
+            if result.returncode != 0:
+                raise SystemExit(f"{name} (section 1 or 2) does not apply to pristine Samba after the "
+                                 "patches before it:\n" + result.stderr.strip())
+    finally:
+        subprocess.run(["git", "-C", str(source), "reset", "-q"], check=True)
+
+
 def build_host(url: str, ref: str, source: Path, jobs: int, env: dict[str, str]) -> None:
     subprocess.run(["git", "clone", "--depth", "1", "--branch", ref,
                     url, str(source)], check=True)
+    check_stock_sections(source)
     subprocess.run(["sh", "-c", '. "$1"; patch_apply_series Samba "$2" "$3"', "sh",
                     str(ROOT / "build/_patch_helpers.sh"),
                     str(ROOT / "build/patches/samba4x/series"), str(source)], check=True)
@@ -365,6 +416,33 @@ def build_host(url: str, ref: str, source: Path, jobs: int, env: dict[str, str])
     host_flags(source)
     subprocess.run([sys.executable, "buildtools/bin/waf", "build", "-j" + str(jobs),
                     "--targets=" + ",".join(BUILD_TARGETS)], cwd=source, env=env, check=True)
+
+
+def build_stock(url: str, ref: str, source: Path, jobs: int, env: dict[str, str],
+                patches: Path = ROOT / "build/patches/samba4x") -> None:
+    """Sections 1 and 2 on pristine Samba, alone and on stock's own terms, as
+    upstream would build them: no overlay, pthreads on, and --enable-developer,
+    whose warnings are errors. check_stock_sections only shows they apply."""
+    subprocess.run(["git", "clone", "--depth", "1", "--branch", ref, url, str(source)], check=True)
+    for name in stock_sections(patches / "series"):
+        subprocess.run(["git", "-C", str(source), "apply", str(patches / name)], check=True)
+    options = ["--without-" + item for item in (
+        "ad-dc", "ads", "ldap", "acl-support", "pam", "json", "winbind", "quotas", "utmp",
+        "automount", "dmapi", "gettext", "syslog", "ldb-lmdb")]
+    options += ["--disable-" + item for item in ("python", "cups", "iprint", "avahi")]
+    options += ["--enable-developer", "--bundled-libraries=ALL", "--with-shared-modules=!vfs_snapper",
+                "--with-static-modules=vfs_xattr_tdb,vfs_streams_xattr,vfs_fruit,vfs_aio_fork",
+                "--nonshared-binary=smbd/smbd"]
+    subprocess.run(["./configure", *options], cwd=source, env=env, check=True)
+    subprocess.run([sys.executable, "buildtools/bin/waf", "build", "-j" + str(jobs), "--targets=smbd/smbd"],
+                   cwd=source, env=env, check=True)
+
+
+def stock(work: Path, jobs: int) -> None:
+    url, ref = samba_source()
+    shutil.rmtree(work / "stock", ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    build_stock(url, ref, work / "stock", jobs, dict(os.environ, PYTHONHASHSEED="1", PYTHON=sys.executable))
 
 
 def main() -> None:
@@ -383,11 +461,16 @@ def main() -> None:
                          help="build without running drivers; run them separately with the run subcommand")
     command.add_argument("--tree-cache", type=Path,
                          help="keep the build here and reuse it while its inputs are unchanged")
+    command = commands.add_parser("stock", help="build sections 1 and 2 alone with --enable-developer")
+    command.add_argument("--work", required=True, type=Path)
+    command.add_argument("--jobs", default=2, type=int)
     args = parser.parse_args()
     if args.command == "stage":
         stage(args.source.resolve())
     elif args.command == "run":
         run_tests(args.source.resolve(), args.cross_exec)
+    elif args.command == "stock":
+        stock(args.work.resolve(), args.jobs)
     else:
         host(args.work.resolve(), args.jobs, args.sanitizers,
              args.tree_cache.resolve() if args.tree_cache else None,

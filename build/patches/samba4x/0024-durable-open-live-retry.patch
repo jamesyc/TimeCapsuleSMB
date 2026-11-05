@@ -22,10 +22,27 @@ diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
  bool defer_smb1_sharing_violation(struct smb_request *req);
  NTSTATUS create_directory(connection_struct *conn,
  			  struct smb_request *req,
+diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
+--- a/source3/smbd/scavenger.c
++++ b/source3/smbd/scavenger.c
+@@ -836,7 +836,12 @@ static void scavenger_add_timer(struct smbd_scavenger_state *state,
+ 	if (global != NULL) {
+ 		if (!global->persistent) {
+ 			if (!server_id_is_disconnected(&global->server_id)) {
+-				DBG_ERR("Open [0x%"PRIx64"] fileid [%s] is "
++				/*
++				 * A reconnect can take the open over before
++				 * this message arrives; it is live again, with
++				 * nothing to expire.
++				 */
++				DBG_NOTICE("Open [0x%"PRIx64"] fileid [%s] is "
+ 					"not marked disconnected\n",
+ 					msg->open_persistent_id,
+ 					file_id_str_buf(msg->file_id, &idbuf));
 diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
 --- a/source3/smbd/smb2_create.c
 +++ b/source3/smbd/smb2_create.c
-@@ -701,6 +701,7 @@ struct smbd_smb2_create_state {
+@@ -702,6 +702,7 @@ struct smbd_smb2_create_state {
  	bool update_open;
  	bool durable_requested;
  	uint32_t durable_timeout_msec;
@@ -33,7 +50,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  	bool do_durable_reconnect;
  	uint64_t persistent_id;
  	bool persistent_requested;
-@@ -1129,6 +1130,32 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+@@ -1130,6 +1131,32 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
  					       lease_key,
  					       now,
  					       &state->op);
@@ -66,7 +83,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  		if (tevent_req_nterror(req, status)) {
  			DBG_NOTICE("smb2srv_open_recreate failed: %s\n",
  				   nt_errstr(status));
-@@ -1488,6 +1515,16 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
+@@ -1508,6 +1535,16 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
  		 */
  		state->durable_timeout_msec = (60*1000);
  	}
@@ -83,7 +100,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  
  	if ((durable_v2_flags & SMB2_DHANDLE_FLAG_PERSISTENT) &&
  	    (server_caps & SMB2_CAP_PERSISTENT_HANDLES) &&
-@@ -1989,7 +2026,7 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
+@@ -2020,7 +2057,7 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
  			durable_v2_response_flags = SMB2_DHANDLE_FLAG_PERSISTENT;
  		}
  
@@ -117,21 +134,23 @@ diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
  		DBG_WARNING("smbXsrv_open_global_verify_record for %s "
  			    "failed: %s\n",
  			    tdb_data_dbg(key),
-@@ -1349,6 +1359,21 @@ static void smb2srv_open_recreate_fn(
+@@ -1349,6 +1359,23 @@ static void smb2srv_open_recreate_fn(
  		goto not_found;
  	}
  
 +	if (live) {
 +		/*
++		 * Waiting helps only while another smbd tears the open down; an
++		 * open this smbd holds gets OBJECT_NAME_NOT_FOUND at once.
++		 */
++		if (server_id_equal(&global->server_id, &state->me)) {
++			goto not_found;
++		}
++		/*
 +		 * NT_STATUS_FILE_NOT_AVAILABLE is only the caller's "still
 +		 * busy, retry" signal; the client never sees it (see
 +		 * smbd_smb2_create_send).
 +		 */
-+		DBG_DEBUG("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
-+			  "open %s is still attached to a live smbd; "
-+			  "treating matching durable reconnect as transiently "
-+			  "unavailable\n",
-+			  tdb_data_dbg(key));
 +		state->status = NT_STATUS_FILE_NOT_AVAILABLE;
 +		return;
 +	}

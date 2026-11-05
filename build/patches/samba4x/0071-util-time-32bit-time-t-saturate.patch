@@ -6,13 +6,13 @@ diff --git a/lib/util/time.c b/lib/util/time.c
  	d -= TIME_FIXUP_CONSTANT_INT;
  
 +	/*
-+	 * A 32-bit time_t cannot hold every NTTIME. Saturate instead of
-+	 * letting the cast wrap, so the callers' TIME_T_MAX and TIME_T_MIN
-+	 * checks see a time out of range: 2040 must not become 1903.
-+	 */
-+	/* Both appliance ABIs use signed time_t. The 64-bit ABI holds the
-+	 * entire converted range; use explicit 32-bit limits for the other
-+	 * ABI, since _TYPE_MINIMUM shifts signed -1 (undefined in C).
++	 * Where time_t is 32 bits the cast below would wrap a time out of
++	 * its range (2040 would become 1903). Saturate first, so that the
++	 * callers' TIME_T_MIN and TIME_T_MAX checks see it as out of range.
++	 * This uses INT32_MIN and INT32_MAX rather than _TYPE_MINIMUM(time_t),
++	 * which shifts a signed -1 (undefined in C), and so assumes that a
++	 * 32-bit time_t is signed; a 64-bit one holds the whole converted
++	 * range.
 +	 */
 +	if (sizeof(time_t) == 4 && d > INT32_MAX) {
 +		d = INT32_MAX;

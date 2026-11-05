@@ -5,40 +5,29 @@
 #include "librpc/gen_ndr/ndr_srvsvc_scompat.h"
 #include "librpc/rpc/dcesrv_core.h"
 
-static NTSTATUS tc_smbd_init_embedded_srvsvc(struct dcesrv_context **_dce_ctx)
+/*
+ * Time Capsule appliance builds run only smbd, from a RAM disk with no room
+ * for samba-dcerpcd and rpcd_classic (the HFS disk can be unmounted at any
+ * time). Finder and smbclient -L still need IPC$ -> \PIPE\srvsvc for share
+ * enumeration, so smbd hosts exactly srvsvc in-process, in the one global
+ * DCE/RPC context, set up at the first open.
+ */
+static NTSTATUS tc_smbd_init_embedded_srvsvc(struct dcesrv_context *dce_ctx)
 {
-	struct dcesrv_context *dce_ctx = *_dce_ctx;
 	const struct dcesrv_endpoint_server *ep_server = srvsvc_get_ep_server();
-	static bool ep_server_registered;
-	static struct dcesrv_context *initialized_dce_ctx;
+	static bool initialized;
 	NTSTATUS status;
 
-	/*
-	 * Time Capsule appliance builds run only smbd, from a RAM disk with no
-	 * room for samba-dcerpcd and rpcd_classic (the HFS disk can be
-	 * unmounted at any time). Finder and smbclient -L still need IPC$ ->
-	 * \PIPE\srvsvc for share enumeration, so smbd hosts exactly srvsvc
-	 * in-process.
-	 */
-	if (dce_ctx == NULL) {
-		dce_ctx = global_dcesrv_context();
-	}
-
-	if (initialized_dce_ctx == dce_ctx) {
-		*_dce_ctx = dce_ctx;
+	if (initialized) {
 		return NT_STATUS_OK;
 	}
 
-	if (!ep_server_registered) {
-		status = dcerpc_register_ep_server(ep_server);
-		if (!NT_STATUS_IS_OK(status) &&
-		    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_COLLISION)) {
-			DBG_ERR("Failed to register embedded srvsvc endpoint: "
-				"%s\n",
-				nt_errstr(status));
-			return status;
-		}
-		ep_server_registered = true;
+	status = dcerpc_register_ep_server(ep_server);
+	if (!NT_STATUS_IS_OK(status) &&
+	    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_COLLISION)) {
+		DBG_ERR("Failed to register embedded srvsvc endpoint: %s\n",
+			nt_errstr(status));
+		return status;
 	}
 
 	status = dcesrv_init_ep_server(dce_ctx, ep_server->name);
@@ -60,8 +49,7 @@ static NTSTATUS tc_smbd_init_embedded_srvsvc(struct dcesrv_context **_dce_ctx)
 		}
 	}
 
-	initialized_dce_ctx = dce_ctx;
-	*_dce_ctx = dce_ctx;
+	initialized = true;
 	return NT_STATUS_OK;
 }
 
@@ -88,7 +76,7 @@ static NTSTATUS tc_smbd_open_embedded_srvsvc_np(
 		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
 	}
 
-	status = tc_smbd_init_embedded_srvsvc(&dce_ctx);
+	status = tc_smbd_init_embedded_srvsvc(dce_ctx);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}

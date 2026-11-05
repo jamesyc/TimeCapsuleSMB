@@ -42,12 +42,12 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  		status = smbd_smb2_advance_send_queue(xconn, &e, ret);
  		if (NT_STATUS_EQUAL(status, NT_STATUS_RETRY)) {
  			/* retry later */
-@@ -5057,12 +5065,516 @@ static NTSTATUS smbd_smb2_flush_send_queue(struct smbXsrv_connection *xconn)
+@@ -5057,12 +5065,532 @@ static NTSTATUS smbd_smb2_flush_send_queue(struct smbXsrv_connection *xconn)
  	return status;
  }
  
 +/*
-+ * Workaround for a macOS bug (issue 221). macOS sends each request through
++ * Workaround for a macOS bug. macOS sends each request through
 + * a kernel call with a 5 s send timeout that reports success when the
 + * timeout cuts the send short, and drops the rest. Once the server's TCP
 + * window has stayed shut long enough, a WRITE can arrive with its NBT
@@ -94,7 +94,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
 + * much of the 60 s to finish what was in flight.
 + */
 +#define TC_DESYNC_CLOSE_SECS 60
-+/* After the FIN, wait this long for the client's before terminating. */
++/* After the FIN, wait this long for the client's FIN before terminating. */
 +#define TC_DESYNC_EOF_SECS 60
 +/*
 + * Each header in a WRITE's data that matches the client's session starts a
@@ -289,6 +289,32 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
 +	return state->req == NULL ||
 +	       (state->pktlen == 0 && state->count == 1 &&
 +		state->vector[0].iov_len == NBT_HDR_SIZE);
++}
++
++/*
++ * Replace the feed, the bytes still to read, after a short WRITE: the rest of
++ * its PDU (tail), then what the feed still held from an earlier short WRITE.
++ * A WRITE read from the feed comes before what the feed still holds.
++ */
++static bool tc_desync_feed_replace(TALLOC_CTX *mem_ctx, uint8_t **feed,
++				   size_t *feed_len, size_t *feed_ofs,
++				   const uint8_t *tail, size_t tail_len)
++{
++	size_t left = *feed_len - *feed_ofs;
++	uint8_t *merged = talloc_array(mem_ctx, uint8_t, tail_len + left);
++
++	if (merged == NULL) {
++		return false;
++	}
++	memcpy(merged, tail, tail_len);
++	if (left != 0) {
++		memcpy(merged + tail_len, *feed + *feed_ofs, left);
++	}
++	TALLOC_FREE(*feed);
++	*feed = merged;
++	*feed_len = tail_len + left;
++	*feed_ofs = 0;
++	return true;
 +}
 +
 +/*
@@ -501,23 +527,13 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
 +
 +	if (found == TC_WRITE_SHORT) {
 +		const uint8_t *next = pdu + resume + NBT_HDR_SIZE;
-+		size_t tail = len - resume;
-+		size_t left = tc_desync.feed_len - tc_desync.feed_ofs;
-+		uint8_t *feed = talloc_array(xconn, uint8_t, tail + left);
 +
-+		if (feed == NULL) {
++		if (!tc_desync_feed_replace(xconn, &tc_desync.feed,
++					    &tc_desync.feed_len,
++					    &tc_desync.feed_ofs,
++					    pdu + resume, len - resume)) {
 +			return NT_STATUS_NO_MEMORY;
 +		}
-+		/* A WRITE read from the feed comes before what it still holds. */
-+		memcpy(feed, pdu + resume, tail);
-+		if (left != 0) {
-+			memcpy(feed + tail, tc_desync.feed + tc_desync.feed_ofs,
-+			       left);
-+		}
-+		TALLOC_FREE(tc_desync.feed);
-+		tc_desync.feed = feed;
-+		tc_desync.feed_len = tail + left;
-+		tc_desync.feed_ofs = 0;
 +		DBG_ERR("tc_desync: WRITE mid %" PRIu64 " is %zu bytes short: "
 +			"the client's next request, %s mid %" PRIu64 ", starts "
 +			"inside its data. Not writing or answering it; reading "
@@ -559,7 +575,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  	NTSTATUS status;
  	NTTIME now;
  	bool ok;
-@@ -5073,6 +5585,27 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
+@@ -5073,6 +5601,27 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
  	}
  
  	if (state->count > 0) {
@@ -587,7 +603,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  		return NT_STATUS_PENDING;
  	}
  
-@@ -5154,6 +5687,7 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
+@@ -5154,6 +5703,7 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
  	if (state->pktbuf == NULL) {
  		return NT_STATUS_NO_MEMORY;
  	}
@@ -595,15 +611,20 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  
  	state->_vector[0] = (struct iovec) {
  		.iov_base = (void *)state->pktbuf,
-@@ -5166,11 +5700,36 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
+@@ -5166,9 +5716,34 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
  
  got_full:
  
 -	if (state->hdr.nbt[0] != 0x00) {
 -		DEBUG(1,("ignore NBT[0x%02X] msg\n",
 -			 state->hdr.nbt[0]));
-+	/* The rest of the WRITE, unless it was found short already. */
++	/*
++	 * The rest of the WRITE, unless it was found short already. A WRITE
++	 * read by receivefile has only its header here: its data is still in
++	 * the socket, to be read when the WRITE runs.
++	 */
 +	if (found == TC_WRITE_WHOLE && state->hdr.nbt[0] == 0x00 &&
++	    !state->doing_receivefile &&
 +	    !tc_desync.lost && !tc_desync.closing && !tc_desync.off) {
 +		found = tc_short_write_check(state->pktbuf, state->pktlen, true,
 +					     xconn->smb2.credits.seq_low,
@@ -627,15 +648,8 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
 +		}
  
  		req = state->req;
-+		/*
-+		 * Samba bug: upstream keeps every ignored frame's buffer until
-+		 * the request is freed, which is when the connection ends.
-+		 */
-+		TALLOC_FREE(state->pktbuf);
- 		*state = (struct smbd_smb2_request_read_state) {
- 			.req = req,
- 			.min_recv_size = lp_min_receive_file_size(),
-@@ -5229,6 +5788,9 @@ got_full:
+ 		/*
+@@ -5235,6 +5810,9 @@ got_full:
  		return status;
  	}
  
@@ -645,7 +659,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  	status = smbd_smb2_request_dispatch(req);
  	if (!NT_STATUS_IS_OK(status)) {
  		return status;
-@@ -5307,6 +5869,22 @@ static NTSTATUS smbd_smb2_io_handler(struct smbXsrv_connection *xconn,
+@@ -5313,6 +5891,22 @@ static NTSTATUS smbd_smb2_io_handler(struct smbXsrv_connection *xconn,
  
  again:
  
@@ -668,7 +682,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  	state->msg = (struct msghdr) {
  		.msg_iov = state->vector,
  		.msg_iovlen = state->count,
-@@ -5321,6 +5899,15 @@ again:
+@@ -5327,6 +5921,15 @@ again:
  
  	ret = recvmsg(xconn->transport.sock, &state->msg, recvmsg_flags);
  	if (ret == 0) {
@@ -684,7 +698,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  		/* propagate end of file */
  		status = NT_STATUS_END_OF_FILE;
  		smbXsrv_connection_disconnect_transport(xconn,
-@@ -5339,7 +5926,11 @@ again:
+@@ -5345,7 +5948,11 @@ again:
  							status);
  		return status;
  	}

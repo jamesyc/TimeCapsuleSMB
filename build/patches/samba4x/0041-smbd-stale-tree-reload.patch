@@ -17,16 +17,15 @@ diff --git a/source3/include/vfs.h b/source3/include/vfs.h
 diff --git a/source3/smbd/conn_idle.c b/source3/smbd/conn_idle.c
 --- a/source3/smbd/conn_idle.c
 +++ b/source3/smbd/conn_idle.c
-@@ -22,6 +22,8 @@
+@@ -22,6 +22,7 @@
  #include "includes.h"
  #include "smbd/smbd.h"
  #include "smbd/globals.h"
 +#include "smbd/fd_handle.h"
-+#include "lib/param/loadparm.h"
  #include "rpc_server/rpc_pipes.h"
  #include "lib/util/tevent_ntstatus.h"
  
-@@ -68,12 +70,15 @@ bool conn_idle_all(struct smbd_server_connection *sconn, time_t t)
+@@ -68,6 +69,8 @@ bool conn_idle_all(struct smbd_server_connection *sconn, time_t t)
  	return true;
  }
  
@@ -35,13 +34,6 @@ diff --git a/source3/smbd/conn_idle.c b/source3/smbd/conn_idle.c
  /****************************************************************************
   Forcibly unmount a share - async
   All shares where "check_fn" returns true are closed.
-  The special sharename '*' forces unmount of all shares.
- ****************************************************************************/
- 
-+
- static struct tevent_req *conn_force_tdis_send(connection_struct *conn);
- static void conn_force_tdis_done(struct tevent_req *req);
- 
 diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 --- a/source3/smbd/proto.h
 +++ b/source3/smbd/proto.h
@@ -57,7 +49,7 @@ diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -1871,9 +1871,15 @@ static void smbd_parent_sig_hup_handler(struct tevent_context *ev,
+@@ -1840,9 +1840,15 @@ static void smbd_parent_sig_hup_handler(struct tevent_context *ev,
  					void *siginfo,
  					void *private_data)
  {

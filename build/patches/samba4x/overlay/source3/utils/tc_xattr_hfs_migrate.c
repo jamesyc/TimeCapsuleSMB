@@ -9,13 +9,14 @@
 #include "source3/lib/xattr_tdb.h"
 #include "source3/include/MacExtensions.h"
 #include "source3/modules/airport_native_xattr.h"
+#include "lib/util/sys_rw.h"
 #include <sys/time.h>
 
 /* Apple's kernel (hfs_vnop_setxattr, Darwin 8's inline-only HFS code) caps a
  * native attribute at (attributes B-tree node size - 20) / 2 - 284, rounded
  * down to even, and returns E2BIG above it. It has no extent-based attribute
- * code, and it creates the attributes B-tree with 8 KiB nodes: 3,802 bytes.
- * Checked by disassembling the NetBSD 6 kernel, 2026-09-27. */
+ * code, and it creates the attributes B-tree with 8 KiB nodes: 3,802 bytes
+ * (checked by disassembling the NetBSD 6 kernel). */
 #define TC_HFS_XATTR_SIZE 3802
 #define TC_HFS_STREAM_XATTRS 35
 #define TC_STREAM_PREFIX "user.DosStream."
@@ -670,8 +671,8 @@ static int tc_native_write_verified(struct tc_migration *migration,
 /* Apple's firmware stores at most TC_HFS_XATTR_SIZE bytes in one HFS
  * attribute, so AFP and a Mac never see a larger value on this disk. Legacy
  * xattr_tdb rows and AppleDouble files had no such limit: macOS sandbox
- * containers carry 8-41 KB com.apple.data-container-personality values
- * (issue 345). Such a value cannot become native, and it is someone's
+ * containers carry 8-41 KB com.apple.data-container-personality values.
+ * Such a value cannot become native, and it is someone's
  * metadata, so it stays where it is and is never deleted: its TDB record is
  * treated like a proven orphan (complete, never rescanned, and its database
  * is quarantined rather than deleted) and its AppleDouble file is kept. The
@@ -774,6 +775,7 @@ static bool tc_stream_extent(const char *name)
 
 static int tc_read_tdb_stream(struct tc_migration *migration,
 			      TALLOC_CTX *mem_ctx,
+			      const char *path,
 			      const struct file_id *id,
 			      const char *anchor_name,
 			      DATA_BLOB *logical)
@@ -782,7 +784,6 @@ static int tc_read_tdb_stream(struct tc_migration *migration,
 	const char *raw_name;
 	uint8_t extents;
 	size_t total;
-	size_t written;
 	uint8_t i;
 	ssize_t ret;
 
@@ -801,43 +802,54 @@ static int tc_read_tdb_stream(struct tc_migration *migration,
 		return -1;
 	}
 	total = anchor.length - 1;
+	logical->data = talloc_memdup(mem_ctx, anchor.data, anchor.length);
+	if (logical->data == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
 	raw_name = anchor_name + strlen(TC_STREAM_PREFIX);
 	for (i = 1; i <= extents; i++) {
 		char *extent_name = talloc_asprintf(
 			mem_ctx, "%s%u.%s", TC_EXT_PREFIX, i, raw_name);
 		DATA_BLOB extent = data_blob_null;
+		uint8_t *grown;
 
 		if (extent_name == NULL) {
 			errno = ENOMEM;
 			return -1;
 		}
 		ret = tc_tdb_get(migration, mem_ctx, id, extent_name, &extent);
-		if (ret < 0 || total + extent.length < total) {
-			if (ret >= 0) {
-				errno = EOVERFLOW;
-			}
-			return -1;
+		if (ret < 0 && tc_missing_error(errno)) {
+			/*
+			 * An interrupted fsetxattr_multi() wrote no further
+			 * extents: the stream ends here, as smbd reads it
+			 * (stock on Linux, where ENOATTR is ENODATA; on NetBSD
+			 * only with 0035, before which the read failed).
+			 * Extents past the gap, which smbd never reads, go
+			 * with the database.
+			 */
+			fprintf(stderr, "stream cut at a missing extent "
+				"path=%s name=%s extents=%u of %u\n",
+				path, anchor_name, (unsigned)(i - 1),
+				(unsigned)extents);
+			break;
 		}
-		total += extent.length;
-	}
-	logical->data = talloc_array(mem_ctx, uint8_t, total == 0 ? 1 : total);
-	if (logical->data == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	memcpy(logical->data, anchor.data, anchor.length - 1);
-	written = anchor.length - 1;
-	for (i = 1; i <= extents; i++) {
-		char *extent_name = talloc_asprintf(
-			mem_ctx, "%s%u.%s", TC_EXT_PREFIX, i, raw_name);
-		DATA_BLOB extent = data_blob_null;
-
-		ret = tc_tdb_get(migration, mem_ctx, id, extent_name, &extent);
 		if (ret < 0) {
 			return -1;
 		}
-		memcpy(logical->data + written, extent.data, extent.length);
-		written += extent.length;
+		if (total + extent.length < total) {
+			errno = EOVERFLOW;
+			return -1;
+		}
+		grown = talloc_realloc(mem_ctx, logical->data, uint8_t,
+				       MAX(total + extent.length, 1));
+		if (grown == NULL) {
+			errno = ENOMEM;
+			return -1;
+		}
+		memcpy(grown + total, extent.data, extent.length);
+		logical->data = grown;
+		total += extent.length;
 	}
 	logical->length = total;
 	return 0;
@@ -847,16 +859,12 @@ static char *tc_apple_native_name(TALLOC_CTX *mem_ctx,
 				  const char *anchor_name)
 {
 	const char *raw = anchor_name + strlen(TC_STREAM_PREFIX);
-	size_t raw_len = strlen(raw);
-	size_t suffix_len = strlen(TC_STREAM_SUFFIX);
+	size_t native_len = tc_apple_stream_native_len(raw);
 
-	if (raw_len <= suffix_len ||
-	    strncmp(raw, "com.apple.", strlen("com.apple.")) != 0 ||
-	    strcmp(raw + raw_len - suffix_len, TC_STREAM_SUFFIX) != 0)
-	{
+	if (native_len == 0) {
 		return NULL;
 	}
-	return talloc_strndup(mem_ctx, raw, raw_len - suffix_len);
+	return talloc_strndup(mem_ctx, raw, native_len);
 }
 
 /* TDB values are authoritative during the deploy migration. Stream extents
@@ -936,7 +944,7 @@ static int tc_migrate_stream(struct tc_migration *migration,
 		return 0;
 	}
 	ret = tc_read_tdb_stream(
-		migration, frame, id, anchor_name, &logical);
+		migration, frame, path, id, anchor_name, &logical);
 	if (ret != 0) {
 		fprintf(stderr, "stream decode failed path=%s name=%s error=%s\n",
 			path, anchor_name, strerror(errno));
@@ -982,13 +990,14 @@ static int tc_migrate_stream(struct tc_migration *migration,
 
 static int tc_finderinfo_from_stream(struct tc_migration *migration,
 				     TALLOC_CTX *mem_ctx,
+				     const char *path,
 				     const struct file_id *id,
 				     uint8_t finderinfo[AFP_FinderSize])
 {
 	DATA_BLOB logical = data_blob_null;
 
-	if (tc_read_tdb_stream(
-			migration, mem_ctx, id, TC_AFPINFO_XATTR, &logical) != 0)
+	if (tc_read_tdb_stream(migration, mem_ctx, path, id,
+			       TC_AFPINFO_XATTR, &logical) != 0)
 	{
 		return -1;
 	}
@@ -1092,11 +1101,11 @@ static int tc_migrate_finderinfo(struct tc_migration *migration,
 			migration, frame, id, finderinfo);
 		if (ret != 0 && tc_missing_error(errno)) {
 			ret = tc_finderinfo_from_stream(
-				migration, frame, id, finderinfo);
+				migration, frame, path, id, finderinfo);
 		}
 	} else {
 		ret = tc_finderinfo_from_stream(
-			migration, frame, id, finderinfo);
+			migration, frame, path, id, finderinfo);
 		if (ret != 0 && tc_missing_error(errno)) {
 			ret = tc_finderinfo_from_netatalk(
 				migration, frame, id, finderinfo);
@@ -1123,9 +1132,9 @@ static int tc_migrate_finderinfo(struct tc_migration *migration,
 		return -1;
 	}
 	/* An all-zero FinderInfo is no FinderInfo, as for a ._ file below.
-	 * Apple's kernel keeps none: it accepts the write, drops the attribute
-	 * and then reports it missing (NetBSD 6, 2026-09-30), so verifying one
-	 * failed the whole migration (v3.1.1 telemetry). fruit lists no
+	 * Apple's NetBSD 6 kernel keeps none: it accepts the write, drops the
+	 * attribute and then reports it missing, so verifying one would fail
+	 * the whole migration. fruit lists no
 	 * AFP_AfpInfo stream for it and removes the stream when a client writes
 	 * zeros, as a macOS server does, so it migrates like a row without
 	 * FinderInfo: any native value stays. */
@@ -1718,33 +1727,30 @@ static int tc_migrate_resource(struct tc_migration *migration,
 		goto out;
 	}
 	while (copied < resource->length) {
-			size_t chunk = MIN(
-				(off_t)TC_COPY_SIZE, resource->length - copied);
-			ssize_t read_ret = pread(
-				source_fd, buffer, chunk, resource->offset + copied);
-			ssize_t write_ret;
+		size_t chunk = MIN((off_t)TC_COPY_SIZE, resource->length - copied);
 
-			if (read_ret != chunk) {
-				if (read_ret >= 0) {
-					errno = EIO;
-				}
-				goto out;
-			}
-			write_ret = pwrite(resource_fd, buffer, chunk, copied);
-			if (write_ret != chunk) {
-				if (write_ret >= 0) {
-					errno = EIO;
-				}
-				goto out;
-			}
-			copied += chunk;
-			tc_progress();
+		if (tc_pread_exact(source_fd, buffer, chunk,
+				   resource->offset + copied) != 0 ||
+		    sys_pwrite_full(resource_fd, buffer, chunk, copied) != (ssize_t)chunk)
+		{
+			goto out;
+		}
+		copied += chunk;
+		tc_progress();
 	}
-	if (ftruncate(resource_fd, resource->length) != 0 ||
-	    fsync(resource_fd) != 0 ||
-	    tc_verify_resource(source_fd, resource_fd,
-		resource->offset, resource->length) != 0)
+	comparison = -1;
+	if (ftruncate(resource_fd, resource->length) == 0 &&
+	    fsync(resource_fd) == 0)
 	{
+		comparison = tc_verify_resource(source_fd, resource_fd,
+						resource->offset,
+						resource->length);
+		if (comparison > 0) {
+			/* The copy differs: no system call failed. */
+			errno = EIO;
+		}
+	}
+	if (comparison != 0) {
 		fprintf(stderr, "resource verification failed path=%s error=%s\n",
 			path, strerror(errno));
 		goto out;
@@ -2268,19 +2274,8 @@ static void tc_classify_unmatched_keys(struct tc_migration *migration)
  * is opened before the rename so an unopenable directory aborts before
  * anything moves; after the rename the directory is fsync'd and a failure is
  * reported with the destination named -- the data is safe under that name,
- * but the run is not reported as durably complete. A filesystem that refuses
- * directory fsync (EINVAL/ENOTSUP) gets a whole-filesystem sync(2) instead. */
-static int tc_fsync_directory_or_sync(int dir_fd)
-{
-	if (fsync(dir_fd) == 0) {
-		return 0;
-	}
-	if (errno == EINVAL || errno == ENOTSUP || errno == EOPNOTSUPP) {
-		sync();
-		return 0;
-	}
-	return -1;
-}
+ * but the run is not reported as durably complete. HFS on both devices
+ * fsyncs a directory like a file. */
 
 /* Open the database's directory and name its first unused quarantine slot.
  * Returns the directory descriptor, or -1 with nothing opened. */
@@ -2361,7 +2356,7 @@ static int tc_quarantine_tdb(struct tc_migration *migration)
 		TALLOC_FREE(frame);
 		return -1;
 	}
-	if (tc_fsync_directory_or_sync(dir_fd) != 0) {
+	if (fsync(dir_fd) != 0) {
 		fprintf(stderr, "quarantine sync failed directory=%s error=%s; database is at %s but not known to be durable\n",
 			directory, strerror(errno), destination);
 		fprintf(migration->multi ? stderr : stdout, "tdb_quarantine_path=%s\n", destination);
@@ -2421,7 +2416,7 @@ static char *tc_backup_tdb(TALLOC_CTX *ctx, const char *tdb_path)
 		}
 		tc_progress();
 	}
-	if (fsync(copy_fd) != 0 || tc_fsync_directory_or_sync(dir_fd) != 0) {
+	if (fsync(copy_fd) != 0 || fsync(dir_fd) != 0) {
 		goto out;
 	}
 	result = talloc_strdup(ctx, destination);
@@ -2710,8 +2705,15 @@ static int tc_merge_attribute(struct db_context *target, struct tc_multi_source 
 		for (extent = 1; extent <= count; extent++) {
 			char *part = talloc_asprintf(ctx, "%s%u.%s", TC_EXT_PREFIX, extent, name + strlen(TC_STREAM_PREFIX));
 			DATA_BLOB data = data_blob_null;
-			if (part == NULL || xattr_tdb_getattr(source->scan.db, ctx, id, part, &data) < 0 ||
-				xattr_tdb_setattr(target, id, part, data.data, data.length, 0) != 0) return -1;
+			if (part == NULL) return -1;
+			if (xattr_tdb_getattr(source->scan.db, ctx, id, part, &data) < 0) {
+				/* The value ends at its first missing extent, as
+				 * smbd reads it (tc_read_tdb_stream()); no other
+				 * source fills it. */
+				if (tc_missing_error(errno)) break;
+				return -1;
+			}
+			if (xattr_tdb_setattr(target, id, part, data.data, data.length, 0) != 0) return -1;
 		}
 	}
 	return 0;
@@ -3017,7 +3019,7 @@ static int tc_multi_scan(struct tc_multi *multi, struct tc_counts *counts)
 	 * produce into the failure it is. */
 	volume_changed = fstat(fd, &st) || (uint64_t)st.st_dev != multi->root_dev ||
 		(uint64_t)st.st_ino != multi->root_inode || tc_multi_root_valid(multi, &st) ||
-		tc_fsync_directory_or_sync(fd) || tc_multi_validate_sources(multi);
+		fsync(fd) || tc_multi_validate_sources(multi);
 	close(fd);
 	if (volume_changed) {
 		int error = errno;
@@ -3074,7 +3076,7 @@ static int tc_multi_retire_path(struct tc_multi_source *source, const char *path
 	fd = open(directory[0] ? directory : "/", O_RDONLY);
 	if (fd < 0) return -1;
 	result = unlink(path);
-	if (!result) result = tc_fsync_directory_or_sync(fd);
+	if (!result) result = fsync(fd);
 	close(fd);
 	return result;
 }

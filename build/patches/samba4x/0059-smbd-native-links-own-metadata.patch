@@ -52,21 +52,19 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_xattr_name = NULL;
  	ssize_t result;
  	int ret;
-@@ -1216,9 +1246,23 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
+@@ -1216,9 +1246,21 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
 +	/*
-+	 * A native link opened as itself has no fd; the backend reaches it
-+	 * by path, so it needs the mapped name as well (patch 0059). Handles
-+	 * with an fd keep upstream behaviour.
++	 * Map the handle's name too, as the other fsp calls do: a native
++	 * link opened as itself has no fd, and the backend reaches it by
++	 * name.
 +	 */
-+	if (fsp_get_pathref_fd(fsp) == -1) {
-+		ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
-+		if (ret != 0) {
-+			TALLOC_FREE(mapped_xattr_name);
-+			return -1;
-+		}
++	ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++	if (ret != 0) {
++		TALLOC_FREE(mapped_xattr_name);
++		return -1;
 +	}
 +
  	result = SMB_VFS_NEXT_FGETXATTR(handle, fsp, mapped_xattr_name,
@@ -76,7 +74,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	TALLOC_FREE(mapped_xattr_name);
  
  	return result;
-@@ -1249,6 +1293,7 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
+@@ -1249,6 +1291,7 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
  			      struct files_struct *fsp,
  			      const char *name)
  {
@@ -84,16 +82,14 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_name = NULL;
  	int ret;
  
-@@ -1261,8 +1306,17 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
+@@ -1261,8 +1304,15 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
-+	if (fsp_get_pathref_fd(fsp) == -1) {
-+		ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
-+		if (ret != 0) {
-+			TALLOC_FREE(mapped_name);
-+			return -1;
-+		}
++	ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++	if (ret != 0) {
++		TALLOC_FREE(mapped_name);
++		return -1;
 +	}
 +
  	ret = SMB_VFS_NEXT_FREMOVEXATTR(handle, fsp, mapped_name);
@@ -102,7 +98,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	TALLOC_FREE(mapped_name);
  
  	return ret;
-@@ -1275,6 +1329,7 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
+@@ -1275,6 +1325,7 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
  			   size_t size,
  			   int flags)
  {
@@ -110,16 +106,14 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_xattr_name = NULL;
  	int ret;
  
-@@ -1287,9 +1342,18 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
+@@ -1287,9 +1338,16 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
-+	if (fsp_get_pathref_fd(fsp) == -1) {
-+		ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
-+		if (ret != 0) {
-+			TALLOC_FREE(mapped_xattr_name);
-+			return -1;
-+		}
++	ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++	if (ret != 0) {
++		TALLOC_FREE(mapped_xattr_name);
++		return -1;
 +	}
 +
  	ret = SMB_VFS_NEXT_FSETXATTR(handle, fsp, mapped_xattr_name,
@@ -200,7 +194,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	return chflags(fsp->fsp_name->base_name, flags);
  #else
  	errno = ENOSYS;
-@@ -3617,8 +3648,14 @@ static ssize_t vfswrap_fgetxattr(struct vfs_handle_struct *handle,
+@@ -3601,8 +3632,14 @@ static ssize_t vfswrap_fgetxattr(struct vfs_handle_struct *handle,
  	}
  
  	/*
@@ -216,7 +210,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	res = getxattr(fsp->fsp_name->base_name, name, value, size);
  out:
  	END_PROFILE_X(syscall_fgetxattr);
-@@ -3957,6 +3994,11 @@ static ssize_t vfswrap_flistxattr(struct vfs_handle_struct *handle, struct files
+@@ -3941,6 +3978,11 @@ static ssize_t vfswrap_flistxattr(struct vfs_handle_struct *handle, struct files
  	/*
  	 * This is no longer a handle based call.
  	 */
@@ -228,7 +222,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	res = listxattr(fsp->fsp_name->base_name, list, size);
  out:
  	END_PROFILE_X(syscall_flistxattr);
-@@ -3987,6 +4029,12 @@ static int vfswrap_fremovexattr(struct vfs_handle_struct *handle, struct files_s
+@@ -3971,6 +4013,12 @@ static int vfswrap_fremovexattr(struct vfs_handle_struct *handle, struct files_s
  	/*
  	 * This is no longer a handle based call.
  	 */
@@ -241,7 +235,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	res = removexattr(fsp->fsp_name->base_name, name);
  out:
  	END_PROFILE_X(syscall_fremovexattr);
-@@ -4021,6 +4069,12 @@ static int vfswrap_fsetxattr(struct vfs_handle_struct *handle, struct files_stru
+@@ -4005,6 +4053,12 @@ static int vfswrap_fsetxattr(struct vfs_handle_struct *handle, struct files_stru
  	/*
  	 * This is no longer a handle based call.
  	 */
@@ -257,7 +251,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
 diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_xattr.c
 --- a/source3/modules/vfs_streams_xattr.c
 +++ b/source3/modules/vfs_streams_xattr.c
-@@ -676,9 +676,19 @@ static int streams_xattr_fstat(vfs_handle_struct *handle, files_struct *fsp,
+@@ -688,9 +688,19 @@ static int streams_xattr_fstat(vfs_handle_struct *handle, files_struct *fsp,
  		return -1;
  	}
  
@@ -304,7 +298,7 @@ diff --git a/source3/smbd/close.c b/source3/smbd/close.c
 diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 --- a/source3/smbd/open.c
 +++ b/source3/smbd/open.c
-@@ -5765,6 +5765,15 @@ static NTSTATUS open_streams_for_delete(connection_struct *conn,
+@@ -5790,6 +5790,15 @@ static NTSTATUS open_streams_for_delete(connection_struct *conn,
  	} else {
  		pathref = smb_fname;
  	}
@@ -320,7 +314,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  	status = vfs_fstreaminfo(pathref->fsp, talloc_tos(),
  				&num_streams, &stream_info);
  
-@@ -6585,6 +6594,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6610,6 +6619,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  	    && is_named_stream(smb_fname))
  	{
  		uint32_t base_create_disposition;
@@ -328,7 +322,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  		struct smb_filename *smb_fname_base = NULL;
  		uint32_t base_privflags;
  
-@@ -6618,7 +6628,20 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6643,7 +6653,20 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  		 * if the basefile exists we want a handle so we can fstat() it.
  		 */
  
@@ -350,7 +344,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  
  		if (!NT_STATUS_IS_OK(status) &&
  		    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND))
-@@ -6630,8 +6653,13 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6655,8 +6678,13 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  			goto fail;
  		}
  
@@ -365,7 +359,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  			 * https://bugzilla.samba.org/show_bug.cgi?id=10229
  			 * We need to check if the requested access mask
  			 * could be used to open the underlying file (if
-@@ -6663,7 +6691,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6688,7 +6716,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  					      | FILE_SHARE_WRITE
  					      | FILE_SHARE_DELETE,
  					      base_create_disposition,

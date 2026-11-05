@@ -25,10 +25,10 @@ diff --git a/lib/replace/system/filesys.h b/lib/replace/system/filesys.h
 +/*
 + * Time Capsule appliance builds (TC_SAMBA4X_AT_EMULATION): neither Apple
 + * kernel has the *at system calls, NetBSD 6's futimens() mishandles
-+ * UTIME_OMIT and NetBSD 4 has none, and NetBSD 4 has no fdopendir(). lib/replace/tc_at_emulation.c emulates them with
-+ * fchdir(); the names below send every caller that includes this header
-+ * there. The final smbd link must not contain libc's own versions
-+ * (build/_samba4x.sh checks).
++ * UTIME_OMIT and NetBSD 4 has none, and NetBSD 4 has no fdopendir().
++ * lib/replace/tc_at_emulation.c emulates them with fchdir(); the names
++ * below send every caller that includes this header there. The final smbd
++ * link must not contain libc's own versions (build/_samba4x.sh checks).
 + */
 +#ifdef TC_SAMBA4X_AT_EMULATION
 +#include <dirent.h>
@@ -46,9 +46,9 @@ diff --git a/lib/replace/system/filesys.h b/lib/replace/system/filesys.h
 +#endif
 +#ifndef O_DIRECTORY
 +/*
-+ * NetBSD 4 has no O_DIRECTORY and its kernel ignores this bit (probed
-+ * 2026-09-28). rep_openat() removes it and checks for a directory itself,
-+ * so Samba's O_DIRECTORY opens behave as elsewhere.
++ * NetBSD 4 has no O_DIRECTORY and its kernel ignores this bit.
++ * rep_openat() removes it and checks for a directory itself, so Samba's
++ * O_DIRECTORY opens behave as elsewhere.
 + */
 +#define O_DIRECTORY 0x00200000
 +#define TC_AT_EMULATE_O_DIRECTORY 1

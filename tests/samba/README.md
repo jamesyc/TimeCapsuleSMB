@@ -74,14 +74,17 @@ its send and posts it ahead of the requests past the queue limit, as happens
 at random on a loaded host. They must count the queue's turns the same way.
 `cancel_active+fast_reply` also frees `requests[0]` after its reply was read
 but before its callback ran, where the plain case frees it while its helper
-still works. Only those cases take the suffix. Durable tests cover live-to-disconnected transition, bounded retry
-exhaustion, unlocked waiting and identity/ownership rejection. They do not assert
-the literal retry limit of 34. The `scavenger_hello_*` cases run the smbd
+still works. Only those cases take the suffix. The durable recreate cases run
+`smb2srv_open_recreate()` itself: a disconnected open is taken over, a live one
+of another smbd answers FILE_NOT_AVAILABLE at once (0024's deferral in
+smb2_create.c does the waiting), one of this smbd answers OBJECT_NAME_NOT_FOUND
+(`live_self`), and client, create GUID, owner and durability mismatches are
+refused. The `scavenger_hello_*` cases run the smbd
 parent's wait for a new scavenger's hello (patch 0075) against a forked child
 that says hello, exits without one, or stays silent: only the silent child is
 waited out and killed, with the limit set to 3 s for that case alone. The
 `brlock_reconnect*` cases run a durable reconnect's byte-range lock steps
-(patch 0077) inside the real `share_mode_do_locked_brl_fn()`, which reads,
+(patches 0080 and 0082) inside the real `share_mode_do_locked_brl_fn()`, which reads,
 stores and frees the lock record, with brlock.c's own record format: the
 handle's disconnected lock is taken over; taken over and given up again when a
 later step fails (`brl_drop_reconnected()`); or, with another open's lock before
@@ -338,6 +341,16 @@ After changing the conversion path, run the suite several times in a row and
 check `/mnt/Flash/dmesg.panic` on the device: without the journal commit, the
 HFS panic appeared within one to three runs, while each run on its own passed.
 
+`srvsvc_device.py` enumerates shares on a connection that holds a tree and
+locks, from smbprotocol and from macOS's own client with a share mounted
+(`smbutil view` finds that session). Patch 0005 serves srvsvc in that worker, so
+a lock must survive the enumeration and the new share of a SIGHUP must appear
+without one. `tc_srvsvc_enum_test` runs the same call on the real loadparm table.
+
+```sh
+.venv/bin/python -m tests.samba.srvsvc_device --env .env
+```
+
 `durable_device.py` checks durable-handle reconnect against a deployed device
 from a Mac (it needs `smbprotocol` on the host):
 
@@ -414,8 +427,9 @@ file within 15 s (a stale lease's break would take
 35 s; the margin covers a data disk that spun down during the wait). The
 `orphan:` cases read `/mnt/Locks` over SSH (`tdb_records.py`, the devices
 have no tdbdump) to check what stays once opens lose their owner (issue 384,
-patch 0077); a copy that does not parse as a tdb counts as not yet, never as
-an empty one. `orphan:killed` kills the smbd that the client's 20 durable,
+patches 0077 and 0081-0083). `orphan:superseded` and `orphan:failed-reconnect`
+are the only tests of smbd's side of 0081 and 0082. A copy that does not parse
+as a tdb counts as not yet, never as an empty one. `orphan:killed` kills the smbd that the client's 20 durable,
 leased open records name, and only when they all name the same one, which
 started serving a client with the test's connection;
 within 60 s every open, replay and lease record of it must be gone, and the
@@ -564,8 +578,8 @@ Its open matrix tries every create disposition with and without
 FILE_DIRECTORY_FILE and FILE_NON_DIRECTORY_FILE, for listing, attribute and
 read/write access, on an existing directory: whatever opens must be a directory
 handle (SMB2 READ is INVALID_DEVICE_REQUEST), must list, and must leave nothing
-behind. A file handle on a directory, the state patch 0063 now prevents and
-patch 0004 used to paper over, fails that READ. The other cases list a
+behind. The matrix reaches a directory through the lookup; patch 0063's race
+(a directory appearing between lookup and open) has no test. The other cases list a
 600-entry directory in small responses with RESTART_SCANS, REOPEN and
 RETURN_SINGLE_ENTRY; open directories with catia-mapped names; keep listing a
 directory handle's own directory after the directory is renamed on disk; nest
@@ -675,7 +689,8 @@ and `smb2.oplock`, about 14 minutes on NetBSD 4).
 built smbd on a device without deploying (quick) or the full tier deploys,
 and each device then runs the regression drivers from RAM, doctor,
 `dir_device.py`, `growth_device.py` (both with `--quick` in the quick
-tier), in the full tier also `durable_device.py` and `links_device.py`, and
+tier), `srvsvc_device.py`, in the full tier also `durable_device.py` and
+`links_device.py`, and
 `torture.py`, which runs smbtorture in Docker and reports only failures
 missing from `smbtorture/known_failures.txt`. Every `*_device.py` tool runs on a Mac against
 a device and needs that device's lock row; `cut_device.py` is the one

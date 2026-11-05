@@ -1,20 +1,17 @@
 diff --git a/source3/lib/dumpcore.c b/source3/lib/dumpcore.c
 --- a/source3/lib/dumpcore.c
 +++ b/source3/lib/dumpcore.c
-@@ -56,11 +56,29 @@ static char *get_default_corepath(const char *logbase, const char *progname)
+@@ -56,11 +56,26 @@ static char *get_default_corepath(const char *logbase, const char *progname)
  		return NULL;
  	}
  
 +#ifdef TC_SAMBA4X_APPLIANCE
 +	/*
-+	 * Time Capsule payload logs live on Apple-managed HFS. NetBSD4/6 HFS
-+	 * reports root-created directories there with uid 4294967295, and the
-+	 * firmware does not provide chown. The strict owner check rejects an
-+	 * otherwise usable core directory and leaves smbd with no corepath.
-+	 * On this appliance-only static build use the non-strict create: it
-+	 * still asks mkdir for 0700 but skips both the owner and the 0700 mode
-+	 * checks on an existing directory, so panic cores land under the
-+	 * payload logs.
++	 * The logs live on the device's HFS, which reports a directory root
++	 * created as owned by uid 4294967295, and the firmware has no chown:
++	 * the strict owner check would leave smbd with no core path. The
++	 * non-strict create still asks mkdir for 0700 but skips the owner and
++	 * mode checks on an existing directory.
 +	 */
 +	if (!directory_create_or_exist(tmp_corepath, mode)) {
 +		DEBUG(0, ("Failed to create %s with mode 0%o\n",
@@ -34,41 +31,23 @@ diff --git a/source3/lib/dumpcore.c b/source3/lib/dumpcore.c
 diff --git a/source3/lib/system.c b/source3/lib/system.c
 --- a/source3/lib/system.c
 +++ b/source3/lib/system.c
-@@ -269,6 +269,28 @@ void copy_stat_ex_timestamps(struct stat_ex *st,
- 	}
- }
- 
-+#ifdef TC_SAMBA4X_APPLIANCE
-+static void tc_normalize_hfs_unknown_owner(struct stat_ex *st)
-+{
-+	/*
-+	 * AirPort Time Capsule HFS can report absent catalog owner/group IDs
-+	 * as 0xffffffff. Samba treats those values as real Unix IDs and later
-+	 * tries to map them to SIDs in ACL, create-context, durable-handle, and
-+	 * stream metadata paths. The appliance serves all SMB users through a
-+	 * forced root/wheel identity, so normalize only this HFS sentinel before
-+	 * it escapes the stat conversion boundary into those paths, where
-+	 * no SID maps to it.
-+	 */
-+	if (st->st_ex_uid == (uid_t)-1) {
-+		st->st_ex_uid = 0;
-+	}
-+
-+	if (st->st_ex_gid == (gid_t)-1) {
-+		st->st_ex_gid = 0;
-+	}
-+}
-+#endif
-+
- void init_stat_ex_from_stat (struct stat_ex *dst,
- 			    const struct stat *src,
- 			    bool fake_dir_create_times)
-@@ -279,6 +301,9 @@ void init_stat_ex_from_stat (struct stat_ex *dst,
+@@ -279,6 +279,20 @@ void init_stat_ex_from_stat (struct stat_ex *dst,
  	dst->st_ex_nlink = src->st_nlink;
  	dst->st_ex_uid = src->st_uid;
  	dst->st_ex_gid = src->st_gid;
 +#ifdef TC_SAMBA4X_APPLIANCE
-+	tc_normalize_hfs_unknown_owner(dst);
++	/*
++	 * HFS on the device reports a missing owner or group as 0xffffffff,
++	 * which no SID maps to in the ACL, create context and durable handle
++	 * paths. The appliance serves every user as root/wheel: take the
++	 * sentinel for that.
++	 */
++	if (dst->st_ex_uid == (uid_t)-1) {
++		dst->st_ex_uid = 0;
++	}
++	if (dst->st_ex_gid == (gid_t)-1) {
++		dst->st_ex_gid = 0;
++	}
 +#endif
  	dst->st_ex_rdev = src->st_rdev;
  	dst->st_ex_size = src->st_size;

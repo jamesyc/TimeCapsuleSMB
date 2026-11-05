@@ -74,9 +74,12 @@ static NTSTATUS observed_do_locked(struct db_context *db, TDB_DATA key,
 	return status;
 }
 
+/* Set by the live_self case: an open this process (pid 456) still holds. */
+static bool self_live;
+
 static bool live_process(const struct server_id *id)
 {
-	return id->pid == 123;
+	return id->pid == 123 || (self_live && id->pid == 456);
 }
 
 static struct server_id current_process(const struct messaging_context *ctx)
@@ -103,7 +106,7 @@ static struct server_id current_process(const struct messaging_context *ctx)
  * no case depends on how fast the child is scheduled.
  */
 static int tc_hello_seconds;
-#define TC_SCAVENGER_HELLO_SECONDS tc_hello_seconds
+#define SCAVENGER_HELLO_TIMEOUT_SECONDS tc_hello_seconds
 #include "../../lib/util/select.h"
 #include "../../lib/util/sys_rw_data.h"
 #include "tc_scavenger_hello.inc"
@@ -129,6 +132,12 @@ static int scavenger_hello(const char *name)
 		if (!strcmp(name, "scavenger_hello_silent")) {
 			for (;;) pause();	/* holds its end open and says nothing */
 		}
+		if (!strcmp(name, "scavenger_hello_half")) {
+			/* Half a hello, then its end closed while it keeps running. */
+			if (write(fds[1], &sent, sizeof(sent) / 2) != sizeof(sent) / 2) _exit(1);
+			close(fds[1]);
+			for (;;) pause();
+		}
 		_exit(0);			/* scavenger_hello_exited: no hello */
 	}
 	close(fds[1]);
@@ -144,11 +153,18 @@ static int scavenger_hello(const char *name)
 		/* Given up after the timeout, and the child killed. */
 		CHECK(!ok && took >= tc_hello_seconds - 0.1);
 		CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+	} else if (!strcmp(name, "scavenger_hello_half")) {
+		/* A short read: no wait for the timeout, and the child killed. */
+		CHECK(!ok && took < tc_hello_seconds / 2);
+		CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
 	} else {
-		/* The child's end closed: no wait for the timeout. */
+		/* The child's end closed: no wait for the timeout. The kill that
+		 * follows the short read may reach the child before its exit
+		 * completes. */
 		CHECK(!strcmp(name, "scavenger_hello_exited"));
 		CHECK(!ok && took < tc_hello_seconds / 2);
-		CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+		CHECK((WIFEXITED(status) && WEXITSTATUS(status) == 0) ||
+		      (WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL));
 	}
 	printf("PASS %s\n", name);
 	return 0;
@@ -160,8 +176,9 @@ static int scavenger_hello(const char *name)
  * smbXsrv_open.c traverse callback. It must release exactly the opens whose
  * smbd is gone (pid 789; 123 is live), and leave live, disconnected and
  * persistent opens and replay records alone, and count only the opens
- * scavenger_cleanup() removed. scavenger_cleanup() is recorded
- * here; the cleanup_* cases run the real smbXsrv_open_cleanup() it calls.
+ * scavenger_cleanup() removed. scavenger_cleanup() is recorded for the
+ * walk; the cleanup_* cases run the real one, cut from the same file, over
+ * the real smbXsrv_open_cleanup(), with the share mode cleanup recorded.
  */
 struct scavenger_message;
 static bool rescan_cleanup(const struct scavenger_message *msg);
@@ -180,6 +197,21 @@ static NTSTATUS rescan_traverse(
 #include "tc_scavenger_rescan.inc"
 #undef smbXsrv_open_global_traverse
 #undef scavenger_cleanup
+
+static unsigned share_mode_cleanups;
+
+static bool recorded_share_mode_cleanup(struct file_id fid, uint64_t open_persistent_id,
+					uint32_t name_hash)
+{
+	(void)fid;
+	(void)name_hash;
+	CHECK(open_persistent_id == 8);
+	share_mode_cleanups++;
+	return true;
+}
+#define share_mode_cleanup_disconnected recorded_share_mode_cleanup
+#include "tc_scavenger_cleanup.inc"
+#undef share_mode_cleanup_disconnected
 
 static uint64_t rescan_cleaned[8];
 static unsigned rescan_cleaned_count;
@@ -272,6 +304,17 @@ static int rescan_case(const char *name)
 		status = smbXsrv_open_cleanup(8);
 		CHECK(NT_STATUS_IS_OK(status));
 		CHECK(!open_stored(8) && !replay_stored(8));
+	} else if (!strcmp(name, "cleanup_file_id") || !strcmp(name, "cleanup_zero_file_id")) {
+		/* scavenger_cleanup() removes a dead owner's record either way;
+		 * only a real file id leads to a share mode entry. A non-durable
+		 * open of a file it created keeps the zero id. */
+		struct scavenger_message msg = {.open_persistent_id = 8};
+		bool zero = !strcmp(name, "cleanup_zero_file_id");
+		if (!zero) msg.file_id = (struct file_id){.devid = 1, .inode = 2};
+		store_open(8, 789, false, false);
+		CHECK(scavenger_cleanup(&msg));
+		CHECK(!open_stored(8) && !replay_stored(8));
+		CHECK(share_mode_cleanups == (zero ? 0u : 1u));
 	} else {
 		/* A live open answers CANNOT_DELETE and keeps everything. */
 		CHECK(!strcmp(name, "cleanup_live_owner"));
@@ -441,6 +484,17 @@ static int brlock_reconnect(const char *name)
  * preservation use Samba's own fsp_set_smb_fname(). */
 static bool rename_lock_held, fail_rename_copy, fail_rename_stat;
 static unsigned renamed_records;
+/* A rename message runs wherever the last request left the working directory;
+ * msg_file_was_renamed() must change into the share root before the helper
+ * stats names relative to it. */
+static bool rename_by_message, fail_rename_chdir;
+static const connection_struct *rename_cwd;
+static int rename_chdir(connection_struct *conn)
+{
+	if (fail_rename_chdir) { errno = EACCES; return -1; }
+	rename_cwd = conn;
+	return 0;
+}
 static const char *renamed_prefix = "dest space/";
 static int rename_unlock(void *p)
 {
@@ -478,6 +532,7 @@ static int rename_stat(connection_struct *conn, const files_struct *dir,
 {
 	const char *suffix = name->base_name + strlen(renamed_prefix);
 	CHECK(dir == conn->cwd_fsp && name->stream_name == NULL && flags == 0);
+	CHECK(!rename_by_message || rename_cwd == conn);
 	if (fail_rename_stat) { errno = EIO; return -1; }
 	ZERO_STRUCTP(st);
 	if (!strcmp(suffix, "sub/band")) st->st_ex_ino = 1;
@@ -496,8 +551,10 @@ static struct file_id rename_stat_id(connection_struct *conn, const SMB_STRUCT_S
 #define get_existing_share_mode_lock rename_lock
 #define rename_share_filename rename_record
 #define cp_smb_filename rename_copy
+#define vfs_ChDir_shareroot rename_chdir
 #include "tc_rename_open_files.inc"
 #include "tc_rename_message.inc"
+#undef vfs_ChDir_shareroot
 #undef get_existing_share_mode_lock
 #undef rename_share_filename
 #undef cp_smb_filename
@@ -530,7 +587,8 @@ static int rename_descendants(const char *which)
 	const char *prefix = "source", *destination = "dest space";
 	char *band_name, *folder_name, *ref_name, *new_band, *new_folder, *new_ref;
 	bool no_change = !strcmp(which, "rename_case_sensitive") ||
-		!strcmp(which, "rename_message_other_share") || !strcmp(which, "rename_stat_failure");
+		!strcmp(which, "rename_message_other_share") || !strcmp(which, "rename_stat_failure") ||
+		!strcmp(which, "rename_message_chdir_failure");
 	char work[] = "tc-rename-XXXXXX", data[5] = {0};
 	int here = open(".", O_RDONLY), fd;
 	struct stat st;
@@ -576,13 +634,17 @@ static int rename_descendants(const char *which)
 	fail_rename_copy = !strcmp(which, "rename_allocation_failure");
 	if (!strncmp(which, "rename_message", 14)) {
 		struct file_rename_message msg = {
-			.servicepath = no_change ? "/missing" : conn->connectpath,
+			.servicepath = !strcmp(which, "rename_message_other_share") ? "/missing" : conn->connectpath,
 			.base_name = dst.base_name,
 			.old_base_name = src.base_name,
 		};
 		DATA_BLOB blob = data_blob_null;
 		CHECK(NDR_ERR_CODE_IS_SUCCESS(ndr_push_struct_blob(&blob, frame, &msg,
 			(ndr_push_flags_fn_t)ndr_push_file_rename_message)));
+		rename_by_message = true;
+		fail_rename_chdir = !strcmp(which, "rename_message_chdir_failure");
+		/* The last request left the working directory on another share. */
+		rename_cwd = other;
 		msg_file_was_renamed(NULL, sconn, MSG_SMB_FILE_RENAME,
 			(struct server_id){.pid = 999}, &blob);
 		status = NT_STATUS_OK;
@@ -684,6 +746,13 @@ int main(int argc, char **argv)
 	/* A live open is only "still busy": FILE_NOT_AVAILABLE, never taken over.
 	 * The create defers and asks again; the client never sees this status. */
 	if (!strcmp(argv[1], "live")) expected = NT_STATUS_FILE_NOT_AVAILABLE;
+	/* One this smbd itself holds cannot be released by waiting: refused at
+	 * once, as upstream does. */
+	else if (!strcmp(argv[1], "live_self")) {
+		self_live = true;
+		record.server_id.pid = 456;
+		expected = NT_STATUS_OBJECT_NAME_NOT_FOUND;
+	}
 	else if (!strcmp(argv[1], "already_disconnected") || !strcmp(argv[1], "v1_reconnect"))
 		server_id_set_disconnected(&record.server_id);
 	else if (!strcmp(argv[1], "client_mismatch")) { record.client_guid.time_low++; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; }
@@ -706,13 +775,13 @@ int main(int argc, char **argv)
 	CHECK(NT_STATUS_EQUAL(status, expected));
 	CHECK(lock_depth == 0);
 	CHECK(attempts == expected_attempts);
-	if (!strcmp(argv[1], "live")) {
-		/* The old smbd still owns the stored record. */
+	if (!strcmp(argv[1], "live") || !strcmp(argv[1], "live_self")) {
+		/* The holder still owns the stored record. */
 		TDB_DATA stored;
 		struct smbXsrv_open_global *decoded = NULL;
 		CHECK(NT_STATUS_IS_OK(dbwrap_fetch(database, frame, record_key, &stored)));
 		CHECK(NT_STATUS_IS_OK(smbXsrv_open_global_parse_record(frame, record_key, stored, &decoded)));
-		CHECK(decoded->server_id.pid == 123);
+		CHECK(decoded->server_id.pid == record.server_id.pid);
 	}
 	if (NT_STATUS_IS_OK(status)) {
 		TDB_DATA stored;

@@ -61,11 +61,14 @@ static int tc_native_finderinfo_read_fsp(files_struct *fsp,
  * fsp), else a pathref of the base name opened under dirfsp. Return 1 with
  * *_base_fsp set, 0 when the base is absent or a nested pathref open is in
  * progress, -1 on a real error. A pathref is returned in *_base_name, which
- * the caller frees; otherwise *_base_name is NULL. */
+ * the caller frees; otherwise *_base_name is NULL. With AT_SYMLINK_NOFOLLOW
+ * in flags a final symlink is never followed, as stock fruit's choice of
+ * open does. */
 static int tc_native_finderinfo_base_fsp(
 	vfs_handle_struct *handle,
 	const struct files_struct *dirfsp,
 	const struct smb_filename *smb_fname,
+	int flags,
 	struct smb_filename **_base_name,
 	files_struct **_base_fsp)
 {
@@ -98,8 +101,31 @@ static int tc_native_finderinfo_base_fsp(
 	}
 
 	config->in_openat_pathref_fsp = true;
-	status = openat_pathref_fsp_lcomp(
-		discard_const_p(struct files_struct, dirfsp), base_name, 0);
+	if (!(flags & AT_SYMLINK_NOFOLLOW)) {
+		status = openat_pathref_fsp(dirfsp, base_name);
+	} else if (dirfsp != handle->conn->cwd_fsp) {
+		status = openat_pathref_fsp_lcomp(
+			discard_const_p(struct files_struct, dirfsp),
+			base_name,
+			0);
+	} else {
+		/*
+		 * A name relative to the share root can have several
+		 * components, which openat_pathref_fsp_lcomp() asserts
+		 * against, and openat_pathref_fsp() follows a final symlink:
+		 * rule a symlink out first. Its stream is absent.
+		 */
+		SMB_STRUCT_STAT st;
+
+		if (SMB_VFS_NEXT_FSTATAT(handle, dirfsp, base_name, &st,
+					 AT_SYMLINK_NOFOLLOW) != 0) {
+			status = map_nt_error_from_unix(errno);
+		} else if (S_ISLNK(st.st_ex_mode)) {
+			status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
+		} else {
+			status = openat_pathref_fsp(dirfsp, base_name);
+		}
+	}
 	config->in_openat_pathref_fsp = false;
 	if (!NT_STATUS_IS_OK(status)) {
 		int error = map_errno_from_nt_status(status);
@@ -118,6 +144,7 @@ static int tc_native_finderinfo_read_at(
 	vfs_handle_struct *handle,
 	const struct files_struct *dirfsp,
 	const struct smb_filename *smb_fname,
+	int flags,
 	uint8_t finderinfo[AFP_FinderSize])
 {
 	struct smb_filename *base_name = NULL;
@@ -125,7 +152,7 @@ static int tc_native_finderinfo_read_at(
 	int ret;
 
 	ret = tc_native_finderinfo_base_fsp(
-		handle, dirfsp, smb_fname, &base_name, &base_fsp);
+		handle, dirfsp, smb_fname, flags, &base_name, &base_fsp);
 	if (ret != 1) {
 		return ret;
 	}
@@ -181,7 +208,8 @@ static int tc_native_finderinfo_remove_at(
 	int ret;
 
 	ret = tc_native_finderinfo_base_fsp(
-		handle, dirfsp, smb_fname, &base_name, &base_fsp);
+		handle, dirfsp, smb_fname, AT_SYMLINK_NOFOLLOW,
+		&base_name, &base_fsp);
 	if (ret != 1) {
 		return ret;
 	}
@@ -301,13 +329,14 @@ static int fruit_fstatat_meta_native(struct vfs_handle_struct *handle,
 				     const struct files_struct *dirfsp,
 				     const struct smb_filename *smb_relname,
 				     SMB_STRUCT_STAT *sbuf,
+				     int flags,
 				     ino_t ino)
 {
 	uint8_t native_finderinfo[AFP_FinderSize];
 	int native_state;
 
 	native_state = tc_native_finderinfo_read_at(
-		handle, dirfsp, smb_relname, native_finderinfo);
+		handle, dirfsp, smb_relname, flags, native_finderinfo);
 	if (native_state != 1 ||
 	    all_zero(native_finderinfo, AFP_FinderSize))
 	{
@@ -346,9 +375,19 @@ static NTSTATUS fruit_streaminfo_meta_native(
 		handle,
 		handle->conn->cwd_fsp,
 		smb_fname,
+		AT_SYMLINK_NOFOLLOW,
 		native_finderinfo);
 	if (native_state < 0) {
-		return map_nt_error_from_unix(errno);
+		/*
+		 * List the other streams without AFP_AfpInfo, as stock fruit
+		 * does for metadata it cannot read, rather than fail the
+		 * whole listing over one attribute (such as a FinderInfo of
+		 * the wrong size).
+		 */
+		DBG_NOTICE("%s: FinderInfo unreadable: %s\n",
+			   smb_fname_str_dbg(smb_fname),
+			   strerror(errno));
+		return NT_STATUS_OK;
 	}
 	if (native_state == 0 ||
 	    all_zero(native_finderinfo, AFP_FinderSize))

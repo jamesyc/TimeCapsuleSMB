@@ -1,26 +1,24 @@
 diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
 --- a/source3/smbd/durable.c
 +++ b/source3/smbd/durable.c
-@@ -189,6 +189,8 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
+@@ -189,6 +189,7 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
  	struct vfs_default_durable_cookie cookie;
  	DATA_BLOB new_cookie_blob = data_blob_null;
  	struct durable_disconnect_state state;
-+	SMB_STRUCT_STAT pre_close_st;
 +	struct file_id post_close_file_id;
  
  	*new_cookie = data_blob_null;
  
-@@ -278,6 +280,56 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
+@@ -278,6 +279,37 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
  		return status;
  	}
  
-+	pre_close_st = fsp->fsp_name->st;
-+
 +	/*
-+	 * Time Capsule HFS can advance ctime as the last writable fd closes.
-+	 * Store the durable cookie after fd_close() so the reconnect check
-+	 * compares against the completed server-side metadata state, not a
-+	 * pre-close snapshot that is stale before the client can reconnect.
++	 * HFS on the device can advance ctime as the last writable fd
++	 * closes. Store the durable cookie after fd_close(), so that the
++	 * reconnect check compares against the metadata as it stands after
++	 * the close, not a snapshot that is stale before the client can
++	 * reconnect.
 +	 */
 +	status = fd_close(fsp);
 +	if (!NT_STATUS_IS_OK(status)) {
@@ -37,10 +35,6 @@ diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
 +		return status;
 +	}
 +
-+	if (!S_ISREG(fsp->fsp_name->st.st_ex_mode)) {
-+		return NT_STATUS_NOT_SUPPORTED;
-+	}
-+
 +	post_close_file_id = vfs_file_id_from_sbuf(conn, &fsp->fsp_name->st);
 +	if (!file_id_equal(&fsp->file_id, &post_close_file_id)) {
 +		DBG_WARNING("TIMECAPSULE_DURABLE_POST_CLOSE_STAT: "
@@ -50,24 +44,10 @@ diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
 +		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
 +	}
 +
-+	if (!timespec_equal(&pre_close_st.st_ex_ctime,
-+			    &fsp->fsp_name->st.st_ex_ctime)) {
-+		struct timeval tc, ts;
-+		tc = convert_timespec_to_timeval(pre_close_st.st_ex_ctime);
-+		ts = convert_timespec_to_timeval(fsp->fsp_name->st.st_ex_ctime);
-+		DBG_NOTICE("TIMECAPSULE_DURABLE_POST_CLOSE_STAT: "
-+			   "%s ctime changed across durable fd_close: "
-+			   "pre:'%s' post:'%s'; using post-close stat in "
-+			   "durable cookie\n",
-+			   fsp_str_dbg(fsp),
-+			   timeval_string(talloc_tos(), &tc, true),
-+			   timeval_string(talloc_tos(), &ts, true));
-+	}
-+
  	ZERO_STRUCT(cookie);
  	cookie.allow_reconnect = true;
  	cookie.id = fsp->file_id;
-@@ -317,10 +369,14 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
+@@ -317,10 +349,14 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
  	}
  
  do_close:

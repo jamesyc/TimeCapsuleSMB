@@ -1,0 +1,60 @@
+diff --git a/source3/printing/queue_process.c b/source3/printing/queue_process.c
+--- a/source3/printing/queue_process.c
++++ b/source3/printing/queue_process.c
+@@ -21,7 +21,27 @@
+ */
+ 
+ #include "includes.h"
++#ifndef TC_SAMBA4X_NETBSD4_COMPAT
+ #include <spawn.h>
++#else
++/*
++ * NetBSD 4 has no spawn.h or posix_spawn() (Samba's configure never defines
++ * HAVE_POSIX_SPAWN, so this is gated on the NetBSD 4 lanes). The appliance
++ * disables printing and ships no samba-bgqd, but this file still compiles
++ * into the static smbd: fail the start without forking. The caller tests
++ * ret == -1 (upstream's check, although posix_spawn() returns an error
++ * number).
++ */
++static int tc_spawn_missing(pid_t *pid, const char *path, const void *actions,
++			    const void *attr, char *const argv[],
++			    char *const envp[])
++{
++	*pid = -1;
++	errno = ENOENT;
++	return -1;
++}
++#define posix_spawn tc_spawn_missing
++#endif
+ #include "smbd/globals.h"
+ #include "include/messages.h"
+ #include "lib/util/util_process.h"
+diff --git a/source3/rpc_client/local_np.c b/source3/rpc_client/local_np.c
+--- a/source3/rpc_client/local_np.c
++++ b/source3/rpc_client/local_np.c
+@@ -16,7 +16,25 @@
+  */
+ 
+ #include "source3/include/includes.h"
++#ifndef TC_SAMBA4X_NETBSD4_COMPAT
+ #include <spawn.h>
++#else
++/*
++ * NetBSD 4 has no posix_spawn(). Every named pipe but srvsvc (served inside
++ * smbd, 0005) comes here to start samba-dcerpcd, which the appliance does
++ * not ship: fail without forking, as posix_spawn() fails for a missing
++ * program, so the client gets NT_STATUS_OBJECT_NAME_NOT_FOUND as on the
++ * NetBSD 6 lane.
++ */
++static int tc_spawn_missing(pid_t *pid, const char *path, const void *actions,
++			    const void *attr, char *const argv[],
++			    char *const envp[])
++{
++	*pid = -1;
++	return ENOENT;
++}
++#define posix_spawn tc_spawn_missing
++#endif
+ #include "local_np.h"
+ #include "lib/async_req/async_sock.h"
+ #include "librpc/gen_ndr/ndr_named_pipe_auth.h"

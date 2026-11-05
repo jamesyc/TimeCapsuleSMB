@@ -1,21 +1,16 @@
 diff --git a/source3/lib/xattr_tdb.c b/source3/lib/xattr_tdb.c
 --- a/source3/lib/xattr_tdb.c
 +++ b/source3/lib/xattr_tdb.c
-@@ -380,8 +380,20 @@ ssize_t xattr_tdb_listattr(struct db_context *db_ctx,
+@@ -377,8 +377,15 @@ ssize_t xattr_tdb_listattr(struct db_context *db_ctx,
  
  	if (len > size) {
  		TALLOC_FREE(frame);
 +		/*
-+		 * listxattr/flistxattr callers may probe with size == 0 and
-+		 * expect the required buffer length. For a nonzero but
-+		 * undersized buffer, return -1/ERANGE so generic Samba callers
-+		 * such as get_ea_names_from_fsp() retry with a larger buffer.
-+		 *
-+		 * Returning the positive required length here makes callers
-+		 * treat that value as bytes written into their smaller buffer,
-+		 * which breaks macOS/iOS assetsd metadata once the stream name
-+		 * list exceeds Samba's initial 1024-byte stack buffer (the
-+		 * Photos library writes many assetsd streams on each file).
++		 * A probe with size 0 gets the length it needs. A nonzero
++		 * buffer that is too small fails with ERANGE, as
++		 * listxattr(2) does: callers such as get_ea_names_from_fsp()
++		 * retry with a larger buffer only then, and take a positive
++		 * return for the bytes written into theirs.
 +		 */
  		errno = ERANGE;
 -		return len;

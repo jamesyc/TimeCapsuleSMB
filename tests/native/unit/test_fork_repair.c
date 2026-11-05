@@ -61,10 +61,10 @@ static void map_records_private_only(uintptr_t b)
 {
 	tc_fork_repair_note_map(at(b, 0), 2 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON);
 	tc_fork_repair_note_map(at(b, 4), pg, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON);	/* shared by design */
-	tc_fork_repair_note_map(at(b, 6), pg, PROT_NONE, MAP_PRIVATE | MAP_ANON);		/* nothing mapped */
+	tc_fork_repair_note_map(at(b, 6), pg, PROT_NONE, MAP_PRIVATE | MAP_ANON);		/* a reservation */
 	tc_fork_repair_note_map(MAP_FAILED, pg, PROT_READ, MAP_PRIVATE | MAP_ANON);		/* failed call */
 	tc_fork_repair_note_map(at(b, 8), pg - 100, PROT_READ, MAP_PRIVATE);			/* a file, rounded up */
-	expect(b, "0-2:3 8-9:1");
+	expect(b, "0-2:3 6-7:0 8-9:1");
 }
 
 /* MAP_FIXED over recorded pages replaces them, whatever the new mapping is. */
@@ -132,18 +132,21 @@ static void remap_drops_replaced(uintptr_t b)
 	expect(b, "0-1:3 3-4:3");
 }
 
-/* mprotect() changes only recorded parts; PROT_NONE drops them. */
+/* mprotect() changes only recorded parts; a PROT_NONE part stays recorded, so
+ * that making it writable again is seen. */
 static void protect_updates(uintptr_t b)
 {
 	tc_fork_repair_note_map(at(b, 0), 4 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON);
 	tc_fork_repair_note_protect(at(b, 1), 2 * pg, PROT_READ);
 	expect(b, "0-1:3 1-3:1 3-4:3");
 	tc_fork_repair_note_protect(at(b, 3), 4 * pg, PROT_NONE);	/* runs past the recorded end */
-	expect(b, "0-1:3 1-3:1");
+	expect(b, "0-1:3 1-3:1 3-4:0");
 	tc_fork_repair_note_protect(at(b, 0), 3 * pg, PROT_READ | PROT_WRITE);
-	expect(b, "0-3:3");
+	expect(b, "0-3:3 3-4:0");
+	tc_fork_repair_note_protect(at(b, 3), pg, PROT_READ | PROT_WRITE);
+	expect(b, "0-4:3");
 	tc_fork_repair_note_protect(at(b, 8), pg, PROT_READ);		/* not recorded: nothing */
-	expect(b, "0-3:3");
+	expect(b, "0-4:3");
 }
 
 static pid_t fake_pid;
@@ -585,6 +588,33 @@ static void updates_keep_mask_and_errno(uintptr_t b)
 	CHECK(sigprocmask(SIG_SETMASK, &saved, NULL) == 0);
 }
 
+/* A private reservation (PROT_NONE) that is later made writable, as an
+ * allocator commits pages it reserved, is repaired from then on, and never
+ * while nothing can write it. */
+static void reservation_made_writable(uintptr_t b)
+{
+	char *res = mmap(NULL, 2 * pg, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	int prot;
+
+	(void)b;
+	CHECK(res != MAP_FAILED);
+	tc_fork_repair_note_map(res, 2 * pg, PROT_NONE, MAP_PRIVATE | MAP_ANON);
+	CHECK(tc_fork_repair_lookup(res, &prot) && prot == PROT_NONE);
+	fake_pid = 4242;
+	CHECK(tc_fork_repair_fork(fake_fork) == 4242);
+	CHECK(tc_fork_repair_cycles == 0 && tc_fork_repair_fallbacks == 0);
+
+	CHECK(mprotect(res, pg, PROT_READ | PROT_WRITE) == 0);
+	tc_fork_repair_note_protect(res, pg, PROT_READ | PROT_WRITE);
+	res[0] = 'w';
+	CHECK(tc_fork_repair_fork(fake_fork) == 4242);
+	CHECK(tc_fork_repair_cycles == 1 && tc_fork_repair_fallbacks == 0);
+	CHECK(res[0] == 'w');
+	res[0] = 'x';	/* still writable after its cycle */
+	CHECK(tc_fork_repair_lookup(res + pg, &prot) && prot == PROT_NONE);
+	CHECK(munmap(res, 2 * pg) == 0);
+}
+
 int main(int argc, char **argv)
 {
 	/* An address range nobody maps: only the registry sees these numbers. */
@@ -604,6 +634,7 @@ int main(int argc, char **argv)
 		{"advice_restored", advice_restored},
 		{"advice_partial_repair", advice_partial_repair},
 		{"read_only_ranges_skipped", read_only_ranges_skipped},
+		{"reservation_made_writable", reservation_made_writable},
 		{"updates_keep_mask_and_errno", updates_keep_mask_and_errno},
 		{"stack_cycled", stack_cycled},
 		{"stack_cycle_fails", stack_cycle_fails},

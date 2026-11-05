@@ -12,7 +12,8 @@ import unittest
 from unittest import mock
 
 from tests.samba import vm_build
-from tests.samba.vm_build import LANES, aside_files, checkout_files, job_script, update_manifest
+from tests.samba.vm_build import (LANES, aside_command, aside_files, checkout_files, job_script, restore_command,
+                                  update_manifest)
 
 
 class JobScriptTest(unittest.TestCase):
@@ -187,6 +188,48 @@ class AsideTest(unittest.TestCase):
                          ["build/patches/samba4x/0003-old.patch", "build/patches/samba4x/0065-theirs.patch"])
         self.assertEqual(aside_files(local, local), [])
 
+    def tree(self, tmp: Path) -> tuple[Path, Path]:
+        checkout = tmp / "checkout"
+        for name in ("patches/0065-theirs.patch", "patches/sub/0066-theirs.patch", "patches/0001-ours.patch"):
+            (checkout / name).parent.mkdir(parents=True, exist_ok=True)
+            (checkout / name).write_text("theirs " + name)
+        return checkout, tmp / "stash"
+
+    def test_a_retried_set_aside_keeps_what_the_first_run_moved(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout, stash = self.tree(Path(temporary))
+            files = ["patches/0065-theirs.patch", "patches/sub/0066-theirs.patch"]
+            command = aside_command(str(checkout), str(stash), files)
+            subprocess.run(["sh", "-c", command], check=True)
+            subprocess.run(["sh", "-c", command], check=True)
+            self.assertFalse((checkout / files[0]).exists())
+            self.assertEqual((stash / files[0]).read_text(), "theirs " + files[0])
+            self.assertEqual((stash / files[1]).read_text(), "theirs " + files[1])
+            self.assertTrue((checkout / "patches/0001-ours.patch").exists())
+            subprocess.run(["sh", "-c", restore_command(str(checkout), str(stash))], check=True)
+            self.assertEqual((checkout / files[1]).read_text(), "theirs " + files[1])
+            self.assertFalse(stash.exists())
+
+    def test_a_restore_keeps_a_newer_file_and_can_run_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout, stash = self.tree(Path(temporary))
+            name = "patches/0065-theirs.patch"
+            subprocess.run(["sh", "-c", aside_command(str(checkout), str(stash), [name])], check=True)
+            (checkout / name).write_text("newer")
+            command = restore_command(str(checkout), str(stash))
+            subprocess.run(["sh", "-c", command], check=True)
+            subprocess.run(["sh", "-c", command], check=True)
+            self.assertEqual((checkout / name).read_text(), "newer")
+
+    def test_a_set_aside_that_cannot_move_a_file_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout, stash = self.tree(Path(temporary))
+            stash.write_text("a file where the stash directory belongs")
+            run = subprocess.run(["sh", "-c", aside_command(str(checkout), str(stash), ["patches/0065-theirs.patch"])],
+                                 capture_output=True)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertTrue((checkout / "patches/0065-theirs.patch").exists())
+
 
 def repo(tmp: Path) -> Path:
     root = tmp / "repo"
@@ -278,7 +321,7 @@ class BuildTest(unittest.TestCase):
         moved = [c for c in vm.commands if "0065-theirs.patch" in c]
         self.assertEqual(len(moved), 1)
         self.assertLess(vm.commands.index(moved[0]), vm.commands.index("put /tmp/tc-x-job.sh"))
-        self.assertIn("mv $f ~/TimeCapsuleSMB/$f", vm.commands[-1])  # put back last
+        self.assertEqual(restore_command("~/TimeCapsuleSMB", "/tmp/tc-x-aside"), vm.commands[-1])  # put back last
         self.assertIn("root rm -rf /tmp/tc-x-out /tmp/tc-x-job.log /tmp/tc-x-job.sh", vm.commands)
 
     def test_a_failed_lane_raises_and_still_puts_files_back(self) -> None:
@@ -289,7 +332,7 @@ class BuildTest(unittest.TestCase):
                 vm_build.build(root, ["6"], Path(tmp) / "out", "pw", "tc-x", install=True, vm=vm,
                                log=lambda *_: None)
             self.assertEqual((root / LANES["6"]["smbd"]).read_bytes(), b"old 6smbd")
-        self.assertIn("mv $f ~/TimeCapsuleSMB/$f", vm.commands[-1])
+        self.assertEqual(restore_command("~/TimeCapsuleSMB", "/tmp/tc-x-aside"), vm.commands[-1])
         # A failed build's outputs do not stay on the VM's shared tmpfs either.
         self.assertIn("root rm -rf /tmp/tc-x-out /tmp/tc-x-job.log /tmp/tc-x-job.sh", vm.commands)
 
@@ -319,8 +362,8 @@ class VmRetryTest(unittest.TestCase):
         calls, sleeps = [], []
 
         def run(argv, **kwargs):
-            calls.append(argv)
-            return subprocess.CompletedProcess(argv, codes.pop(0), "", "")
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, codes.pop(0), "", "rsync: connection unexpectedly closed\n")
 
         return vm_build.Vm("pw", run=run, sleep=sleeps.append), calls, sleeps
 
@@ -339,6 +382,17 @@ class VmRetryTest(unittest.TestCase):
             vm.get("/tmp/o/smbd.6", Path("/x"))
         self.assertEqual(len(calls), 4)
 
+    def test_a_root_command_is_retried_only_when_the_login_failed(self) -> None:
+        # The expect script exits 3 or 4 only before su ran anything.
+        vm, calls, sleeps = self.vm([4, 3, 0])
+        vm.root("true")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, [4, 4])
+        vm, calls, _ = self.vm([1])
+        with self.assertRaisesRegex(RuntimeError, r"root command failed \(1\): false"):
+            vm.root("false")
+        self.assertEqual(len(calls), 1)
+
     def test_a_command_is_retried_only_after_ssh_s_refusal(self) -> None:
         vm, calls, _ = self.vm([255, 0])
         vm.ssh("true")
@@ -349,9 +403,87 @@ class VmRetryTest(unittest.TestCase):
             vm.ssh("false")
         self.assertEqual(len(calls), 1)
 
+    def sync(self, codes):
+        """Sync a two-file checkout; return each try's call, the sleeps and the error raised."""
+        vm, calls, sleeps = self.vm(codes)
+        error = None
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(vm_build, "checkout_files", return_value=["a.c", "b.patch"]):
+            try:
+                vm.sync(Path(tmp))
+            except RuntimeError as exc:
+                error = str(exc)
+            for argv, kwargs in calls:
+                # Every try sends the whole file list to rsync run in the
+                # checkout, and keeps its stderr for the error.
+                self.assertEqual(argv[0], "rsync")
+                self.assertEqual(kwargs["cwd"], Path(tmp))
+                self.assertEqual(kwargs["input"], "a.c\0b.patch")
+                self.assertTrue(kwargs["capture_output"])
+                self.assertEqual(kwargs["env"]["SSHPASS"], "pw")
+        return calls, sleeps, error
+
+    def test_a_sync_is_retried_after_any_failure(self) -> None:
+        # rsync passes on ssh's 255 and sshpass's 5 (a refused password);
+        # GNU rsync can report a dropped connection as 12. A sync is safe to repeat.
+        calls, sleeps, error = self.sync([255, 5, 12, 0])
+        self.assertIsNone(error)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(sleeps, [4, 4, 4])
+
+    def test_a_sync_that_keeps_failing_raises_after_four_tries(self) -> None:
+        calls, sleeps, error = self.sync([255, 255, 23, 23])
+        self.assertEqual(error, "rsync to the VM failed (23)\nrsync: connection unexpectedly closed")
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(sleeps, [4, 4, 4])
+
+
+class VmConnectionTest(unittest.TestCase):
+    # These check the options each call passes. Whether ssh then shares the
+    # connection (one login, the master not holding the captured pipes open,
+    # the socket removed when ControlPersist ends the master) needs a real
+    # sshd: a vm_build run on the VM.
+
+    def vm(self):
+        calls = []
+
+        def run(argv, **kwargs):
+            # The expect script is deleted once root() returns; keep its text.
+            script = Path(argv[2]).read_text() if argv[0] == "expect" else None
+            calls.append((argv, script))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        return vm_build.Vm("pw", run=run, sleep=lambda _: None), calls
+
+    def shares(self, vm, text: str) -> bool:
+        return " ".join(vm.opts) in text
+
+    def test_every_call_goes_through_the_vm_s_own_connection(self) -> None:
+        vm, calls = self.vm()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(vm_build, "checkout_files", return_value=[]):
+            vm.ssh("true")
+            vm.put(Path(tmp) / "a", "/tmp/a")
+            vm.get("/tmp/a", Path(tmp) / "b")
+            vm.sync(Path(tmp))
+            vm.root("true")
+        ssh, put, get, sync, root = calls
+        for argv, _ in (ssh, put, get):
+            self.assertTrue(self.shares(vm, " ".join(argv)), argv)
+        self.assertTrue(self.shares(vm, sync[0][sync[0].index("-e") + 1]), sync[0])
+        spawn = next(line for line in root[1].splitlines() if line.startswith("spawn "))
+        self.assertTrue(self.shares(vm, spawn), spawn)
+        self.assertTrue(spawn.endswith(f" {vm_build.VM}"), spawn)
+
+    def test_each_vm_has_its_own_socket_short_enough_for_macos(self) -> None:
+        a, b = vm_build.Vm("pw"), vm_build.Vm("pw")
+        self.assertNotEqual(a.control, b.control)
+        # sun_path holds 104 bytes on macOS, and ssh binds the master to the
+        # path plus a 17-byte random suffix before renaming it.
+        self.assertLess(len(a.control) + 17, 104)
+
 
 class ExpectTest(unittest.TestCase):
-    script = vm_build.EXPECT.format(vm="james@192.0.2.1")
+    script = vm_build.EXPECT.format(vm="james@192.0.2.1", opts="-o ControlPath=/tmp/x")
 
     def test_pattern_lists_span_lines(self) -> None:
         # On one line, expect takes a braced list as a single pattern: every
@@ -365,12 +497,32 @@ class ExpectTest(unittest.TestCase):
         self.assertIn("-re {__RC=([0-9]+)}", self.script)
         self.assertIn('send -- "$env(VMCMD); echo __RC=\\$?\\r"', self.script)
 
+    def run_login(self, spawn: str) -> int:
+        """Run the script with `spawn` standing in for the login; return expect's status."""
+        local = self.script.replace("spawn sshpass -e ssh -tt -o ControlPath=/tmp/x james@192.0.2.1", spawn)
+        with tempfile.NamedTemporaryFile("w", suffix=".exp", delete=False) as handle:
+            handle.write(local)
+        try:
+            return subprocess.run(["expect", "-f", handle.name], env={"VMCMD": "true", "VMPASS": "x",
+                                                                       "PATH": "/usr/bin:/bin"},
+                                  capture_output=True, text=True, timeout=30).returncode
+        finally:
+            Path(handle.name).unlink()
+
+    @unittest.skipUnless(shutil.which("expect"), "expect is not installed")
+    def test_a_login_that_fails_before_the_prompt_exits_with_a_retried_status(self) -> None:
+        # ssh's own refusal (one password prompt) and a connection that drops
+        # before the shell both exit with a status root() retries; nothing ran.
+        self.assertEqual(self.run_login(
+            "spawn sh -c {echo 'james@vm: Permission denied (password).'; exit 255}"), 3)
+        self.assertEqual(self.run_login(
+            "spawn sh -c {echo 'Connection closed by 192.168.64.4 port 22'; exit 255}"), 4)
+
     @unittest.skipUnless(shutil.which("expect"), "expect is not installed")
     def test_expect_reports_the_command_status(self) -> None:
         # Run the script's logic against a local shell instead of the VM.
         local = self.script.replace(
-            "spawn sshpass -e ssh -tt -o PubkeyAuthentication=no -o PreferredAuthentications=password "
-            "-o StrictHostKeyChecking=no james@192.0.2.1",
+            "spawn sshpass -e ssh -tt -o ControlPath=/tmp/x james@192.0.2.1",
             "spawn sh -c {PS1='ja$ '; export PS1; exec sh -i}")
         # A nested interactive shell with a root-style prompt stands in for su.
         local = local.replace('send "su\\r"\nexpect "assword"\nsend -- "$env(VMPASS)\\r"\n',

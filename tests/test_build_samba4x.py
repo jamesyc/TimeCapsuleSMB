@@ -135,13 +135,17 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         # The scavenger hello wait and rescan tc_durable_reconnect_test compiles.
         self.make_file(src_dir / "source3/smbd/scavenger.c",
                        "struct scavenger_message {\n};\n\n"
-                       "#ifndef TC_SCAVENGER_HELLO_SECONDS\n#endif\n\nstatic bool scavenger_wait_hello(void)\n{\n}\n\n"
+                       "#ifndef SCAVENGER_HELLO_TIMEOUT_SECONDS\n#endif\n\nstatic bool scavenger_wait_hello(void)\n{\n}\n\n"
+                       "static bool scavenger_cleanup(const struct scavenger_message *msg)\n{\n}\n\n"
                        "struct scavenger_rescan_rec {\n};\n\nstatic size_t scavenger_rescan(void)\n{\n}\n")
         # The durable driver also compiles the production rename helpers.
         self.make_file(src_dir / "source3/smbd/smb2_reply.c",
                        "static void rename_open_files(void)\n{\n}\n\n"
                        "NTSTATUS rename_open_files_below(void)\n{\n}\n")
         self.make_file(src_dir / "source3/smbd/open.c", "void msg_file_was_renamed(void)\n{\n}\n")
+        # The links driver compiles the reparse tag lookup with its hook.
+        self.make_file(src_dir / "source3/modules/util_reparse.c",
+                       "NTSTATUS fsctl_get_reparse_tag(void)\n{\n}\n")
         # And the durable reconnect's byte-range lock steps with the record
         # parse and store they run under.
         self.make_file(src_dir / "source3/locking/brlock.c",
@@ -241,7 +245,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                                    "tc_streams_xattr_test", "tc_native_metadata_test",
                                    "tc_xattr_migrate_test", "tc_storage_reload_test",
                                    "tc_native_links_test", "tc_catia_links_test", "tc_at_emulation_test",
-                                   "tc_file_growth_test", "tc_fork_repair_test", "tc_short_write_test"):
+                                   "tc_file_growth_test", "tc_fork_repair_test", "tc_short_write_test",
+                                   "tc_srvsvc_enum_test"):
                         if target in targets:
                             if os.environ.get("TEST_MISSING_REGRESSION_BINARY") != target:
                                 binary = pathlib.Path("bin/default/source3/modules") / target
@@ -282,6 +287,20 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         )
 
     _dependency_pins: dict[str, str] | None = None
+
+    @classmethod
+    def gnutls_stamp_name(cls) -> str:
+        """The GnuTLS stamp of a build from the pinned source with this
+        checkout's patches/gnutls: the cksum of every file there, in byte
+        order of their paths, as _samba4x.sh computes it."""
+        pins = cls.dependency_pins()
+        patches = REPO_ROOT / "build/patches/gnutls"
+        paths = sorted((path for path in patches.rglob("*") if path.is_file()),
+                       key=lambda path: path.relative_to(patches).as_posix().encode())
+        data = b"".join(path.read_bytes() for path in paths)
+        crc, size = subprocess.run(["cksum"], input=data, capture_output=True, check=True).stdout.split()
+        return (f".stamp-gnutls-{pins['GNUTLS_VERSION']}-{pins['GNUTLS_SHA256']}"
+                f"-system-nettle-oaep-no-thread-local-{crc.decode()}-{size.decode()}")
 
     @classmethod
     def dependency_pins(cls) -> dict[str, str]:
@@ -345,10 +364,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         self.make_file(deps / "lib" / "libhogweed.a")
         self.make_file(deps / f".stamp-libtasn1-{pins['LIBTASN1_VERSION']}-{pins['LIBTASN1_SHA256']}")
         self.make_file(deps / "lib" / "libtasn1.a")
-        self.make_file(
-            deps / f".stamp-gnutls-{pins['GNUTLS_VERSION']}-{pins['GNUTLS_SHA256']}"
-            "-system-nettle-oaep-no-thread-local"
-        )
+        self.make_file(deps / self.gnutls_stamp_name())
         self.make_file(deps / "lib" / "libgnutls.a")
         self.make_file(deps / "lib" / "pkgconfig" / "gnutls.pc", "Libs: -L${libdir} -lgnutls\n")
 
@@ -510,6 +526,64 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertIn(f"libtasn1-{pins['LIBTASN1_VERSION']}.tar.gz", calls[0])
             self.assertFalse(capture.exists())
+
+    def test_gnutls_built_with_other_patches_is_rebuilt(self) -> None:
+        # A library built before a patch changed, or without the patches'
+        # checksum in its stamp, is not reused: the build fetches the source.
+        pins = self.dependency_pins()
+        for case, stamp in (
+            ("stamp without the patch checksum",
+             f".stamp-gnutls-{pins['GNUTLS_VERSION']}-{pins['GNUTLS_SHA256']}-system-nettle-oaep-no-thread-local"),
+            ("other patches", self.gnutls_stamp_name().rsplit("-", 2)[0] + "-1-1"),
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                curl_capture = root / "curl-args.txt"
+                env = self.env_for_lane(root, "netbsd7", root / "configure-args.txt")
+                env["TEST_CURL_ARGS"] = str(curl_capture)
+                deps = root / "samba-build-netbsd7" / "deps"
+                (deps / self.gnutls_stamp_name()).unlink()
+                self.make_file(deps / stamp)
+
+                result = self.run_wrapper("samba4x.sh", env)
+
+                self.assertNotEqual(result.returncode, 0)
+                output = result.stdout + result.stderr + Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+                self.assertNotIn(f"GnuTLS {pins['GNUTLS_VERSION']} already built.", output)
+                calls = curl_capture.read_text().splitlines()
+                self.assertEqual(len(calls), 1)
+                self.assertIn(f"gnutls-{pins['GNUTLS_VERSION']}.tar.xz", calls[0])
+                # The stale stamp went with the library it described.
+                self.assertFalse((deps / stamp).exists())
+
+    def test_gnutls_stamp_covers_every_file_of_its_patch_directory(self) -> None:
+        # patch_apply_series also applies a series line with no description,
+        # and patch_copy_overlay copies an overlay directory: a change to any
+        # file there must rebuild the library.
+        pins = self.dependency_pins()
+        patch = "0001-netbsd-no-pthread-gnutls.patch"
+        changes = {
+            "nothing": lambda d: None,
+            "a byte of a patch": lambda d: (d / patch).write_bytes((d / patch).read_bytes() + b"\n"),
+            "a series line without a description": lambda d: (
+                (d / "0002-bare.patch").write_text(""),
+                (d / "series").write_text((d / "series").read_text() + "0002-bare.patch\n")),
+            "an overlay file": lambda d: ((d / "overlay").mkdir(), (d / "overlay/new.c").write_text("new")),
+        }
+        for case, change in changes.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, "netbsd7", root / "configure-args.txt")
+                env["TEST_CURL_ARGS"] = str(root / "curl-args.txt")
+                env["GNUTLS_PATCH_DIR"] = str(root / "gnutls-patches")
+                shutil.copytree(REPO_ROOT / "build/patches/gnutls", env["GNUTLS_PATCH_DIR"])
+                change(Path(env["GNUTLS_PATCH_DIR"]))
+
+                result = self.run_wrapper("samba4x.sh", env)
+
+                output = result.stdout + result.stderr + Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+                built = f"GnuTLS {pins['GNUTLS_VERSION']} already built."
+                self.assertEqual(built in output, case == "nothing", output[-400:])
 
     def test_appliance_lanes_enable_private_kernel_workarounds(self) -> None:
         for wrapper, lane, log_name in (
@@ -1230,6 +1304,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         self.assertIn("tc_file_growth_test", built)
                         self.assertIn("tc_fork_repair_test", built)
                         self.assertIn("tc_short_write_test", built)
+                        self.assertIn("tc_srvsvc_enum_test", built)
                         self.assertFalse(calls.exists())
                         continue
                     self.assertEqual(calls.read_text().splitlines(), [
