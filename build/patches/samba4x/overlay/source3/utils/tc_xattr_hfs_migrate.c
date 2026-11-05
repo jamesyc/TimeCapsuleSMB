@@ -822,9 +822,11 @@ static int tc_read_tdb_stream(struct tc_migration *migration,
 		if (ret < 0 && tc_missing_error(errno)) {
 			/*
 			 * An interrupted fsetxattr_multi() wrote no further
-			 * extents: the stream ends here, as stock
-			 * fgetxattr_multi() reads it. Extents past the gap,
-			 * which smbd never reads, go with the database.
+			 * extents: the stream ends here, as smbd reads it
+			 * (stock on Linux, where ENOATTR is ENODATA; on NetBSD
+			 * only with 0035, before which the read failed).
+			 * Extents past the gap, which smbd never reads, go
+			 * with the database.
 			 */
 			fprintf(stderr, "stream cut at a missing extent "
 				"path=%s name=%s extents=%u of %u\n",
@@ -1736,11 +1738,19 @@ static int tc_migrate_resource(struct tc_migration *migration,
 		copied += chunk;
 		tc_progress();
 	}
-	if (ftruncate(resource_fd, resource->length) != 0 ||
-	    fsync(resource_fd) != 0 ||
-	    tc_verify_resource(source_fd, resource_fd,
-		resource->offset, resource->length) != 0)
+	comparison = -1;
+	if (ftruncate(resource_fd, resource->length) == 0 &&
+	    fsync(resource_fd) == 0)
 	{
+		comparison = tc_verify_resource(source_fd, resource_fd,
+						resource->offset,
+						resource->length);
+		if (comparison > 0) {
+			/* The copy differs: no system call failed. */
+			errno = EIO;
+		}
+	}
+	if (comparison != 0) {
 		fprintf(stderr, "resource verification failed path=%s error=%s\n",
 			path, strerror(errno));
 		goto out;
@@ -2697,8 +2707,9 @@ static int tc_merge_attribute(struct db_context *target, struct tc_multi_source 
 			DATA_BLOB data = data_blob_null;
 			if (part == NULL) return -1;
 			if (xattr_tdb_getattr(source->scan.db, ctx, id, part, &data) < 0) {
-				/* The value ends at its first missing extent
-				 * (tc_read_tdb_stream()); no other source fills it. */
+				/* The value ends at its first missing extent, as
+				 * smbd reads it (tc_read_tdb_stream()); no other
+				 * source fills it. */
 				if (tc_missing_error(errno)) break;
 				return -1;
 			}
