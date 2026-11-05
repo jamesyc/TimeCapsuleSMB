@@ -594,6 +594,18 @@ static int test_next_fstatat(struct vfs_handle_struct *handle,
 	return 0;
 }
 
+static int test_next_lstat(struct vfs_handle_struct *handle,
+			   struct smb_filename *smb_fname)
+{
+	(void)handle;
+	ZERO_STRUCT(smb_fname->st);
+	smb_fname->st.st_ex_mode = test_fstatat_base_mode;
+	smb_fname->st.st_ex_size = 4096;
+	smb_fname->st.st_ex_blocks = 8;
+	smb_fname->st.st_ex_ino = 100;
+	return 0;
+}
+
 static ssize_t test_fgetxattr(struct files_struct *fsp,
 			      const char *name,
 			      void *value,
@@ -810,6 +822,8 @@ static NTSTATUS test_missing_synthetic_pathref(void)
 #define SMB_VFS_FSETXATTR(f, n, v, s, x) test_fsetxattr((f), (n), (v), (s), (x))
 #undef SMB_VFS_NEXT_FSTATAT
 #define SMB_VFS_NEXT_FSTATAT(h, d, n, s, f) test_next_fstatat((h), (d), (n), (s), (f))
+#undef SMB_VFS_NEXT_LSTAT
+#define SMB_VFS_NEXT_LSTAT(h, n) test_next_lstat((h), (n))
 #undef SMB_VFS_NEXT_FSTREAMINFO
 #define SMB_VFS_NEXT_FSTREAMINFO(h, f, m, n, s) test_next_fstreaminfo((h), (f), (m), (n), (s))
 #undef SMB_VFS_FGETXATTR
@@ -1385,12 +1399,17 @@ static void test_finderinfo_views(struct vfs_handle_struct *handle,
 			   finderinfo, sizeof(finderinfo));
 		CHECK(tc_native_finderinfo_read_at(
 			      handle, handle->conn->cwd_fsp, &nested,
-			      read_back) == 1);
+			      AT_SYMLINK_NOFOLLOW, read_back) == 1);
 		CHECK(test_pathref_opens == 1 && test_lcomp_opens == 0);
 		CHECK(read_back[0] == 'T');
 		CHECK(tc_native_finderinfo_read_at(
-			      handle, &dir, &leaf, read_back) == 1);
+			      handle, &dir, &leaf, AT_SYMLINK_NOFOLLOW,
+			      read_back) == 1);
 		CHECK(test_pathref_opens == 1 && test_lcomp_opens == 1);
+		/* Following is asked for: the open that follows, as in stock. */
+		CHECK(tc_native_finderinfo_read_at(
+			      handle, &dir, &leaf, 0, read_back) == 1);
+		CHECK(test_pathref_opens == 2 && test_lcomp_opens == 1);
 	}
 
 	/* A symlink stat'ed with AT_SYMLINK_NOFOLLOW has no AFP_AfpInfo,
@@ -1413,6 +1432,39 @@ static void test_finderinfo_views(struct vfs_handle_struct *handle,
 				 AT_SYMLINK_NOFOLLOW) == 0);
 	CHECK(sbuf.st_ex_size == AFP_INFO_SIZE);
 	CHECK(test_pathref_opens == 1);
+
+	/* Followed, a link reports its target's: the base stat and the open
+	 * both follow it. */
+	test_fstatat_base_mode = S_IFLNK | 0777;
+	CHECK(fruit_fstatat_meta(handle, &config, handle->conn->cwd_fsp,
+				 &stream_name, &sbuf, 0) == 0);
+	CHECK(test_pathref_opens == 2);
+
+	/* Removing never follows: the target keeps its FinderInfo. */
+	CHECK(tc_native_finderinfo_remove_at(
+		      handle, handle->conn->cwd_fsp, &stream_name) == 0);
+	CHECK(native_store.exists);
+	CHECK(test_pathref_opens == 2 && test_lcomp_opens == 0);
+
+	/* A handle reports the attribute's own allocation, as a path does,
+	 * not the data fork's. */
+	reset_stores();
+	seed_store(&native_store, TC_FINDERINFO_XATTR,
+		   finderinfo, sizeof(finderinfo));
+	{
+		struct smb_filename open_name = {0};
+		files_struct stream_fsp = {0};
+		struct fio fio = {.config = &config};
+		SMB_STRUCT_STAT by_handle = {0};
+
+		init_stream_file(mem_ctx, handle->conn, fsp, &stream_fsp, &open_name);
+		CHECK(fruit_fstat_meta(handle, &stream_fsp, &by_handle, &fio) == 0);
+		CHECK(fruit_fstatat_meta(handle, &config, NULL, &stream_name,
+					 &sbuf, 0) == 0);
+		CHECK(by_handle.st_ex_size == sbuf.st_ex_size);
+		CHECK(by_handle.st_ex_blocks == sbuf.st_ex_blocks);
+		CHECK(by_handle.st_ex_blocks == 1);
+	}
 }
 
 static void test_resource_backend(struct vfs_handle_struct *handle,
