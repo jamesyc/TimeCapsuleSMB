@@ -389,6 +389,11 @@
 # one pipe inside smbd (overlay tc_embedded_srvsvc.c). Other pipes (lsarpc,
 # samr, wkssvc, winreg) fall through to local_np_connect, which fails to start
 # the absent samba-dcerpcd.
+#
+# Stock srvsvc reloads the whole share table for each enumeration. rpcd_classic
+# holds no trees, but a worker does: the reload drops the options modules set in
+# memory at tree connect, fruit's "posix locking = no" among them, for the trees
+# already connected. Share enumeration uses the worker's table as it stands.
 0005-rpc-embedded-srvsvc.patch|embedded srvsvc named pipe support
 # On appliance builds (TC_SAMBA4X_APPLIANCE), run notifyd and cleanupd in the
 # parent, as interactive smbd does. Skip the datagram-socket sweep, which forks

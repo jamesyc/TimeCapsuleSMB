@@ -14,7 +14,7 @@ Phases, in order, each step's output in DIR/<device>-<step>.log:
   devices  per device, the devices in parallel: the regression drivers
            (quick: three of them; full: the whole device plan of
            tests/samba/run.py) from a RAM disk of their own, doctor,
-           dir_device, growth_device, full only durable_device and
+           dir_device, growth_device, srvsvc_device, full only durable_device and
            links_device, then smbtorture (tests/samba/torture.py).
 
 Without --build or --binaries there is nothing new to install or to run the
@@ -98,6 +98,7 @@ def device_steps(tier: str, lane: str, env: str, out: Path, drivers_from: Path |
     steps.append(Step("dir_device", lane, py("tests.samba.dir_device", *on,
                                              *(["--quick"] if quick else ["--record", str(out / f"{lane}-dir.json")]))))
     steps.append(Step("growth_device", lane, py("tests.samba.growth_device", *on, *(["--quick"] if quick else []))))
+    steps.append(Step("srvsvc_device", lane, py("tests.samba.srvsvc_device", *on)))
     if not quick:
         steps.append(Step("growth_device_sync", lane, py("tests.samba.growth_device", *on, "--no-aio",
                                                          *[a for case in GROWTH_SYNC for a in ("--case", case)])))

@@ -32,7 +32,7 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(names(phases[2].steps), ["swap_smbd", "swap_smbd"])
         self.assertIn("/out/binaries/smbd.4le", phases[2].steps[1].argv)
         self.assertEqual(names(phases[3].per_device["6"]),
-                         ["drivers", "doctor", "dir_device", "growth_device", "smbtorture"])
+                         ["drivers", "doctor", "dir_device", "growth_device", "srvsvc_device", "smbtorture"])
         self.assertIn("--quick", phases[3].per_device["6"][2].argv)
         self.assertIn("--quick", phases[3].per_device["6"][3].argv)
         torture = phases[3].per_device["4le"][-1].argv
@@ -46,8 +46,8 @@ class PlanTest(unittest.TestCase):
         self.assertEqual([s.device for s in install.steps], ["6", "4le"])
         self.assertFalse(install.parallel)
         self.assertEqual(names(phases[3].per_device["6"]),
-                         ["drivers", "doctor", "dir_device", "growth_device", "growth_device_sync",
-                          "durable_device", "links_device", "smbtorture"])
+                         ["drivers", "doctor", "dir_device", "growth_device", "srvsvc_device",
+                          "growth_device_sync", "durable_device", "links_device", "smbtorture"])
         self.assertNotIn("--quick", phases[3].per_device["6"][2].argv)
 
     def test_the_build_takes_the_vm_password_from_netbsd6_s_env(self) -> None:

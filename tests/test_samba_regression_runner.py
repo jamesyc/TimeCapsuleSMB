@@ -251,6 +251,8 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
             "tc_at_emulation_test": ["replace"],
             # So does the NetBSD 6 fork repair (patch 0070).
             "tc_fork_repair_test": ["replace"],
+            # Calls the real srvsvc server code.
+            "tc_srvsvc_enum_test": ["smbd_base", "RPC_SRVSVC"],
         }.get(name, ["smbd_base"])
         assert arguments["deps"].split() == expected_deps
         assert arguments["install"] is False

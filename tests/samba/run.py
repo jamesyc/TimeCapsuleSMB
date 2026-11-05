@@ -22,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 TARGETS = ("tc_pthreadpool_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
            "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test", "tc_storage_reload_test",
            "tc_native_links_test", "tc_catia_links_test", "tc_at_emulation_test", "tc_file_growth_test",
-           "tc_fork_repair_test", "tc_short_write_test")
+           "tc_fork_repair_test", "tc_short_write_test", "tc_srvsvc_enum_test")
 MIGRATOR_TARGET = "tc_xattr_hfs_migrate"
 SMBD_TARGET = "smbd/smbd"
 # Compile the production accept/fork call site as well as the extracted helper.
@@ -85,6 +85,7 @@ FORK_REPAIR_CASES = ("kernel", "bounds", "registry", "regions", "read_after_repa
 # Patch 0072's check for a short macOS WRITE, its frame walk and end decision.
 SHORT_WRITE_CASES = ("whole", "short", "several", "keepalive", "false_match", "ids_and_offset",
                      "partial_tail", "end_now", "arriving", "compound", "cap", "read_idle", "feed_replace")
+SRVSVC_ENUM_CASES = ("options", "table")
 STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks",
                         "root", "root_widen", "root_rename", "root_no_fds", "root_aio", "root_failed", "root_unchanged")
 
@@ -193,6 +194,10 @@ def host_flags(source: Path) -> None:
     for cache in (source / "bin/c4che").glob("*_cache.py"):
         with cache.open("a") as stream:
             stream.write("HOST_CFLAGS = ['-D__STDC_WANT_LIB_EXT1__=1']\n")
+            # Links srvsvc's server code into smbd_base, for tc_srvsvc_enum_test.
+            # Serving the pipe also needs the C macro of that name, which only
+            # build/_samba4x.sh sets: a host smbd has no embedded srvsvc.
+            stream.write("TC_SAMBA4X_EMBEDDED_SRVSVC = True\n")
     (source / "bin/c4che/sambadeps").unlink(missing_ok=True)
 
 
@@ -222,11 +227,13 @@ def cases():
         yield TARGETS[11], (case,)
     for case in SHORT_WRITE_CASES:
         yield TARGETS[12], (case,)
+    for case in SRVSVC_ENUM_CASES:
+        yield TARGETS[13], (case,)
 
 
 def execution_cases(cross_exec: bool):
     """Upload each large native fixture once on storage-constrained devices."""
-    combined_targets = (TARGETS[4], TARGETS[5], TARGETS[6], TARGETS[7], TARGETS[10])
+    combined_targets = (TARGETS[4], TARGETS[5], TARGETS[6], TARGETS[7], TARGETS[10], TARGETS[13])
     seen: set[str] = set()
     for target, arguments in cases():
         if target in combined_targets:
