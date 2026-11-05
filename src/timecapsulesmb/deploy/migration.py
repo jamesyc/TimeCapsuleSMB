@@ -376,7 +376,11 @@ def inventory_metadata(connection: SshConnection, plan, *, claims: VolumeClaims)
             payload_dirs.append(directory)
             for suffix in ("private/xattr.tdb", "var/locks/xattr.tdb"):
                 path = directory + "/" + suffix
-                probe = run_ssh(connection, f"test -f {shlex.quote(path)}", check=False)
+                # A stop after the database was retired, before migrate_phase
+                # removed its receipt, leaves the receipt describing nothing,
+                # and nothing else ever reads it: remove it here.
+                receipt = shlex.quote(path + RECEIPT_SUFFIX)
+                probe = run_ssh(connection, f"test -f {shlex.quote(path)} || {{ rm -f {receipt}; exit 1; }}", check=False)
                 if probe.returncode == 1:
                     continue
                 if probe.returncode:
