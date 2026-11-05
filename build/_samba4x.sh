@@ -8,7 +8,7 @@ SAMBA4X_SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 . "$SAMBA4X_SCRIPT_DIR/_data_segment_check.sh"
 . "$SAMBA4X_SCRIPT_DIR/_netbsd4_notes.sh"
 
-GNUTLS_PATCH_DIR="$SAMBA4X_SCRIPT_DIR/patches/gnutls"
+GNUTLS_PATCH_DIR="${GNUTLS_PATCH_DIR:-$SAMBA4X_SCRIPT_DIR/patches/gnutls}"
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
 TRIPLE="$(select_tool_triple)"
@@ -923,7 +923,7 @@ build_samba4x_gnutls() {
     # The library is built with patches/gnutls applied, so the stamp names
     # their checksum: an edited patch rebuilds GnuTLS rather than reusing one
     # built without it. cksum only has to tell patch versions apart.
-    gnutls_patch_sum="$(cd "$GNUTLS_PATCH_DIR" && cat series $(sed -n 's/|.*//p' series) | cksum | sed 's/ /-/')"
+    gnutls_patch_sum="$(cd "$GNUTLS_PATCH_DIR" && find . -type f | LC_ALL=C sort | xargs cat | cksum | sed 's/ /-/')"
     stamp="$SAMBA4X_DEPS/.stamp-gnutls-$SAMBA4X_GNUTLS_VERSION-$SAMBA4X_GNUTLS_SHA256-$gnutls_stamp_suffix-$gnutls_patch_sum"
     if [ -f "$stamp" ] && [ -f "$SAMBA4X_DEPS/lib/libgnutls.a" ]; then
         echo "GnuTLS $SAMBA4X_GNUTLS_VERSION already built."

@@ -290,12 +290,13 @@ class Samba4XBuildScriptTests(unittest.TestCase):
     @classmethod
     def gnutls_stamp_name(cls) -> str:
         """The GnuTLS stamp of a build from the pinned source with this
-        checkout's patches/gnutls: their cksum, as _samba4x.sh computes it."""
+        checkout's patches/gnutls: the cksum of every file there, in byte
+        order of their paths, as _samba4x.sh computes it."""
         pins = cls.dependency_pins()
         patches = REPO_ROOT / "build/patches/gnutls"
-        series = (patches / "series").read_bytes()
-        names = [line.split("|", 1)[0] for line in series.decode().splitlines() if "|" in line]
-        data = series + b"".join((patches / name).read_bytes() for name in names)
+        paths = sorted((path for path in patches.rglob("*") if path.is_file()),
+                       key=lambda path: path.relative_to(patches).as_posix().encode())
+        data = b"".join(path.read_bytes() for path in paths)
         crc, size = subprocess.run(["cksum"], input=data, capture_output=True, check=True).stdout.split()
         return (f".stamp-gnutls-{pins['GNUTLS_VERSION']}-{pins['GNUTLS_SHA256']}"
                 f"-system-nettle-oaep-no-thread-local-{crc.decode()}-{size.decode()}")
@@ -553,6 +554,35 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 self.assertIn(f"gnutls-{pins['GNUTLS_VERSION']}.tar.xz", calls[0])
                 # The stale stamp went with the library it described.
                 self.assertFalse((deps / stamp).exists())
+
+    def test_gnutls_stamp_covers_every_file_of_its_patch_directory(self) -> None:
+        # patch_apply_series also applies a series line with no description,
+        # and patch_copy_overlay copies an overlay directory: a change to any
+        # file there must rebuild the library.
+        pins = self.dependency_pins()
+        patch = "0001-netbsd-no-pthread-gnutls.patch"
+        changes = {
+            "nothing": lambda d: None,
+            "a byte of a patch": lambda d: (d / patch).write_bytes((d / patch).read_bytes() + b"\n"),
+            "a series line without a description": lambda d: (
+                (d / "0002-bare.patch").write_text(""),
+                (d / "series").write_text((d / "series").read_text() + "0002-bare.patch\n")),
+            "an overlay file": lambda d: ((d / "overlay").mkdir(), (d / "overlay/new.c").write_text("new")),
+        }
+        for case, change in changes.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, "netbsd7", root / "configure-args.txt")
+                env["TEST_CURL_ARGS"] = str(root / "curl-args.txt")
+                env["GNUTLS_PATCH_DIR"] = str(root / "gnutls-patches")
+                shutil.copytree(REPO_ROOT / "build/patches/gnutls", env["GNUTLS_PATCH_DIR"])
+                change(Path(env["GNUTLS_PATCH_DIR"]))
+
+                result = self.run_wrapper("samba4x.sh", env)
+
+                output = result.stdout + result.stderr + Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+                built = f"GnuTLS {pins['GNUTLS_VERSION']} already built."
+                self.assertEqual(built in output, case == "nothing", output[-400:])
 
     def test_appliance_lanes_enable_private_kernel_workarounds(self) -> None:
         for wrapper, lane, log_name in (
