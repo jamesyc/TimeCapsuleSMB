@@ -535,6 +535,95 @@ def test_check_stock_sections_applies_them_in_order_and_resets(tmp_path):
     assert staged == "" and (repo / "file.txt").read_text() == "one\ntwo\nthree\n"
 
 
+class RecordedRuns:
+    """subprocess.run that records every command, and fails one on request."""
+
+    def __init__(self, monkeypatch, fail_on=None):
+        self.commands = []
+        self.fail_on = fail_on
+        monkeypatch.setattr(run.subprocess, "run", self)
+
+    def __call__(self, command, **_):
+        self.commands.append([str(word) for word in command])
+        if self.fail_on and self.fail_on in " ".join(self.commands[-1]):
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0)
+
+    def indexes(self, word):
+        return [i for i, command in enumerate(self.commands) if word in " ".join(command)]
+
+
+def test_the_host_build_applies_nothing_until_the_stock_sections_passed(tmp_path, monkeypatch):
+    runs = RecordedRuns(monkeypatch)
+
+    def refuse(source):
+        raise SystemExit("0002 does not apply")
+
+    monkeypatch.setattr(run, "check_stock_sections", refuse)
+    with pytest.raises(SystemExit, match="0002"):
+        run.build_host("url", "ref", tmp_path / "source", 2, {})
+    assert runs.indexes("git clone") == [0] and not runs.indexes("patch_apply_series")
+
+
+def test_the_host_build_checks_the_stock_sections_on_the_clone_first(tmp_path, monkeypatch):
+    runs = RecordedRuns(monkeypatch)
+    checked = []
+    monkeypatch.setattr(run, "check_stock_sections",
+                        lambda source: checked.append((source, len(runs.commands))))
+    monkeypatch.setattr(run, "stage", lambda source: None)
+    monkeypatch.setattr(run, "host_flags", lambda source: None)
+    source = tmp_path / "source"
+    run.build_host("url", "ref", source, 2, {})
+    assert checked == [(source, 1)] and runs.indexes("patch_apply_series")[0] == 1
+
+
+def test_build_stock_builds_the_sections_alone_with_warnings_as_errors(tmp_path, monkeypatch):
+    runs = RecordedRuns(monkeypatch)
+    pdir = tmp_path / "patches"
+    pdir.mkdir()
+    (pdir / "series").write_text(SERIES)
+    run.build_stock("url", "ref", tmp_path / "source", 3, {}, pdir)
+    applied = [command[-1] for command in runs.commands if command[3:4] == ["apply"]]
+    assert applied == [str(pdir / name) for name in ("0001-first.patch", "0002-second.patch", "0003-third.patch")]
+    configure = next(command for command in runs.commands if command[0] == "./configure")
+    assert "--enable-developer" in configure
+    assert not [word for word in configure if "pthread" in word]
+    assert runs.indexes("--targets=smbd/smbd") == [len(runs.commands) - 1]
+    # Only the patches: nothing copies the overlay in.
+    assert not [command for command in runs.commands if "overlay" in " ".join(command)]
+
+
+def test_build_stock_stops_at_a_section_that_does_not_apply(tmp_path, monkeypatch):
+    runs = RecordedRuns(monkeypatch, fail_on="0002-second.patch")
+    pdir = tmp_path / "patches"
+    pdir.mkdir()
+    (pdir / "series").write_text(SERIES)
+    with pytest.raises(subprocess.CalledProcessError):
+        run.build_stock("url", "ref", tmp_path / "source", 3, {}, pdir)
+    assert not runs.indexes("./configure")
+
+
+def test_build_stock_fails_when_the_developer_build_does(tmp_path, monkeypatch):
+    RecordedRuns(monkeypatch, fail_on="--targets=smbd/smbd")
+    pdir = tmp_path / "patches"
+    pdir.mkdir()
+    (pdir / "series").write_text(SERIES)
+    with pytest.raises(subprocess.CalledProcessError):
+        run.build_stock("url", "ref", tmp_path / "source", 3, {}, pdir)
+
+
+def test_the_stock_cli_starts_from_an_empty_tree(tmp_path, monkeypatch):
+    builds = []
+    monkeypatch.setattr(run, "samba_source", lambda: ("url", "ref"))
+    monkeypatch.setattr(run, "build_stock", lambda url, ref, source, jobs, env: builds.append(
+        (url, ref, source.exists(), jobs, env["PYTHONHASHSEED"])))
+    work = tmp_path / "work"
+    (work / "stock").mkdir(parents=True)
+    monkeypatch.setattr(sys, "argv", ["run.py", "stock", "--work", str(work), "--jobs", "4"])
+    run.main()
+    assert builds == [("url", "ref", False, 4, "1")]
+
+
 def test_check_stock_sections_refuses_one_that_needs_a_later_patch(tmp_path):
     repo, pdir = _repo_with_patches(tmp_path, SERIES, {
         "0001-first.patch": ("two", "2"), "0002-second.patch": ("missing", "x"),

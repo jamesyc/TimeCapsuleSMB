@@ -307,18 +307,23 @@ def host_build_key(url: str, ref: str, env: dict[str, str], root: Path = ROOT) -
     return digest.hexdigest()
 
 
+def samba_source() -> tuple[str, str]:
+    """The build's source pin, including deliberate environment overrides.
+    Loading only defaults keeps host tests independent of device credentials."""
+    config = str(ROOT / "build/env.sh")
+    url, ref = subprocess.check_output(
+        ["sh", "-c", '. "$1"; printf "%s\\n%s\\n" "$SAMBA4X_GIT_URL" "$SAMBA4X_GIT_REF"',
+         config, config], env=dict(os.environ, TC_ENV_FILE="/dev/null"), text=True,
+    ).splitlines()
+    return url, ref
+
+
 def host(work: Path, jobs: int, sanitizers: bool, tree_cache: Path | None = None,
          *, build_only: bool = False) -> None:
     # --work must be a new directory. This command never resets a user's tree.
     work.mkdir(parents=True, exist_ok=False)
     source = work / "source"
-    config = str(ROOT / "build/env.sh")
-    # Use the build's source pin, including deliberate environment overrides.
-    # Loading only defaults keeps host tests independent of device credentials.
-    url, ref = subprocess.check_output(
-        ["sh", "-c", '. "$1"; printf "%s\\n%s\\n" "$SAMBA4X_GIT_URL" "$SAMBA4X_GIT_REF"',
-         config, config], env=dict(os.environ, TC_ENV_FILE="/dev/null"), text=True,
-    ).splitlines()
+    url, ref = samba_source()
     env = dict(os.environ, PYTHONHASHSEED="1", PYTHON=sys.executable)
     if sanitizers:
         flags = "-fsanitize=address,undefined -fno-omit-frame-pointer"
@@ -406,6 +411,33 @@ def build_host(url: str, ref: str, source: Path, jobs: int, env: dict[str, str])
                     "--targets=" + ",".join(BUILD_TARGETS)], cwd=source, env=env, check=True)
 
 
+def build_stock(url: str, ref: str, source: Path, jobs: int, env: dict[str, str],
+                patches: Path = ROOT / "build/patches/samba4x") -> None:
+    """Sections 1 and 2 on pristine Samba, alone and on stock's own terms, as
+    upstream would build them: no overlay, pthreads on, and --enable-developer,
+    whose warnings are errors. check_stock_sections only shows they apply."""
+    subprocess.run(["git", "clone", "--depth", "1", "--branch", ref, url, str(source)], check=True)
+    for name in stock_sections(patches / "series"):
+        subprocess.run(["git", "-C", str(source), "apply", str(patches / name)], check=True)
+    options = ["--without-" + item for item in (
+        "ad-dc", "ads", "ldap", "acl-support", "pam", "json", "winbind", "quotas", "utmp",
+        "automount", "dmapi", "gettext", "syslog", "ldb-lmdb")]
+    options += ["--disable-" + item for item in ("python", "cups", "iprint", "avahi")]
+    options += ["--enable-developer", "--bundled-libraries=ALL", "--with-shared-modules=!vfs_snapper",
+                "--with-static-modules=vfs_xattr_tdb,vfs_streams_xattr,vfs_fruit,vfs_aio_fork",
+                "--nonshared-binary=smbd/smbd"]
+    subprocess.run(["./configure", *options], cwd=source, env=env, check=True)
+    subprocess.run([sys.executable, "buildtools/bin/waf", "build", "-j" + str(jobs), "--targets=smbd/smbd"],
+                   cwd=source, env=env, check=True)
+
+
+def stock(work: Path, jobs: int) -> None:
+    url, ref = samba_source()
+    shutil.rmtree(work / "stock", ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    build_stock(url, ref, work / "stock", jobs, dict(os.environ, PYTHONHASHSEED="1", PYTHON=sys.executable))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -422,11 +454,16 @@ def main() -> None:
                          help="build without running drivers; run them separately with the run subcommand")
     command.add_argument("--tree-cache", type=Path,
                          help="keep the build here and reuse it while its inputs are unchanged")
+    command = commands.add_parser("stock", help="build sections 1 and 2 alone with --enable-developer")
+    command.add_argument("--work", required=True, type=Path)
+    command.add_argument("--jobs", default=2, type=int)
     args = parser.parse_args()
     if args.command == "stage":
         stage(args.source.resolve())
     elif args.command == "run":
         run_tests(args.source.resolve(), args.cross_exec)
+    elif args.command == "stock":
+        stock(args.work.resolve(), args.jobs)
     else:
         host(args.work.resolve(), args.jobs, args.sanitizers,
              args.tree_cache.resolve() if args.tree_cache else None,
