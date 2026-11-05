@@ -22,6 +22,23 @@ diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
  bool defer_smb1_sharing_violation(struct smb_request *req);
  NTSTATUS create_directory(connection_struct *conn,
  			  struct smb_request *req,
+diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
+--- a/source3/smbd/scavenger.c
++++ b/source3/smbd/scavenger.c
+@@ -836,7 +836,12 @@ static void scavenger_add_timer(struct smbd_scavenger_state *state,
+ 	if (global != NULL) {
+ 		if (!global->persistent) {
+ 			if (!server_id_is_disconnected(&global->server_id)) {
+-				DBG_ERR("Open [0x%"PRIx64"] fileid [%s] is "
++				/*
++				 * A reconnect can take the open over before
++				 * this message arrives; it is live again, with
++				 * nothing to expire.
++				 */
++				DBG_NOTICE("Open [0x%"PRIx64"] fileid [%s] is "
+ 					"not marked disconnected\n",
+ 					msg->open_persistent_id,
+ 					file_id_str_buf(msg->file_id, &idbuf));
 diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
 --- a/source3/smbd/smb2_create.c
 +++ b/source3/smbd/smb2_create.c
