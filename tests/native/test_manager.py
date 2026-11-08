@@ -1559,11 +1559,43 @@ def test_a_full_once_report_list_sends_no_new_report(manager,monkeypatch,tmp_pat
     control=tmp_path/'eio'
     monkeypatch.setenv('TC_TEST_EIO',f'@{control}')
     start()
-    wait(lambda rows:sorted(verdict_reports(events))==['payload:damaged','rsync:unreadable'],30)
+    # Both delivered, not just started: the list is full of delivered ones.
+    wait(lambda rows:sorted(verdict_reports(events))==['payload:damaged','rsync:unreadable']
+         and verdict_outcomes(events)==[0,0],30)
     control.write_text(str(payload/'smbd'))
     until(root,lambda:'manager: once-report list full; not sending payload:unreadable' in runtime_log(root),40)
     time.sleep(2)
     assert sorted(verdict_reports(events))==['payload:damaged','rsync:unreadable']
+    assert runtime_log(root).count('once-report list full')==1
+
+
+def test_once_reports_waiting_or_in_flight_fill_the_list(manager,monkeypatch,tmp_path):
+    # One of payload:damaged and rsync:unreadable is in flight and the other
+    # waits behind it when the payload verdict changes: those two take both
+    # places (ONCE_REPORTS is 2 here), so payload:unreadable is not sent,
+    # though none is delivered yet. Counting only delivered ones sent it with
+    # no place left to record it. A held report that times out goes back to
+    # the queue and is sent again: still waiting, so still counted.
+    root,start,events,wait,_,_=manager
+    payload=root/'dk2/.samba4'
+    good=deploy_checksum(root,rsync=True)
+    (root/'config').write_text('TELEMETRY=1\nRSYNC_ENABLED=1\n')
+    damage(payload/'smbd',good)
+    monkeypatch.setenv('TC_TEST_EIO_OPEN',str(payload/'rsync'))
+    control=tmp_path/'eio'
+    monkeypatch.setenv('TC_TEST_EIO',f'@{control}')
+    (root/'report-hold').touch()
+    start()
+    wait(lambda rows:verdict_reports(events),30)
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_DAMAGED,probe.RSYNC_UNREADABLE),30)
+    control.write_text(str(payload/'smbd'))
+    until(root,lambda:'manager: once-report list full; not sending payload:unreadable' in runtime_log(root),40)
+    assert verdict_outcomes(events)==[]
+    (root/'report-hold').unlink()
+    wait(lambda rows:verdict_outcomes(events)==[0,0],40)
+    time.sleep(2)
+    assert set(verdict_reports(events))=={'payload:damaged','rsync:unreadable'}
+    assert verdict_outcomes(events)==[0,0]
     assert runtime_log(root).count('once-report list full')==1
 
 

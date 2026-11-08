@@ -1208,18 +1208,23 @@ static int is_once(const char *reason) {
 }
 /* Queues reason, a once-report, unless this manager delivered it or it waits
  * or is in flight. A full queue drops a report, at a push or when a failed
- * one goes back, so it is queued again on the next call until delivered. */
+ * one goes back, so it is queued again on the next call until delivered.
+ * Once-reports waiting or in flight count towards ONCE_REPORTS, as each
+ * takes a place in once_delivered when it is delivered: counting only the
+ * delivered ones would send a report that no place is left to record. */
 static void report_once(struct manager *m, const char *reason) {
-    size_t i;
+    size_t i, pending = is_once(m->queue_inflight);
     if (!strcmp(m->queue_inflight, reason))
         return;
     for (i = 0; i < m->once_count; i++)
         if (!strcmp(m->once_delivered[i], reason))
             return;
-    for (i = 0; i < m->queue_count; i++)
+    for (i = 0; i < m->queue_count; i++) {
         if (!strcmp(m->queue[i], reason))
             return;
-    if (m->once_count == ONCE_REPORTS) {
+        pending += is_once(m->queue[i]);
+    }
+    if (m->once_count + pending >= ONCE_REPORTS) {
         if (!m->once_full_logged)
             timestamped_fprintf(stderr, "manager: once-report list full; not sending %s\n", reason);
         m->once_full_logged = 1;

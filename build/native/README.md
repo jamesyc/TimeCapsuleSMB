@@ -215,8 +215,9 @@ clears), the title carries `unmounted=<start>` on the `started=` clock and one
 `unmounted:internal` or `unmounted:usb` heartbeat goes out per manager (the
 same once-per-manager reports as the payload verdicts': each reason retried
 until delivered, then never sent again; the manager remembers 16 of them
-(`ONCE_REPORTS`), and when that list is full it logs once and sends no new
-one rather than resending one it cannot record). Time
+(`ONCE_REPORTS`, counting those still waiting or in flight), and when that
+list is full it logs once and sends no new one rather than resending one it
+cannot record). Time
 diskd spends in `fsck_hfs` or `newfs_hfs` does not count towards the 10
 minutes; a disk that fails while another serves the Samba files is left to
 doctor's share checks. Doctor reads both words from the title; `unmounted=`
