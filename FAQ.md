@@ -205,7 +205,29 @@ If it disappeared after a macOS update (macOS 26.x/27): make sure **Advertise AF
 
 If Bonjour discovery stopped after weeks of working (SMB by IP still works): the device's own Bonjour responder (Apple's `mDNSResponder`) has died. Nothing on the device restarts it, so reboot the Time Capsule. `doctor` reports this as "Apple mDNSResponder is not running (reboot the device…)".
 
-Alternatively:
+To check the device, run:
+
+```bash
+.venv/bin/tcapsule doctor
+```
+
+Then check Bonjour directly:
+
+```bash
+dns-sd -B _smb._tcp local.
+```
+
+To inspect discovery results from the tool itself, run:
+
+```bash
+.venv/bin/tcapsule discover --json
+```
+
+If the system is working normally, you should see an `_smb._tcp` service with the Time Capsule's current device name.
+
+Finder is not always the best first diagnostic tool. The service can be up and correct even when Finder browsing is being slow or temperamental.
+
+If Finder still does not connect:
 
 1. Try connecting directly:
    ```
@@ -216,6 +238,8 @@ Alternatively:
    ```
    smb://<yourtimecapsuleIP>/<share-name>
    ```
+
+The direct address separates “Bonjour browsing did something odd” from “SMB itself is broken.”
 
 #### The Time Capsule reset itself!
 
@@ -281,6 +305,59 @@ This is normal for **NetBSD 4 devices** (older Gen 1-4 Time Capsules). The firmw
 **Solution:** Run `tcapsule activate` after rebooting older stock devices. A normal `tcapsule deploy` handles this automatically by rebooting, waiting for SSH to return, and then activating the deployed runtime.
 
 Alternatively, you can `flash` the boot hook. Use the macOS app, or run the `flash` python command. 
+
+#### Deploy says SMB listing failed right after reboot
+
+That can happen if the device has come back on the network but is still finishing startup. These old Time Capsule CPUs are not fast.
+
+Wait a little, then run:
+
+```bash
+.venv/bin/tcapsule doctor
+```
+
+#### Samba stopped after erasing the disk
+
+Erasing the disk in AirPort Utility also removes TimeCapsuleSMB's files from it. Checkup and `activate` then report that the Samba files are missing. Run “Install / Update Samba” in the app, or `.venv/bin/tcapsule deploy`, to put them back.
+
+#### The disk is failing
+
+Install / Update Samba, Uninstall, Disk Repair and Checkup read the device's kernel log for disk errors the disk could not recover from, and whether the device could read TimeCapsuleSMB's own files from the disk: a read error, or a read so slow that it ran out of time. When they find either, the disk is probably failing: reinstalling will not fix it, and file sharing and Time Machine will not work reliably on it. AirPort Utility may still show the disk as OK, because its own check does not catch these errors.
+
+1. Copy off the files you need. If file sharing still works, copy them over the network now. Otherwise take the disk out of the device and connect it to a Mac with a SATA-to-USB adapter; macOS reads the disk as it is.
+2. Replace the disk.
+3. Erase the new disk in AirPort Utility, then run “Install / Update Samba” in the app, or `.venv/bin/tcapsule deploy`. Time Machine starts a new, full backup on it.
+
+Install, Uninstall and Disk Repair ask before they go on with a failing disk; `--yes` goes on after printing the warning.
+
+#### A Seagate disk reports 3.86 GB
+
+A Seagate drive that cannot load its firmware from its own platters, usually because its heads or the firmware area on the platters failed, runs from the code in its chip instead. It then reports 8,089,950 sectors (3950 MiB, which Windows shows as 3.86 GB) whatever its real size, gives its plain Seagate model name without Apple's "APPLE HDD", and cannot read its first sector. The 2 TB and 3 TB Seagate drives in the AirPort Time Capsule (802.11ac) fail this way, and so do other Seagate models: [this Tom's Hardware thread](https://forums.tomshardware.com/threads/seagate-1tb-st1000vm002-unallocated-3-86-gb.3657800/) shows a 1 TB drive doing the same.
+
+TimeCapsuleSMB treats an internal disk at exactly 3950 MiB as this failure. Checkup reports it even when a USB disk serves in its place. Wipe Internal Disk refuses it, and Install / Update Samba stops on it unless a USB disk can hold the files. Restarting the device or reinstalling does not bring the disk back. A SATA-to-USB adapter does not help either, because the drive reports the same 3.86 GB to a Mac.
+
+1. If you need the files on the disk, do not erase it. A data recovery service may be able to get them back.
+2. Replace the disk. iFixit has a guide for the [AirPort Time Capsule (802.11ac)](https://www.ifixit.com/Guide/Airport+Time+Capsule+A1470+Hard+Drive+Replacement/61924).
+3. Erase the new disk in AirPort Utility, then run “Install / Update Samba” in the app, or `.venv/bin/tcapsule deploy`. Time Machine starts a new, full backup on it.
+
+#### The disk is not responding
+
+A disk operation on the device has waited for minutes without finishing, such as Apple's `mount_hfs` mounting the disk at startup. Apple's AirPort service waits for the disk too, so the device cannot be updated or restarted over the network, and AirPort Utility may say the AirPort service is not answering. Install / Update Samba, Uninstall, Disk Repair, Wipe Internal Disk and Activate refuse to start, with nothing changed, and Checkup names the stuck processes.
+
+1. Unplug the device, wait 10 seconds and plug it back in. Wait 2 minutes, then try again.
+2. If the disk stops responding again, it is probably failing. Copy off the files you need: connect a USB disk to a Mac, or take an internal disk out and connect it to a Mac with a SATA-to-USB adapter. Then replace the disk, erase the new one in AirPort Utility and run “Install / Update Samba”.
+
+#### Disk Repair says fsck_hfs crashed
+
+Apple's disk checker (`fsck_hfs`) ended with a crash signal, such as SIGBUS (exit status 138), before it finished. It usually crashes at the same place on the same volume, so another Disk Repair on the device will not get further; file sharing comes back with the restart that follows the repair. To repair the volume, connect the disk to a Mac (an internal disk through a SATA-to-USB adapter) and run First Aid in Disk Utility.
+
+#### SSH does not turn on
+
+Turning on SSH restarts the device. When that fails, Configure and “Enable SSH” tell three cases apart:
+
+- **The device has not come back:** no new startup answered within 10 minutes. Some Time Capsules stop partway through a restart and stay off the network, Wi-Fi included, until they are unplugged. Unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, then try again.
+- **SSH did not turn on:** the device restarted and is back, but SSH stayed off for 4 minutes after that. Try again; if it still does not turn on, unplug the device, wait 10 seconds and plug it back in, then try again after 2 minutes.
+- **This Mac moved to another network:** while the device restarted, macOS joined another network it knows, such as an iPhone hotspot, and stayed on it, so TimeCapsuleSMB could not see the device come back. Connect the Mac to the device's network again. Then, in Configure, try again: if SSH turned on, it does not restart the device again. After “Enable SSH”, run a Checkup instead. The same can happen at any restart, such as the one at the end of an install.
 
 ## Security and Privacy
 

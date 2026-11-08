@@ -103,17 +103,17 @@ class SeagateRuleTests(unittest.TestCase):
 
 
 class SeagateGuideLinkTests(unittest.TestCase):
-    def test_the_guide_url_names_a_readme_heading(self) -> None:
+    def test_the_guide_url_names_a_faq_heading(self) -> None:
         # GitHub's anchor for a heading: lower case, punctuation dropped,
-        # spaces to hyphens. A renamed heading would leave every card's link
-        # landing at the top of the README.
-        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        # spaces to hyphens. A renamed or moved heading would leave every
+        # card's link landing at the top of the page.
+        faq = (Path(__file__).resolve().parents[1] / "FAQ.md").read_text()
         anchors = {re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
-                   for heading in re.findall(r"^#+ (.+)$", readme, re.M)}
+                   for heading in re.findall(r"^#+ (.+)$", faq, re.M)}
         base, fragment = wipe.SEAGATE_FAILED_GUIDE_URL.split("#")
-        self.assertEqual(base, "https://github.com/jamesyc/TimeCapsuleSMB")
+        self.assertEqual(base, "https://github.com/jamesyc/TimeCapsuleSMB/blob/main/FAQ.md")
         self.assertIn(fragment, anchors)
-        self.assertIn(wipe.SEAGATE_FAILED_REPORTS_URL, readme)
+        self.assertIn(wipe.SEAGATE_FAILED_REPORTS_URL, faq)
 
 
 class DiskSizeRuleTests(unittest.TestCase):

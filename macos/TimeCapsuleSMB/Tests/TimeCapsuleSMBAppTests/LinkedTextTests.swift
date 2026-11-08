@@ -11,7 +11,7 @@ final class LinkedTextTests: XCTestCase {
     }
 
     func testAWebAddressBecomesALinkWithoutTheSentencesPeriod() {
-        let guide = "https://github.com/jamesyc/TimeCapsuleSMB#a-seagate-disk-reports-386-gb"
+        let guide = "https://github.com/jamesyc/TimeCapsuleSMB/blob/main/FAQ.md#a-seagate-disk-reports-386-gb"
         let found = links(in: "Replace the disk. For a replacement guide, see \(guide).")
         XCTAssertEqual(found.map(\.0), [guide])
         XCTAssertEqual(found.map(\.1), [URL(string: guide)!])
@@ -25,7 +25,7 @@ final class LinkedTextTests: XCTestCase {
     }
 
     func testFullWidthPunctuationEndsTheAddress() {
-        let guide = "https://github.com/jamesyc/TimeCapsuleSMB#a-seagate-disk-reports-386-gb"
+        let guide = "https://github.com/jamesyc/TimeCapsuleSMB/blob/main/FAQ.md#a-seagate-disk-reports-386-gb"
         XCTAssertEqual(links(in: "请更换磁盘。更换指南见 \(guide)。").map(\.0), [guide])
         XCTAssertEqual(links(in: "请更换磁盘（更换指南：\(guide)）。").map(\.0), [guide])
     }
@@ -34,7 +34,7 @@ final class LinkedTextTests: XCTestCase {
         // The catalogs put each address in parentheses, so neither the
         // closing one nor the period after it reaches the link.
         let thread = "https://forums.tomshardware.com/threads/seagate-1tb-st1000vm002-unallocated-3-86-gb.3657800/"
-        let guide = "https://github.com/jamesyc/TimeCapsuleSMB#a-seagate-disk-reports-386-gb"
+        let guide = "https://github.com/jamesyc/TimeCapsuleSMB/blob/main/FAQ.md#a-seagate-disk-reports-386-gb"
         XCTAssertEqual(links(in: "Other owners describe the same failure on Tom's Hardware (\(thread)).").map(\.0), [thread])
         XCTAssertEqual(links(in: "Remplacez le disque (guide de remplacement\u{00A0}: \(guide)).").map(\.0), [guide])
     }
@@ -45,7 +45,7 @@ final class LinkedTextTests: XCTestCase {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
         let thread = "https://forums.tomshardware.com/threads/seagate-1tb-st1000vm002-unallocated-3-86-gb.3657800/"
-        let guide = "https://github.com/jamesyc/TimeCapsuleSMB#a-seagate-disk-reports-386-gb"
+        let guide = "https://github.com/jamesyc/TimeCapsuleSMB/blob/main/FAQ.md#a-seagate-disk-reports-386-gb"
         for language in AppLanguage.allCases where language != .system {
             L10n.apply(language: language)
             for (key, url) in [("doctor.check.disk_seagate_failed", guide),
