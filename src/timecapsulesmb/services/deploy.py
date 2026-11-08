@@ -103,10 +103,16 @@ from timecapsulesmb.device.storage import (
     disk_size_misreported,
     payload_candidate_checks_debug_summary,
     parse_mast_inventory,
+    seagate_disk_failed,
     select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
 )
-from timecapsulesmb.device.wipe import gpt_verdict_description, read_gpt_verdict_conn, size_misreported_message
+from timecapsulesmb.device.wipe import (
+    SEAGATE_FAILED_MESSAGE,
+    gpt_verdict_description,
+    read_gpt_verdict_conn,
+    size_misreported_message,
+)
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import Netbsd4StartMessages, start_netbsd4_runtime_after_reboot
 from timecapsulesmb.services.callbacks import OperationCallbacks
@@ -637,6 +643,14 @@ def mast_no_volume_error(
     except Exception:
         disks = ()
     if disks:
+        failed = next((disk for disk in disks if seagate_disk_failed(disk)), None)
+        if failed is not None:
+            return DeployDeviceError(
+                SEAGATE_FAILED_MESSAGE, code=ErrorCode.DISK_SEAGATE_FAILED,
+                detail=f"{failed.device}: {failed.model or 'unknown model'}, {failed.size_mib} MiB",
+            )
+        # Not "no HFS volume": its card would offer Wipe Internal Disk, which
+        # refuses this disk.
         misreported = next((disk for disk in disks if disk_size_misreported(disk)), None)
         if misreported is not None:
             return DeployDeviceError(

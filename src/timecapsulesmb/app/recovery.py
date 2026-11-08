@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from timecapsulesmb.checks.network import CLI_TERMINAL_APP_BLOCKED
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.disk_errors import DISK_CHECK_STALL_WAIT
+from timecapsulesmb.device.wipe import SEAGATE_FAILED_GUIDE_URL, SEAGATE_FAILED_REPORTS_URL
 from timecapsulesmb.transport.errors import LOCAL_NETWORK_FILTERED_MESSAGE, SSH_TIMEOUT_SLOW_DEVICE_MESSAGE
 from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
 
@@ -560,15 +561,33 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         retryable=True,
     ),
-    # The internal disk reports a size far below its real one, and its identity
-    # without Apple's prefix (device.storage.disk_size_misreported). Erasing it
-    # would format it as that size, so no step offers an erase or a wipe.
+    # A Seagate internal disk running from its ROM: it cannot load its
+    # firmware from the platters, so restarting does not help and its files
+    # need a recovery lab (device.storage.seagate_disk_failed). The data comes
+    # first, so the first step says not to erase it.
+    ErrorCode.DISK_SEAGATE_FAILED: RecoveryInfo(
+        "The Seagate disk has failed",
+        "The internal disk reports itself as 3.86 GB. A Seagate disk does this when it cannot load its own "
+        "firmware, usually because its heads or its firmware area failed. Restarting or reinstalling will not fix "
+        "it, and the device cannot read its files.",
+        (
+            "If you need its files, do not erase the disk: a data recovery service may be able to get them back. "
+            f"Other owners describe the same failure on Tom's Hardware ({SEAGATE_FAILED_REPORTS_URL}).",
+            f"Replace the disk (replacement guide: {SEAGATE_FAILED_GUIDE_URL}).",
+            _DISK_FAILING_STEPS[2],
+        ),
+        retryable=False,
+    ),
+    # Any other internal disk that reports a size far below its real one
+    # (device.storage.disk_size_misreported), from Install or Wipe Internal
+    # Disk. Erasing it would format it as that size, so no step offers an erase
+    # or a wipe.
     ErrorCode.DISK_SIZE_MISREPORTED: RecoveryInfo(
         "The disk is reporting the wrong size",
         "The device reports the internal disk as much smaller than it is. A restart sometimes clears this; "
         "if it keeps happening, the disk is probably failing.",
         (
-            "Restart the device, then run “Install / Update Samba” again after the disk spins up.",
+            "Restart the device, then try again after the disk spins up.",
             "If it keeps reporting the wrong size, the disk needs replacing. Its files cannot be reached while it "
             "does this; a data recovery service may be able to get them back.",
             "Run “Checkup” and copy the diagnostics if you need help.",

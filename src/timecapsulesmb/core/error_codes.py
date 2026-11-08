@@ -97,7 +97,10 @@ class ErrorCode(str, Enum):
     FSCK_ALREADY_RUNNING = "fsck_already_running"
     FSCK_SESSION_DROPPED = "fsck_session_dropped"
     FSCK_VOLUME_NOT_UNMOUNTED = "fsck_volume_not_unmounted"
-    DISK_SIZE_MISREPORTED = "deploy_disk_size_misreported"
+    # A Seagate internal disk running from its ROM (storage.seagate_disk_failed).
+    DISK_SEAGATE_FAILED = "disk_seagate_failed"
+    # Any other internal disk reporting under 15 GB (storage.disk_size_misreported).
+    DISK_SIZE_MISREPORTED = "disk_size_misreported"
     WIPE_DISK_RESTART_NEEDED = "wipe_disk_restart_needed"
     WIPE_DISK_ERASE_RUNNING = "wipe_disk_erase_running"
     WIPE_DISK_JOB_RUNNING = "wipe_disk_job_running"

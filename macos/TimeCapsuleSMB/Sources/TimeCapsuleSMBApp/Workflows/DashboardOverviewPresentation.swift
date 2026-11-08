@@ -572,8 +572,8 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         case .installFailed, .installInterrupted:
             // Installing again would not help a failing disk: the Checkup
             // says what does.
-            if runtimeState.errorCode == DoctorSummary.diskFailingResultCode {
-                return diskFailingRow(action: .runCheckup)
+            if let code = runtimeState.errorCode, replaceDiskCodes.contains(code) {
+                return replaceDiskRow(code: code, action: .runCheckup)
             }
             // A deploy that ended on a damaged rsync: name it, with Install
             // (or, for one the disk could not read, a Checkup).
@@ -595,8 +595,8 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 status: .warning,
                 action: .startSMB
             )
-        case .unhealthy where runtimeState.errorCode == DoctorSummary.diskFailingResultCode:
-            return diskFailingRow(action: .viewCheckup)
+        case .unhealthy where replaceDiskCodes.contains(runtimeState.errorCode ?? ""):
+            return replaceDiskRow(code: runtimeState.errorCode ?? "", action: .viewCheckup)
         // A stuck disk check gives a running repair a few more minutes first.
         case .unhealthy where runtimeState.errorCode == DoctorSummary.diskNotRespondingResultCode
             || runtimeState.errorCode == DoctorSummary.diskCheckNotRespondingResultCode:
@@ -648,12 +648,18 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         }
     }
 
-    /// The disk reported errors it could not recover from: never Install.
-    private static func diskFailingRow(action: DashboardSecondaryAction) -> DashboardHealthRow {
+    /// Disks only a new disk fixes: one that reported errors it could not
+    /// recover from, and a failed Seagate.
+    private static let replaceDiskCodes: Set<String> = [
+        DoctorSummary.diskFailingResultCode, DoctorSummary.diskSeagateFailedResultCode,
+    ]
+
+    /// A disk to replace, with the code's Checkup line: never Install.
+    private static func replaceDiskRow(code: String, action: DashboardSecondaryAction) -> DashboardHealthRow {
         DashboardHealthRow(
-            id: "runtime-disk-failing",
+            id: "runtime-" + code.replacingOccurrences(of: "_", with: "-"),
             title: DashboardHealthDomain.runtime.title,
-            detail: L10n.string("doctor.check.disk_failing"),
+            detail: L10n.string("doctor.check.\(code)"),
             status: .failed,
             action: action
         )

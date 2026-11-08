@@ -32,6 +32,7 @@ from timecapsulesmb.device.storage import (
     VolumeClaims,
     disk_size_misreported,
     parse_mast_inventory,
+    seagate_disk_failed,
 )
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.services import storage as storage_service
@@ -71,10 +72,55 @@ def disk(**changes: object) -> MaStDiskSnapshot:
     return replace(base, **changes)
 
 
+class SeagateRuleTests(unittest.TestCase):
+    def test_an_internal_disk_at_exactly_3950_mib_is_a_failed_seagate(self) -> None:
+        # The 3 TB and the 2 TB Seagate of a TC8,119 running from their ROM
+        # (8,089,950 sectors), their "APPLE HDD" prefix gone.
+        cases = {
+            "3 TB drive": disk(size=3950, partitions=(), model="TS0300MD00 1"),
+            "2 TB drive": disk(size=3950, partitions=(), model="TS0200MD00 1"),
+        }
+        for name, case in cases.items():
+            with self.subTest(name):
+                self.assertTrue(seagate_disk_failed(case))
+
+    def test_any_other_size_or_a_usb_disk_is_not(self) -> None:
+        cases = {
+            "one MiB under": disk(size=3949, partitions=()),
+            "one MiB over": disk(size=3951, partitions=()),
+            "another small size": disk(size=1000, partitions=()),
+            "a real disk": disk(),
+            "a USB stick sold as 4 GB": disk(builtin=False, size=3950, partitions=()),
+            # The kernel finds partitions in sector 0, which the ROM cannot
+            # read: a disk that lists one is readable, whatever its size, and
+            # every reader of its partitions treats them as real.
+            "listed with a partition": disk(size=3950),
+            "unknown size": disk(size=None, partitions=()),
+        }
+        for name, case in cases.items():
+            with self.subTest(name):
+                self.assertFalse(seagate_disk_failed(case))
+
+
+class SeagateGuideLinkTests(unittest.TestCase):
+    def test_the_guide_url_names_a_readme_heading(self) -> None:
+        # GitHub's anchor for a heading: lower case, punctuation dropped,
+        # spaces to hyphens. A renamed heading would leave every card's link
+        # landing at the top of the README.
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        anchors = {re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+                   for heading in re.findall(r"^#+ (.+)$", readme, re.M)}
+        base, fragment = wipe.SEAGATE_FAILED_GUIDE_URL.split("#")
+        self.assertEqual(base, "https://github.com/jamesyc/TimeCapsuleSMB")
+        self.assertIn(fragment, anchors)
+        self.assertIn(wipe.SEAGATE_FAILED_REPORTS_URL, readme)
+
+
 class DiskSizeRuleTests(unittest.TestCase):
-    def test_the_internal_disk_reporting_4_gb_with_no_partitions_is_misreported(self) -> None:
-        # The TC8,119 record from telemetry: Apple's Seagate, its "APPLE HDD"
-        # prefix gone, at 3950 MiB.
+    def test_an_internal_disk_under_15_gb_with_no_partitions_is_misreported(self) -> None:
+        # A drive that reports some other wrong size; a failed Seagate, which
+        # also matches, is checked before it everywhere.
+        self.assertTrue(disk_size_misreported(disk(size=1000, partitions=())))
         self.assertTrue(disk_size_misreported(disk(size=3950, partitions=(), model="TS0300MD00 1")))
 
     def test_real_disks_are_not(self) -> None:
@@ -1328,15 +1374,16 @@ class PrepareWipeTests(unittest.TestCase):
 
     def test_refused_disks(self) -> None:
         cases = {
-            "wrong size": (disk(size=3950, partitions=()), ErrorCode.DISK_SIZE_MISREPORTED),
-            "soft-disconnected": (disk(soft_disconnected=True), ErrorCode.DISK_FAILING),
+            "failed Seagate": (disk(size=3950, partitions=()), ErrorCode.DISK_SEAGATE_FAILED, "seagate_failed"),
+            "wrong size": (disk(size=1000, partitions=()), ErrorCode.DISK_SIZE_MISREPORTED, "size_misreported"),
+            "soft-disconnected": (disk(soft_disconnected=True), ErrorCode.DISK_FAILING, "soft_disconnected"),
         }
         from timecapsulesmb.app.recovery import recovery_for
-        for name, (target, code) in cases.items():
+        for name, (target, code, reason) in cases.items():
             with self.subTest(name):
                 with self.assertRaises(wipe_disk.WipeDiskError) as raised:
                     self.prepare(target)
-                self.assertEqual(raised.exception.code, code)
+                self.assertEqual((raised.exception.code, raised.exception.reason), (code, reason))
                 # Refused before anything was written: the general card.
                 stage = self.callbacks.stage.call_args.args[0]
                 self.assertEqual(recovery_for("wipe-disk", code, stage=stage)["localization_key"], code.value)
@@ -1369,7 +1416,7 @@ class PrepareWipeTests(unittest.TestCase):
         # and nothing else is read for it.
         with self.assertRaises(wipe_disk.WipeDiskError) as raised:
             self.prepare(disk(size=3950, partitions=()), others=(usb,), labelled={"sd1": "apple_labels"})
-        self.assertEqual(raised.exception.code, ErrorCode.DISK_SIZE_MISREPORTED)
+        self.assertEqual(raised.exception.code, ErrorCode.DISK_SEAGATE_FAILED)
         self.label_check.assert_not_called()
 
     def test_an_unreadable_geometry_needs_a_restart(self) -> None:
@@ -1465,9 +1512,20 @@ class DeployVerdictTests(unittest.TestCase):
 
     def test_the_verdict_picks_the_code_whose_guidance_fits(self) -> None:
         blank = disk(partitions=())
-        misreported = self.error((disk(size=3950, partitions=()),), wipe.GptVerdict("blank"))
-        self.assertEqual(misreported.code, ErrorCode.DISK_SIZE_MISREPORTED)
-        self.assertIn("only 4 GB", str(misreported))
+        seagate = self.error((disk(size=3950, partitions=(), model="TS0300MD00 1"),), wipe.GptVerdict("blank"))
+        self.assertEqual(seagate.code, ErrorCode.DISK_SEAGATE_FAILED)
+        self.assertIn("Seagate disk that has failed: it reports itself as 3.86 GB", str(seagate))
+        # The fixture's MaSt XML carries no model.
+        self.assertEqual(seagate.detail, "sd0: unknown model, 3950 MiB")
+        # Any other small size is no failed Seagate, but not "no HFS volume"
+        # either: that card offers Wipe Internal Disk, which refuses the disk.
+        small = self.error((disk(size=1000, partitions=()),), wipe.GptVerdict("blank"))
+        self.assertEqual(small.code, ErrorCode.DISK_SIZE_MISREPORTED)
+        self.assertIn("reports the internal disk as only 1 GB", str(small))
+        self.assertEqual(small.detail, "sd0: unknown model, 1000 MiB")
+        # A failed Seagate beside another small disk is named as the Seagate.
+        both = (disk(size=1000, partitions=()), disk(device="wd1", size=3950, partitions=()))
+        self.assertEqual(self.error(both, wipe.GptVerdict("blank")).code, ErrorCode.DISK_SEAGATE_FAILED)
         # An Apple HFS partition on disk only has not mounted: no Wipe button.
         self.assertEqual(self.error((blank,), wipe.GptVerdict("apple_hfs", ("apple_hfs",))).code, ErrorCode.DEPLOY_DISK_NOT_MOUNTED)
         foreign = self.error((blank,), wipe.GptVerdict("foreign", ("apfs",)))
@@ -1547,20 +1605,71 @@ class KernelDiskLineTests(unittest.TestCase):
 
 
 class DoctorDiskVerdictTests(unittest.TestCase):
-    def results(self, disks, verdict):
+    def results(self, disks, verdict=wipe.GptVerdict("blank")):
+        """Checkup's disk lines past the SMART ones, from a MaSt listing
+        `disks`, with `gpt show` finding `verdict` on each disk."""
         from types import SimpleNamespace
         from timecapsulesmb.checks import doctor_steps
-        added = []
-        sink = SimpleNamespace(add=added.append)
-        with mock.patch.object(doctor_steps, "read_gpt_verdict_conn", return_value=verdict):
-            doctor_steps._doctor_check_disks_without_hfs(SimpleNamespace(connection=CONNECTION), disks, sink)
-        return [(result.status, result.details["code"], result.message) for result in added]
+        from timecapsulesmb.checks.doctor_state import DoctorSink
+        sink = DoctorSink(on_result=None, debug_fields={})
+        mast = subprocess.CompletedProcess([], 0, "MaSt=" + mast_xml(disks), "")
+        with (
+            mock.patch.object(doctor_steps, "run_ssh", return_value=mast),
+            mock.patch.object(doctor_steps, "read_gpt_verdict_conn", return_value=verdict) as gpt,
+            mock.patch.object(doctor_steps, "read_in_memory_volumes_conn",
+                              return_value=wipe.InMemoryCheck(wipe.EraseLog())) as in_memory,
+        ):
+            doctor_steps._doctor_check_disk_health(SimpleNamespace(connection=CONNECTION),
+                                                   SimpleNamespace(remote_checks_enabled=True), sink)
+        self.gpt_disks = [call.args[1] for call in gpt.call_args_list]
+        self.in_memory_read = in_memory.called
+        return [(result.status, result.details["code"], result.message) for result in sink.results
+                if result.details.get("code") not in ("disk_info", "disk_smart_failing")]
 
-    def test_the_wrong_size_disk_and_a_foreign_disk_fail_with_their_codes(self) -> None:
-        from timecapsulesmb.checks.doctor_steps import DOCTOR_CODE_DISK_NO_HFS_PARTITION, DOCTOR_CODE_DISK_SIZE_MISREPORTED
-        [(status, code, message)] = self.results((disk(size=3950, partitions=()),), wipe.GptVerdict("blank"))
-        self.assertEqual((status, code), ("FAIL", DOCTOR_CODE_DISK_SIZE_MISREPORTED))
-        self.assertIn("reports only 4 GB", message)
+    def test_a_failed_seagate_alone_fails_and_no_table_is_read(self) -> None:
+        [(status, code, message)] = self.results((disk(size=3950, partitions=()),))
+        self.assertEqual((status, code), ("FAIL", ErrorCode.DISK_SEAGATE_FAILED))
+        self.assertTrue(message.startswith(wipe.SEAGATE_FAILED_MESSAGE + " Restarting or reinstalling"), message)
+        self.assertIn("do not erase the disk", message)
+        # The URL stands apart from the sentence's punctuation.
+        self.assertTrue(message.endswith(f"(replacement guide: {wipe.SEAGATE_FAILED_GUIDE_URL})"))
+        # Its ROM cannot read sector 0: asking gpt about it would only wait.
+        self.assertEqual(self.gpt_disks, [])
+
+    def test_a_failed_seagate_beside_a_serving_usb_disk_still_warns(self) -> None:
+        # Install puts Samba on the USB disk without a word about the
+        # internal one, so Checkup is what names it: a WARN, since file
+        # sharing works.
+        usb = disk(device="sd1", builtin=False, label="Disk 2", uuid=USB_UUID)
+        [(status, code, message)] = self.results((disk(size=3950, partitions=()), usb))
+        self.assertEqual((status, code), ("WARN", ErrorCode.DISK_SEAGATE_FAILED))
+        self.assertIn("is a Seagate disk that has failed", message)
+        self.assertTrue(self.in_memory_read)
+        self.assertEqual(self.gpt_disks, [])
+
+    def test_a_healthy_device_has_no_seagate_line(self) -> None:
+        self.assertEqual(self.results((disk(),)), [])
+        self.assertTrue(self.in_memory_read)
+
+    def test_a_3950_mib_disk_listing_a_volume_is_an_ordinary_disk_that_serves(self) -> None:
+        # Its volume is real to every other check, so it is no failed
+        # Seagate and the volume checks run on it.
+        self.assertEqual(self.results((disk(size=3950),)), [])
+        self.assertTrue(self.in_memory_read)
+        self.assertEqual(self.gpt_disks, [])
+
+    def test_another_wrong_size_fails_without_offering_the_wipe_that_refuses_it(self) -> None:
+        [(status, code, message)] = self.results((disk(size=1000, partitions=()),))
+        self.assertEqual((status, code), ("FAIL", ErrorCode.DISK_SIZE_MISREPORTED))
+        self.assertIn("reports only 1 GB, much smaller than it is; restart the device", message)
+        self.assertNotIn("Wipe Internal Disk", message)
+        self.assertEqual(self.gpt_disks, [])
+
+    def test_a_foreign_disk_fails_with_what_gpt_found(self) -> None:
+        from timecapsulesmb.checks.doctor_steps import DOCTOR_CODE_DISK_NO_HFS_PARTITION
+        [(status, code, message)] = self.results((disk(partitions=()),))
+        self.assertEqual((status, code), ("FAIL", DOCTOR_CODE_DISK_NO_HFS_PARTITION))
+        self.assertIn("This disk has no partitions.", message)
         [(status, code, message)] = self.results((disk(partitions=()),), wipe.GptVerdict("foreign", ("apfs",)))
         self.assertEqual((status, code), ("FAIL", DOCTOR_CODE_DISK_NO_HFS_PARTITION))
         self.assertIn("This disk is formatted as APFS.", message)
@@ -1570,6 +1679,14 @@ class DoctorDiskVerdictTests(unittest.TestCase):
         [(status, code, message)] = self.results((usb,), wipe.GptVerdict("foreign", ("apfs",)))
         self.assertEqual((status, code), ("FAIL", DOCTOR_CODE_DISK_NO_HFS_PARTITION))
         self.assertNotIn("Wipe Internal Disk", message)
+
+    def test_a_failed_seagate_and_a_blank_usb_disk_each_get_their_line(self) -> None:
+        from timecapsulesmb.checks.doctor_steps import DOCTOR_CODE_DISK_NO_HFS_PARTITION
+        usb = disk(device="sd1", builtin=False, label="Disk 2", uuid=USB_UUID, partitions=())
+        found = self.results((disk(size=3950, partitions=()), usb))
+        self.assertEqual([(status, code) for status, code, _ in found],
+                         [("FAIL", ErrorCode.DISK_SEAGATE_FAILED), ("FAIL", DOCTOR_CODE_DISK_NO_HFS_PARTITION)])
+        self.assertEqual(self.gpt_disks, ["sd1"])
 
     def test_an_apple_hfs_partition_that_has_not_mounted_is_not_offered_a_wipe(self) -> None:
         self.assertEqual(self.results((disk(partitions=()),), wipe.GptVerdict("apple_hfs", ("apple_hfs",))), [])

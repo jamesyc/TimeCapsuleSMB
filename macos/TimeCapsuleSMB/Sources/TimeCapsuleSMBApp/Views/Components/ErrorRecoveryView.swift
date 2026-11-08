@@ -62,7 +62,7 @@ struct ErrorRecoveryView: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                     ForEach(Array(presentation.steps.enumerated()), id: \.offset) { index, step in
-                        Text("\(index + 1). \(step)")
+                        Text(AttributedString("\(index + 1). ") + .linkingWebAddresses(in: step))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

@@ -346,6 +346,70 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(snapshot.device?.status, .warn)
     }
 
+    func testAFailedSeagateBesideAServingUsbDiskKeepsTheRuntimeVerified() throws {
+        // Samba serves from the USB disk: the Checkup names the dead
+        // internal disk, but the device is not unhealthy.
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device"),
+            testDoctorCheck(status: "WARN", message: "Disk 1 (internal) is a Seagate disk that has failed",
+                            domain: "device", code: DoctorSummary.diskSeagateFailedResultCode),
+        ])
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .warning, summary: summary)
+
+        // Only its FAIL, with no disk serving, makes it the device's problem.
+        XCTAssertFalse(summary.diskSeagateFailed)
+        XCTAssertEqual(runtimeState?.state, .installedVerified)
+    }
+
+    func testAFailedSeagatesWarningLeavesInstallAndActivateTheFixesForTheUsbDisk() throws {
+        // A USB disk serves, so the Seagate's line is a WARN: Samba's own
+        // problems there keep their fixes.
+        let seagate = testDoctorCheck(status: "WARN", message: "Disk 1 (internal) is a Seagate disk that has failed",
+                                      domain: "device", code: DoctorSummary.diskSeagateFailedResultCode)
+        let missing = try makeDoctorSummary(checks: [
+            seagate,
+            testDoctorCheck(status: "FAIL", message: "the helper's English", domain: "device",
+                            code: DoctorSummary.payloadMissingFromDiskResultCode),
+        ])
+        XCTAssertFalse(missing.diskSeagateFailed)
+        let reinstall = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .failed, summary: missing)
+        XCTAssertEqual(reinstall?.state, .notInstalled)
+        XCTAssertEqual(reinstall?.errorCode, DoctorSummary.payloadMissingFromDiskResultCode)
+
+        let stopped = try makeDoctorSummary(checks: [
+            seagate,
+            testDoctorCheck(status: "FAIL", message: "not started", domain: "device",
+                            code: DoctorSummary.runtimeNotStartedResultCode),
+        ])
+        let activate = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd4_samba4"), skipSSH: false, state: .failed, summary: stopped)
+        XCTAssertEqual(activate?.state, .activationNeeded)
+    }
+
+    func testAFailedSeagateWithNothingInstalledNeverAsksForInstallOrActivate() throws {
+        // No disk serves: Samba is not installed and not running, but only a
+        // new disk helps, on either system.
+        for family in ["netbsd6_samba4", "netbsd4_samba4"] {
+            let summary = try makeDoctorSummary(checks: [
+                testDoctorCheck(status: "FAIL", message: "Disk 1 (internal) is a Seagate disk that has failed",
+                                domain: "device", code: DoctorSummary.diskSeagateFailedResultCode),
+                testDoctorCheck(status: "FAIL", message: "not installed", domain: "device",
+                                code: DoctorSummary.runtimeNotInstalledResultCode),
+                testDoctorCheck(status: "FAIL", message: "not started", domain: "device",
+                                code: DoctorSummary.runtimeNotStartedResultCode),
+            ])
+
+            let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: try makeProfile(payloadFamily: family), skipSSH: false, state: .failed, summary: summary)
+
+            XCTAssertEqual(runtimeState?.state, .unhealthy, family)
+            XCTAssertEqual(runtimeState?.errorCode, DoctorSummary.diskSeagateFailedResultCode, family)
+        }
+    }
+
     func testThisMacsWarningsDoNotStopASmartWarningKeepingTheRuntimeVerified() throws {
         let summary = try makeDoctorSummary(checks: [
             smartFailing(),

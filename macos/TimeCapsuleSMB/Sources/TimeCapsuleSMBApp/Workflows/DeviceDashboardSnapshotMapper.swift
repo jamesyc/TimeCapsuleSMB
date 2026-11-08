@@ -41,9 +41,10 @@ enum DeviceDashboardSnapshotMapper {
             text: countSummary
         )
         let payloadFamily = profile.runtimeState?.payloadFamily ?? profile.payloadFamily
-        // A disk whose SMART check says it is failing, or debug logging left
-        // on, leaves Samba serving: the Checkup row shows the warning, the
-        // runtime stays verified.
+        // A disk whose SMART check says it is failing, a failed Seagate beside
+        // a USB disk that serves, or debug logging left on, leaves Samba
+        // serving: the Checkup row shows the warning, the runtime stays
+        // verified.
         let status = device.status == .warn && onlyWarningsThatLeaveSambaServing(summary) ? .pass : device.status
         switch status {
         case .notChecked:
@@ -77,8 +78,9 @@ enum DeviceDashboardSnapshotMapper {
         case .fail:
             // Installed files gone from every disk, or Samba's damaged: only
             // Install brings Samba back, unless the disk itself is failing
-            // (its kernel errors, or files it could not read).
-            let replacesDisk = summary.diskFailing || (summary.payloadProblem?.replacesDisk ?? false)
+            // (its kernel errors, a failed Seagate, or files it could not read).
+            let replacesDisk = summary.diskFailing || summary.diskSeagateFailed
+                || (summary.payloadProblem?.replacesDisk ?? false)
             let installFixes = summary.payloadProblem.map { $0.stopsSamba && !$0.replacesDisk } ?? false
             if !replacesDisk && (summary.runtimeNotInstalled || installFixes) {
                 return DeviceRuntimeStateSnapshot(
@@ -100,7 +102,7 @@ enum DeviceDashboardSnapshotMapper {
                 // device is unplugged, or the disk is failing or stopped
                 // responding, which Activate cannot start Samba from.
                 state: summary.runtimeNotStarted && profile.traits.isNetBSD4 && !summary.acpdGone
-                    && !summary.diskFailing && !summary.diskNotResponding
+                    && !summary.diskFailing && !summary.diskSeagateFailed && !summary.diskNotResponding
                     ? .activationNeeded : .unhealthy,
                 source: .doctor,
                 stage: nil,
@@ -114,7 +116,8 @@ enum DeviceDashboardSnapshotMapper {
                 // to the Checkup, which lists them all. An ACPd that is gone
                 // takes diskd with it, so it explains a disk that will not mount,
                 // and a disk that stopped responding holds up diskd, so it does too.
-                errorCode: summary.diskFailing ? DoctorSummary.diskFailingResultCode
+                errorCode: summary.diskSeagateFailed ? DoctorSummary.diskSeagateFailedResultCode
+                    : summary.diskFailing ? DoctorSummary.diskFailingResultCode
                     : summary.diskCheckNotResponding ? DoctorSummary.diskCheckNotRespondingResultCode
                     : summary.diskNotResponding ? DoctorSummary.diskNotRespondingResultCode
                     : summary.acpdGone ? DoctorSummary.acpdBrokenResultCode
@@ -136,6 +139,7 @@ enum DeviceDashboardSnapshotMapper {
         }
         return !warnings.isEmpty && warnings.allSatisfy {
             $0.code == DoctorSummary.diskSmartFailingResultCode || $0.code == DoctorSummary.debugLoggingOnResultCode
+                || $0.code == DoctorSummary.diskSeagateFailedResultCode
         }
     }
 

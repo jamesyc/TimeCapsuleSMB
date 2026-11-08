@@ -390,6 +390,16 @@ Install / Update Samba, Uninstall, Disk Repair and Checkup read the device's ker
 
 Install, Uninstall and Disk Repair ask before they go on with a failing disk; `--yes` goes on after printing the warning.
 
+### A Seagate Disk Reports 3.86 GB
+
+A Seagate drive that cannot load its firmware from its own platters, usually because its heads or the firmware area on the platters failed, runs from the code in its chip instead. It then reports 8,089,950 sectors (3950 MiB, which Windows shows as 3.86 GB) whatever its real size, gives its plain Seagate model name without Apple's "APPLE HDD", and cannot read its first sector. The 2 TB and 3 TB Seagate drives in the AirPort Time Capsule (802.11ac) fail this way, and so do other Seagate models: [this Tom's Hardware thread](https://forums.tomshardware.com/threads/seagate-1tb-st1000vm002-unallocated-3-86-gb.3657800/) shows a 1 TB drive doing the same.
+
+TimeCapsuleSMB treats an internal disk at exactly 3950 MiB as this failure. Checkup reports it even when a USB disk serves in its place. Wipe Internal Disk refuses it, and Install / Update Samba stops on it unless a USB disk can hold the files. Restarting the device or reinstalling does not bring the disk back. A SATA-to-USB adapter does not help either, because the drive reports the same 3.86 GB to a Mac.
+
+1. If you need the files on the disk, do not erase it. A data recovery service may be able to get them back.
+2. Replace the disk. iFixit has a guide for the [AirPort Time Capsule (802.11ac)](https://www.ifixit.com/Guide/Airport+Time+Capsule+A1470+Hard+Drive+Replacement/61924).
+3. Erase the new disk in AirPort Utility, then run “Install / Update Samba” in the app, or `.venv/bin/tcapsule deploy`. Time Machine starts a new, full backup on it.
+
 ### The Disk Is Not Responding
 
 A disk operation on the device has waited for minutes without finishing, such as Apple's `mount_hfs` mounting the disk at startup. Apple's AirPort service waits for the disk too, so the device cannot be updated or restarted over the network, and AirPort Utility may say the AirPort service is not answering. Install / Update Samba, Uninstall, Disk Repair, Wipe Internal Disk and Activate refuse to start, with nothing changed, and Checkup names the stuck processes.

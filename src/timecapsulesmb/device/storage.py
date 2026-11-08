@@ -102,9 +102,11 @@ class MaStDiskSnapshot:
 
 
 # Internal disks under this many MiB (15 GB) with no partitions: the drive
-# misreports its size (and identity), as the stock Seagates of TC8,119s do at
-# 3950 MiB; diskd takes the size from the kernel, so nothing else tells it from
-# a real small disk. No Time Capsule shipped with an internal disk under 16 GB.
+# misreports its size, as a failed Seagate does (seagate_disk_failed, checked
+# first); diskd takes the size from the kernel, so nothing else tells it from a
+# real small disk. No Time Capsule shipped with an internal disk under 16 GB.
+# Apple's erase would format the disk at the size it reports, so Wipe Internal
+# Disk refuses it, and Install and Checkup say so instead of offering the wipe.
 MISREPORTED_DISK_SIZE_LIMIT_MIB = 14305
 
 
@@ -113,6 +115,23 @@ def disk_size_misreported(disk: MaStDiskSnapshot) -> bool:
     the internal disk: a blank USB stick under 15 GB is a real small disk."""
     size = disk.size_mib
     return disk.builtin and not disk.partitions and size is not None and size < MISREPORTED_DISK_SIZE_LIMIT_MIB
+
+
+# A Seagate drive that cannot load its firmware from its own platters (failed
+# heads or a damaged firmware area) runs from the code in its ROM, which
+# reports 8,089,950 sectors (3950 MiB, Windows' "3.86 GB") whatever the
+# drive's real size, its generic model name (ST3000DM001, without the "APPLE
+# HDD" Apple's firmware area adds) and an unreadable sector 0. The 2 TB and 3 TB
+# Seagates of TC8,119s report exactly this size when they fail.
+SEAGATE_ROM_DISK_SIZE_MIB = 3950
+
+
+def seagate_disk_failed(disk: MaStDiskSnapshot) -> bool:
+    """Whether the internal disk is a Seagate running from its ROM: a
+    misreported size (disk_size_misreported) of exactly its ROM's. It can
+    list no partitions, since the kernel finds its wedges in sector 0, so
+    every reader of the disk's partitions agrees with this rule."""
+    return disk_size_misreported(disk) and disk.size_mib == SEAGATE_ROM_DISK_SIZE_MIB
 
 
 @dataclass(frozen=True)

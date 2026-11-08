@@ -770,7 +770,7 @@ Run it when doctor or a failure points at the filesystem, or before a deploy to 
 
 Steps:
 - It reads the disk list and partition tables without mounting or changing anything.
-- It refuses an internal disk that reports under 15 GB with no partitions (a drive misreporting its size), a disk the firmware has lost, and any disk while Apple's disk service is busy. It also refuses while another disk has Apple's APconfig, APswap or APdata partitions, because Apple's erase would format that disk instead. Unplug such a USB disk first. It never wipes a USB disk.
+- It refuses a failed Seagate internal disk, which reports exactly 3950 MiB (README.md, "A Seagate Disk Reports 3.86 GB"), any other internal disk that reports under 15 GB with no partitions (a drive misreporting its size; Apple's erase would format it at that size), a disk the firmware has lost, and any disk while Apple's disk service is busy. It also refuses while another disk has Apple's APconfig, APswap or APdata partitions, because Apple's erase would format that disk instead. Unplug such a USB disk first. It never wipes a USB disk.
 - It asks, with No as the default, naming the disk and what is on it, and warns when the disk shows signs of failing.
 - It stops file sharing, zeroes both ends of the disk, checks the writes, and asks for the Quick erase. The new disk gets APconfig, APswap and APdata partitions, and the volume keeps its old name when it can, else "Data".
 - It waits up to 30 minutes for the format, reboots, checks the new volume, and starts file sharing again. If the wiped disk held the Samba files, run `tcapsule deploy` next.

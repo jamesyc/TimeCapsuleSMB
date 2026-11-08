@@ -57,11 +57,13 @@ from timecapsulesmb.device.storage import (
     parse_mast_plist,
     raise_if_acpd_silent,
     read_mast_volumes_with_output_conn,
+    seagate_disk_failed,
 )
 from timecapsulesmb.device.wipe import (
     APPLE_PARTITION_NAMES,
     PS_DISK_JOBS_COMMAND,
     RAW_PARTITION_COMMAND,
+    SEAGATE_FAILED_MESSAGE,
     WIPE_LINE_PREFIX,
     DiskGeometry,
     GptVerdict,
@@ -145,9 +147,12 @@ class WipeDiskError(DeviceError):
 
 
 def require_wipeable(disk: MaStDiskSnapshot) -> None:
-    """Refuse an internal disk that reports the wrong size (an erase would
-    format it as that size), or that diskd has lost (its RPCs about it can
-    hang). Other disks: disks_with_apple_labels."""
+    """Refuse a failed Seagate internal disk, an internal disk that reports
+    the wrong size (an erase would format it as that size), or one that diskd
+    has lost (its RPCs about it can hang). Other disks:
+    disks_with_apple_labels."""
+    if seagate_disk_failed(disk):
+        raise WipeDiskError(SEAGATE_FAILED_MESSAGE, code=ErrorCode.DISK_SEAGATE_FAILED, reason="seagate_failed")
     if disk_size_misreported(disk):
         raise WipeDiskError(size_misreported_message(disk.size_mib), code=ErrorCode.DISK_SIZE_MISREPORTED,
                             reason="size_misreported")

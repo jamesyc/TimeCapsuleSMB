@@ -315,6 +315,46 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(installRow.action, .runCheckup)
     }
 
+    func testAFailedSeagateNamesTheDiskAndNeverOffersInstall() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        let detail = L10n.string("doctor.check.disk_seagate_failed")
+        XCTAssertNotEqual(detail, "doctor.check.disk_seagate_failed")
+        var profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+
+        // An install that stopped on it: no Checkup yet, so the row offers one.
+        profile.runtimeState = DeviceRuntimeStateSnapshot(
+            state: .installFailed, source: .deploy, stage: nil, payloadFamily: "netbsd6_samba4", verified: false,
+            summary: "", errorCode: DoctorSummary.diskSeagateFailedResultCode, errorMessage: nil, recovery: nil)
+        let installRow = try row(.runtime, in: DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile, passwordState: .available, displayStatus: .readyToInstall,
+            primaryAction: .installSMB, hostWarning: nil
+        )))
+        XCTAssertEqual(installRow.id, "runtime-disk-seagate-failed")
+        XCTAssertEqual(installRow.detail, detail)
+        XCTAssertEqual(installRow.status, .failed)
+        XCTAssertEqual(installRow.action, .runCheckup)
+
+        // A Checkup that found it beside the missing install: the row sends
+        // the user to the Checkup's lines, not to Install.
+        let summary = DoctorSummary(payload: try testDoctorPayload(checks: [
+            testDoctorCheck(status: "FAIL", message: "the helper's English", domain: "device",
+                            code: DoctorSummary.diskSeagateFailedResultCode),
+            testDoctorCheck(status: "FAIL", message: "the helper's English", domain: "device",
+                            code: DoctorSummary.runtimeNotInstalledResultCode),
+        ]).decode(DoctorPayload.self))
+        XCTAssertEqual(summary.checks.first?.localizedMessage(), detail)
+        profile.runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: summary)
+        let checkupRow = try row(.runtime, in: DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile, passwordState: .available, displayStatus: .readyToInstall,
+            primaryAction: .installSMB, hostWarning: nil
+        )))
+        XCTAssertEqual(checkupRow.id, "runtime-disk-seagate-failed")
+        XCTAssertEqual(checkupRow.action, .viewCheckup)
+    }
+
     func testADamagedRsyncNeverHidesAnotherFailure() throws {
         // rsync damaged and smbd down in the same Checkup: the dashboard does
         // not show the rsync row, whose text says file sharing works, but the

@@ -129,7 +129,7 @@ private struct CheckupDomainView: View {
                     Text(row.statusText)
                         .font(.system(.caption, design: .monospaced))
                         .frame(width: 44, alignment: .leading)
-                    Text(row.message)
+                    Text(AttributedString.linkingWebAddresses(in: row.message))
                         .font(.caption)
                 }
             }

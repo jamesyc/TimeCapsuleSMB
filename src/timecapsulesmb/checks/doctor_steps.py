@@ -112,6 +112,8 @@ from timecapsulesmb.device.disk_errors import (
     read_disk_errors_conn,
 )
 from timecapsulesmb.device.wipe import (
+    SEAGATE_FAILED_GUIDE_URL,
+    SEAGATE_FAILED_MESSAGE,
     decimal_size,
     gpt_verdict_description,
     in_memory_volume_message,
@@ -126,6 +128,7 @@ from timecapsulesmb.device.storage import (
     diskd_rpc_status_conn,
     disk_size_misreported,
     parse_mast_xml_inventory,
+    seagate_disk_failed,
 )
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
 from timecapsulesmb.device import acpd
@@ -322,10 +325,9 @@ DOCTOR_CODE_DEBUG_LOGGING_ON = "debug_logging_on"
 DOCTOR_CODE_DISK_INFO = "disk_info"
 # INFO, not WARN: a WARN would mark the runtime unverified in the app.
 DOCTOR_CODE_DISK_INFO_UNAVAILABLE = "disk_info_unavailable"
-# No disk has an HFS volume: the internal disk reports the wrong size, or a
-# disk holds a table or a format the device cannot use (Wipe Internal Disk
-# formats the internal one).
-DOCTOR_CODE_DISK_SIZE_MISREPORTED = "disk_size_misreported"
+# No disk has an HFS volume: a disk holds a table or a format the device
+# cannot use (Wipe Internal Disk formats the internal one). A failed Seagate
+# and another misreported size use their ErrorCode.
 DOCTOR_CODE_DISK_NO_HFS_PARTITION = "disk_no_hfs_partition"
 DOCTOR_CODE_HOSTNAME_WAITING = "hostname_waiting"
 DOCTOR_CODE_HOSTNAME_UNMAPPED = "hostname_unmapped"
@@ -2913,7 +2915,7 @@ def _disk_health_result(disk: MaStDiskSnapshot) -> CheckResult:
     AirPort Utility shows) and the space on each of its volumes, whatever
     their format. Only `builtin` marks the internal disk: it is sd0 on
     NetBSD 4, where a USB disk is sd0 on NetBSD 6."""
-    name = f"{disk.label or disk.device} ({'internal' if disk.builtin else 'USB'})"
+    name = _disk_name(disk)
     volumes = "; ".join(
         f"{partition.name or partition.device}: {_decimal_size(partition.used_mib)} used, "
         f"{_decimal_size(partition.free_mib)} free of {_decimal_size(partition.size_mib)}"
@@ -3000,7 +3002,9 @@ def _doctor_check_disk_health(target: DoctorTarget, remote: RemoteAccess, sink: 
         ))
     for disk in disks:
         sink.add(_disk_health_result(disk))
-    if any(partition.format == "hfs" for disk in disks for partition in disk.partitions):
+    serving = any(partition.format == "hfs" for disk in disks for partition in disk.partitions)
+    _doctor_check_seagate_failed(disks, serving, sink)
+    if serving:
         _doctor_check_in_memory_volumes(target, disks, sink)
     elif disks:
         _doctor_check_disks_without_hfs(target, disks, sink)
@@ -3033,13 +3037,38 @@ def _doctor_check_in_memory_volumes(target: DoctorTarget, disks: tuple[MaStDiskS
         ))
 
 
+def _disk_name(disk: MaStDiskSnapshot) -> str:
+    return f"{disk.label or disk.device} ({'internal' if disk.builtin else 'USB'})"
+
+
+def _doctor_check_seagate_failed(disks: tuple[MaStDiskSnapshot, ...], serving: bool, sink: DoctorSink) -> None:
+    """A failed Seagate internal disk (device.storage.seagate_disk_failed),
+    whatever the other disks hold: FAIL when no disk has an HFS volume (deploy
+    stops on it too), WARN when a USB disk serves in its place, since nothing
+    else would ever name the dead disk."""
+    for disk in disks:
+        if not seagate_disk_failed(disk):
+            continue
+        sink.add(CheckResult(
+            "WARN" if serving else "FAIL",
+            f"{SEAGATE_FAILED_MESSAGE} Restarting or reinstalling will not fix it. If you need its files, do not "
+            "erase the disk: a data recovery service may be able to get them back. Otherwise replace the disk "
+            f"(replacement guide: {SEAGATE_FAILED_GUIDE_URL})",
+            details={"code": ErrorCode.DISK_SEAGATE_FAILED, "disk": disk.device, "builtin": disk.builtin,
+                     "size_mib": disk.size_mib, "model": disk.model},
+        ))
+
+
 def _doctor_check_disks_without_hfs(target: DoctorTarget, disks: tuple[MaStDiskSnapshot, ...], sink: DoctorSink) -> None:
     """Why no disk has an HFS volume, the way deploy explains it
     (services.deploy.mast_no_volume_error): the internal disk reporting the
-    wrong size, or what `gpt show` (read-only) finds on each disk. A disk
-    whose table has an Apple HFS partition only has not mounted yet."""
+    wrong size, or what `gpt show` (read-only) finds on each disk. A failed
+    Seagate has its own line (_doctor_check_seagate_failed). A disk whose
+    table has an Apple HFS partition only has not mounted yet."""
     for disk in disks:
-        name = f"{disk.label or disk.device} ({'internal' if disk.builtin else 'USB'})"
+        if seagate_disk_failed(disk):
+            continue
+        name = _disk_name(disk)
         details: dict[str, object] = {"disk": disk.device, "builtin": disk.builtin}
         if disk_size_misreported(disk):
             size = decimal_size(disk.size_mib or 0)
@@ -3047,7 +3076,7 @@ def _doctor_check_disks_without_hfs(target: DoctorTarget, disks: tuple[MaStDiskS
                 "FAIL",
                 f"{name} reports only {size}, much smaller than it is; restart the device, and if it keeps "
                 f"reporting {size}, the disk needs replacing",
-                details={"code": DOCTOR_CODE_DISK_SIZE_MISREPORTED, **details, "size_mib": disk.size_mib},
+                details={"code": ErrorCode.DISK_SIZE_MISREPORTED, **details, "size_mib": disk.size_mib},
             ))
             continue
         verdict = read_gpt_verdict_conn(target.connection, disk.device)

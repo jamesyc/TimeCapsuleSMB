@@ -61,6 +61,10 @@ struct DoctorSummary: Equatable {
     static let rsyncUnreadableOnDiskResultCode = "rsync_unreadable_on_disk"
     static let diskNotMountingResultCode = "disk_not_mounting"
     static let diskFailingResultCode = "disk_failing"
+    /// The internal disk is a Seagate that cannot load its own firmware: a
+    /// new disk is the only fix. FAIL when no other disk serves, WARN beside
+    /// a USB disk that does.
+    static let diskSeagateFailedResultCode = "disk_seagate_failed"
     /// A process has waited minutes for the disk, and Apple's ACPd waits
     /// behind it: a restart, or a new disk when it comes back.
     static let diskNotRespondingResultCode = "disk_not_responding"
@@ -119,6 +123,10 @@ struct DoctorSummary: Equatable {
     /// The disk reported errors it could not recover from: it outranks the
     /// payload problems, whose fix (Install) it would undo.
     let diskFailing: Bool
+    /// The internal disk is a failed Seagate and no other disk serves (its
+    /// line is a FAIL): only a new disk helps. Its WARN, beside a USB disk
+    /// that serves, leaves Install and Activate the fixes for anything else.
+    let diskSeagateFailed: Bool
     /// The disk has stopped responding (diskNotRespondingResultCode). It
     /// explains a silent ACPd and a disk that will not mount.
     let diskNotResponding: Bool
@@ -154,6 +162,10 @@ struct DoctorSummary: Equatable {
         self.payloadProblemCode = Self.payloadProblems.first { Self.containsResultCode($0.code, in: payload) }?.code
         self.diskNotMounting = Self.containsResultCode(Self.diskNotMountingResultCode, in: payload)
         self.diskFailing = Self.containsResultCode(Self.diskFailingResultCode, in: payload)
+        self.diskSeagateFailed = payload.results.contains { check in
+            check.details.stringValue(for: "code") == Self.diskSeagateFailedResultCode
+                && DoctorCheckDomainPolicy.normalizedStatus(check.status) == "FAIL"
+        }
         self.diskNotResponding = Self.containsResultCode(Self.diskNotRespondingResultCode, in: payload)
         self.diskCheckNotResponding = payload.results.contains { check in
             guard case .object(let details) = check.details else { return false }

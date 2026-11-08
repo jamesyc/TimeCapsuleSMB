@@ -382,6 +382,22 @@ def size_misreported_message(size_mib: int | None) -> str:
     return SIZE_MISREPORTED_MESSAGE.format(size=decimal_size(size_mib or 0))
 
 
+# A Seagate internal disk running from its ROM (storage.seagate_disk_failed).
+# The size is the 3.86 GB Windows shows and owners search for, not
+# decimal_size's 4 GB.
+SEAGATE_FAILED_MESSAGE = (
+    "The internal disk is a Seagate disk that has failed: it reports itself as 3.86 GB, as a Seagate disk does "
+    "when it cannot load its own firmware."
+)
+# README's section on it (the anchor of "A Seagate Disk Reports 3.86 GB"),
+# which links the replacement guides.
+SEAGATE_FAILED_GUIDE_URL = "https://github.com/jamesyc/TimeCapsuleSMB#a-seagate-disk-reports-386-gb"
+# Other owners with the same failure.
+SEAGATE_FAILED_REPORTS_URL = (
+    "https://forums.tomshardware.com/threads/seagate-1tb-st1000vm002-unallocated-3-86-gb.3657800/"
+)
+
+
 def volume_name_allowed(name: str) -> bool:
     """A name diskd can pass to newfs_hfs: UTF-8 is fine; quotes, `$`, `\\`,
     backticks, `:`, control characters, an empty name, leading or trailing

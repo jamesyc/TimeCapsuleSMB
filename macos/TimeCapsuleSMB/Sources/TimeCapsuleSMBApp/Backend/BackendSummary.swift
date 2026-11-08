@@ -255,6 +255,9 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.diskd_handoff_pending")
         case "diskd_restart_needed":
             return L10n.string("doctor.check.diskd_restart_needed")
+        // A failed Seagate internal disk, whatever the other disks hold.
+        case "disk_seagate_failed":
+            return L10n.string("doctor.check.disk_seagate_failed")
         // No disk has an HFS volume: the helper's line names the disk and
         // what gpt found; the catalog's says what to do.
         case "disk_size_misreported":
