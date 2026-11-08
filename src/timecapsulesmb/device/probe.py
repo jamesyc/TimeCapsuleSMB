@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal, Union
 
 from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
+from timecapsulesmb.device.diskd import DiskdHandoff, parse_diskd_handoff
 from timecapsulesmb.device.errors import (
     DeviceError,
     DiskPayloadDamagedError,
@@ -30,6 +31,7 @@ from timecapsulesmb.device.processes import (
     PS_ROWS_FUNCTION,
     acpd_running,
     describe_uninterruptible,
+    listing_complete,
     parse_ps_rows,
     service_role_processes,
     service_unreadable,
@@ -473,6 +475,9 @@ class ManagedRuntimeProbeResult:
     attempts: tuple[RuntimeProbeAttemptSummary, ...] = ()
     soft_timeout_seconds: int | None = None
     final_attempts_allowed: int = 0
+    # Whether the manager runs, as the last listing that could tell saw it
+    # (ManagerState.present; None when none could).
+    manager_present: bool | None = None
 
     @property
     def steps(self) -> tuple[ProbeStepResult, ...]:
@@ -2335,6 +2340,17 @@ class ManagerState:
 
     problems: tuple[DiskPayloadProblem, ...] = ()
     acpd_running: bool | None = None
+    # One manager runs (True), a finished listing shows none (False), or the
+    # listing cannot tell (None: unfinished, an unreadable service, several).
+    present: bool | None = None
+
+
+def _manager_presence(output: str, rows: list) -> bool | None:
+    if len(rows) == 1:
+        return True
+    if not rows and listing_complete(output) and not service_unreadable(output):
+        return False
+    return None
 
 
 def read_manager_state(connection: SshConnection) -> ManagerState | None:
@@ -2350,8 +2366,8 @@ def read_manager_state(connection: SshConnection) -> ManagerState | None:
         return None
     output = proc.stdout or ""
     rows = service_role_processes(output, "manager")
-    problems = _title_payload_problems(list(rows[0].argv[1:])) if len(rows) == 1 else ()
-    return ManagerState(problems, acpd_running(output))
+    title = list(rows[0].argv[1:]) if len(rows) == 1 else []
+    return ManagerState(_title_payload_problems(title), acpd_running(output), _manager_presence(output, rows))
 
 
 def manager_payload_problems(connection: SshConnection) -> tuple[DiskPayloadProblem, ...] | None:
@@ -2373,9 +2389,12 @@ class ManagerVerdicts:
     acpd_gone counts the listings in a row that finished without ACPd; any
     other read starts the count again."""
 
-    def __init__(self, problems: tuple[DiskPayloadProblem, ...] = (), *, acpd_gone: int = 0) -> None:
+    def __init__(self, problems: tuple[DiskPayloadProblem, ...] = (), *, acpd_gone: int = 0,
+                 manager_present: bool | None = None) -> None:
         self.problems = tuple(problems)
         self.acpd_gone = acpd_gone
+        # Whether the manager runs, at the last listing that could tell.
+        self.manager_present = manager_present
 
     def update(self, read: tuple[DiskPayloadProblem, ...] | None) -> None:
         if read is not None:
@@ -2385,6 +2404,8 @@ class ManagerVerdicts:
         """Take one read_manager_state reading."""
         self.update(None if state is None else state.problems)
         self.acpd_gone = self.acpd_gone + 1 if state is not None and state.acpd_running is False else 0
+        if state is not None and state.present is not None:
+            self.manager_present = state.present
 
     @property
     def acpd_quit(self) -> bool:
@@ -2415,6 +2436,7 @@ class ManagerVerdicts:
         goes on through it and reports it only at its end."""
         return ManagerVerdicts(
             tuple(problem for problem in self.problems if not problem.replaces_disk), acpd_gone=self.acpd_gone,
+            manager_present=self.manager_present,
         )
 
 
@@ -2428,6 +2450,9 @@ def _title_unmounted_since(title: list[str]) -> int | None:
 
 
 RSYNC_NOT_RUNNING_STEP = "rsync_not_running"
+# The step a wait ends with when a finished listing shows no manager.
+MANAGER_NOT_RUNNING_STEP = "manager_not_running"
+MANAGER_NOT_RUNNING_DETAIL = "The runtime manager is not running"
 # The step a wait for the runtime ends with when ACPd is gone (ManagerVerdicts.acpd_quit).
 ACPD_QUIT_STEP = "acpd_quit"
 ACPD_QUIT_STEP_DETAIL = "Apple ACPd is not running"
@@ -2490,8 +2515,8 @@ def probe_managed_runtime_conn(
         )
         attempts.append(summary)
         last_result = result
-        if not result.ready:
-            verdicts.update_state(read_manager_state(connection))
+        # Every attempt: listeners with no manager behind them are not ready.
+        verdicts.update_state(read_manager_state(connection))
         outcome = _runtime_outcome(result, verdicts if phase == "final_check" else verdicts.lasting())
         if outcome is not None:
             return finish(outcome)
@@ -2521,15 +2546,20 @@ def _runtime_outcome(
     timeout_detail: str | None = None,
 ) -> ManagedRuntimeProbeResult | None:
     """How a wait for the runtime ends after an attempt. Samba and rsync are
-    judged alike: ready; once ACPd is gone while Samba is off, which no wait
-    brings back (a verdict seen while the last listing lacked ACPd waits
-    for the next one); at a verdict in the manager's title, which holds
-    however long it waits (rsync's once Samba serves, so the result says how
-    Samba is); else, at the deadline (timeout_detail), whichever is not
-    ready: rsync alone while Samba serves, or the runtime timed out. None:
+    judged alike: ready, unless a finished listing shows no manager behind
+    the listeners (a listing that cannot tell leaves the listeners to
+    decide); once ACPd is gone while Samba is off, which no wait brings back
+    (a verdict seen while the last listing lacked ACPd waits for the next
+    one); at a verdict in the manager's title, which holds however long it
+    waits (rsync's once Samba serves, so the result says how Samba is);
+    else, at the deadline (timeout_detail), whichever is not ready: no
+    manager, rsync alone while Samba serves, or the runtime timed out. None:
     wait on."""
-    if result.ready:
+    result = replace(result, manager_present=verdicts.manager_present)
+    if result.ready and verdicts.manager_present is not False:
         return result
+    if result.ready:
+        return _manager_not_running(result) if timeout_detail is not None else None
     if verdicts.acpd_quit and not result.samba_ready:
         # Without ACPd the manager can read no disk and no setting, so it
         # never starts Samba; its title's verdicts may be out of date too.
@@ -2547,6 +2577,8 @@ def _runtime_outcome(
         return replace(result, detail=problem.message, extra_steps=result.extra_steps + (step,))
     if timeout_detail is None:
         return None
+    if verdicts.manager_present is False:
+        return _manager_not_running(result)
     if result.samba_ready:
         return _rsync_not_running(result)
     step = ProbeStepResult(id="runtime_timeout", status="fail", detail=timeout_detail)
@@ -2556,6 +2588,11 @@ def _runtime_outcome(
         detail=f"{timeout_detail}; {result.detail}",
         extra_steps=result.extra_steps + (step,),
     )
+
+
+def _manager_not_running(result: ManagedRuntimeProbeResult) -> ManagedRuntimeProbeResult:
+    step = ProbeStepResult(id=MANAGER_NOT_RUNNING_STEP, status="fail", detail=MANAGER_NOT_RUNNING_DETAIL)
+    return replace(result, ready=False, detail=f"{step.detail}; {result.detail}", extra_steps=result.extra_steps + (step,))
 
 
 def flash_runtime_config_present_conn(connection: SshConnection) -> bool:
@@ -2928,6 +2965,9 @@ class ManagerStartupAgeProbeResult:
     # different pid on a unit whose uptime ran on is an ACPd started again.
     acpd_running: bool | None = None
     acpd_pids: tuple[int, ...] = ()
+    # The title's diskd= word (diskd.parse_diskd_handoff): None when there is
+    # none (a manager before v3.8.5) or this release cannot read it.
+    handoff: DiskdHandoff | None = None
 
 
 def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupAgeProbeResult:
@@ -2978,6 +3018,7 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
         _manager_startup_age(title, now_text),
         payload_problems=_title_payload_problems(title),
         unmounted_since=_title_unmounted_since(title),
+        handoff=parse_diskd_handoff(title),
         **acpd,
     )
 

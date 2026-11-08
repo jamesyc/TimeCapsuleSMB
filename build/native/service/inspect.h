@@ -18,6 +18,7 @@ enum tc_process_role {
 };
 struct tc_process_info {
     pid_t pid, parent, group;
+    unsigned long long born;
     enum tc_process_role role;
 };
 struct tc_process_table {

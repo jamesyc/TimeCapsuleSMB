@@ -149,7 +149,7 @@ def test_boot_installs_both_guards_and_still_prepares_and_starts(boot):
     assert operations[-1] == ['service', 'manager']
 
 
-def test_diskd_guard_starts_only_the_manager_loopback_diskd(boot):
+def test_diskd_guard_ignores_all_starts_and_the_native_link_runs(boot):
     root, run, calls = boot
     assert run().returncode == 0
     log = root/'Memory/samba4/var/runtime.log'
@@ -157,17 +157,22 @@ def test_diskd_guard_starts_only_the_manager_loopback_diskd(boot):
     def start(*args):
         return _guard_start(root, calls, 'diskd', *args)
 
-    assert start('-i', 'lo0', '-d', 'local.') == (0, [['multicall', 'diskd', '-i', 'lo0', '-d', 'local.']])
+    assert start('-i', 'lo0', '-d', 'local.') == (0, [])
     # ACPd's starts: nothing runs, one line each in the runtime log.
     assert start('-i', 'bridge0', '-d', 'local.') == (0, [])
     assert start('-i', '', '-d', 'local.') == (0, [])
     assert start() == (0, [])
     lines = log.read_text().splitlines()
     assert [line.split(' ', 2)[2] for line in lines] == [
+        'diskd guard: ignored ACPd start: -i lo0 -d local.',
         'diskd guard: ignored ACPd start: -i bridge0 -d local.',
         'diskd guard: ignored ACPd start: -i  -d local.',
         'diskd guard: ignored ACPd start: ',
     ]
+    before = len(calls())
+    subprocess.run([str(root/'ram/usr/libexec/diskd'), '-i', 'lo0', '-d', 'local.'], check=True, timeout=10,
+                   env={**os.environ, 'BOOT_ROOT': str(root)})
+    assert calls()[before:] == [['multicall', 'diskd', '-i', 'lo0', '-d', 'local.']]
     # Before boot.sh creates the log directory, an ACPd start writes nothing.
     log.unlink()
     (root/'Memory/samba4/var').rename(root/'Memory/samba4/var.away')
@@ -203,8 +208,7 @@ def test_guards_keep_working_after_uninstall_removes_the_runtime(boot):
     root, run, calls = boot
     assert run().returncode == 0
     shutil.rmtree(root/'Memory/samba4')  # uninstall's RemovePathsAction
-    assert _guard_start(root, calls, 'diskd', '-i', 'lo0', '-d', 'local.') == (
-        0, [['multicall', 'diskd', '-i', 'lo0', '-d', 'local.']])
+    assert _guard_start(root, calls, 'diskd', '-i', 'lo0', '-d', 'local.') == (0, [])
     assert _guard_start(root, calls, 'diskd', '-i', 'bridge0', '-d', 'local.') == (0, [])
     assert _guard_start(root, calls, 'wcifsnd') == (0, [])
     assert not (root/'Memory/samba4').exists()

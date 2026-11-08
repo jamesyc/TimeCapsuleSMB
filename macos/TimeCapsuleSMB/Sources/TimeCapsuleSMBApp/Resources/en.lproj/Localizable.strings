@@ -1481,3 +1481,13 @@
 "backend.recovery.ssh_client_failed.action.1" = "Try again.";
 "backend.recovery.ssh_client_failed.action.2" = "If it keeps failing, click “Copy Diagnostics” and report it at https://github.com/jamesyc/TimeCapsuleSMB/issues.";
 "app_menu.check_for_updates" = "Check for Updates...";
+
+// Disk service handoff
+"backend.recovery.diskd_handoff_pending.title" = "File sharing is still starting";
+"backend.recovery.diskd_handoff_pending.message" = "Apple's disk service is still preparing file sharing.";
+"backend.recovery.diskd_handoff_pending.action.1" = "Leave the device powered on and wait, then run “Checkup” again.";
+"doctor.check.diskd_handoff_pending" = "Apple's disk service is still preparing file sharing.";
+"backend.recovery.diskd_restart_needed.title" = "The disk service needs a restart";
+"backend.recovery.diskd_restart_needed.message" = "Apple's disk service is stuck, and file sharing cannot use the disks until the device restarts.";
+"backend.recovery.diskd_restart_needed.action.1" = "After backups and disk operations finish, restart the device, then run “Checkup” again.";
+"doctor.check.diskd_restart_needed" = "Apple's disk service is stuck, and file sharing cannot use the disks until the device restarts. After backups and disk operations finish, restart the device, then run “Checkup” again.";

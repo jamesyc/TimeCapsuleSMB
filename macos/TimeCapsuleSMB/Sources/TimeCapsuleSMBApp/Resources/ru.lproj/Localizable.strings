@@ -1481,3 +1481,13 @@
 "backend.recovery.ssh_client_failed.action.1" = "Повторите попытку.";
 "backend.recovery.ssh_client_failed.action.2" = "Если ошибка повторяется, нажмите «Скопировать диагностику» и сообщите о проблеме на https://github.com/jamesyc/TimeCapsuleSMB/issues.";
 "app_menu.check_for_updates" = "Проверить обновления...";
+
+// Disk service handoff
+"backend.recovery.diskd_handoff_pending.title" = "Общий доступ к файлам еще запускается";
+"backend.recovery.diskd_handoff_pending.message" = "Служба дисков Apple еще подготавливает общий доступ к файлам.";
+"backend.recovery.diskd_handoff_pending.action.1" = "Оставьте устройство включенным и подождите, затем снова запустите операцию «Проверка».";
+"doctor.check.diskd_handoff_pending" = "Служба дисков Apple еще подготавливает общий доступ к файлам.";
+"backend.recovery.diskd_restart_needed.title" = "Службу дисков нужно перезапустить";
+"backend.recovery.diskd_restart_needed.message" = "Служба дисков Apple зависла, и общий доступ к файлам не может использовать диски, пока устройство не будет перезагружено.";
+"backend.recovery.diskd_restart_needed.action.1" = "Когда резервное копирование и операции с диском завершатся, перезагрузите устройство, затем снова запустите операцию «Проверка».";
+"doctor.check.diskd_restart_needed" = "Служба дисков Apple зависла, и общий доступ к файлам не может использовать диски, пока устройство не будет перезагружено. Когда резервное копирование и операции с диском завершатся, перезагрузите устройство, затем снова запустите операцию «Проверка».";

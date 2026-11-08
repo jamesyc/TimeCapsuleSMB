@@ -37,13 +37,10 @@ tc_guard() {
 # names: the second diskd fails to register, and when it exits ACPd deletes the
 # names it tried, which are the manager diskd's. After a few starts
 # diskd.useVolume is gone until reboot, so deploy and disk activation fail.
-# Only the manager's loopback diskd may start.
+# The manager executes the native link directly. No start through this guard owns the handoff.
 tc_guard diskd <<'EOF'
 #!/bin/sh
 # TimeCapsuleSMB diskd guard: see /mnt/Flash/boot.sh.
-if [ "${1:-}" = -i ] && [ "${2:-}" = lo0 ]; then
-    exec /usr/libexec/diskd "$@"
-fi
 { echo "$(/bin/date '+%Y-%m-%d %H:%M:%S') diskd guard: ignored ACPd start: $*" \
     >>/mnt/Memory/samba4/var/runtime.log; } 2>/dev/null
 exit 0

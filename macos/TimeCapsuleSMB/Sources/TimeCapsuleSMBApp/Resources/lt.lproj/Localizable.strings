@@ -1481,3 +1481,13 @@
 "backend.recovery.ssh_client_failed.action.1" = "Bandykite dar kartą.";
 "backend.recovery.ssh_client_failed.action.2" = "Jei vis tiek nepavyksta, spustelėkite „Kopijuoti diagnostiką“ ir praneškite apie problemą adresu https://github.com/jamesyc/TimeCapsuleSMB/issues.";
 "app_menu.check_for_updates" = "Ieškoti naujinimų...";
+
+// Disk service handoff
+"backend.recovery.diskd_handoff_pending.title" = "Failų bendrinimas dar paleidžiamas";
+"backend.recovery.diskd_handoff_pending.message" = "Apple diskų tarnyba dar ruošia failų bendrinimą.";
+"backend.recovery.diskd_handoff_pending.action.1" = "Palikite įrenginį įjungtą ir palaukite, tada dar kartą paleiskite operaciją „Patikrinimas“.";
+"doctor.check.diskd_handoff_pending" = "Apple diskų tarnyba dar ruošia failų bendrinimą.";
+"backend.recovery.diskd_restart_needed.title" = "Diskų tarnybą reikia paleisti iš naujo";
+"backend.recovery.diskd_restart_needed.message" = "Apple diskų tarnyba nebeveikia tinkamai, todėl failų bendrinimas negali naudoti diskų, kol įrenginys nebus paleistas iš naujo.";
+"backend.recovery.diskd_restart_needed.action.1" = "Pasibaigus atsarginių kopijų kūrimui ir disko operacijoms, paleiskite įrenginį iš naujo, tada dar kartą paleiskite operaciją „Patikrinimas“.";
+"doctor.check.diskd_restart_needed" = "Apple diskų tarnyba nebeveikia tinkamai, todėl failų bendrinimas negali naudoti diskų, kol įrenginys nebus paleistas iš naujo. Pasibaigus atsarginių kopijų kūrimui ir disko operacijoms, paleiskite įrenginį iš naujo, tada dar kartą paleiskite operaciją „Patikrinimas“.";

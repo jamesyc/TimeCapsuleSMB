@@ -249,6 +249,12 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.metadata_migration_in_progress")
         case "disk_not_mounting":
             return L10n.string("doctor.check.disk_not_mounting")
+        // The manager has not taken over the disks from Apple's diskd: the
+        // helper's line names its phase, which the catalog leaves out.
+        case "diskd_handoff_pending":
+            return L10n.string("doctor.check.diskd_handoff_pending")
+        case "diskd_restart_needed":
+            return L10n.string("doctor.check.diskd_restart_needed")
         // No disk has an HFS volume: the helper's line names the disk and
         // what gpt found; the catalog's says what to do.
         case "disk_size_misreported":

@@ -71,7 +71,8 @@ int tc_process_table_build(struct tc_process_table *table, const struct tc_proct
             int read = argv(p->pid, command, sizeof(command));
             if (read > 0)
                 continue;
-            if (read < 0)
+            /* An empty diskd argv would read as stock and draw a TERM. */
+            if (read < 0 || (!strcmp(p->comm, "diskd") && !command[0]))
                 return -1;
         }
         role = classify(p->comm, command);
@@ -82,6 +83,7 @@ int tc_process_table_build(struct tc_process_table *table, const struct tc_proct
         table->processes[table->count].pid = p->pid;
         table->processes[table->count].parent = p->parent;
         table->processes[table->count].group = p->group;
+        table->processes[table->count].born = p->born;
         table->processes[table->count].role = role;
         table->count++;
     }

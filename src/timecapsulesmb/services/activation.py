@@ -128,10 +128,12 @@ def decide_manual_activation(
             detail=runtime.detail,
             runtime=runtime,
         )
-    if runtime.samba_ready:
+    if runtime.samba_ready and runtime.manager_present is not False:
         # The manager runs and serves: it starts rsync itself, and starting
         # the runtime again would stop file sharing that works. Only the
-        # verification's wait can tell how rsync ends up.
+        # verification's wait can tell how rsync ends up. A finished listing
+        # with no manager means nothing supervises that Samba: start the
+        # runtime.
         return ActivationDecision(
             run_actions=False,
             verify_runtime=True,

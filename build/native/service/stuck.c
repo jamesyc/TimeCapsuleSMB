@@ -156,7 +156,7 @@ static void title_append(char *out, size_t size, size_t *used, const char *forma
 
 void tc_manager_title(char *out, size_t size, long long started_ms, int waiting, const char *payload,
                       const char *rsync, long long unmounted_ms, const struct tc_stuck *stuck, size_t limit,
-                      long long now) {
+                      long long now, const char *diskd) {
     const struct tc_stuck_entry *order[TC_STUCK_MAX];
     size_t used = 0, i, shown = 0, more = 0;
     if (!size)
@@ -164,6 +164,8 @@ void tc_manager_title(char *out, size_t size, long long started_ms, int waiting,
     title_append(out, size, &used, "role=manager");
     if (started_ms >= 0)
         title_append(out, size, &used, " started=%lld", started_ms / 1000);
+    if (diskd)
+        title_append(out, size, &used, " diskd=%s", diskd);
     if (waiting)
         title_append(out, size, &used, " waiting=hostname");
     if (payload)

@@ -68,6 +68,7 @@ CHILD = '''
 import json,os,signal,sys,time,select
 from pathlib import Path
 role=sys.argv[1] if Path(sys.argv[0]).name=='roles' else Path(sys.argv[0]).name
+if role=='stock-diskd':role='diskd'
 log=Path(os.environ['TC_TEST_ROOT'])/'events'
 def event(kind,**extra):
     # Events from different children need one clock origin; macOS Python 3.9's
@@ -130,6 +131,13 @@ if role=='telemetry' and '--report' in sys.argv and not stuck:
     event('report-done',status=status)
     sys.exit(status)
 if role=='diskd' and (Path(os.environ['TC_TEST_ROOT'])/'diskd-fail').exists():sys.exit(7)
+if role=='diskd':
+    root=Path(os.environ['TC_TEST_ROOT'])
+    if (root/'mounts-after-diskd').exists():
+        (root/'mounts').write_text((root/'mounts-after-diskd').read_text())
+    # A diskd that dies this many seconds after it starts.
+    if (root/'diskd-lifetime').exists():
+        time.sleep(float((root/'diskd-lifetime').read_text()));event('exit');sys.exit(1)
 while True:
     if role=='diskd' or stuck:time.sleep(.1);continue
     if select.select([0],[],[],0.1)[0] and not os.read(0,128):
@@ -150,7 +158,10 @@ def manager_tools(tmp_path_factory,request):
     # and a worker's lock must not hold off another worker's manager.
     (root/'roles').write_text(f'#!{sys.executable}\n'+CHILD)
     (root/'roles').chmod(0o755)
-    executable('diskd',CHILD)
+    # A file of its own rather than a hard link to the cross-worker
+    # executable cache: tests rename and replace it.
+    (root/'diskd').write_text(f'#!{sys.executable}\n'+CHILD)
+    (root/'diskd').chmod(0o755)
     executable('atactl','''
 import os,sys,json
 from pathlib import Path
@@ -170,13 +181,48 @@ key=sys.argv[-1]
 if (root/'record-acp').exists():
     import json
     with (root/'events').open('a') as out:
-        out.write(json.dumps(dict(kind='command',role='acp',pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),key=key))+'\\n')
+        out.write(json.dumps(dict(kind='command',role='acp',pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),key=key,
+                                  method=sys.argv[2] if sys.argv[1:2]==['rpc'] else None))+'\\n')
 if key=='syNm' and (root/'bad-name').exists():sys.exit(1)
 if key=='syPW' and (root/'bad-auth').exists():sys.exit(1)
 if key=='MaSt':
     if (root/'slow-mast').exists():time.sleep(60)
     if (root/'bad-mast').exists():sys.exit(1)
-    print((root/'inventory').read_text());sys.exit(0)
+    if (root/'mast-hold').exists():
+        import json
+        with (root/'events').open('a') as out:
+            out.write(json.dumps(dict(kind='blocked',role='inventory',pid=os.getpid()))+'\\n')
+        while (root/'mast-hold').exists():time.sleep(.05)
+    captured=(root/'inventory').read_text()
+    if (root/'claim-counts').exists():
+        import json,plistlib
+        disks=plistlib.loads(captured.encode())
+        counts=json.loads((root/'claim-counts').read_text())
+        for disk in disks:
+            for part in disk['partitions']:
+                part['users']=counts.get('path:s:'+str(root/part['deviceName']),0)
+        captured=plistlib.dumps(disks).decode()
+    print(captured);sys.exit(0)
+if sys.argv[1:3]==['rpc','diskd.getVolumeCounts']:
+    if (root/'missing-rpc').exists():
+        # acp's own line, after another one when the test asks for noise.
+        if (root/'missing-rpc').read_text():print((root/'missing-rpc').read_text(),file=sys.stderr)
+        print('### RPC function "diskd.getVolumeCounts" failed: -6727',file=sys.stderr)
+        sys.exit(22)
+    if (root/'probe-fail').exists():
+        print((root/'probe-fail').read_text(),file=sys.stderr);sys.exit(1)
+    if (root/'diskd-probe-hold').exists():
+        import json
+        if (root/'diskd-probe-ignore-term').exists():
+            # Like acp waiting on ACPd: a stopped probe stays until the grace kill.
+            import signal;signal.signal(signal.SIGTERM,signal.SIG_IGN)
+        with (root/'events').open('a') as out:
+            out.write(json.dumps(dict(kind='blocked',role='diskd-probe'))+'\\n')
+        while (root/'diskd-probe-hold').exists():time.sleep(.05)
+    print((root/'diskd-reply').read_text() if (root/'diskd-reply').exists()
+          else '<dict><key>status</key><integer>0</integer><key>outputs</key><dict>'
+               '<key>afpCount</key><integer>0</integer><key>smbCount</key><integer>0</integer></dict></dict>')
+    sys.exit(0)
 if sys.argv[1:3]==['rpc','diskd.useVolume']:
     if (root/'hold-activation').exists():
         import json
@@ -187,7 +233,21 @@ if sys.argv[1:3]==['rpc','diskd.useVolume']:
         while (root/'hold-activation').exists():time.sleep(.05)
         event('released')
     failed=root/'fail-claim'
-    sys.exit(1 if failed.exists() and failed.read_text() in sys.argv[-1] else 0)
+    if failed.exists() and failed.read_text() in sys.argv[-1]:
+        print('### RPC function "diskd.useVolume" failed: -6727',file=sys.stderr)
+        sys.exit(22)
+    counter=root/'claim-counts'
+    if counter.exists():
+        import json
+        counts=json.loads(counter.read_text());counts[key]=counts.get(key,0)+1
+        pending=counter.with_suffix('.new')
+        pending.write_text(json.dumps(counts));pending.replace(counter)
+    if (root/'claim-status').exists():
+        status=(root/'claim-status').read_text().strip()
+        print('<dict><key>status</key><integer>'+status+'</integer></dict>')
+        sys.exit(0)
+    print('<dict><key>status</key><integer>0</integer></dict>')
+    sys.exit(0)
 print({'syNm':(root/'name').read_text() if (root/'name').exists() else 'Capsule','syAP':'116','syAM':'TimeCapsule6,116','syPW':'password'}[key])
 ''')
     executable('fstat','''
@@ -212,7 +272,8 @@ if not (root/'no-listener').exists():
     binary=compile_service(root/'manager',flags=[
         f'-DTC_SERVICE_BIN="{root}/roles"',f'-DTC_RAM_ROOT="{root}/ram"',f'-DTC_HOSTS_PATH="{root}/hosts"',
         f'-DTC_FLASH_CONFIG_PATH="{root}/config"',f'-DTC_VOLUMES_ROOT="{root}"',
-        f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_DISKD_PATH="{root}/diskd"',f'-DTC_ATACTL_PATH="{root}/atactl"',f'-DTC_FSTAT_PATH="{root}/fstat"',
+        f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_DISKD_PATH="{root}/diskd"',
+        f'-DTC_DISKD_STOCK="{root}/stock-diskd"',f'-DTC_ATACTL_PATH="{root}/atactl"',f'-DTC_FSTAT_PATH="{root}/fstat"',
         f'-DTC_BUFWAKE_DIR="{root}/wake"',f'-DTC_LOCKS_ROOT="{root}/locks"',
         *(f'-D{name}={value}' for name,value in TIMINGS.items()),
         *extra_flags,
@@ -228,7 +289,9 @@ def manager(manager_tools):
     hosts=root/'hosts'
     if hosts.is_dir():hosts.rmdir()
     else:hosts.unlink(missing_ok=True)
-    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','no-ipv6','diskd-absent','diskd-fail','record-acp','fail-claim','record-audit','record-fstat','smbd-hold','hold-activation',
+    for name in ('claim-status','claim-counts','bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','no-ipv6','diskd-absent','diskd-fail','record-acp','fail-claim','record-audit','record-fstat','smbd-hold','hold-activation',
+                 'mounts-after-diskd','diskd-probe-hold','diskd-probe-ignore-term','diskd-reply','missing-rpc','probe-fail','stock-diskd',
+                 'diskd-lifetime','mast-hold',
                  'bufcache','bufcache.writes','bufcache.wakes','bufcache.tmp','bufcache.new','fork-fail','smbd-ignore-term','telemetry-hang',
                  'report-hold','report-exit','titles','smbd-corrupt','smbd-exit-status','rsync-exit-status','discovery-exit-status'):
         (root/name).unlink(missing_ok=True)
@@ -644,9 +707,9 @@ def test_manager_title_carries_its_monotonic_start_through_every_change(manager)
     assert len(started)==1, titles
     value=started.pop()
     assert value.startswith('started=') and before<=int(value.removeprefix('started='))<=after
-    assert titles[0]==f'role=manager {value}'
-    assert f'role=manager {value} waiting=hostname' in titles
-    assert titles[-1]==f'role=manager {value}'
+    assert titles[0].startswith(f'role=manager {value} diskd=inspect:')
+    assert any('waiting=hostname' in title for title in titles)
+    assert 'waiting=hostname' not in titles[-1] and 'diskd=ready:' in titles[-1]
 
 
 def discovery_names(rows):
@@ -1768,7 +1831,8 @@ def test_unavailable_mast_retains_service_and_singleton_refuses_duplicate(manage
     (root/'bad-mast').touch();process.send_signal(signal.SIGHUP)
     time.sleep(1)
     assert not any(e['role']=='smbd' and e['kind']=='stop' for e in events())
-    duplicate=subprocess.run([str(manager_tools[1]),'manager'],capture_output=True,timeout=5)
+    # A live manager keeps the singleton through the 15-second contention window.
+    duplicate=subprocess.run([str(manager_tools[1]),'manager'],capture_output=True,timeout=30)
     assert duplicate.returncode==1
     assert process.poll() is None
 
@@ -1981,6 +2045,7 @@ def test_term_resistant_rsync_daemon_is_killed_and_logged_once(manager):
 def test_missing_diskd_is_started_on_loopback_and_survives_manager_stop(manager):
     root,start,_,wait,_,_=manager
     (root/'diskd-absent').touch()
+    (root/'mounts').write_text('')
     process=start();values=wait(started('diskd'))
     diskd=next(e for e in values if e['role']=='diskd' and e['kind']=='start')
     assert diskd['args']==['-i','lo0','-d','local.']
@@ -1990,19 +2055,183 @@ def test_missing_diskd_is_started_on_loopback_and_survives_manager_stop(manager)
     os.kill(diskd['pid'],0)
 
 
+def test_diskd_handoff_blocks_claims_and_samba_until_old_owner_exits(manager):
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    (root/'record-acp').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    # A pipe holds Apple's deferred TERM cleanup, independent of a fake
+    # process lifetime. The test advances only after the signal is observed.
+    child=subprocess.Popen([sys.executable,'-c',
+        'import os,signal,sys\nfrom pathlib import Path\n'
+        'signal.signal(signal.SIGTERM,lambda s,f:print("term",flush=True))\n'
+        'print("ready",flush=True)\nos.read(0,1)\nPath(sys.argv[1]).write_text("")\n',str(root/'mounts')],
+        stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,start_new_session=True)
+    try:
+        assert child.stdout.readline().strip()=='ready'
+        external(root,f'{child.pid} 1 {child.pid} S diskd /sbin/diskd -i bridge0 -d local.\n')
+        start()
+        import select
+        assert select.select([child.stdout],[],[],15)[0]
+        assert child.stdout.readline().strip()=='term'
+        # Read the manager's own phase before releasing the old owner.
+        wait_log(root,'diskd: stopping',timeout=15)
+        assert child.poll() is None
+        assert not smbd_starts(events())
+        assert not any(e['role']=='acp' and str(e.get('key','')).startswith('path:s:') for e in events())
+        child.stdin.write('x');child.stdin.flush();child.wait(timeout=5)
+        wait(started('smbd'),timeout=30)
+    finally:
+        if child.poll() is None:child.kill()
+        child.wait()
+
+
 def test_failed_diskd_restart_is_backed_off_without_holding_back_discovery(manager):
     root,start,events,wait,_,_=manager
     (root/'diskd-absent').touch();(root/'diskd-fail').touch()
+    (root/'mounts').write_text('')
     # Discovery does not wait for diskd.
     start();wait(started('discovery'))
-    # Each failure doubles the wait before the next start: 2x, then 4x
-    # TC_ROLE_RETRY_MS (2 s, then 4 s on the device), counted from the exit,
+    # Handoff retries wait 1x, 3x, then 12x TC_STORAGE_RETRY_MS from exit,
     # which follows the start. A loaded host only lengthens the gaps, so they
     # are measured rather than slept through.
     def diskd_starts(rows):return [e['at'] for e in rows if e['role']=='diskd' and e['kind']=='start']
     at=diskd_starts(wait(lambda rows:len(diskd_starts(rows))>=3,timeout=30))
-    step=TIMINGS['TC_ROLE_RETRY_MS']/1000
-    assert at[1]-at[0]>2*step and at[2]-at[1]>4*step
+    step=TIMINGS['TC_STORAGE_RETRY_MS']/1000
+    assert at[1]-at[0]>=step and at[2]-at[1]>=3*step
+
+
+def test_diskd_readiness_is_required_before_claims_and_staging(manager):
+    root,start,events,wait,_,_=manager
+    (root/'diskd-probe-hold').touch();(root/'record-acp').touch()
+    start()
+    wait(lambda rows:any(e['role']=='diskd-probe' for e in rows))
+    assert not smbd_starts(events())
+    assert not any(e['role']=='acp' and str(e.get('key','')).startswith('path:s:') for e in events())
+    (root/'diskd-probe-hold').unlink()
+    wait(started('smbd'))
+
+
+@pytest.mark.parametrize('flag,text,line',[
+    ('missing-rpc','','### RPC function "diskd.getVolumeCounts" failed: -6727'),
+    ('probe-fail','acp: cannot reach ACPd','acp: cannot reach ACPd'),
+],ids=['not-registered','other-error'])
+def test_two_unanswered_probes_report_no_answer_until_one_is_answered(manager,flag,text,line):
+    root,start,events,wait,_,_=manager
+    (root/'record-acp').touch()
+    (root/flag).write_text(text)
+    start()
+    wait_log(root,'diskd: starting reason=no_answer')
+    assert sum(e.get('key')=='diskd.getVolumeCounts' for e in events()) >= 2
+    # The title says only that it went unanswered; the log says how.
+    assert f'diskd readiness: no answer: {line}' in runtime_log(root)
+    assert not smbd_starts(events())
+    (root/flag).unlink()
+    wait(started('smbd'))
+    assert handoff(root).startswith('ready:') and handoff(root).endswith(':none')
+
+
+@pytest.mark.parametrize('reply',[
+    '', '<dict/>', '<key>status</key><integer>8</integer>', '<key>status</key><integer>-6728</integer>',
+])
+def test_a_reply_with_a_handler_error_still_counts_as_an_answer(manager,reply):
+    # acp exited 0: diskd dispatched the call, which is all readiness asks.
+    root,start,events,wait,_,_=manager
+    (root/'diskd-reply').write_text(reply)
+    start()
+    wait(started('smbd'))
+    assert 'diskd readiness: no answer' not in runtime_log(root)
+
+
+def test_diskd_absent_with_residual_mount_never_launches_over_it(manager):
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    start()
+    wait_log(root,'diskd: inspect reason=residual_mounts')
+    assert ':residual_mounts' in manager_titles(root)[-1]
+    assert not any(e['kind']=='start' and e['role'] in ('smbd','diskd') for e in events())
+    (root/'mounts').write_text('')
+    wait(started('smbd'),timeout=30)
+
+
+def test_adopt_existing_owner_with_missing_alias(manager):
+    root,start,events,wait,_,_=manager
+    image = root/'diskd'
+    aside = root/'diskd-aside'
+    image.rename(aside)
+    try:
+        start()
+        wait(started('smbd'))
+        assert not any(e['kind']=='start' and e['role']=='diskd' for e in events())
+    finally:
+        aside.rename(image)
+
+
+def test_diskd_conflicting_owners_block_then_recover_without_signalling(manager):
+    root,start,events,wait,_,_=manager
+    processes(root,'duplicate-diskd','3 1 3 S diskd /sbin/diskd -i lo0 -d local.\n')
+    start()
+    wait_log(root,'diskd: inspect reason=conflict')
+    assert not smbd_starts(events())
+    assert not any(e['kind']=='start' and e['role']=='diskd' for e in events())
+    (root/'procs/duplicate-diskd').unlink()
+    wait(started('smbd'),timeout=30)
+    assert 'sending SIGKILL' not in runtime_log(root)
+
+
+def test_diskd_owner_change_discards_inflight_stage_and_same_pid_is_not_identity(manager):
+    root,start,events,wait,inventory,volumes=manager
+    hosts=root/'hosts';os.mkfifo(hosts)
+    process=start()
+    held=[wait_for_fifo_reader(hosts)]
+    try:
+        # The same numeric PID now identifies another process. Give it a
+        # different share name while the old staging job cannot finish.
+        volumes[0]['partitions'][0]['name']='NewOwner'
+        inventory(volumes)
+        write_rows(root,'apple-diskd',['2 1 2 3 0x80 0 0 select diskd born=99 /sbin/diskd -i lo0 -d local.'])
+        process.send_signal(signal.SIGHUP)
+        wait_log(root,'manager: smbd staging superseded; staging again',timeout=30)
+        assert not smbd_starts(events())
+        held.append(wait_for_fifo_reader(hosts))
+    finally:
+        for fd in held:os.close(fd)
+    wait(started('smbd'),timeout=30)
+    assert len(smbd_starts(events()))==1
+    assert '[NewOwner]' in (root/'ram/etc/smb.conf').read_text()
+    assert '[Data]' not in (root/'ram/etc/smb.conf').read_text()
+
+
+def test_manager_restart_adopts_surviving_loopback_diskd(manager):
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    (root/'mounts').write_text('')
+    first=start();wait(started('smbd'))
+    first.terminate();assert first.wait(timeout=15)==0
+    diskd=next(e['pid'] for e in events() if e['kind']=='start' and e['role']=='diskd')
+    os.kill(diskd,0)
+    start()
+    wait(lambda rows:len(smbd_starts(rows))==2,timeout=30)
+    assert len([e for e in events() if e['kind']=='start' and e['role']=='diskd'])==1
+    os.kill(diskd,0)
+
+
+@pytest.mark.parametrize('helper',['umount','fsck','fsck_hfs','mount','newfs_hfs','gpt'])
+def test_diskd_maintenance_child_blocks_takeover_even_after_parent_is_gone(manager,helper):
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    (root/'mounts').write_text('')
+    # An orphaned unmount command still has kernel work outstanding. Its
+    # disappearance is the release event, not a real-time sleep budget.
+    processes(root,'maintenance',f'7 1 7 D {helper} /sbin/{helper} /Volumes/dk2\n')
+    start()
+    wait_log(root,'diskd: inspect reason=maintenance')
+    assert not any(e['kind']=='start' and e['role'] in ('smbd','diskd') for e in events())
+    (root/'procs/maintenance').unlink()
+    wait(started('smbd'),timeout=30)
 
 
 def test_discovery_receives_exact_applied_names_devices_and_uuids_as_argv(manager):
@@ -2223,7 +2452,9 @@ def test_controller_death_cleans_orphaned_native_nbns_before_replacement(manager
 @pytest.mark.parametrize('change',['recheck','hotplug'])
 def test_boot_and_rechecks_never_migrate_or_consume_legacy_metadata(manager,change):
     root,start,_,wait,inventory,volumes=manager
-    if change=='hotplug':inventory(volumes[:1])
+    if change=='hotplug':
+        inventory(volumes[:1])
+        (root/'mounts').write_text(f'{root}/dk2 dk2 1\n')
     private=root/'dk2/.samba4/private'
     files={'xattr.tdb':b'pending metadata','xattr.tdb.orphaned.1':b'quarantine',
            'xattr-migration-completed.txt':b'old untrusted checkpoint'}
@@ -2235,6 +2466,7 @@ def test_boot_and_rechecks_never_migrate_or_consume_legacy_metadata(manager,chan
     (root/'config').write_text('TELEMETRY=1\n');process.send_signal(signal.SIGHUP)
     wait(started('telemetry'))
     if change=='hotplug':
+        (root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
         inventory(volumes);process.send_signal(signal.SIGHUP)
         wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows))
     assert not (root/'MIGRATED').exists()
@@ -3090,7 +3322,7 @@ def test_disks_that_never_mount_are_titled_and_reported_once_until_one_mounts(ma
     mounts_again(root)
     wait(started('smbd'),25)
     wait(lambda _:'unmounted' not in title_words(root),20)
-    assert 'manager: storage: a disk with the Samba files is mounted again, or none is listed' in stderr(root)
+    assert 'manager: storage: a disk with the Samba files is mounted again, none is listed, or diskd left ready' in stderr(root)
     assert len(unmounted_reports(events))==1
 
 
@@ -3253,3 +3485,513 @@ def test_second_unmounted_episode_in_one_manager_run_is_not_reported_again(manag
     assert len(unmounted_starts(root))==2
     time.sleep(1)
     assert len(unmounted_reports(events))==1
+
+
+def acted_on_fresh_table(root,process,events,wait):
+    """Return once the manager has acted on a process table read after this call.
+    An audit starts only on a table read in its own pass, and the next one only
+    after that audit finished, so the second shows a whole pass went by."""
+    (root/'record-audit').touch()
+    for _ in range(2):
+        count=sum(e['role']=='audit' for e in events())
+        process.send_signal(signal.SIGHUP)
+        wait(lambda rows:sum(e['role']=='audit' for e in rows)>count)
+
+
+def handoff(root):
+    return next(w for w in manager_titles(root)[-1].split() if w.startswith('diskd=')).removeprefix('diskd=')
+
+
+def test_diskd_helper_child_never_counts_as_a_second_owner(manager):
+    root,start,events,wait,_,_=manager
+    (root/'record-acp').touch()
+    process=start()
+    first=smbd_starts(wait(started('smbd')))[0]['pid']
+    wait(lambda _:handoff(root).startswith('ready:'))
+    def calls(method):return sum(e.get('method')==method for e in events())
+    before=(calls('diskd.getVolumeCounts'),calls('diskd.useVolume'))
+    # diskd forks before it execs a tool: the child keeps its name and argv,
+    # then becomes the shell that runs the tool.
+    processes(root,'forked','3 2 2 S diskd /sbin/diskd -i lo0 -d local.\n')
+    acted_on_fresh_table(root,process,events,wait)
+    assert handoff(root).startswith('ready:') and handoff(root).endswith(':none')
+    processes(root,'forked','3 2 2 S sh sh -c /sbin/mount_hfs /dev/dk2 /Volumes/dk2\n')
+    acted_on_fresh_table(root,process,events,wait)
+    assert handoff(root).startswith('ready:') and handoff(root).endswith(':none')
+    assert (calls('diskd.getVolumeCounts'),calls('diskd.useVolume'))==before
+    assert [e['pid'] for e in smbd_starts(events())]==[first]
+
+
+def test_disk_work_from_the_stock_owner_holds_term_but_an_ssh_shell_does_not(manager):
+    import select
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    # Apple's diskd unmounts on TERM; the pipe holds that cleanup until the
+    # test lets it finish.
+    child=subprocess.Popen([sys.executable,'-c',
+        'import os,signal,sys\nfrom pathlib import Path\n'
+        'signal.signal(signal.SIGTERM,lambda s,f:print("term",flush=True))\n'
+        'print("ready",flush=True)\nos.read(0,1)\nPath(sys.argv[1]).write_text("")\n',str(root/'mounts')],
+        stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,start_new_session=True)
+    try:
+        assert child.stdout.readline().strip()=='ready'
+        external(root,f'{child.pid} 1 {child.pid} S diskd /sbin/diskd -i bridge0 -d local.\n')
+        # The shell diskd's system() runs a check in.
+        processes(root,'helper',f'7 {child.pid} 7 S sh sh -c /sbin/fsck_hfs -q /dev/dk2\n')
+        process=start()
+        wait_log(root,'diskd: quiesce reason=maintenance')
+        acted_on_fresh_table(root,process,events,wait)
+        assert not select.select([child.stdout],[],[],0)[0]
+        # A shell of someone else's, as an SSH command runs in, is no disk work.
+        processes(root,'helper','7 1 7 S sh sh -c echo checking\n')
+        assert select.select([child.stdout],[],[],15)[0]
+        assert child.stdout.readline().strip()=='term'
+        wait_log(root,'diskd: stopping')
+        assert not smbd_starts(events())
+        child.stdin.write('x');child.stdin.flush();child.wait(timeout=5)
+        wait(started('smbd'),timeout=30)
+        assert sum(e['kind']=='start' and e['role']=='diskd' for e in events())==1
+    finally:
+        if child.poll() is None:child.kill()
+        child.wait()
+
+
+def stock_diskd_reporting(root,watched):
+    """A stock diskd that, on TERM, prints whether process `watched` still
+    exists, then waits for the test before its cleanup empties the mounts."""
+    stock=subprocess.Popen([sys.executable,'-c',
+        'import os,signal,subprocess,sys\nfrom pathlib import Path\n'
+        'def term(s,f):\n'
+        '    stat=subprocess.run(["ps","-o","stat=","-p",sys.argv[2]],capture_output=True,text=True).stdout.strip()\n'
+        '    print("term",stat or "gone",flush=True)\n'
+        'signal.signal(signal.SIGTERM,term)\n'
+        'print("ready",flush=True)\nos.read(0,1)\nPath(sys.argv[1]).write_text("")\n',
+        str(root/'mounts'),str(watched)],
+        stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,start_new_session=True)
+    assert stock.stdout.readline().strip()=='ready'
+    return stock
+
+
+def term_found_it_gone(stock):
+    import select
+    assert select.select([stock.stdout],[],[],30)[0]
+    line=stock.stdout.readline().split()
+    return line[0]=='term' and (line[1]=='gone' or line[1].startswith('Z'))
+
+
+@pytest.mark.parametrize('role,command',[('wcifsfs','wcifsfs /sbin/wcifsfs'),('smbd','smbd /sbin/smbd'),
+                                         ('discovery','service service: role=discovery')])
+def test_a_foreign_disk_user_holds_the_stock_term_until_it_is_gone(manager,role,command):
+    import threading
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    # Apple's own SMB server, or an smbd or discovery (which logs to the
+    # payload disk) no manager owns, still has files open on the volumes and
+    # ignores TERM: the manager KILLs it after TC_STALE_KILL_MS. Reaped at
+    # once, so its row goes when it dies.
+    user=sleeper(ignore_term=True)
+    reaper=threading.Thread(target=user.wait,daemon=True);reaper.start()
+    stock=stock_diskd_reporting(root,user.pid)
+    try:
+        external(root,f'{stock.pid} 1 {stock.pid} S diskd /sbin/diskd -i bridge0 -d local.\n'
+                      f'{user.pid} 1 {user.pid} S {command}\n')
+        start()
+        wait_log(root,f'foreign {role} pid {user.pid}',timeout=30)
+        # TERM reached Apple's diskd only once the other process was gone.
+        assert term_found_it_gone(stock)
+        assert user.returncode==-signal.SIGKILL
+        wait_log(root,'diskd: stopping')
+        stock.stdin.write('x');stock.stdin.flush();stock.wait(timeout=5)
+        wait(started('smbd'),timeout=30)
+    finally:
+        for child in (stock,user):
+            if child.poll() is None:child.kill()
+        stock.wait()
+
+
+def test_our_discovery_logging_to_the_disk_is_gone_before_the_stock_term(manager):
+    root,start,events,wait,_,_=manager
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    start()
+    rows=wait(lambda rows:started('smbd')(rows) and
+              any(e['role']=='discovery' and e['kind']=='start' and '--adisk-share' in e['args'] for e in rows))
+    # Serving, so discovery's log is <payload>/logs/discovery.log.
+    serving=[e for e in rows if e['role']=='discovery' and e['kind']=='start' and '--adisk-share' in e['args']][-1]
+    stock=stock_diskd_reporting(root,serving['pid'])
+    try:
+        # Our diskd is replaced by a stock one: quiesce stops smbd, so
+        # discovery restarts with its log in RAM.
+        (root/'procs/apple-diskd').unlink()
+        external(root,f'{stock.pid} 1 {stock.pid} S diskd /sbin/diskd -i bridge0 -d local.\n')
+        wait_log(root,'diskd: quiesce',timeout=30)
+        assert term_found_it_gone(stock)
+        assert any(e['role']=='discovery' and e['kind']=='start' and '--diskless' in e['args'] for e in events())
+        stock.stdin.write('x');stock.stdin.flush();stock.wait(timeout=5)
+        wait(lambda rows:len(smbd_starts(rows))>=2,timeout=30)
+    finally:
+        if stock.poll() is None:stock.kill()
+        stock.wait()
+
+
+def test_a_new_owner_starts_no_unmounted_episode_from_its_predecessors_claims(manager):
+    root,start,events,wait,_,_=manager
+    never_mounts(root,'accepted')
+    process=start()
+    wait(lambda _:'unmounted' in title_words(root),20)
+    (root/'diskd-probe-hold').touch()
+    (root/'procs/apple-diskd').unlink()
+    wait(lambda _:handoff(root).startswith('starting:'),30)
+    # The disks would mount for the new diskd, but its first storage pass is
+    # held in its claims: until it ends, only the old diskd's results exist.
+    mounts_again(root)
+    (root/'hold-activation').touch()
+    def blocked():return sum(e['role']=='activation' and e['kind']=='blocked' for e in events())
+    held,started_episodes=blocked(),stderr(root).count('no disk with the Samba files has mounted since')
+    (root/'diskd-probe-hold').unlink()
+    wait(lambda _:handoff(root).startswith('ready:'),30)
+    wait(lambda _:blocked()>held,30)
+    acted_on_fresh_table(root,process,events,wait)
+    assert stderr(root).count('no disk with the Samba files has mounted since')==started_episodes
+    assert 'unmounted' not in title_words(root)
+    (root/'hold-activation').unlink()
+    wait(started('smbd'),timeout=30)
+
+
+def test_a_retired_owner_takes_its_unmounted_verdict_with_it(manager):
+    root,start,events,wait,_,_=manager
+    never_mounts(root,'accepted')
+    start()
+    wait(lambda _:'unmounted' in title_words(root),20)
+    # The diskd that accepted claims without mounting them exits, and its
+    # replacement has not answered yet: the verdict was about the old one.
+    (root/'diskd-probe-hold').touch()
+    (root/'procs/apple-diskd').unlink()
+    wait(lambda _:handoff(root).startswith('starting:'),30)
+    assert 'unmounted' not in title_words(root), manager_titles(root)[-1]
+    (root/'diskd-probe-hold').unlink()
+    ready_at=time.monotonic()
+    wait(lambda _:handoff(root).startswith('ready:'),30)
+    # Its claims do not mount either: a new episode, timed from its own ready.
+    wait(lambda _:'unmounted' in title_words(root),20)
+    assert time.monotonic()-ready_at>=UNMOUNTED_S
+
+
+def test_a_wcifsfs_started_after_the_last_audit_holds_the_stock_term(manager):
+    import threading
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    apple=sleeper(ignore_term=True)
+    reaper=threading.Thread(target=apple.wait,daemon=True);reaper.start()
+    stock=stock_diskd_reporting(root,apple.pid)
+    def table(*extra):
+        write_rows(root,'external',[f'live {stock.pid} 1 {stock.pid} 3 0x80 0 0 - diskd /sbin/diskd -i bridge0 -d local.',
+                                    *extra])
+    try:
+        # A disk check holds the TERM, then ends in the same table read that
+        # first shows ACPd's wcifsfs: no audit has seen it yet.
+        table(f'7 {stock.pid} 7 3 0x80 0 0 - sh sh -c /sbin/fsck_hfs -q /dev/dk2')
+        start()
+        wait_log(root,'diskd: quiesce reason=maintenance')
+        table(f'live {apple.pid} 1 {apple.pid} 3 0x80 0 0 - wcifsfs /sbin/wcifsfs')
+        assert term_found_it_gone(stock)
+        assert apple.returncode==-signal.SIGKILL
+        stock.stdin.write('x');stock.stdin.flush();stock.wait(timeout=5)
+        wait(started('smbd'),timeout=30)
+    finally:
+        for child in (stock,apple):
+            if child.poll() is None:child.kill()
+        stock.wait()
+
+
+def test_missing_diskd_link_launches_apple_binary_at_its_stock_path(manager):
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    (root/'mounts').write_text('')
+    image=root/'diskd';aside=root/'diskd-aside';image.rename(aside)
+    os.link(aside,root/'stock-diskd')
+    try:
+        start()
+        rows=wait(started('smbd'),timeout=30)
+        diskd=[e for e in rows if e['kind']=='start' and e['role']=='diskd']
+        assert len(diskd)==1 and diskd[0]['args']==['-i','lo0','-d','local.']
+    finally:aside.rename(image)
+
+
+def test_failed_diskd_launch_backs_off_and_retries(manager):
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    (root/'mounts').write_text('')
+    image=root/'diskd';aside=root/'diskd-aside';image.rename(aside)
+    try:
+        start()
+        # Neither the link nor Apple's stock path exists: the exec fails.
+        wait_log(root,'diskd: launch failed; retry in')
+        wait(lambda _:':relaunch_wait' in handoff(root))
+        assert not smbd_starts(events())
+    finally:aside.rename(image)
+    wait(started('smbd'),timeout=30)
+
+
+def test_a_second_manager_exits_at_once_while_the_first_holds_the_lock(manager):
+    root,start,events,wait,_,_=manager
+    first=start()
+    try:
+        wait(started('smbd'))
+        # It gives up at once rather than retrying while the lock is held.
+        second=start()
+        assert second.wait(timeout=5)==1
+        assert first.poll() is None
+    finally:
+        # The fixture stops only the last manager it started.
+        first.terminate();first.wait(timeout=20)
+
+
+def test_new_owner_claims_every_volume_again_without_copying_or_restarting(manager):
+    root,start,events,wait,_,_=manager
+    (root/'record-acp').touch()
+    process=start();wait(started('smbd'))
+    def claims():return sorted(e['key'] for e in events() if e.get('method')=='diskd.useVolume')
+    wait(lambda _:handoff(root).startswith('ready:'))
+    before=claims()
+    assert runtime_log(root).count('copied smbd')==1
+    # Another loopback diskd: Apple's claims lived in the old process.
+    processes(root,'apple-diskd','3 1 3 S diskd /sbin/diskd -i lo0 -d local.\n')
+    process.send_signal(signal.SIGHUP)
+    wait_log(root,'owner=3 generation=2')
+    wait(lambda _:claims()==sorted(before*2),timeout=30)
+    assert runtime_log(root).count('copied smbd')==1
+    assert len(smbd_starts(events()))==1
+    assert not any(e['kind']=='start' and e['role']=='diskd' for e in events())
+
+
+def test_loopback_owner_exit_keeps_serving_and_waits_for_its_mounts(manager):
+    root,start,events,wait,_,_=manager
+    process=start()
+    # Serving: smbd up and discovery advertising its shares.
+    wait(lambda rows:smbd_starts(rows) and any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    acted_on_fresh_table(root,process,events,wait)
+    rows=events()
+    smbd=smbd_starts(rows)[-1]['pid']
+    discovery=[e['pid'] for e in rows if e['role']=='discovery' and e['kind']=='start']
+    # Our diskd is gone and its volumes are still mounted: a new diskd would
+    # not adopt them (README F17).
+    (root/'procs/apple-diskd').unlink()
+    wait_log(root,'diskd: inspect reason=residual_mounts')
+    acted_on_fresh_table(root,process,events,wait)
+    assert not any(e['kind']=='start' and e['role']=='diskd' for e in events())
+    os.kill(smbd,0)
+    # Once the volumes are gone a loopback diskd starts and mounts them again.
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    (root/'mounts').write_text('')
+    wait(started('diskd'),timeout=30)
+    wait(lambda _:handoff(root).startswith('ready:'),timeout=30)
+    acted_on_fresh_table(root,process,events,wait)
+    assert smbd_starts(events())[-1]['pid']==smbd and len(smbd_starts(events()))==len(smbd_starts(rows))
+    assert [e['pid'] for e in events() if e['role']=='discovery' and e['kind']=='start']==discovery
+
+
+def test_handler_error_from_use_volume_still_shares_the_mounted_volume(manager):
+    root,start,events,wait,_,_=manager
+    # Apple's handler can increment its count and then fail its reply.
+    (root/'claim-status').write_text('-6728')
+    (root/'record-acp').touch()
+    start();wait(started('smbd'))
+    assert '[Data]' in (root/'ram/etc/smb.conf').read_text()
+    assert any(e.get('method')=='diskd.useVolume' for e in events())
+
+
+def test_refused_claims_recover_without_a_reload(manager):
+    root,start,events,wait,_,_=manager
+    (root/'fail-claim').write_text('/dk2')
+    (root/'mounts').write_text(f'{root}/dk3 dk3 1\n')
+    start()
+    until(root,lambda:runtime_log(root).count(f'storage: claim {root}/dk2 failed')>=2)
+    assert not smbd_starts(events())
+    (root/'fail-claim').unlink()
+    (root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
+    wait(started('smbd'),timeout=30)
+
+
+def test_cancelled_storage_passes_do_not_stop_later_claims(manager):
+    root,start,events,wait,inventory,volumes=manager
+    (root/'hold-activation').touch()
+    process=start()
+    def blocked():return sum(e['role']=='activation' and e['kind']=='blocked' for e in events())
+    wait(lambda _:blocked()>=1)
+    extra=dict(deviceName='sd2',partitions=[dict(deviceName='dk4',name='Spare',format='hfs',users=0,
+                                                 uuid='44444444-4444-4444-4444-444444444444')])
+    for change in (lambda:volumes.append(extra),lambda:volumes.remove(extra)):
+        # A confirmed topology change cancels the pass blocked in useVolume.
+        count=blocked()
+        change();inventory(volumes)
+        process.send_signal(signal.SIGHUP)
+        wait(lambda _:blocked()>count,timeout=30)
+    (root/'hold-activation').unlink()
+    wait(started('smbd'),timeout=30)
+    assert '[Data]' in (root/'ram/etc/smb.conf').read_text()
+
+
+def test_unlisted_mounted_volume_does_not_hold_back_sharing(manager):
+    root,start,events,wait,_,_=manager
+    with (root/'mounts').open('a') as mounts:mounts.write(f'{root}/dk9 dk9 1\n')
+    start();wait(started('smbd'))
+    assert '[Data]' in (root/'ram/etc/smb.conf').read_text()
+    assert handoff(root).startswith('ready:') and handoff(root).endswith(':none')
+
+
+def test_stop_leaves_diskd_and_its_claims_alone(manager):
+    root,start,events,wait,_,_=manager
+    counts=root/'claim-counts';counts.write_text('{}')
+    (root/'record-acp').touch()
+    process=start();wait(started('smbd'))
+    wait(lambda _:handoff(root).startswith('ready:'))
+    before=json.loads(counts.read_text())
+    assert before
+    process.terminate()
+    assert process.wait(timeout=20)==0
+    assert json.loads(counts.read_text())==before
+    assert not any(e.get('method')=='diskd.unuseVolume' for e in events())
+
+
+def test_waiting_on_the_handoff_does_not_spin(manager):
+    root,start,events,wait,_,_=manager
+    # The probe never answers: the manager waits in starting, where no MaSt
+    # read is due, for as long as this test holds it.
+    (root/'diskd-probe-hold').touch()
+    process=start()
+    wait(lambda rows:any(e['role']=='diskd-probe' for e in rows))
+    def cpu_seconds():
+        minutes,seconds=subprocess.run(['ps','-o','time=','-p',str(process.pid)],capture_output=True,text=True,
+                                       check=True).stdout.strip().split(':')[-2:]
+        return int(minutes)*60+float(seconds)
+    before=cpu_seconds();started=time.monotonic()
+    while time.monotonic()-started<4:time.sleep(.1)
+    # A loop that spins burns about 4 s here; an idle one a few hundredths.
+    assert cpu_seconds()-before<0.8, runtime_log(root)
+
+
+def manager_cpu_seconds(process):
+    # macOS prints M:SS.ss, Linux [[DD-]HH:]MM:SS: minutes and seconds are last.
+    minutes,seconds=subprocess.run(['ps','-o','time=','-p',str(process.pid)],capture_output=True,text=True,
+                                   check=True).stdout.strip().split(':')[-2:]
+    return int(minutes)*60+float(seconds)
+
+
+@pytest.mark.parametrize('answers',[True,False],ids=['answers','never-answers'])
+def test_a_diskd_that_keeps_dying_waits_before_each_relaunch(manager,answers):
+    root,start,events,wait,_,_=manager
+    # No data volume, so nothing is left mounted when it dies.
+    (root/'diskd-absent').touch()
+    (root/'mounts').write_text('');(root/'mounts-after-diskd').write_text('')
+    (root/'diskd-lifetime').write_text('1')
+    if not answers:(root/'missing-rpc').touch()
+    start()
+    def starts(rows):return [e['at'] for e in rows if e['role']=='diskd' and e['kind']=='start']
+    at=starts(wait(lambda rows:len(starts(rows))>=3,timeout=40))
+    # Each life is 1 s. An answer resets the backoff, so a diskd that answers
+    # waits 1x TC_STORAGE_RETRY_MS (0.5 s here) every time; one that never
+    # answers waits 1x, then 3x. Relaunching at once gave about 1.3 s each.
+    step=TIMINGS['TC_STORAGE_RETRY_MS']/1000
+    second=1 if answers else 3
+    assert at[1]-at[0]>=1+step and at[2]-at[1]>=1+second*step, at
+    assert 'diskd: inspect reason=relaunch_wait' in runtime_log(root)
+
+
+def test_an_owner_exit_with_an_inventory_read_in_flight_does_not_spin(manager):
+    root,start,events,wait,_,_=manager
+    process=start()
+    wait(started('smbd'))
+    wait(lambda _:handoff(root).startswith('ready:'))
+    hold=root/'mast-hold';hold.touch()
+    try:
+        count=sum(e['role']=='inventory' and e['kind']=='blocked' for e in events())
+        process.send_signal(signal.SIGHUP)  # an inventory read now, held in acp
+        wait(lambda rows:sum(e['role']=='inventory' and e['kind']=='blocked' for e in rows)>count)
+        # Our diskd dies with its volumes mounted: no launch over them.
+        (root/'procs/apple-diskd').unlink()
+        wait_log(root,'diskd: inspect reason=residual_mounts')
+    finally:hold.unlink()
+    before=manager_cpu_seconds(process);started_at=time.monotonic()
+    while time.monotonic()-started_at<4:time.sleep(.1)
+    # A loop that spins burns about 4 s here; an idle one a few hundredths.
+    assert manager_cpu_seconds(process)-before<0.8, runtime_log(root)
+    assert ':residual_mounts' in handoff(root)
+    assert 'MaSt read failed, timed out, or was stopped by a diskd owner change' in runtime_log(root)
+
+
+def test_a_conflict_that_clears_asks_the_remaining_diskd_again(manager):
+    root,start,events,wait,_,_=manager
+    (root/'record-acp').touch()
+    process=start()
+    smbd=smbd_starts(wait(started('smbd')))[0]['pid']
+    wait(lambda _:handoff(root).startswith('ready:'))
+    def probes():return sum(e.get('method')=='diskd.getVolumeCounts' for e in events())
+    def claims():return sum(e.get('method')=='diskd.useVolume' for e in events())
+    before=probes()
+    processes(root,'duplicate-diskd','3 1 3 S diskd /sbin/diskd -i lo0 -d local.\n')
+    process.send_signal(signal.SIGHUP)
+    # Two diskd: ready goes back to starting, so nothing claims meanwhile,
+    # not even after a reload asks for a storage pass.
+    wait_log(root,'diskd: starting reason=conflict')
+    assert handoff(root).startswith('starting:') and handoff(root).endswith(':conflict')
+    claimed=claims()
+    acted_on_fresh_table(root,process,events,wait)
+    assert claims()==claimed
+    # Its exit may have deleted our diskd's RPC names (README F16).
+    (root/'procs/duplicate-diskd').unlink()
+    process.send_signal(signal.SIGHUP)
+    wait_log(root,'diskd: starting reason=none')
+    wait(lambda _:probes()>before and handoff(root).startswith('ready:') and handoff(root).endswith(':none'),
+         timeout=30)
+    assert smbd_starts(events())[-1]['pid']==smbd
+
+
+def test_an_owner_change_during_a_probe_starts_the_next_only_after_the_first_is_reaped(manager):
+    root,start,events,wait,_,_=manager
+    hold=root/'diskd-probe-hold';hold.touch()
+    # The stopped probe outlives TERM, so it still holds the slot for the
+    # 10 s grace when the new owner is due its first probe at once.
+    (root/'diskd-probe-ignore-term').touch()
+    process=start()
+    def held():return sum(e['role']=='diskd-probe' and e['kind']=='blocked' for e in events())
+    wait(lambda _:held()>=1)
+    # Another loopback diskd replaces the one being asked.
+    processes(root,'apple-diskd','3 1 3 S diskd /sbin/diskd -i lo0 -d local.\n')
+    wait_log(root,'previous readiness probe has not exited; counted as no answer',timeout=30)
+    wait(lambda _:held()>=2,timeout=30)
+    hold.unlink()
+    wait(started('smbd'),timeout=30)
+    zombies=[line for line in subprocess.run(['ps','-ax','-o','ppid=,stat='],capture_output=True,text=True,
+                                             check=True).stdout.splitlines()
+             if line.split()[0]==str(process.pid) and line.split()[1].startswith('Z')]
+    assert zombies==[], zombies
+
+
+def test_a_new_owner_is_classified_only_by_an_audit_after_it_appeared(manager):
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch();(root/'record-audit').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    (root/'mounts').write_text('')
+    start()
+    wait_log(root,'diskd: starting reason=none')
+    rows=events()
+    launched=next(i for i,e in enumerate(rows) if e['kind']=='start' and e['role']=='diskd')
+    assert any(e['role']=='audit' for e in rows[launched+1:]), rows
+
+
+def test_a_failing_audit_keeps_an_adopted_owner_ready(manager):
+    root,start,events,wait,_,_=manager
+    process=start();wait(started('smbd'))
+    wait(lambda _:handoff(root).startswith('ready:'))
+    # A helper with an empty argv fails every audit from now on; the owner's
+    # role was read before, from a row with its PID and start time.
+    write_rows(root,'blank-helper',['7 2 2 3 0x80 0 0 - diskd'])
+    acted_on_fresh_table(root,process,events,wait)
+    assert handoff(root).startswith('ready:') and handoff(root).endswith(':none')
+    assert 'diskd: ready reason=observation' not in runtime_log(root)
+

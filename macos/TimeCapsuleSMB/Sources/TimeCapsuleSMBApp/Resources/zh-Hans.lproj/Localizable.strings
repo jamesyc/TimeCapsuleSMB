@@ -1481,3 +1481,13 @@
 "backend.recovery.ssh_client_failed.action.1" = "请重试。";
 "backend.recovery.ssh_client_failed.action.2" = "如果仍然失败，请点击“复制诊断信息”，然后在 https://github.com/jamesyc/TimeCapsuleSMB/issues 报告此问题。";
 "app_menu.check_for_updates" = "检查更新…";
+
+// Disk service handoff
+"backend.recovery.diskd_handoff_pending.title" = "文件共享仍在启动";
+"backend.recovery.diskd_handoff_pending.message" = "苹果的磁盘服务仍在准备文件共享。";
+"backend.recovery.diskd_handoff_pending.action.1" = "请保持设备开机并等待，然后再次运行“检查”。";
+"doctor.check.diskd_handoff_pending" = "苹果的磁盘服务仍在准备文件共享。";
+"backend.recovery.diskd_restart_needed.title" = "磁盘服务需要重新启动";
+"backend.recovery.diskd_restart_needed.message" = "苹果的磁盘服务卡住了，重启设备之前，文件共享无法使用磁盘。";
+"backend.recovery.diskd_restart_needed.action.1" = "备份和磁盘操作结束后，请重启设备，然后再次运行“检查”。";
+"doctor.check.diskd_restart_needed" = "苹果的磁盘服务卡住了，重启设备之前，文件共享无法使用磁盘。备份和磁盘操作结束后，请重启设备，然后再次运行“检查”。";

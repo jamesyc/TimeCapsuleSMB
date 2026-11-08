@@ -494,6 +494,25 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         _DISK_FAILING_STEPS,
         retryable=False,
     ),
+    # The manager has not taken over the disks from Apple's diskd
+    # (device.diskd.DiskdHandoff.verdict): still under way, or stuck on
+    # something only a restart clears.
+    ErrorCode.DISKD_HANDOFF_PENDING: RecoveryInfo(
+        "File sharing is still starting",
+        "Apple's disk service is still preparing file sharing.",
+        ("Leave the device powered on and wait, then run “Checkup” again.",),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
+    ErrorCode.DISKD_RESTART_NEEDED: RecoveryInfo(
+        "The disk service needs a restart",
+        "Apple's disk service is stuck, and file sharing cannot use the disks until the device restarts.",
+        ("After backups and disk operations finish, restart the device, then run “Checkup” again.",),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
     # A process has waited minutes for the disk (device.processes.disk_io_stalls),
     # and Apple's ACPd waits behind it: the preflight of every command that
     # restarts the device or writes it, and a MaSt read that hangs or fails

@@ -55,6 +55,7 @@ static void fill(struct tc_proc *out, const struct kinfo_proc2 *p) {
     out->threads = (int)p->p_nlwps;
     out->slept = p->p_slptime;
     out->cpu_us = (unsigned long long)p->p_rtime_sec * 1000000ULL + p->p_rtime_usec;
+    out->born = (unsigned long long)p->p_ustart_sec * 1000000ULL + p->p_ustart_usec;
     copy_field(out->wmesg, sizeof(out->wmesg), p->p_wmesg, sizeof(p->p_wmesg));
     copy_field(out->comm, sizeof(out->comm), p->p_comm, sizeof(p->p_comm));
 }
@@ -167,9 +168,17 @@ static int parse_row(char *line, struct tc_proc *p, const char **argv) {
     p->parent = (pid_t)parent;
     p->group = (pid_t)group;
     p->threads = 0;
+    p->born = 0;
     copy_field(p->wmesg, sizeof(p->wmesg), strcmp(wmesg, "-") ? wmesg : "", sizeof(wmesg));
     copy_field(p->comm, sizeof(p->comm), comm, sizeof(comm));
     *argv = offset ? row + offset : row + strlen(row);
+    /* Optional test identity, before argv, so older fixtures stay valid. */
+    if (!strncmp(*argv, "born=", 5)) {
+        char *end;
+        p->born = strtoull(*argv + 5, &end, 10);
+        while (isspace((unsigned char)*end)) end++;
+        *argv = end;
+    }
     return 1;
 }
 

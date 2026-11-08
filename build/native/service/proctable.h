@@ -35,6 +35,7 @@ struct tc_proc {
     int stat, flag, threads;
     unsigned slept;            /* seconds in this sleep: the kernel's l_slptime */
     unsigned long long cpu_us; /* CPU time so far */
+    unsigned long long born; /* Kernel process start time; distinguishes PID reuse. */
     char wmesg[TC_PROC_WMESG], comm[TC_PROC_COMM];
 };
 struct tc_proctable {

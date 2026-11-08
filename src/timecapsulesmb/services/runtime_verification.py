@@ -16,6 +16,7 @@ from timecapsulesmb.device.processes import StuckProcess, disk_io_stalls
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, RsyncNotRunningError
 from timecapsulesmb.device.probe import (
     ACPD_QUIT_STEP,
+    MANAGER_NOT_RUNNING_STEP,
     ManagedRuntimeProbeResult,
     ManagerStartupAgeProbeResult,
     RuntimeNamingIdentityProbeResult,
@@ -33,6 +34,7 @@ from timecapsulesmb.transport.ssh import SshConnection
 # How long deploy and Activate wait for the runtime. Each must outlast the
 # manager's restart of an smbd without listeners (manager.c TC_ROLE_READY_MS).
 RUNTIME_ACTIVATION_WAIT_SECONDS = 200
+MANAGER_NOT_RUNNING_MESSAGE = "The runtime manager is not running."
 RUNTIME_REBOOT_WAIT_SECONDS = 240
 
 
@@ -117,7 +119,19 @@ def verify_managed_runtime_ready(
     disk_stalls = tuple(disk_io_stalls(read_processes(connection)))
     if disk_stalls:
         callbacks.debug(disk_io_stalls=[stall.describe() for stall in disk_stalls])
-    raise runtime_failure_error(verification, failure_message, disk_errors=disk_errors, disk_stalls=disk_stalls)
+    manager = None
+    if not any(step.id in (ACPD_QUIT_STEP, MANAGER_NOT_RUNNING_STEP) for step in verification.steps):
+        # The manager's disk-owner handoff and the device clock, read once the
+        # wait has ended: whether the handoff is what holds file sharing back,
+        # and for how long.
+        try:
+            manager = read_start_state(connection)
+        except Exception as exc:
+            callbacks.debug(manager_after_wait_error=system_exit_message(exc)[:200])
+        if manager is not None and manager.handoff is not None:
+            callbacks.debug(diskd_handoff=manager.handoff.detail)
+    raise runtime_failure_error(verification, failure_message, disk_errors=disk_errors, disk_stalls=disk_stalls,
+                                manager=manager)
 
 
 def acpd_after_start_measurement(
@@ -162,12 +176,16 @@ def runtime_failure_error(
     *,
     disk_errors: tuple[str, ...] | None = None,
     disk_stalls: tuple[StuckProcess, ...] = (),
+    manager: ManagerStartupAgeProbeResult | None = None,
 ) -> DeviceError:
     """The error for a runtime that is not ready: this boot's disk errors
     when they explain it (disk_errors_explain), else a process stuck on the
     disk while Samba is off (disk_stalls, processes.disk_io_stalls: the
     manager cannot stage anything from it), else ACPd gone (the wait's
     ACPD_QUIT_STEP: without it the manager sees no disk, so its verdicts say
+    nothing), else no manager, else a manager that has not taken over the
+    disks when `manager` was read after the wait (DiskdHandoff.verdict, timed
+    on that read's device clock; a title without a readable diskd= word says
     nothing), else the manager's verdict, or rsync's alone while file sharing
     serves (whose error must not say file sharing failed), or failure_message
     with the probe's detail."""
@@ -181,6 +199,20 @@ def runtime_failure_error(
         failed = "; ".join(step.detail for step in verification.steps
                            if step.status in ("fail", "timeout") and step.detail)
         return AcpdQuitError(f"{failure_message.rstrip()} {acpd.ACPD_QUIT_MESSAGE}", detail=failed or None)
+    if any(step.id == MANAGER_NOT_RUNNING_STEP for step in verification.steps):
+        # Not RUNTIME_NOT_RESTARTED: its way out is Activate, which only
+        # NetBSD 4 has, and this ends NetBSD 6 deploys too.
+        return DeviceError(f"{failure_message.rstrip()} {MANAGER_NOT_RUNNING_MESSAGE}",
+                           detail=verification.detail.strip() or None)
+    handoff = manager.handoff if manager is not None else None
+    verdict = handoff.verdict(manager.now_monotonic_ms) if handoff is not None and manager is not None else None
+    if verdict is not None:
+        # Read after the wait: the manager has not taken over the disks, so
+        # nothing that needs them starts. One that finished since is no
+        # longer the cause, and the errors below say what is.
+        code, message = verdict
+        detail = "; ".join(part for part in (handoff.detail, verification.detail.strip()) if part)
+        return DeviceError(message, code=code, detail=detail)
     if problem is not None:
         return problem.error_type(problem.error_after(failure_message))
     if verification.samba_ready:

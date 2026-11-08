@@ -220,6 +220,7 @@ Base forms; inflect them naturally rather than splicing them into sentences.
 
 ### Notes on the vocabulary
 
+- **Disk service:** Apple's background diskd process, not Disk Utility or this app's Disk Repair operation. Translate the ordinary service noun: German *Festplattendienst*, Dutch *schijfservice*, French *service de disque*, Spanish *servicio de discos*, Italian *servizio dischi*, Portuguese *serviço de discos*, Russian *служба дисков*, Chinese *磁盘服务*, Lithuanian *diskų tarnyba*. A pending handoff asks the user to leave the device powered on while disk work finishes; it does not diagnose filesystem damage.
 - **Stop:** stopping something (Samba, file sharing, the managed services). Something that stops by itself uses the ordinary verb (Portuguese *parou*, Italian *si è fermato*, Lithuanian *sustojo*). A metadata migration that ended on an error *failed*, it did not stop; see [Error lines](#error-lines-and-recovery-guidance).
 - **Failed:** the sentence form agrees with its noun (Italian *la migrazione … non è riuscita*, Russian *перенос … не удался*).
 - **Enable / disable:** one pair per feature everywhere it appears (setting label, confirmation, result summary). It is Apple's enable verb in each language. Spanish and Italian enable with *habilitar*/*abilitare* and keep *activar*/*attivare* for **Activate**; in German, French and Portuguese the two share a verb (see [App labels](#app-labels)).

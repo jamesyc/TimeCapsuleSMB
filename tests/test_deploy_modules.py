@@ -170,10 +170,11 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 from timecapsulesmb.device.acpd import RestartVerdict
 
 
-def manager_state(problems, *, acpd_running: bool | None = True) -> ManagerState | None:
-    """read_manager_state's reading of a listing with these title verdicts;
-    None (no reading) for None."""
-    return None if problems is None else ManagerState(tuple(problems), acpd_running)
+def manager_state(problems, *, acpd_running: bool | None = True, present: bool | None = True) -> ManagerState | None:
+    """read_manager_state's reading of a listing with these title verdicts,
+    from one running manager unless given otherwise; None (no reading) for
+    None."""
+    return None if problems is None else ManagerState(tuple(problems), acpd_running, present)
 
 
 def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
@@ -3649,18 +3650,21 @@ describe_managed_smbd_status "" ""
         self.assertGreater(runtime_once.call_count, 1)
         self.assertIsNone(runtime_payload_problem(result))
 
-    def test_probe_managed_runtime_does_not_ask_about_the_payload_once_ready(self) -> None:
+    def test_probe_managed_runtime_ends_ready_without_the_payload_verdict_once_ready(self) -> None:
+        # The listing is read to see a manager behind the listeners; a stale
+        # payload verdict in it does not turn a serving runtime into a failure.
         runtime_ready = ManagedRuntimeProbeResult(
             ready=True,
             detail="managed runtime is ready",
             smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
             mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
-        with mock.patch("timecapsulesmb.device.probe.read_manager_state") as asked:
+        unreadable = next(p for p in DISK_PAYLOAD_PROBLEMS if p.token == "payload=unreadable")
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state((unreadable,))) as asked:
             with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_ready):
                 result = probe_managed_runtime_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=200)
         self.assertTrue(result.ready)
-        asked.assert_not_called()
+        asked.assert_called_once()
         self.assertIsNone(runtime_payload_problem(result))
 
     def test_verify_managed_runtime_ready_rechecks_this_macs_adisk_copy_only_once_samba_serves(self) -> None:

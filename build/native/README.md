@@ -19,6 +19,12 @@ the HDD. Discovery and telemetry collect their own network plans; the manager
 is network-blind and passes successfully applied disk shares to discovery as
 argv.
 
+`service/diskd.c` is the disk-owner state machine. It does no I/O: the manager
+gives it one observation per pass and carries out the actions it returns. It
+hands disks from Apple's stock `diskd` to the manager's loopback `diskd`
+without killing either, and holds claims, staging and new service starts until
+the loopback owner answers its RPCs. See [Disk owner handoff](#disk-owner-handoff).
+
 Bonjour registrations use `name=NULL` and flags `0`: Apple owns the default
 instance name and conflict renaming across SMB/ADisk. This follows the live
 stock `diskd` test on 2026-09-19, where an SMB-only collision renamed both
@@ -230,6 +236,186 @@ the existing `/mnt/Memory` directory to exclude concurrent cycles, including
 manual runs, without a lock file or job directory. That directory must be
 root-owned, with sticky permissions if writable by other users.
 
+## Disk owner handoff
+
+The goal is exactly one `diskd`, started as `/usr/libexec/diskd -i lo0 -d
+local.`, that answers `diskd.getVolumeCounts` before the manager claims a
+volume. Apple's diskd handles SIGTERM in its event loop: it unregisters its RPC
+names, then unmounts its volumes (F17). It defers the signal until a tool it
+started through `system()` returns, so a disk check it is running finishes
+first. The manager never sends diskd SIGKILL and never takes over because a
+timer expired.
+
+### Observation
+
+Each pass uses the kernel process table the manager already reads; no argv:
+
+- **Owners** are rows named `diskd` whose parent is not a `diskd` row. A child
+  diskd forks keeps diskd's name and argv until it execs, so it is a helper,
+  never an owner.
+- **Disk work** is a row named `fsck*`, `newfs*`, `mount`, `mount_hfs`,
+  `umount` or `gpt`, or a `sh` whose parent is a `diskd` row. Because diskd
+  defers SIGTERM until `system()` returns, a tool's shell is always the child
+  of a live diskd, and an orphaned tool still carries its own name.
+- **Role**: the existing audit classifies each owner from its argv as loopback
+  (`-i lo0`) or stock. That is all the handoff takes from the audit, and only
+  for a single owner. An owner is identified by PID and kernel start time,
+  and an audit row counts only when it has both: that is the same process,
+  exec keeps the start time, and diskd never execs again, so a row read
+  before its exec never classifies it and a row read after keeps its role for
+  life, across later failed audits too. A change of owners starts an audit at
+  once; otherwise the audit runs every 10 s outside `ready` and every 30 s in
+  it. An owner row with an empty argv fails the audit rather than reading as
+  stock.
+- **Our launch** is the manager's own child until it execs; the manager
+  tracks it, not the audit.
+- **Leftover mounts** are HFS volumes mounted from `/dev/dkN` under
+  `/Volumes` (`getmntinfo` with `MNT_NOWAIT`, which never touches a sleeping
+  disk). They matter only while no diskd runs: a new diskd does not adopt an
+  existing mount, and a device whose first mount fails ("Device busy") is not
+  retried until the next reboot (F17). That is how a v3.8.3 install lost its
+  disk after its stock diskd was killed mid-cleanup.
+
+### Phases and reasons
+
+The manager's title carries `diskd=PHASE:SINCE:REASON`. SINCE is the
+monotonic second when the phase or the reason last changed, so a host can tell
+how long the current reason has held. Each reason claims only this much:
+
+| Reason | Meaning |
+| --- | --- |
+| `none` | Nothing holds the phase back. |
+| `maintenance` | A disk tool, or a shell a diskd started, runs. |
+| `residual_mounts` | No diskd runs and an HFS data volume is still mounted. |
+| `conflict` | Two or more independent diskd run. |
+| `no_answer` | The last two readiness probes in a row got no answer: acp exited with an error (any code, -6727 "not registered" included), ran past its 20 s limit or was killed, or the manager could not start the probe (fork failed, or the previous probe had not exited). The title does not say which; the manager log has a line for each probe. |
+| `relaunch_wait` | No diskd runs and the next launch waits out its backoff: the last launch exited before exec, or our diskd exited. |
+| `observation` | This pass could not tell: no process table, an unreadable mount list, or one owner whose role no audit has read yet. |
+
+Every pass, in this order: without a process table nothing changes (reason
+`observation`); a current owner that is gone is retired (below), since an
+exit needs no argv; without the owner's role nothing new starts (reason
+`observation`); two or more owners are a conflict (below); then:
+
+| Phase | Entered on | What happens, and the next phase |
+| --- | --- | --- |
+| `inspect` | manager start, owner exit, failed launch | Our launch child not exec'd yet: wait. One loopback owner: `starting`. One stock owner: `quiesce`. No owner: disk work → `maintenance`; a leftover mount → `residual_mounts`; inside the backoff → `relaunch_wait`; else launch, `launching`. |
+| `quiesce` | one stock owner | Stops the manager's smbd, rsync, staging and storage work, so the stock owner can unmount on TERM. Discovery, which logs to the payload disk while smbd serves, restarts with its log in RAM, and the old one must have exited. Also waits until the audit no longer finds a foreign smbd, rsync daemon, discovery or `wcifsfs` (or a foreign `wcifsnd`), which it stops on its own (TERM, then KILL after 10 s): a TERM before then would unmount under them, or leave their busy volumes mounted with no diskd. A `wcifsfs` or `wcifsnd` that ACPd starts after the last audit is caught in the pass's own process table, since its audit runs in the background. Once drained with no disk work (reason `maintenance` while it lasts): TERM the owner once, then `stopping`. Apple's `afpserver` and an rsync sshd started for a user's transfer are never stopped, so they are not waited for. |
+| `stopping` | TERM sent | Owner gone: `inspect`. TERM is never resent or escalated; reason `maintenance` while a disk tool runs, since diskd handles TERM only after it returns. |
+| `launching` | fork | The child's PID shows up as `diskd`: `starting`. The child exits before exec: back off (reason `relaunch_wait`), then `inspect`. |
+| `starting` | one loopback owner | One `getVolumeCounts` probe at a time, 20 s each. acp exiting 0 is the answer, whatever status the reply carries: diskd dispatches RPCs only after its initial disk scan (F18), so the dispatch is what readiness means. Answer: `ready`. Anything else counts as no answer and the next probe follows 5 s later; two in a row set `no_answer`. A disk tool running sets `maintenance` instead. |
+| `ready` | probe answered | Storage passes, claims, staging and service starts are allowed. The owner exits: `inspect`. |
+
+When our loopback diskd exits (in `starting` or `ready`), the next launch
+waits 5, 15, then 60 s, as after a launch that never exec'd, so a diskd that
+keeps dying is not relaunched every pass. An answer resets the count: one that
+answers and then dies waits 5 s each time, even after weeks in `ready`. When
+the manager reaps its own exec'd diskd it retires it at once, without waiting
+for the next sample. A stock owner exiting after its TERM is the handoff
+itself: the launch follows at once.
+
+Two or more owners in any phase set reason `conflict`. Nothing is sent TERM,
+launched or probed while it lasts. `ready` goes back to `starting` at once, so
+no MaSt read, storage pass, claim, staging or service start happens while two
+diskd run; running smbd, rsync and discovery keep running, but one that exits
+is not started again until the conflict is over. No probe answer from before
+or during it counts. Once one owner is left: if it is the current owner, a
+stock owner carries on, and a loopback owner is probed at once and must
+answer again, since the other diskd's exit may have deleted its RPC names
+(F16). Otherwise the owner-exit rule applies.
+
+Each owner has a generation. Losing the owner retires it: a probe reply from
+an older generation is ignored, the storage state is invalidated (which
+supersedes a storage or staging run in flight), an inventory read in flight
+is stopped, and the next owner's first storage pass starts from no previous
+snapshot, so every volume is claimed again, because Apple keeps `useVolume`
+counts inside the diskd process. A running smbd and rsync are left alone
+outside `quiesce`; that full pass decides whether their configuration
+changes. The `unmounted=` episode (a disk diskd accepted but never mounted)
+counts only while the handoff is `ready`, the only phase that claims, and
+only on the current owner's own storage results: leaving `ready` ends the
+episode, so a retired owner's verdict never stands for its replacement, which
+starts its own only once its own full storage pass has failed too.
+
+When the loopback owner itself dies, its volumes stay mounted, so `inspect`
+waits on `residual_mounts` and launches nothing: a new diskd would not list
+those volumes, the next storage pass would find no payload and stop smbd. The
+running smbd keeps serving from the existing mounts instead, nothing new is
+claimed until a restart, and the host reports `diskd_restart_needed` after ten
+minutes. Before v3.8.5 the manager restarted diskd at once.
+
+### Launch and manager restart
+
+The manager launches `/usr/libexec/diskd`, boot.sh's hard link to the
+multi-call `/sbin/ACPd`. When boot.sh could not create that link it also left
+Apple's `/sbin/diskd` in place (`tc_guard`), so the manager launches that. The
+boot guard ignores every start through `/sbin/diskd`.
+
+The launch child closes the manager's singleton lock like every child. A
+manager that died between that fork and the exec and was replaced within that
+instant would launch a second diskd, which reads as `conflict`. Nothing
+restarts the manager that fast: deploy reboots, and rc.local is run by hand.
+This is the cheaper option; keeping the lock in the child until its exec
+closes the gap if that changes. Until the exec the child carries the
+manager's title, so for that instant Checkup's listing shows two managers and
+reads it as "cannot tell".
+
+On stop the manager leaves diskd running and its volume claims in place. It
+waits only for its own children, as before the handoff. Deploy and uninstall
+reboot, which clears Apple's counts.
+
+### Claims
+
+Claims work as they did before the handoff: `diskd.useVolume` on each attempt,
+then a poll for the mount. Apple counts claims without recording who made
+them, and each manager restart without a reboot adds one more. A surplus claim
+only keeps a volume mounted until the next reboot; Disk Repair unmounts with
+`umount -f`, not by releasing claims. This is the cheaper option: a ledger of
+acknowledged claims with a release on stop would avoid the surplus, but it can
+leave a mounted volume unshared after an uncertain reply, and a release
+unmounts the disks on every restart without a reboot.
+
+### Host reading
+
+- Deploy and Activate wait for the listeners, as before, and for a manager
+  behind them: a finished listing that shows no manager is its own failure
+  (the runtime is not running), however Samba's listeners answer, and
+  Activate starts the runtime for it. A listing that cannot tell leaves the
+  listeners to decide.
+- The wait does not read the handoff: Samba and rsync start only once it is
+  `ready`, so their listeners already say it was. A wait that fails reads the
+  manager's title once more, and a handoff that is not `ready` then is the
+  error.
+- A title without a readable `diskd=` word (a manager before v3.8.5, or a
+  word this release cannot read) says nothing about the handoff.
+- A process stuck on disk I/O gets the existing disk-not-responding verdict in
+  any phase; disk work only explains a wait while nothing is stalled.
+- Otherwise a phase other than `ready` is `diskd_handoff_pending`, whose
+  message names no single cause. `conflict`, `no_answer`,
+  `residual_mounts`, or `stopping` with reason `none` (Apple's diskd ignoring
+  its TERM with no disk tool running), held for ten minutes by SINCE, is
+  `diskd_restart_needed`. A phase or reason the host does not know stays
+  pending.
+- Checkup reports the handoff after its startup wait, unless a disk that
+  stopped responding already explains it.
+
+### Tests
+
+`tests/native/unit/test_diskd.c` drives every row of the phase table,
+`conflict` in each phase, generation retirement, the launch backoff and the
+probe outcomes. `tests/native/test_manager.py` covers the boot takeover
+(stock TERM, wait, launch), adopting a loopback owner, disk work and a
+leftover mount holding launch, a foreign smbd, discovery or `wcifsfs`, and
+our own disk-logging discovery, holding the stock TERM until it is gone, a
+retired owner's `unmounted=` verdict going with it and its claims starting
+none for the next, a `wcifsfs` started after the last audit, a forked helper, a crashed launch, a diskd
+that keeps dying, a probe that goes unanswered (each way) or answers with a
+handler error, a conflict that stops claims and clears, audits that classify
+only owners they saw, loopback owner exit while smbd serves, and stop leaving
+diskd and its claims alone. `tests/test_diskd_handoff.py` covers title
+parsing, the runtime wait with and without a manager, the error after a
+failed wait, stall precedence and the reason timer.
+
 ## Telemetry protocol
 
 Schema 2 reports `debug_logging` (Samba or mDNS) and `advertise_afp`, using
@@ -367,14 +553,16 @@ cite them by number. ([DETAIL.md](../../DETAIL.md) has the user-facing side.)
 | F5 | Under the Apple stack `ACPd` registers `_airport._tcp`; `diskd` registers `_smb._tcp`, `_adisk._tcp,_airport` and `_afpovertcp._tcp`; the daemon itself registers `_device-info._tcp` (`model=` from `/etc/mdnsd.conf`); `printd` registers printers. `wcifsfs`, `wcifsnd`, `afpserver` register nothing. |
 | F6 | `diskd` registers unconditionally: killing `wcifsfs`/`wcifsnd`/`afpserver` closes the ports but leaves the records. ACPd respawns none of them. |
 | F7 | `diskd` is load-bearing: it populates `acp -q MaSt` and serves `acp rpc diskd.useVolume`. |
-| F8 | `/sbin/diskd -i lo0 -d local.` relaunched by us still serves MaSt and `diskd.useVolume` while its `_smb`/`_adisk`/`_afpovertcp` stay on loopback. |
+| F8 | The original firmware experiment launched `/sbin/diskd -i lo0 -d local.` (the manager now uses the verified native link). The loopback process served MaSt and `diskd.useVolume` while its `_smb`/`_adisk`/`_afpovertcp` registrations stayed on loopback. |
 | F9 | Registering a name another client already holds auto-renames to "Name (2)" unless `kDNSServiceFlagsNoAutoRename` is passed (then the callback reports `kDNSServiceErr_NameConflict`). A stock `diskd` renames SMB and ADisk together after an SMB-only conflict, leaving `syNm` and the hostname alone. |
 | F10 | Apple's host records on the LAN: fe80 plus every IPv4 including 169.254, no GUA. Hostname `AirPort-Time-Capsule.local.` (mixed case); SRV targets of our registrations are that hostname automatically. |
 | F11 | Killing the daemon is unrecoverable without a reboot: ACPd never respawns it and a hand-started daemon lacks `_airport`. The runtime must never kill it. |
 | F13 | `/etc/mdnsd.conf` (RAM root, regenerated each boot) carries `Hardware TimeCapsule6,116` / `TimeCapsule8,119`, `Software 7.8.1` / `7.9.1`, `PrimaryIPv4Interface bridge0`. |
 | F14 | Samba's IPv6 `interfaces=` tokens must use the embedded-scope form `fe80:<index hex>::…/64`; Apple's pf opens 445/139/137/138/548 on the WAN iff `usbF & 0x8` in NAT mode; router mode is `(raNA,raDS)`: `(0,0)` bridge, `(0,1)` DHCP-only, `(1,1)` NAT; the guest bridge owns `gnRo`. |
 | F15 | Device shell quirks: NetBSD 4 `sed` has no `\|` alternation; `reboot`, `ifconfig` need full paths in non-login shells; `/etc` edits do not persist; `/mnt/Memory` is the 15 MB RAM staging area; `/mnt/Flash` is ≈1 MB. |
-| F16 | ACPd keeps one table of `diskd.*` RPC names. A second diskd's duplicate registration is rejected, but when it exits ACPd deletes the names it tried, which are the first diskd's, in registration order (`getHomeVolumeInfo`, `getVolumeCounts`, `useVolume`, ...). `acp rpc` exits 22 for every failure; stderr carries the code (-6727 for a missing name). Measured on NetBSD 4 LE. |
+| F16 | ACPd keeps one table of `diskd.*` RPC names. A second diskd's duplicate registration is rejected, but when it exits ACPd deletes the names it tried, which are the first diskd's, in registration order (`getHomeVolumeInfo`, `getVolumeCounts`, `useVolume`, ...). `acp rpc` exits 22 on routing failure. A routed call can exit zero with a nonzero handler status in the reply. Stderr carries -6727 for a missing name. Measured on NetBSD 4 LE. |
+| F17 | Diskd processes SIGTERM through its event loop and unregisters RPCs before unmounting volumes. NetBSD 4 LE cleanup is at `0xed950`, volume removal at `0xe98c8`, and mount preparation at `0xe9a20`. A failed initial mount frees the volume record but retains the seen device name, so an unchanged device is not retried on the next scan. Local ARM emulation reproduced this failure path. Persistent filesystem damage on the affected device remains unproven. |
+| F18 | The initial scan precedes event-loop RPC dispatch in the saved NetBSD 4 LE, 4 BE and 6 firmware. Scan/dispatch call sites: LE `0xee17c`/`0xee160`, BE `0xcae74`/`0xcae58`, 6 `0x1040e8`/`0x1040cc`. The read-only getVolumeCounts handlers are LE `0xe8e94`, BE `0xc5de0`, 6 `0xfec74`. The inspected binaries' SHA-256 values are LE `16539fccbe32dae85bf4267e12fcc59d4599fbbf11f4e02c1b3ed790d7dbfde3`, BE `a446998662315592b61f8264d21438453e9234a0fa7ad567cd20fdff3abdd5c3`, 6 `7a1e5fae541f8fd112d98f261b18eb3ac3ac1c8be02e3223660d5b1b7cc2e05b`. |
 
 ### Apple ACPd
 

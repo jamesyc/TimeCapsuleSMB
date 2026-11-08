@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
     assert(!mkdir(dir, 0700));
 
     /* Each test source writes its own file. */
-    write_file("base", "2 1 2 3 0x80 4 0 select diskd /sbin/diskd -i lo0 -d local.\n"
+    write_file("base", "2 1 2 3 0x80 4 0 select diskd born=123456789 /sbin/diskd -i lo0 -d local.\n"
                        "31 2 31 5 0x0 0 0 - smbd (smbd)\n"
                        "40 1 40 3 0x0 75 1200 biowait a_command_name_longer_than_16 x\n"
                        "garbage line\n");
@@ -74,6 +74,7 @@ int main(int argc, char **argv) {
     assert(find(&t, 2)->stat == 3 && find(&t, 2)->flag == 0x80 && find(&t, 2)->slept == 4);
     assert(!strcmp(find(&t, 2)->wmesg, "select") && !strcmp(find(&t, 2)->comm, "diskd"));
     assert(find(&t, 2)->threads == 1 && find(&t, 2)->parent == 1 && find(&t, 2)->group == 2);
+    assert(find(&t, 2)->born == 123456789 && find(&t, 31)->born == 0);
     /* "-" is no wait message; zombies stay in the table, marked exited. */
     assert(!strcmp(find(&t, 31)->wmesg, "") && tc_proc_exited(find(&t, 31)));
     assert(!tc_proc_exited(find(&t, 2)));

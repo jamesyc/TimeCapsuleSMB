@@ -1481,3 +1481,13 @@
 "backend.recovery.ssh_client_failed.action.1" = "Vuelva a intentarlo.";
 "backend.recovery.ssh_client_failed.action.2" = "Si sigue fallando, haga clic en «Copiar diagnóstico» e informe del problema en https://github.com/jamesyc/TimeCapsuleSMB/issues.";
 "app_menu.check_for_updates" = "Buscar actualizaciones...";
+
+// Disk service handoff
+"backend.recovery.diskd_handoff_pending.title" = "El uso compartido de archivos aún se está iniciando";
+"backend.recovery.diskd_handoff_pending.message" = "El servicio de discos de Apple aún está preparando el uso compartido de archivos.";
+"backend.recovery.diskd_handoff_pending.action.1" = "Deje el dispositivo encendido y espere; después, vuelva a ejecutar «Comprobación».";
+"doctor.check.diskd_handoff_pending" = "El servicio de discos de Apple aún está preparando el uso compartido de archivos.";
+"backend.recovery.diskd_restart_needed.title" = "El servicio de discos necesita reiniciarse";
+"backend.recovery.diskd_restart_needed.message" = "El servicio de discos de Apple se ha bloqueado y el uso compartido de archivos no puede usar los discos hasta que se reinicie el dispositivo.";
+"backend.recovery.diskd_restart_needed.action.1" = "Cuando terminen las copias de seguridad y las operaciones de disco, reinicie el dispositivo y vuelva a ejecutar «Comprobación».";
+"doctor.check.diskd_restart_needed" = "El servicio de discos de Apple se ha bloqueado y el uso compartido de archivos no puede usar los discos hasta que se reinicie el dispositivo. Cuando terminen las copias de seguridad y las operaciones de disco, reinicie el dispositivo y vuelva a ejecutar «Comprobación».";

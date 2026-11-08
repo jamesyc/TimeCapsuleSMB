@@ -14,6 +14,8 @@ struct tc_storage_snapshot {
 };
 /* 1 mounted as the expected HFS device, 0 unavailable, -1 probe failed. */
 int tc_volume_mounted(const struct tc_volume *, int *writable);
+/* An HFS data volume is mounted: 1, none: 0, the mount list unreadable: -1. */
+int tc_storage_data_mounted(void);
 int tc_storage_prepare(struct tc_storage_snapshot *, const struct tc_inventory *,
                        const struct tc_storage_snapshot *previous, const struct tc_runtime_config *,
                        int tune_ata, uint32_t requested);

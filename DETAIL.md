@@ -208,9 +208,9 @@ Releases before native storage kept Mac metadata in `.samba4/private/xattr.tdb` 
 
 The device's own `mDNSResponder` is the only mDNS responder on the device, and TimeCapsuleSMB never kills it: ACPd does not restart it, so only a reboot would bring it back. Our `service discovery` role registers our records through the daemon's `dns_sd` socket.
 
-Apple's `diskd` registers `_smb._tcp`, `_adisk._tcp` and `_afpovertcp._tcp` for Apple's own file servers, which would send Finder to Apple's SMB and AFP. `diskd` also provides the disk list (`acp -q MaSt`) and mounts volumes (`diskd.useVolume`), so it has to keep running. The manager starts it as `/sbin/diskd -i lo0 -d local.`, which keeps both of those working and limits its registrations to loopback.
+Apple's `diskd` registers `_smb._tcp`, `_adisk._tcp` and `_afpovertcp._tcp` for Apple's own file servers, which would send Finder to Apple's SMB and AFP. `diskd` also provides the disk list (`acp -q MaSt`) and mounts volumes (`diskd.useVolume`), so it has to keep running. The manager starts it as `/usr/libexec/diskd -i lo0 -d local.`, which keeps both of those working and limits its registrations to loopback.
 
-`boot.sh` replaces `/sbin/diskd` with a guard that lets only that loopback start through. A second diskd started by ACPd would break the first one's RPC names until the next reboot. `/sbin/wcifsnd` gets a guard too, so ACPd cannot take the NBNS ports from the `wcifsnd` that discovery runs. Uninstall leaves both guards in place until the next reboot brings back the stock daemons.
+`boot.sh` replaces `/sbin/diskd` with a guard that ignores every start through that path. The manager uses the native hard link directly. A second diskd started by ACPd would break the first one's RPC names until the next reboot. `/sbin/wcifsnd` gets a guard too, so ACPd cannot take the NBNS ports from the `wcifsnd` that discovery runs. Uninstall leaves both guards in place until the next reboot brings back the stock daemons.
 
 | Process | Owner | Role |
 | --- | --- | --- |

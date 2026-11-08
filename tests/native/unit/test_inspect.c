@@ -93,6 +93,15 @@ int main(void) {
     argv_failing = 12;
     argv_result = -1;
     assert(tc_process_table_build(&table, &snapshot, fake_argv) < 0);
+    load("12 1 2 S diskd /sbin/diskd -i lo0 -d local.\n");
+    snapshot.procs[0].born = 123456789;
+    assert(!tc_process_table_build(&table, &snapshot, fake_argv));
+    assert(table.count == 1 && table.processes[0].born == 123456789);
+    /* A process not yet renamed diskd (an exec under way, or the manager's
+     * own launch child, which the manager tracks itself) has no diskd role. */
+    assert(!build(&table,
+        "12 1 12 S service /usr/libexec/diskd -i lo0 -d local.\n"
+        "14 1 14 S service /usr/libexec/diskd-other -i lo0\n") && table.count == 0);
     /* smbd needs no command line, so its failure cannot matter. */
     load(ps);
     argv_failing = 30;

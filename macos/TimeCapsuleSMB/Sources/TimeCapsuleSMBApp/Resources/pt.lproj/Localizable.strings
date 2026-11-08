@@ -1481,3 +1481,13 @@
 "backend.recovery.ssh_client_failed.action.1" = "Tente novamente.";
 "backend.recovery.ssh_client_failed.action.2" = "Se continuar falhando, clique em “Copiar diagnóstico” e relate o problema em https://github.com/jamesyc/TimeCapsuleSMB/issues.";
 "app_menu.check_for_updates" = "Buscar atualizações...";
+
+// Disk service handoff
+"backend.recovery.diskd_handoff_pending.title" = "O compartilhamento de arquivos ainda está iniciando";
+"backend.recovery.diskd_handoff_pending.message" = "O serviço de discos da Apple ainda está preparando o compartilhamento de arquivos.";
+"backend.recovery.diskd_handoff_pending.action.1" = "Deixe o dispositivo ligado e aguarde. Depois, execute “Verificação” novamente.";
+"doctor.check.diskd_handoff_pending" = "O serviço de discos da Apple ainda está preparando o compartilhamento de arquivos.";
+"backend.recovery.diskd_restart_needed.title" = "O serviço de discos precisa ser reiniciado";
+"backend.recovery.diskd_restart_needed.message" = "O serviço de discos da Apple está travado, e o compartilhamento de arquivos não pode usar os discos até o dispositivo ser reiniciado.";
+"backend.recovery.diskd_restart_needed.action.1" = "Quando os backups e as operações de disco terminarem, reinicie o dispositivo e execute “Verificação” novamente.";
+"doctor.check.diskd_restart_needed" = "O serviço de discos da Apple está travado, e o compartilhamento de arquivos não pode usar os discos até o dispositivo ser reiniciado. Quando os backups e as operações de disco terminarem, reinicie o dispositivo e execute “Verificação” novamente.";

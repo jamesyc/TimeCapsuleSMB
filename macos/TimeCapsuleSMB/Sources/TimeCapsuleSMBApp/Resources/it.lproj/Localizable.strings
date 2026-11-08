@@ -1481,3 +1481,13 @@
 "backend.recovery.ssh_client_failed.action.1" = "Riprova.";
 "backend.recovery.ssh_client_failed.action.2" = "Se continua a non riuscire, fai clic su “Copia diagnostica” e segnala il problema su https://github.com/jamesyc/TimeCapsuleSMB/issues.";
 "app_menu.check_for_updates" = "Verifica aggiornamenti...";
+
+// Disk service handoff
+"backend.recovery.diskd_handoff_pending.title" = "La condivisione dei file si sta ancora avviando";
+"backend.recovery.diskd_handoff_pending.message" = "Il servizio dischi di Apple sta ancora preparando la condivisione dei file.";
+"backend.recovery.diskd_handoff_pending.action.1" = "Lascia il dispositivo acceso e attendi, poi esegui di nuovo “Controllo”.";
+"doctor.check.diskd_handoff_pending" = "Il servizio dischi di Apple sta ancora preparando la condivisione dei file.";
+"backend.recovery.diskd_restart_needed.title" = "Il servizio dischi richiede un riavvio";
+"backend.recovery.diskd_restart_needed.message" = "Il servizio dischi di Apple è bloccato e la condivisione dei file non può usare i dischi finché il dispositivo non viene riavviato.";
+"backend.recovery.diskd_restart_needed.action.1" = "Al termine dei backup e delle operazioni sul disco, riavvia il dispositivo, poi esegui di nuovo “Controllo”.";
+"doctor.check.diskd_restart_needed" = "Il servizio dischi di Apple è bloccato e la condivisione dei file non può usare i dischi finché il dispositivo non viene riavviato. Al termine dei backup e delle operazioni sul disco, riavvia il dispositivo, poi esegui di nuovo “Controllo”.";

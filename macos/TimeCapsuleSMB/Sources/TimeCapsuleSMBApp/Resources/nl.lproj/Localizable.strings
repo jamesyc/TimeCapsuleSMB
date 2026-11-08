@@ -1481,3 +1481,13 @@
 "backend.recovery.ssh_client_failed.action.1" = "Probeer het opnieuw.";
 "backend.recovery.ssh_client_failed.action.2" = "Mislukt het nog steeds, klik dan op ‘Diagnostische gegevens kopiëren’ en meld het probleem op https://github.com/jamesyc/TimeCapsuleSMB/issues.";
 "app_menu.check_for_updates" = "Zoek naar updates...";
+
+// Disk service handoff
+"backend.recovery.diskd_handoff_pending.title" = "Bestandsdeling wordt nog gestart";
+"backend.recovery.diskd_handoff_pending.message" = "De schijfservice van Apple bereidt bestandsdeling nog voor.";
+"backend.recovery.diskd_handoff_pending.action.1" = "Laat het apparaat aanstaan en wacht. Voer daarna ‘Controle’ opnieuw uit.";
+"doctor.check.diskd_handoff_pending" = "De schijfservice van Apple bereidt bestandsdeling nog voor.";
+"backend.recovery.diskd_restart_needed.title" = "De schijfservice moet opnieuw worden gestart";
+"backend.recovery.diskd_restart_needed.message" = "De schijfservice van Apple is vastgelopen en bestandsdeling kan de schijven pas gebruiken nadat het apparaat opnieuw is opgestart.";
+"backend.recovery.diskd_restart_needed.action.1" = "Herstart het apparaat zodra de reservekopieën en schijfbewerkingen klaar zijn en voer daarna ‘Controle’ opnieuw uit.";
+"doctor.check.diskd_restart_needed" = "De schijfservice van Apple is vastgelopen en bestandsdeling kan de schijven pas gebruiken nadat het apparaat opnieuw is opgestart. Herstart het apparaat zodra de reservekopieën en schijfbewerkingen klaar zijn en voer daarna ‘Controle’ opnieuw uit.";

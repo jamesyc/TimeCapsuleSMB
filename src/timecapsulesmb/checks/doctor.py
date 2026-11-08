@@ -40,6 +40,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_disk_health,
     _doctor_check_disk_mounting,
     _doctor_check_disk_payload,
+    _doctor_check_diskd_handoff,
     _doctor_manager_starting,
     _doctor_refresh_payload_problems,
     _doctor_check_diskd_rpc,
@@ -157,6 +158,7 @@ def run_doctor_checks(
             or _doctor_check_disk_payload(manager, sink).stop):
         _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
         return sink.results, sink.fatal()
+    _doctor_check_diskd_handoff(target, remote, manager, sink)
 
     naming = _doctor_check_runtime_naming_identity(target, remote, sink)
     probed_mac = _doctor_check_device_compatibility(inputs, target, remote, sink)

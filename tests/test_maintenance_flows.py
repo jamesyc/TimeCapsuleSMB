@@ -1000,12 +1000,14 @@ class ActivateRuntimeTests(unittest.TestCase):
         verify_error=None,
         config_present: bool = True,
         installed: tuple[str | None, int | None] = (RELEASE_TAG, CLI_VERSION_CODE),
+        manager_present: bool | None = True,
     ):
         recorder = RecordingCallbacks()
         runtime = SimpleNamespace(
             ready=ready, samba_ready=ready or samba_ready, steps=(),
             detail="managed runtime is ready" if ready else
             "managed rsync process is not running" if samba_ready else "managed runtime is not ready",
+            manager_present=manager_present,
         )
         version = DeployedVersionProbeResult(installed[0], installed[1], "ok")
         with mock.patch("timecapsulesmb.services.activation.flash_runtime_config_present_conn", return_value=config_present):

@@ -10,6 +10,51 @@
 #include <sys/mount.h>
 #endif
 
+/* Whether an HFS volume from a disk wedge is mounted under the volumes root.
+ * MNT_NOWAIT reads the kernel's mount list without asking a disk. */
+static int data_mount(const char *from, const char *on, const char *type) {
+    return !strcmp(type, "hfs") && !strncmp(from, "/dev/dk", 7) &&
+           !strncmp(on, TC_VOLUMES_ROOT "/", sizeof(TC_VOLUMES_ROOT));
+}
+int tc_storage_data_mounted(void) {
+#ifdef TC_NATIVE_TEST
+    const char *fixture = getenv("TC_TEST_MOUNTS");
+    if (fixture) {
+        /* Host tests list "root device writable" per mount, all HFS wedges. */
+        FILE *f = fopen(fixture, "r");
+        char line[768], root[256], device[16], from[32];
+        int rw, found = 0;
+        if (!f)
+            return -1;
+        while (fgets(line, sizeof(line), f)) {
+            if (sscanf(line, "%255s %15s %d", root, device, &rw) != 3) {
+                found = -1;
+                break;
+            }
+            snprintf(from, sizeof(from), "/dev/%s", device);
+            if (data_mount(from, root, "hfs"))
+                found = 1;
+        }
+        if (ferror(f))
+            found = -1;
+        fclose(f);
+        return found;
+    }
+#endif
+#if defined(__NetBSD__)
+    struct statvfs *mounts;
+    int count = getmntinfo(&mounts, MNT_NOWAIT), i;
+    if (count <= 0)
+        return -1;
+    for (i = 0; i < count; i++)
+        if (data_mount(mounts[i].f_mntfromname, mounts[i].f_mntonname, mounts[i].f_fstypename))
+            return 1;
+    return 0;
+#else
+    (void)data_mount;
+    return -1;
+#endif
+}
 int tc_volume_mounted(const struct tc_volume *volume, int *writable) {
     *writable = 0;
 #ifdef TC_NATIVE_TEST

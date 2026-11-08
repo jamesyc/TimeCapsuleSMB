@@ -487,6 +487,24 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertTrue(german.message.hasPrefix("Eine Festplatte am Gerät reagiert nicht mehr"))
     }
 
+    func testCheckupPresentationLocalizesTheDiskServiceHandoff() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        for code in ["diskd_handoff_pending", "diskd_restart_needed"] {
+            let payload = try testDoctorPayload(checks: [
+                testDoctorCheck(status: "FAIL", message: "Waiting: diskd phase=starting reason=rpc_missing since=40",
+                                domain: "device", code: code)
+            ]).decode(DoctorPayload.self)
+            for language in [AppLanguage.english, .german] {
+                L10n.apply(language: language)
+                let row = try XCTUnwrap(CheckupPresentation(
+                    summary: DoctorSummary(payload: payload), state: .failed).domains.first?.rows.first)
+                XCTAssertEqual(row.message, L10n.string("doctor.check.\(code)"))
+                XCTAssertFalse(row.message.contains("phase="))
+            }
+        }
+    }
+
     func testCheckupPresentationGivesAStuckDiskCheckMoreTimeBeforeTheUnplug() throws {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

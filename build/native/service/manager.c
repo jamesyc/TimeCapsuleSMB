@@ -7,6 +7,7 @@
 #include "../samba/staging.h"
 #include "../storage/settle.h"
 #include "bufstall.h"
+#include "diskd.h"
 #include "inspect.h"
 #include "proctable.h"
 #include "stuck.h"
@@ -79,8 +80,12 @@ typedef char stage_job_fits_two_payload_reads[2 * TC_PAYLOAD_READ_BUDGET_MS + 30
 #ifndef TC_MANAGER_PASS_MS
 #define TC_MANAGER_PASS_MS 1000
 #endif
+/* boot.sh's hard link to Apple's multi-call ACPd, and Apple's own path. */
 #ifndef TC_DISKD_PATH
-#define TC_DISKD_PATH "/sbin/diskd"
+#define TC_DISKD_PATH "/usr/libexec/diskd"
+#endif
+#ifndef TC_DISKD_STOCK
+#define TC_DISKD_STOCK "/sbin/diskd"
 #endif
 /* Cool down after delivery; failed attempts retain the report and retry. */
 #ifndef TC_BUFSTALL_REPORT_MS
@@ -228,6 +233,25 @@ struct manager {
     struct audit_result audit_result;
     struct tc_child mast_job;
     struct mast_result mast_result;
+    /* Disk owner handoff (diskd.h): the machine and its readiness probe; the
+     * last completed audit's table, which says whether a single owner is
+     * stock or loopback; a signature of the owner set, whose change asks for
+     * an audit. Process-local. */
+    struct tc_diskd handoff;
+    struct tc_child diskd_probe;
+    unsigned probe_token;
+    /* Our launched diskd once it has exec'd: its identity, so its reaped exit
+     * retires it at once (tc_diskd_owner_exited). */
+    struct tc_diskd_identity diskd_child_identity;
+    /* The handoff generation the storage job started under, and the one the
+     * accepted storage snapshot belongs to: a new owner's first pass starts
+     * from no previous snapshot, so every volume is claimed again. */
+    unsigned storage_job_generation, storage_owner_generation;
+    struct tc_process_table audited;
+    unsigned long long owners_signature;
+    int diskd_child_execd;
+    enum tc_diskd_phase logged_phase;
+    enum tc_diskd_reason logged_reason;
     struct tc_share_set discovery_shares;
     char discovery_name[16];
     int discovery_diskless, discovery_afp, discovery_debug;
@@ -314,11 +338,13 @@ static const char *payload_word(const struct manager *m) {
  * stuck=PID:COMM:WAIT:SECONDS[,...] from the title (stuck.h tc_manager_title; ps shows a sleep time of at most
  * 127 s, and none for a wait that keeps waking). */
 static void set_manager_title(const struct manager *m) {
-    char title[256];
+    char title[256], handoff[64];
+    snprintf(handoff, sizeof(handoff), "%s:%lld:%s", tc_diskd_phase_name(m->handoff.phase), m->handoff.since / 1000,
+             tc_diskd_reason_name(m->handoff.reason));
     tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting, payload_word(m),
                      verdict_names[m->rsync_verdict],
                      m->unmounted_shown ? m->unmounted_since : -1, &m->stuck,
-                     STUCK_TITLE_MAX, acp_monotonic_ms());
+                     STUCK_TITLE_MAX, acp_monotonic_ms(), handoff);
 #if defined(__NetBSD__)
     setproctitle("%s", title);
 #elif defined(TC_NATIVE_TEST)
@@ -525,7 +551,9 @@ static int storage_job(void *opaque) {
     struct manager *m = opaque;
     struct tc_storage_snapshot result;
     tc_worker_begin("storage");
-    if (tc_storage_prepare(&result, &m->topology.stable, &m->storage, &m->settings.config, m->tune_ata, m->storage_request))
+    const struct tc_storage_snapshot *previous =
+        m->storage_owner_generation == m->storage_job_generation ? &m->storage : NULL;
+    if (tc_storage_prepare(&result, &m->topology.stable, previous, &m->settings.config, m->tune_ata, m->storage_request))
         return tc_worker_finish(1);
     return tc_worker_finish(tc_worker_result(&result, sizeof(result)) ? 1 : 0);
 }
@@ -659,12 +687,14 @@ static void pump_inventory(struct manager *m, long long now) {
             if (m->topology.pending)
                 lower(&m->mast_at, m->topology.confirm_at > now ? m->topology.confirm_at : now + 1000);
         } else {
-            timestamped_fprintf(stderr, "manager: MaSt unavailable; retaining last valid inventory\n");
+            timestamped_fprintf(stderr, "manager: MaSt read failed, timed out, or was stopped by a diskd owner "
+                                        "change; retaining the last valid inventory (an owner change clears it)\n");
             m->mast_at = now + JOB_RETRY_MS;
         }
         tc_child_close(&m->mast_job);
     }
-    if (!m->mast_job.group && now >= m->mast_at) {
+    /* MaSt comes from diskd through ACPd: it is read for the current owner only. */
+    if (!m->mast_job.group && now >= m->mast_at && tc_diskd_ready(&m->handoff)) {
         m->mast_at = now + INVENTORY_MS;
         if (tc_child_fork(&m->mast_job, mast_job, NULL, MANAGER_LOG, &m->mast_result,
                           sizeof(m->mast_result), now + 25000))
@@ -727,6 +757,7 @@ static void pump_storage(struct manager *m, long long now) {
                 unit_changed(&m->rsync_unit, now);
             }
             m->storage = m->storage_result;
+            m->storage_owner_generation = m->storage_job_generation;
             m->storage_dirty = 0;
             m->storage_at = 0;
             m->tune_ata = 0;
@@ -768,8 +799,9 @@ static void pump_storage(struct manager *m, long long now) {
         m->storage_at = now;
     }
     if ((m->storage_dirty || (storage_pending(m) && now >= m->storage_retry.at)) && m->have_settings && m->topology.initialized && !m->topology.pending &&
-        !m->storage_job.group && !units_staging(m) && now >= m->storage_at) {
+        !m->storage_job.group && !units_staging(m) && now >= m->storage_at && tc_diskd_ready(&m->handoff)) {
         m->storage_revision = m->storage_generation;
+        m->storage_job_generation = m->handoff.generation;
         m->storage_request = m->storage_dirty ? UINT32_MAX : storage_pending(m);
         /* At most 16 disks, each with a bounded native activation. Child
          * death and TERM remain responsive throughout this setup job. */
@@ -808,7 +840,7 @@ static int audit_serving(struct managed *role, pid_t pid, int probed, int listen
 }
 static void apply_audit(struct manager *m, long long now) {
     size_t i;
-    int diskd = 0, external = 0;
+    int external = 0;
     struct stale_process stale[TC_PROCESS_MAX];
     size_t stale_count = 0;
     m->blocked = 0;
@@ -825,10 +857,9 @@ static void apply_audit(struct manager *m, long long now) {
         /* Discovery verifies its own child's sockets before registering names.
          * Clear only a foreign child; discovery can keep Bonjour alive
          * and retry native NBNS locally without surrendering a working socket. */
-        int stop = p->role == TC_PROC_WCIFSFS || p->role == TC_PROC_DISKD ||
+        /* A stock diskd is the handoff's to stop (pump_diskd), never by KILL. */
+        int stop = p->role == TC_PROC_WCIFSFS ||
                    (p->role == TC_PROC_WCIFSND && p->parent != m->discovery.child.pid);
-        if (p->role == TC_PROC_DISKD || p->role == TC_PROC_DISKD_LOOPBACK)
-            diskd++;
         if (p->role == TC_PROC_SMBD && p->group != m->smb.child.group)
             stop = 1;
         if (p->role == TC_PROC_RSYNC && p->group != m->rsync.child.group)
@@ -877,13 +908,7 @@ static void apply_audit(struct manager *m, long long now) {
         m->audit_at = now + 1000;
     }
     m->ownership_ready = 1;
-    if (!diskd && !m->diskd.child.group) {
-        char *argv[] = {TC_DISKD_PATH, "-i", "lo0", "-d", "local.", NULL};
-        if (!start_role(&m->diskd, argv, MANAGER_LOG, now, 1, NULL, 0))
-            m->mast_at = now;
-        else if (m->diskd.retry > now)
-            lower(&m->audit_at, m->diskd.retry);
-    }
+    m->audited = *table;
     if (audit_serving(&m->smb, m->audit_result.smb_pid, m->audit_result.smb_probe,
                       (m->audit_result.smb & 3) == 3, now) &&
         m->smb_reload_pending) {
@@ -896,10 +921,6 @@ static void apply_audit(struct manager *m, long long now) {
         m->audit_at = now + 1000;
 }
 static void pump_audit(struct manager *m, long long now) {
-    int had_diskd = m->diskd.child.group != 0;
-    poll_role(&m->diskd, "diskd", now, 1);
-    if (had_diskd && !m->diskd.child.group)
-        m->audit_at = m->diskd.retry;
     if (m->audit_job.group && tc_child_poll(&m->audit_job, now)) {
         if (tc_child_ok(&m->audit_job) && m->audit_job.used == sizeof(m->audit_result))
             apply_audit(m, now);
@@ -925,6 +946,216 @@ static void pump_audit(struct manager *m, long long now) {
                           now + 20000))
             m->audit_at = now + JOB_RETRY_MS;
     }
+}
+static int foreign_netbios(const struct manager *m);
+/* Disk owner handoff: the adapter between the process table and diskd.c.
+ * README "Disk owner handoff" has the phases and what each observation means. */
+/* The readiness probe, read-only. acp exits 0 once diskd's event loop has
+ * dispatched the call, which it does only after its initial disk scan
+ * (README F18): that exit is the answer, and a handler error inside the
+ * reply still proves the dispatch. Any other end is no answer; the line
+ * below says which (acp's own message, -6727 for names not registered),
+ * after the worker's "failed or timed out" line. */
+static int diskd_probe_job(void *unused) {
+    char reply[4096], *end;
+    char *argv[] = {"/bin/sh", "-c", "exec \"$0\" rpc diskd.getVolumeCounts 2>&1", TC_ACP_PATH, NULL};
+    (void)unused;
+    tc_worker_begin("diskd readiness");
+    if (!tc_command_capture(argv, reply, sizeof(reply), 20))
+        return tc_worker_finish(0);
+    if ((end = strchr(reply, '\n')))
+        *end = 0;
+    fprintf(stderr, "diskd readiness: no answer: %s\n", reply[0] ? reply : "no output");
+    return tc_worker_finish(1);
+}
+/* Apple's disk tools; diskd runs them through `sh -c` (see observe_diskd). */
+static int disk_job_name(const char *name) {
+    return !strncmp(name, "fsck", 4) || !strncmp(name, "newfs", 5) || !strcmp(name, "mount") ||
+           !strcmp(name, "mount_hfs") || !strcmp(name, "umount") || !strcmp(name, "gpt");
+}
+static const struct tc_proc *live_row(const struct tc_proctable *t, pid_t pid) {
+    size_t i;
+    for (i = 0; i < t->count; i++)
+        if (t->procs[i].pid == pid && !tc_proc_exited(&t->procs[i]))
+            return &t->procs[i];
+    return NULL;
+}
+static int diskd_row(const struct tc_proc *p) {
+    return p && !strcmp(p->comm, "diskd");
+}
+/* The observation diskd.c needs, from this pass's kernel table and the last
+ * completed audit. A child diskd forks keeps its name and argv until it
+ * execs, so only a diskd whose parent is not a diskd is an owner. The audit
+ * only says whether a single owner is stock or loopback. Its row counts only
+ * when it has the owner's PID and kernel start time: that is the same
+ * process, exec keeps the start time, and diskd never execs again, so a row
+ * read before the exec (another role) never classifies it and a row read
+ * since keeps the role for the process's life, also across failed audits. */
+static void observe_diskd(struct manager *m, struct tc_diskd_observation *o) {
+    const struct tc_proctable *t = &m->procs;
+    unsigned long long signature = 0;
+    int classified = 0;
+    size_t i;
+    memset(o, 0, sizeof(*o));
+    o->kernel_valid = m->procs_valid;
+    if (!o->kernel_valid)
+        return;
+    for (i = 0; i < t->count; i++) {
+        const struct tc_proc *p = &t->procs[i];
+        int child_of_diskd;
+        if (tc_proc_exited(p))
+            continue;
+        child_of_diskd = diskd_row(live_row(t, p->parent));
+        if (disk_job_name(p->comm) || (child_of_diskd && !strcmp(p->comm, "sh")))
+            o->disk_work = 1;
+        if (!diskd_row(p) || child_of_diskd)
+            continue;
+        o->owners++;
+        o->owner = (struct tc_diskd_identity){p->pid, p->born};
+        signature += (unsigned long long)p->pid * 2654435761ULL + p->born;
+        if (p->pid == m->handoff.owner.pid && p->born == m->handoff.owner.born)
+            o->current_present = 1;
+        if (p->pid == m->diskd.child.pid && m->diskd.child.group) {
+            m->diskd_child_execd = 1;
+            m->diskd_child_identity = (struct tc_diskd_identity){p->pid, p->born};
+        }
+    }
+    /* A new owner needs an audit read after it appeared: ask for one now
+     * rather than at the next scheduled audit. */
+    if (signature != m->owners_signature) {
+        m->owners_signature = signature;
+        m->audit_at = 0;
+    }
+    o->launch = m->diskd.child.group && !m->diskd_child_execd;
+    for (i = 0; i < m->audited.count && o->owners == 1; i++) {
+        const struct tc_process_info *a = &m->audited.processes[i];
+        if (a->pid == o->owner.pid && a->born == o->owner.born &&
+            (a->role == TC_PROC_DISKD || a->role == TC_PROC_DISKD_LOOPBACK)) {
+            o->loopback = a->role == TC_PROC_DISKD_LOOPBACK;
+            classified = 1;
+        }
+    }
+    o->valid = o->owners != 1 || classified;
+    o->mounts = o->owners ? 0 : tc_storage_data_mounted();
+    /* Nothing may still hold a file on the volumes. Our discovery logs to the
+     * payload disk while smbd serves; quiesce stops smbd, so discovery
+     * restarts with its log in RAM, and the old one must have exited. A
+     * foreign smbd, rsync daemon, discovery or wcifsfs: the last audit sent
+     * it TERM (KILL after TC_STALE_KILL_MS) and set its block bit, which
+     * clears at the audit after it exits (BLOCK_DISCOVERY also covers a
+     * foreign wcifsnd, which the audit stops the same way). The owner's role
+     * comes from an audit too, so these bits are never older than that. Only
+     * Apple's wcifsfs and wcifsnd can appear after that audit (ACPd starts
+     * them; any other would need a second manager): the audit they trigger
+     * runs in the background, so this pass's table is checked for them too.
+     * A stock diskd TERMed meanwhile would unmount under them, or leave busy
+     * volumes mounted with no diskd (`residual_mounts`). */
+    o->drained = !m->smb.child.group && !m->rsync.child.group && !m->storage_job.group && !units_staging(m) &&
+                 !(m->discovery.child.group && !m->discovery_diskless) &&
+                 !(m->blocked & (BLOCK_SMB | BLOCK_RSYNC | BLOCK_DISCOVERY)) && !foreign_netbios(m);
+}
+static void report_handoff(struct manager *m) {
+    const struct tc_diskd *s = &m->handoff;
+    if (m->logged_phase == s->phase && m->logged_reason == s->reason)
+        return;
+    m->logged_phase = s->phase;
+    m->logged_reason = s->reason;
+    timestamped_fprintf(stderr, "manager: diskd: %s reason=%s owner=%ld generation=%u\n", tc_diskd_phase_name(s->phase),
+                        tc_diskd_reason_name(s->reason), (long)s->owner.pid, s->generation);
+    set_manager_title(m);
+}
+static void pump_diskd(struct manager *m, long long now) {
+    struct tc_diskd_observation o;
+    enum tc_diskd_phase before = m->handoff.phase;
+    unsigned actions = 0;
+    if (m->diskd.child.group && tc_child_poll(&m->diskd.child, now)) {
+        if (!m->diskd_child_execd) {
+            tc_diskd_launch_exited(&m->handoff, now);
+            timestamped_fprintf(stderr, "manager: diskd: launch failed; retry in %lld ms\n", m->handoff.retry_at - now);
+        } else
+            /* The process table may not show the exit until the next sample;
+             * the owner's claims went with it now. */
+            actions |= tc_diskd_owner_exited(&m->handoff, m->diskd_child_identity, now);
+        tc_child_close(&m->diskd.child);
+        m->diskd_child_execd = 0;
+        m->diskd_child_identity = (struct tc_diskd_identity){0};
+    }
+    if (m->diskd_probe.group && tc_child_poll(&m->diskd_probe, now)) {
+        tc_diskd_probed(&m->handoff, m->probe_token, tc_child_ok(&m->diskd_probe) && !m->diskd_probe.stopping, now);
+        tc_child_close(&m->diskd_probe);
+    }
+    observe_diskd(m, &o);
+    actions |= tc_diskd_step(&m->handoff, &o, now);
+    if (actions & TC_DISKD_RETIRE) {
+        /* Apple keeps claims inside the diskd process: the next owner gets a
+         * full storage pass on a fresh inventory, so an inventory read under
+         * the old owner goes too. Serving programs carry on. */
+        invalidate_storage(m, now);
+        memset(&m->topology, 0, sizeof(m->topology));
+        tc_child_stop(&m->mast_job, now, 1);
+        tc_child_stop(&m->diskd_probe, now, 1);
+    } else if (before == TC_DISKD_READY && !tc_diskd_ready(&m->handoff) && m->storage_job.group)
+        /* A conflict moved ready back to starting: claims wait for the next answer. */
+        invalidate_storage(m, now);
+    if (m->handoff.phase == TC_DISKD_QUIESCE) {
+        /* The stock owner unmounts on TERM: nothing of ours may hold a volume. */
+        stop_role(&m->smb, now, 1);
+        stop_role(&m->rsync, now, 1);
+        unit_superseded(&m->samba_unit, now);
+        unit_superseded(&m->rsync_unit, now);
+        if (m->storage_job.group)
+            invalidate_storage(m, now);
+        m->have_applied = 0;
+    }
+    if (actions & TC_DISKD_TERM) {
+        const struct tc_proc *p = live_row(&m->procs, m->handoff.owner.pid);
+        if (p && p->born == m->handoff.owner.born && diskd_row(p) && kill(p->pid, SIGTERM) && errno != ESRCH)
+            timestamped_fprintf(stderr, "manager: diskd: cannot stop pid %ld: %s\n", (long)p->pid, strerror(errno));
+    }
+    if ((actions & TC_DISKD_LAUNCH) && m->diskd.child.group) {
+        tc_diskd_launch_exited(&m->handoff, now); /* the last child is not reaped yet */
+    } else if (actions & TC_DISKD_LAUNCH) {
+        /* boot.sh links /usr/libexec/diskd to Apple's binary; without the link
+         * it left Apple's /sbin/diskd in place instead of its guard.
+         * Accepted limitation: the child closes the singleton lock like every
+         * child, so a manager that died between this fork and the exec and
+         * was replaced in that instant would launch a second diskd
+         * (`conflict`). Nothing restarts the manager that fast (deploy
+         * reboots; rc.local is run by hand); keeping the lock in the child
+         * until exec is the fix if that changes. */
+        char *argv[] = {access(TC_DISKD_PATH, X_OK) ? TC_DISKD_STOCK : TC_DISKD_PATH, "-i", "lo0", "-d", "local.",
+                        NULL};
+        struct role_launch launch = {argv, MANAGER_LOG, NULL, 0, -1};
+        m->diskd_child_execd = 0;
+        if (tc_child_fork(&m->diskd.child, launch_role, &launch, MANAGER_LOG, NULL, 0, 0)) {
+            timestamped_fprintf(stderr, "manager: diskd: cannot launch %s: %s\n", argv[0], strerror(errno));
+            tc_diskd_launch_exited(&m->handoff, now);
+        } else
+            m->diskd.child.allow_kill = 0;
+    }
+    if (actions & TC_DISKD_PROBE) {
+        /* One probe child at a time. A stopped one keeps its own token until
+         * it is reaped, so its reply can never count for this one. */
+        if (m->diskd_probe.group) {
+            timestamped_fprintf(stderr, "manager: diskd: previous readiness probe has not exited; counted as no answer\n");
+            tc_diskd_probed(&m->handoff, m->handoff.probe_token, 0, now);
+        } else if (tc_child_fork(&m->diskd_probe, diskd_probe_job, NULL, MANAGER_LOG, NULL, 0, now + 25000)) {
+            timestamped_fprintf(stderr, "manager: diskd: readiness probe not started (%s); counted as no answer\n",
+                                strerror(errno));
+            tc_diskd_probed(&m->handoff, m->handoff.probe_token, 0, now);
+        } else
+            m->probe_token = m->handoff.probe_token;
+    }
+    if (before != TC_DISKD_READY && tc_diskd_ready(&m->handoff)) {
+        invalidate_storage(m, now);
+        m->mast_at = now;
+    }
+    /* Outside ready, audit at least every 10 s: a failed audit is retried
+     * sooner than AUDIT_MS, and an owner the last audit missed is classified.
+     * An owner change already asked for one at once (observe_diskd). */
+    if (!tc_diskd_ready(&m->handoff))
+        lower(&m->audit_at, now + 10000);
+    report_handoff(m);
 }
 /* Put Apple's low-water mark back when the manager exits. */
 static void bufstall_restore(void) {
@@ -1284,10 +1515,16 @@ static int disk_maintenance(const struct manager *m) {
  * check after each claim must not restart the clock, and a long repair is
  * not a hang. A sample interval counts as theirs when either end saw them,
  * since they may have run for most of it. The title keeps the episode's start
- * either way. Reporting only: the manager never restarts the device. */
+ * either way. An episode belongs to one diskd in `ready`, the only phase that
+ * claims, and to that diskd's own storage results: leaving `ready` (the owner
+ * retired, or a conflict) ends it, and a new owner starts one only once its
+ * own full storage pass has failed too, never from its predecessor's.
+ * Reporting only: the manager never restarts the device. */
 static void sample_unmounted(struct manager *m, long long now) {
     uint32_t pending = m->storage.retry_prepare & ~m->storage.mounted;
-    int failing = pending && m->storage.payload_index < 0, internal = 0, maintenance, shown;
+    int failing = tc_diskd_ready(&m->handoff) && m->storage_owner_generation == m->handoff.generation && pending &&
+                  m->storage.payload_index < 0,
+        internal = 0, maintenance, shown;
     size_t i;
     maintenance = failing && disk_maintenance(m);
     if (!failing) {
@@ -1310,7 +1547,8 @@ static void sample_unmounted(struct manager *m, long long now) {
                                 (now - m->unmounted_since) / 1000);
         else
             timestamped_fprintf(stderr,
-                                "manager: storage: a disk with the Samba files is mounted again, or none is listed\n");
+                                "manager: storage: a disk with the Samba files is mounted again, none is listed, "
+                                "or diskd left ready\n");
         set_manager_title(m);
     }
     if (shown) {
@@ -1439,7 +1677,8 @@ static void pump_unit(struct manager *m, struct unit *u, long long now) {
     }
     if (!(u->dirty || tc_image_wanted(&u->image)) || !m->have_settings || !k->wanted(m) || !k->may_stage(m) ||
         m->storage.payload_index < 0 || m->storage_dirty || m->topology.pending || m->storage_job.group ||
-        u->job.group || !m->ownership_ready || (m->blocked & k->block) || now < next_run_at(u))
+        u->job.group || !m->ownership_ready || (m->blocked & k->block) || now < next_run_at(u) ||
+        !tc_diskd_ready(&m->handoff))
         return;
     /* A payload change or a failed copy leaves the image wanted. */
     u->how.copy = tc_image_wanted(&u->image);
@@ -1451,7 +1690,7 @@ static void pump_unit(struct manager *m, struct unit *u, long long now) {
 static int unit_may_start(const struct manager *m, const struct unit *u) {
     return m->have_settings && u->kind->wanted(m) && !u->dirty && u->image.state == TC_IMAGE_VERIFIED &&
            !u->role->child.group && !(m->blocked & u->kind->block) && !m->storage_dirty &&
-           m->storage.payload_index >= 0 && m->ownership_ready;
+           m->storage.payload_index >= 0 && m->ownership_ready && tc_diskd_ready(&m->handoff);
 }
 static int unit_always(const struct manager *m) {
     (void)m;
@@ -1649,11 +1888,12 @@ static void stopping(struct manager *m, long long now) {
     tc_child_stop(&m->rsync_unit.job, now, 1);
     tc_child_stop(&m->audit_job, now, 1);
     tc_child_stop(&m->mast_job, now, 1);
+    tc_child_stop(&m->diskd_probe, now, 1);
     tc_child_stop(&m->report_job, now, 1);
 }
 static int drained(struct manager *m, long long now) {
     struct tc_child *jobs[] = {&m->storage_job, &m->settings_job, &m->samba_unit.job, &m->rsync_unit.job,
-                               &m->audit_job, &m->mast_job, &m->report_job};
+                               &m->audit_job, &m->mast_job, &m->diskd_probe, &m->report_job};
     size_t i;
     for (i = 0; i < sizeof(jobs) / sizeof(jobs[0]); i++) {
         if (jobs[i]->group && tc_child_poll(jobs[i], now))
@@ -1705,6 +1945,7 @@ int tc_manager_main(int argc, char **argv) {
         return 1;
     }
     m->started_ms = m->hostname_wait_since = acp_monotonic_ms();
+    tc_diskd_init(&m->handoff, m->started_ms);
     m->unmounted_since = -1;
     set_manager_title(m);
     m->storage_dirty = 1;
@@ -1738,10 +1979,11 @@ int tc_manager_main(int argc, char **argv) {
                 }
                 m->mast_at = m->settings_at = m->audit_at = now;
             }
+            pump_audit(m, now);
+            pump_diskd(m, now);
             pump_inventory(m, now);
             pump_settings(m, now);
             pump_storage(m, now);
-            pump_audit(m, now);
             pump_unit(m, m->units[0], now);
             pump_unit(m, m->units[1], now);
             check_locks(m, now);
@@ -1754,19 +1996,21 @@ int tc_manager_main(int argc, char **argv) {
         struct tc_child *children[] = {&m->smb.child,       &m->rsync.child,  &m->discovery.child,
                                        &m->telemetry.child, &m->settings_job, &m->storage_job,
                                        &m->samba_unit.job,  &m->rsync_unit.job, &m->audit_job,
-                                       &m->mast_job,        &m->report_job};
+                                       &m->mast_job,        &m->diskd_probe,    &m->report_job};
         size_t i;
         for (i = 0; i < sizeof(children) / sizeof(children[0]); i++)
             tc_child_prepare(children[i], &reads, &maxfd, &deadline);
         if (!m->stopping) {
-            if (!m->mast_job.group)
+            /* MaSt is read only once the handoff is ready (pump_inventory):
+             * a past mast_at before then would spin this loop. */
+            if (!m->mast_job.group && tc_diskd_ready(&m->handoff))
                 lower(&deadline, m->mast_at);
             if (!m->settings_job.group)
                 lower(&deadline, m->settings_at);
             if (!m->audit_job.group)
                 lower(&deadline, m->audit_at);
             if (!m->storage_job.group && !units_staging(m) && m->have_settings &&
-                m->topology.initialized && !m->topology.pending) {
+                m->topology.initialized && !m->topology.pending && tc_diskd_ready(&m->handoff)) {
                 if (m->storage_dirty) lower(&deadline, m->storage_at);
                 else if (storage_pending(m))
                     lower(&deadline, m->storage_retry.at > m->storage_at ? m->storage_retry.at : m->storage_at);
