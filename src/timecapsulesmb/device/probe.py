@@ -2444,6 +2444,11 @@ def _title_payload_problems(title: list[str]) -> tuple[DiskPayloadProblem, ...]:
     return tuple(problem for problem in DISK_PAYLOAD_PROBLEMS if problem.token in title)
 
 
+def _title_held(title: list[str]) -> int:
+    values = [word.removeprefix("held=") for word in title if word.startswith("held=")]
+    return int(values[0]) if len(values) == 1 and _DECIMAL.fullmatch(values[0]) else 0
+
+
 def _title_unmounted_since(title: list[str]) -> int | None:
     values = [word.removeprefix("unmounted=") for word in title if word.startswith("unmounted=")]
     return int(values[0]) if len(values) == 1 and _DECIMAL.fullmatch(values[0]) else None
@@ -2968,6 +2973,9 @@ class ManagerStartupAgeProbeResult:
     # The title's diskd= word (diskd.parse_diskd_handoff): None when there is
     # none (a manager before v3.8.5) or this release cannot read it.
     handoff: DiskdHandoff | None = None
+    # The title's held=: seconds the stock diskd's TERM waited for it to idle
+    # (README F19), 0 without the word; None without a diskd= word.
+    handoff_held_s: int | None = None
 
 
 def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupAgeProbeResult:
@@ -3019,6 +3027,7 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
         payload_problems=_title_payload_problems(title),
         unmounted_since=_title_unmounted_since(title),
         handoff=parse_diskd_handoff(title),
+        handoff_held_s=_title_held(title) if any(word.startswith("diskd=") for word in title) else None,
         **acpd,
     )
 

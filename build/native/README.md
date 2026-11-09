@@ -244,12 +244,17 @@ local.`, that answers `diskd.getVolumeCounts` before the manager claims a
 volume. Apple's diskd handles SIGTERM in its event loop: it unregisters its RPC
 names, then unmounts its volumes (F17). It defers the signal until a tool it
 started through `system()` returns, so a disk check it is running finishes
-first. The manager never sends diskd SIGKILL and never takes over because a
-timer expired.
+first. A TERM that arrives before it is back in that loop can leave its
+unregisters and an ACPd call waiting on each other for good (F19), so the
+manager sends it only once diskd idles there. The manager never sends diskd
+SIGKILL and never takes over because a timer expired.
 
 ### Observation
 
-Each pass uses the kernel process table the manager already reads; no argv:
+Each pass uses the kernel process table the manager already reads; no argv.
+`tc_diskd_scan` and `tc_diskd_owner_idle` in `service/diskd.c` read it, pure
+functions beside the machine; the manager adds the audit's role, the mounts,
+its own children and the drain:
 
 - **Owners** are rows named `diskd` whose parent is not a `diskd` row. A child
   diskd forks keeps diskd's name and argv until it execs, so it is a helper,
@@ -268,6 +273,23 @@ Each pass uses the kernel process table the manager already reads; no argv:
   once; otherwise the audit runs every 10 s outside `ready` and every 30 s in
   it. An owner row with an empty argv fails the audit rather than reading as
   stock.
+- **Idle** (a stock owner only): it sleeps in `kevent` (wmesg `kqread` on
+  NetBSD 4, `kqueue` on NetBSD 6; diskd has one LWP on both) with `p_slptime`
+  of at least 3 (`TC_DISKD_IDLE_SECONDS`), and has no child. The kernel adds
+  one each second to every sleeping thread, the first time as soon as the
+  next second starts, so 3 means asleep for more than 2 s; any wakeup, a
+  rescan or a timer, starts the count again. diskd's disk scans run outside
+  that sleep: a tool's shell (wmesg `wait`), the disk, or its own requests
+  to ACPd (`netio`). That is its only `kevent` that waits (F19). It counts
+  only in a table read this pass: passes come sooner than table reads (a
+  child's exit, an audit), so an older table asks the next pass for a fresh
+  read, as the audit does, rather than TERM on an idle seen up to a second
+  ago.
+- **acp clients**: processes named `acp`. ACPd forwards a client's MaSt read
+  or `diskd.*` call to diskd and holds it in flight until diskd answers, so
+  a TERM meanwhile can deadlock the same way (F19). Most are the runtime's
+  own `acp -q` reads of ACPd's properties: a pass or two while ACPd answers
+  at once, tens of seconds while it is slow (up to 20 s a read).
 - **Our launch** is the manager's own child until it execs; the manager
   tracks it, not the audit.
 - **Leftover mounts** are HFS volumes mounted from `/dev/dkN` under
@@ -281,7 +303,10 @@ Each pass uses the kernel process table the manager already reads; no argv:
 
 The manager's title carries `diskd=PHASE:SINCE:REASON`. SINCE is the
 monotonic second when the phase or the reason last changed, so a host can tell
-how long the current reason has held. Each reason claims only this much:
+how long the current reason has held. Any change restarts it, so reasons that
+keep alternating (`busy` and `none` while something else holds the drain)
+put off the host's ten-minute verdict; none has been seen to alternate for
+long. Each reason claims only this much:
 
 | Reason | Meaning |
 | --- | --- |
@@ -292,6 +317,7 @@ how long the current reason has held. Each reason claims only this much:
 | `no_answer` | The last two readiness probes in a row got no answer: acp exited with an error (any code, -6727 "not registered" included), ran past its 20 s limit or was killed, or the manager could not start the probe (fork failed, or the previous probe had not exited). The title does not say which; the manager log has a line for each probe. |
 | `relaunch_wait` | No diskd runs and the next launch waits out its backoff: the last launch exited before exec, or our diskd exited. |
 | `observation` | This pass could not tell: no process table, an unreadable mount list, or one owner whose role no audit has read yet. |
+| `busy` | The stock owner is drained and runs no disk tool, but is not idle in its event loop in a table read this pass, or an acp client runs, so its TERM waits (F19). |
 
 Every pass, in this order: without a process table nothing changes (reason
 `observation`); a current owner that is gone is retired (below), since an
@@ -301,7 +327,7 @@ exit needs no argv; without the owner's role nothing new starts (reason
 | Phase | Entered on | What happens, and the next phase |
 | --- | --- | --- |
 | `inspect` | manager start, owner exit, failed launch | Our launch child not exec'd yet: wait. One loopback owner: `starting`. One stock owner: `quiesce`. No owner: disk work → `maintenance`; a leftover mount → `residual_mounts`; inside the backoff → `relaunch_wait`; else launch, `launching`. |
-| `quiesce` | one stock owner | Stops the manager's smbd, rsync, staging and storage work, so the stock owner can unmount on TERM. Discovery, which logs to the payload disk while smbd serves, restarts with its log in RAM, and the old one must have exited. Also waits until the audit no longer finds a foreign smbd, rsync daemon, discovery or `wcifsfs` (or a foreign `wcifsnd`), which it stops on its own (TERM, then KILL after 10 s): a TERM before then would unmount under them, or leave their busy volumes mounted with no diskd. A `wcifsfs` or `wcifsnd` that ACPd starts after the last audit is caught in the pass's own process table, since its audit runs in the background. Once drained with no disk work (reason `maintenance` while it lasts): TERM the owner once, then `stopping`. Apple's `afpserver` and an rsync sshd started for a user's transfer are never stopped, so they are not waited for. |
+| `quiesce` | one stock owner | On entry, once (action `ENTER_QUIESCE`, again after a retire brings in a new stock owner): stops the manager's smbd, rsync, staging and storage work, so the stock owner can unmount on TERM; none of them starts again outside `ready`. Discovery, which logs to the payload disk while smbd serves, restarts with its log in RAM, and the old one must have exited. Also waits until the audit no longer finds a foreign smbd, rsync daemon, discovery or `wcifsfs` (or a foreign `wcifsnd`), which it stops on its own (TERM, then KILL after 10 s): a TERM before then would unmount under them, or leave their busy volumes mounted with no diskd. A `wcifsfs` or `wcifsnd` that ACPd starts after the last audit is caught in the pass's own process table, since its audit runs in the background. Once drained with no disk work (reason `maintenance` while it lasts), the owner idle and no acp client running (reason `busy` until then, however long, F19): TERM the owner once, then `stopping`. Apple's `afpserver` and an rsync sshd started for a user's transfer are never stopped, so they are not waited for. |
 | `stopping` | TERM sent | Owner gone: `inspect`. TERM is never resent or escalated; reason `maintenance` while a disk tool runs, since diskd handles TERM only after it returns. |
 | `launching` | fork | The child's PID shows up as `diskd`: `starting`. The child exits before exec: back off (reason `relaunch_wait`), then `inspect`. |
 | `starting` | one loopback owner | One `getVolumeCounts` probe at a time, 20 s each. acp exiting 0 is the answer, whatever status the reply carries: diskd dispatches RPCs only after its initial disk scan (F18), so the dispatch is what readiness means. Answer: `ready`. Anything else counts as no answer and the next probe follows 5 s later; two in a row set `no_answer`. A disk tool running sets `maintenance` instead. |
@@ -393,19 +419,46 @@ unmounts the disks on every restart without a reboot.
   any phase; disk work only explains a wait while nothing is stalled.
 - Otherwise a phase other than `ready` is `diskd_handoff_pending`, whose
   message names no single cause. `conflict`, `no_answer`,
-  `residual_mounts`, or `stopping` with reason `none` (Apple's diskd ignoring
-  its TERM with no disk tool running), held for ten minutes by SINCE, is
+  `residual_mounts`, `busy` (Apple's diskd never idle, so never asked to
+  stop), or `stopping` with reason `none` (Apple's diskd ignoring its TERM
+  with no disk tool running), held for ten minutes by SINCE, is
   `diskd_restart_needed`. A phase or reason the host does not know stays
   pending.
 - Checkup reports the handoff after its startup wait, unless a disk that
-  stopped responding already explains it.
+  stopped responding, or a broken ACPd, already explains it. Unplugging, the
+  ACPd fix, restarts Apple's diskd too, and a diskd wedged by F19 also
+  silences ACPd's network listener.
+- The manager's title carries `held=N` after the `diskd=` word once `busy`
+  has held a stock owner's TERM back for a second or more: the seconds of
+  the spells that ended. Every Deploy and Activate wait, successful or not,
+  sends it as `acpd_after_start.diskd_held_sec` (0 without the word, left
+  out for a manager without `diskd=`); failures carry the whole log anyway.
+
+### Limits of the idle gate
+
+The gate keeps the manager's TERM out of the windows it can see. Two remain
+that only killing diskd could close, and the manager never sends SIGKILL:
+
+- A network ACP client, such as AirPort Utility reading MaSt over TCP 5009,
+  has its call forwarded to diskd by ACPd with no process on the device to
+  show for it.
+- A call forwarded after the TERM, before diskd's cleanup reaches that name
+  (about a dozen local round trips), deadlocks the same way.
+
+A stock diskd that never idles holds the handoff in `busy` with Samba already
+stopped by `quiesce`, until the host's ten-minute `diskd_restart_needed`
+says to restart. On a NetBSD 4 without the boot hook, Activate after that
+restart hands over from a fresh stock diskd again. Field process listings
+show idle stock diskd asleep in `kevent` for many seconds between wakeups.
 
 ### Tests
 
 `tests/native/unit/test_diskd.c` drives every row of the phase table,
 `conflict` in each phase, generation retirement, the launch backoff and the
-probe outcomes. `tests/native/test_manager.py` covers the boot takeover
-(stock TERM, wait, launch), adopting a loopback owner, disk work and a
+probe outcomes, the `quiesce` entry action, a table from an earlier pass,
+`held` and the title word, and the table scan and idle rule on their own. `tests/native/test_manager.py` covers the boot takeover
+(stock TERM, wait, launch), the stock TERM waiting for an idle owner and
+no acp client, adopting a loopback owner, disk work and a
 leftover mount holding launch, a foreign smbd, discovery or `wcifsfs`, and
 our own disk-logging discovery, holding the stock TERM until it is gone, a
 retired owner's `unmounted=` verdict going with it and its claims starting
@@ -564,6 +617,7 @@ cite them by number. ([DETAIL.md](../../DETAIL.md) has the user-facing side.)
 | F16 | ACPd keeps one table of `diskd.*` RPC names. A second diskd's duplicate registration is rejected, but when it exits ACPd deletes the names it tried, which are the first diskd's, in registration order (`getHomeVolumeInfo`, `getVolumeCounts`, `useVolume`, ...). `acp rpc` exits 22 on routing failure. A routed call can exit zero with a nonzero handler status in the reply. Stderr carries -6727 for a missing name. Measured on NetBSD 4 LE. |
 | F17 | Diskd processes SIGTERM through its event loop and unregisters RPCs before unmounting volumes. NetBSD 4 LE cleanup is at `0xed950`, volume removal at `0xe98c8`, and mount preparation at `0xe9a20`. A failed initial mount frees the volume record but retains the seen device name, so an unchanged device is not retried on the next scan. Local ARM emulation reproduced this failure path. Persistent filesystem damage on the affected device remains unproven. |
 | F18 | The initial scan precedes event-loop RPC dispatch in the saved NetBSD 4 LE, 4 BE and 6 firmware. Scan/dispatch call sites: LE `0xee17c`/`0xee160`, BE `0xcae74`/`0xcae58`, 6 `0x1040e8`/`0x1040cc`. The read-only getVolumeCounts handlers are LE `0xe8e94`, BE `0xc5de0`, 6 `0xfec74`. The inspected binaries' SHA-256 values are LE `16539fccbe32dae85bf4267e12fcc59d4599fbbf11f4e02c1b3ed790d7dbfde3`, BE `a446998662315592b61f8264d21438453e9234a0fa7ad567cd20fdff3abdd5c3`, 6 `7a1e5fae541f8fd112d98f261b18eb3ac3ac1c8be02e3223660d5b1b7cc2e05b`. |
+| F19 | A TERM that reaches diskd before it is back in its event loop can deadlock it with ACPd. Its cleanup sends 13 unregisters on its request socket, each a blocking `recv(MSG_WAITALL)` with no timeout (LE `0x4070b0`, `0x4074d4`): eraseDisk, cancelEraseDisk, archiveDisk, cancelArchiveDisk, MaSt, then the nine `diskd.*` RPC names, getVolumeCounts twelfth. ACPd answers an unregister only once no call to that name is in flight, waiting in an unbounded 100 ms loop (`0x261444`; properties `0x261af4`). A forwarded call stays in flight in `recv` on diskd's callback socket, which diskd reads only from its event loop. ACPd's main thread calls `diskd.getVolumeCounts` synchronously after diskd's `acpd.processDiskChanges` (`0x24bdf0`), and the same thread accepts TCP 5009 (`0x410338`). So diskd sleeps in `netio`, `acp -A MaSt` fails, and 5009 accepts but never answers, while local `acp` (one ACPd thread per Unix client) keeps working, until diskd is killed (5009 answers again within seconds) or the device is unplugged. In all three images the main loop's `kevent` is the only one diskd's own code waits in (LE `0xee0d4`, BE `0xcadcc`, NetBSD 6 `0x104060`); its other calls only change events, and the ACP client library's waiting thread is one diskd never starts. Startup scan, per volume: `sh -c /sbin/fsck -q`, a mount, `sh -c /sbin/umount`. On a NetBSD 4 LE, a hand-started stock diskd TERMed during that scan (wmesg `wait`) wedged every time, with r8 = "diskd.getVolumeCounts" in its trapframe; TERMed asleep in `kqread` it exited every time. BE (`0xca64c`, `0x239514`, `0x225250`) and NetBSD 6 (`0x1038b4`, `0x28ff0c`, `0x2790e4`) have the same cleanup order, drain and main-thread call. |
 
 ### Apple ACPd
 

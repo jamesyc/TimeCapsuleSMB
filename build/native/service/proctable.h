@@ -59,4 +59,6 @@ int tc_proctable_threads(pid_t, struct tc_proc_thread *out, size_t max);
 int tc_proctable_argv(pid_t, char *out, size_t size);
 /* A zombie, or dying. */
 int tc_proc_exited(const struct tc_proc *);
+/* PID's row in the table, unless it is gone or has exited. */
+const struct tc_proc *tc_proctable_live(const struct tc_proctable *, pid_t);
 #endif

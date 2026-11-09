@@ -96,7 +96,7 @@ class VerdictTests(unittest.TestCase):
 
     def test_only_a_stuck_reason_held_ten_minutes_asks_for_a_restart(self) -> None:
         for phase, reason in (("inspect", "conflict"), ("starting", "conflict"), ("starting", "no_answer"),
-                              ("inspect", "residual_mounts"), ("stopping", "none")):
+                              ("inspect", "residual_mounts"), ("stopping", "none"), ("quiesce", "busy")):
             handoff = DiskdHandoff(phase, 100, reason)
             with self.subTest(phase=phase, reason=reason):
                 before = handoff.verdict((100 + RESTART_AFTER_SECONDS - 1) * 1000 + 999)
@@ -110,6 +110,12 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("has not answered", message)
         for way in ("failed", "timed out", "could not be sent"):
             self.assertIn(way, message)
+
+    def test_a_stock_diskd_that_never_idles_is_named_as_the_cause(self) -> None:
+        # The manager holds the TERM until Apple's diskd idles in its event
+        # loop (README F19); one that never does needs the restart.
+        _code, message = DiskdHandoff("quiesce", 0, "busy").verdict(RESTART_AFTER_SECONDS * 1000)
+        self.assertTrue(message.startswith("Apple's own disk service never became idle"))
 
     def test_the_pending_message_names_no_single_cause(self) -> None:
         # Pending also covers no answer yet, a conflict and leftover mounts.
@@ -256,6 +262,32 @@ class VerifyAfterWaitTests(unittest.TestCase):
         self.assertEqual(reads.call_count, 1)
 
 
+class HeldTests(unittest.TestCase):
+    """The title's held=: how long the stock diskd's TERM waited for it to idle
+    (README F19), sent with every start's acpd_after_start, failed or not."""
+
+    def read(self, title: str) -> ManagerStartupAgeProbeResult:
+        from timecapsulesmb.device.probe import probe_manager_startup_age_conn
+        output = f"ps=  142 1 142 S 0 - 0:00.10 service service: {title}\nnow_ms=60000\n"
+        proc = subprocess.CompletedProcess(["ssh"], 0, stdout=output, stderr="")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            return probe_manager_startup_age_conn(CONNECTION)
+
+    def test_reads_held_beside_the_handoff_word(self) -> None:
+        self.assertEqual(self.read("role=manager started=5 diskd=ready:17:none held=4").handoff_held_s, 4)
+        # Never held: the manager leaves the word out.
+        self.assertEqual(self.read("role=manager started=5 diskd=ready:17:none").handoff_held_s, 0)
+        # A manager before the handoff word says nothing about it.
+        self.assertIsNone(self.read("role=manager started=5").handoff_held_s)
+
+    def test_every_start_records_it(self) -> None:
+        from timecapsulesmb.services.runtime_verification import acpd_after_start_measurement
+        state = ManagerStartupAgeProbeResult(1.0, "m", 5, 60000, acpd_running=True, acpd_pids=(190,),
+                                             handoff=READY, handoff_held_s=4)
+        fields = acpd_after_start_measurement(CONNECTION, "s", lambda _c: state, quit_confirmed=False)
+        self.assertEqual(fields["diskd_held_sec"], 4)
+
+
 class ActivationDecisionTests(unittest.TestCase):
     def decide(self, *, samba_ready: bool, present: bool | None):
         runtime = SimpleNamespace(ready=False, samba_ready=samba_ready, detail="d", steps=(), manager_present=present)
@@ -318,6 +350,24 @@ class DoctorHandoffTests(unittest.TestCase):
         stall = CheckResult("FAIL", "A disk has stopped responding.", {"code": ErrorCode.DISK_NOT_RESPONDING})
         results, _, _ = self.check(STARTING, STARTING, earlier=(stall,))
         self.assertEqual(results, [])
+
+    def test_a_broken_acpd_is_the_explanation(self) -> None:
+        # Unplugging, ACPd's fix, restarts diskd too; a handoff stuck on a
+        # TERMed diskd silences ACPd's network listener as well (README F19).
+        stuck = DiskdHandoff("stopping", 0, "none")
+        for problem in ("network_silent", "syut_silent", "stuck_child"):
+            broken = CheckResult("FAIL", "Apple ACPd is broken", {"code": "apple_acpd_broken", "acpd_problem": problem})
+            for now_ms in (10**6, RESTART_AFTER_SECONDS * 1000):
+                with self.subTest(problem=problem, now_ms=now_ms):
+                    results, _, debug = self.check(stuck, stuck, now_ms=now_ms, earlier=(broken,))
+                    self.assertEqual(results, [])
+                    self.assertEqual(debug["diskd_handoff"], stuck.detail)
+
+    def test_other_failures_leave_the_handoff_to_report(self) -> None:
+        # A healthy ACPd adds no result; an unrelated FAIL explains nothing.
+        other = CheckResult("FAIL", "managed smbd parent process is not running", {"code": "smbd_not_running"})
+        results, _, _ = self.check(STARTING, STARTING, earlier=(other,))
+        self.assertEqual([r.details["code"] for r in results], [ErrorCode.DISKD_HANDOFF_PENDING])
 
     def test_ready_and_older_managers_need_no_second_read(self) -> None:
         for handoff in (READY, None):

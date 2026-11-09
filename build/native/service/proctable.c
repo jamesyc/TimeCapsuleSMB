@@ -20,6 +20,14 @@ int tc_proc_exited(const struct tc_proc *p) {
     return p->stat == TC_LSZOMB || p->stat == TC_LSDEAD;
 }
 
+const struct tc_proc *tc_proctable_live(const struct tc_proctable *t, pid_t pid) {
+    size_t i;
+    for (i = 0; i < t->count; i++)
+        if (t->procs[i].pid == pid && !tc_proc_exited(&t->procs[i]))
+            return &t->procs[i];
+    return NULL;
+}
+
 #if defined(__NetBSD__) || defined(TC_NATIVE_TEST)
 /* Copies a kernel name field, which is not NUL-terminated when full. */
 static void copy_field(char *out, size_t size, const char *field, size_t field_size) {

@@ -357,13 +357,14 @@ def manager(manager_tools):
 def started(role):return lambda events:any(e['kind']=='start' and e['role']==role for e in events)
 
 
-def processes(root,name,ps_lines,live=False):
-    """Process-table rows (proctable.h) from "PID PPID PGID STATE NAME COMMAND" lines as ps prints them."""
+def processes(root,name,ps_lines,live=False,wmesg='-',slept=0):
+    """Process-table rows (proctable.h) from "PID PPID PGID STATE NAME COMMAND" lines as ps prints them,
+    each sleeping on `wmesg` for `slept` seconds."""
     rows=[]
     for line in ps_lines.splitlines():
         pid,ppid,pgid,state,name_,command=line.split(None,5)
         stat=5 if 'Z' in state else 3
-        rows.append(f"{'live ' if live else ''}{pid} {ppid} {pgid} {stat} 0x80 0 0 - {name_} {command}")
+        rows.append(f"{'live ' if live else ''}{pid} {ppid} {pgid} {stat} 0x80 {slept} 0 {wmesg} {name_} {command}")
     write_rows(root,name,rows)
 
 
@@ -375,9 +376,13 @@ def write_rows(root,name,rows):
     os.replace(root/'procs'/f'.{name}.new',root/'procs'/name)
 
 
-def external(root,ps_lines):
+def external(root,ps_lines,wmesg='-',slept=0):
     """Processes the manager did not start, listed while they are alive."""
-    processes(root,'external',ps_lines,live=True)
+    processes(root,'external',ps_lines,live=True,wmesg=wmesg,slept=slept)
+
+
+# Apple's diskd idle in its event loop long enough to take its TERM (README F19).
+IDLE_STOCK={'wmesg':'kqread','slept':5}
 
 
 def test_supervision_direct_smb_child_and_applied_discovery(manager):
@@ -2101,7 +2106,7 @@ def test_diskd_handoff_blocks_claims_and_samba_until_old_owner_exits(manager):
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,start_new_session=True)
     try:
         assert child.stdout.readline().strip()=='ready'
-        external(root,f'{child.pid} 1 {child.pid} S diskd /sbin/diskd -i bridge0 -d local.\n')
+        external(root,f'{child.pid} 1 {child.pid} S diskd /sbin/diskd -i bridge0 -d local.\n',**IDLE_STOCK)
         start()
         import select
         assert select.select([child.stdout],[],[],15)[0]
@@ -3568,7 +3573,7 @@ def test_disk_work_from_the_stock_owner_holds_term_but_an_ssh_shell_does_not(man
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,start_new_session=True)
     try:
         assert child.stdout.readline().strip()=='ready'
-        external(root,f'{child.pid} 1 {child.pid} S diskd /sbin/diskd -i bridge0 -d local.\n')
+        external(root,f'{child.pid} 1 {child.pid} S diskd /sbin/diskd -i bridge0 -d local.\n',**IDLE_STOCK)
         # The shell diskd's system() runs a check in.
         processes(root,'helper',f'7 {child.pid} 7 S sh sh -c /sbin/fsck_hfs -q /dev/dk2\n')
         process=start()
@@ -3628,7 +3633,7 @@ def test_a_foreign_disk_user_holds_the_stock_term_until_it_is_gone(manager,role,
     stock=stock_diskd_reporting(root,user.pid)
     try:
         external(root,f'{stock.pid} 1 {stock.pid} S diskd /sbin/diskd -i bridge0 -d local.\n'
-                      f'{user.pid} 1 {user.pid} S {command}\n')
+                      f'{user.pid} 1 {user.pid} S {command}\n',**IDLE_STOCK)
         start()
         wait_log(root,f'foreign {role} pid {user.pid}',timeout=30)
         # TERM reached Apple's diskd only once the other process was gone.
@@ -3656,7 +3661,7 @@ def test_our_discovery_logging_to_the_disk_is_gone_before_the_stock_term(manager
         # Our diskd is replaced by a stock one: quiesce stops smbd, so
         # discovery restarts with its log in RAM.
         (root/'procs/apple-diskd').unlink()
-        external(root,f'{stock.pid} 1 {stock.pid} S diskd /sbin/diskd -i bridge0 -d local.\n')
+        external(root,f'{stock.pid} 1 {stock.pid} S diskd /sbin/diskd -i bridge0 -d local.\n',**IDLE_STOCK)
         wait_log(root,'diskd: quiesce',timeout=30)
         assert term_found_it_gone(stock)
         assert any(e['role']=='discovery' and e['kind']=='start' and '--diskless' in e['args'] for e in events())
@@ -3719,7 +3724,7 @@ def test_a_wcifsfs_started_after_the_last_audit_holds_the_stock_term(manager):
     reaper=threading.Thread(target=apple.wait,daemon=True);reaper.start()
     stock=stock_diskd_reporting(root,apple.pid)
     def table(*extra):
-        write_rows(root,'external',[f'live {stock.pid} 1 {stock.pid} 3 0x80 0 0 - diskd /sbin/diskd -i bridge0 -d local.',
+        write_rows(root,'external',[f'live {stock.pid} 1 {stock.pid} 3 0x80 5 0 kqread diskd /sbin/diskd -i bridge0 -d local.',
                                     *extra])
     try:
         # A disk check holds the TERM, then ends in the same table read that
@@ -3735,6 +3740,37 @@ def test_a_wcifsfs_started_after_the_last_audit_holds_the_stock_term(manager):
     finally:
         for child in (stock,apple):
             if child.poll() is None:child.kill()
+        stock.wait()
+
+
+def test_stock_term_waits_until_apple_diskd_idles_in_its_event_loop(manager):
+    """README F19: the TERM waits while Apple's diskd is not idle in its event
+    loop or an acp client runs (tc_diskd_owner_idle and its unit tests cover
+    each case), then goes once it is."""
+    import select
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+    stock=stock_diskd_reporting(root,os.getpid())
+    row=f'{stock.pid} 1 {stock.pid} S diskd /sbin/diskd -i bridge0 -d local.\n'
+    try:
+        # Its startup scan waits on the shell running a tool.
+        external(root,row,wmesg='wait',slept=30)
+        process=start()
+        wait_log(root,'diskd: quiesce reason=busy',timeout=30)
+        # Idle, but an acp call may be forwarded to it.
+        external(root,row,**IDLE_STOCK)
+        processes(root,'client','99998 1 99998 S acp acp -A MaSt\n')
+        acted_on_fresh_table(root,process,events,wait)
+        assert not select.select([stock.stdout],[],[],0)[0] and handoff(root).endswith(':busy')
+        assert not smbd_starts(events())
+        (root/'procs/client').unlink()
+        assert select.select([stock.stdout],[],[],30)[0] and stock.stdout.readline().split()[0]=='term'
+        wait_log(root,'diskd: stopping')
+        stock.stdin.write('x');stock.stdin.flush();stock.wait(timeout=5)
+        wait(started('smbd'),timeout=30)
+    finally:
+        if stock.poll() is None:stock.kill()
         stock.wait()
 
 

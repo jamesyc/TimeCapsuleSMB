@@ -2796,7 +2796,11 @@ def _doctor_check_diskd_handoff(
     the startup wait, which the handoff may have finished in. A process stuck
     on the disk, which _doctor_check_stuck_processes reported first, is the
     better explanation: Apple's disk work waits on it, so nothing is added.
-    A title without a readable diskd= word (a manager before v3.8.5, or a
+    So is a broken ACPd, which _doctor_check_apple_acpd reported first: its
+    fix, unplugging the device, restarts Apple's diskd too, and a handoff
+    stuck on a TERMed diskd also silences ACPd's network listener (README
+    F19), where a second message saying to wait or restart would contradict
+    it. A title without a readable diskd= word (a manager before v3.8.5, or a
     word this release cannot read) has no handoff to report."""
     if manager is None or manager.handoff is None or manager.handoff.ready or not remote.remote_checks_enabled:
         return
@@ -2810,8 +2814,10 @@ def _doctor_check_diskd_handoff(
     if sink.debug_fields is not None:
         sink.debug_fields["diskd_handoff"] = handoff.detail if handoff is not None else "no readable diskd= word"
     verdict = handoff.verdict(fresh.now_monotonic_ms) if handoff is not None else None
-    if verdict is None or any(result.details.get("code") in (ErrorCode.DISK_NOT_RESPONDING, ErrorCode.DISK_FAILING)
-                              for result in sink.results):
+    if verdict is None or any(
+            result.details.get("code") in (ErrorCode.DISK_NOT_RESPONDING, ErrorCode.DISK_FAILING,
+                                           acpd.APPLE_ACPD_BROKEN_CODE)
+            for result in sink.results):
         return
     code, message = verdict
     sink.add(CheckResult("FAIL", message, {"code": code, "diskd_handoff": handoff.detail}))

@@ -338,9 +338,8 @@ static const char *payload_word(const struct manager *m) {
  * stuck=PID:COMM:WAIT:SECONDS[,...] from the title (stuck.h tc_manager_title; ps shows a sleep time of at most
  * 127 s, and none for a wait that keeps waking). */
 static void set_manager_title(const struct manager *m) {
-    char title[256], handoff[64];
-    snprintf(handoff, sizeof(handoff), "%s:%lld:%s", tc_diskd_phase_name(m->handoff.phase), m->handoff.since / 1000,
-             tc_diskd_reason_name(m->handoff.reason));
+    char title[256], handoff[96]; /* the word's longest form is 70 */
+    tc_diskd_word(&m->handoff, handoff, sizeof(handoff));
     tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting, payload_word(m),
                      verdict_names[m->rsync_verdict],
                      m->unmounted_shown ? m->unmounted_since : -1, &m->stuck,
@@ -968,62 +967,40 @@ static int diskd_probe_job(void *unused) {
     fprintf(stderr, "diskd readiness: no answer: %s\n", reply[0] ? reply : "no output");
     return tc_worker_finish(1);
 }
-/* Apple's disk tools; diskd runs them through `sh -c` (see observe_diskd). */
-static int disk_job_name(const char *name) {
-    return !strncmp(name, "fsck", 4) || !strncmp(name, "newfs", 5) || !strcmp(name, "mount") ||
-           !strcmp(name, "mount_hfs") || !strcmp(name, "umount") || !strcmp(name, "gpt");
-}
-static const struct tc_proc *live_row(const struct tc_proctable *t, pid_t pid) {
-    size_t i;
-    for (i = 0; i < t->count; i++)
-        if (t->procs[i].pid == pid && !tc_proc_exited(&t->procs[i]))
-            return &t->procs[i];
-    return NULL;
-}
-static int diskd_row(const struct tc_proc *p) {
-    return p && !strcmp(p->comm, "diskd");
-}
-/* The observation diskd.c needs, from this pass's kernel table and the last
- * completed audit. A child diskd forks keeps its name and argv until it
- * execs, so only a diskd whose parent is not a diskd is an owner. The audit
- * only says whether a single owner is stock or loopback. Its row counts only
- * when it has the owner's PID and kernel start time: that is the same
- * process, exec keeps the start time, and diskd never execs again, so a row
- * read before the exec (another role) never classifies it and a row read
+/* The observation diskd.c needs: what this pass's kernel table says
+ * (tc_diskd_scan), the last completed audit and the manager's own state. The
+ * audit only says whether a single owner is stock or loopback. Its row
+ * counts only when it has the owner's PID and kernel start time: that is the
+ * same process, exec keeps the start time, and diskd never execs again, so a
+ * row read before the exec (another role) never classifies it and a row read
  * since keeps the role for the process's life, also across failed audits. */
-static void observe_diskd(struct manager *m, struct tc_diskd_observation *o) {
+static void observe_diskd(struct manager *m, struct tc_diskd_observation *o, long long now) {
     const struct tc_proctable *t = &m->procs;
-    unsigned long long signature = 0;
+    struct tc_diskd_scan scan;
+    const struct tc_proc *child;
     int classified = 0;
     size_t i;
     memset(o, 0, sizeof(*o));
     o->kernel_valid = m->procs_valid;
     if (!o->kernel_valid)
         return;
-    for (i = 0; i < t->count; i++) {
-        const struct tc_proc *p = &t->procs[i];
-        int child_of_diskd;
-        if (tc_proc_exited(p))
-            continue;
-        child_of_diskd = diskd_row(live_row(t, p->parent));
-        if (disk_job_name(p->comm) || (child_of_diskd && !strcmp(p->comm, "sh")))
-            o->disk_work = 1;
-        if (!diskd_row(p) || child_of_diskd)
-            continue;
-        o->owners++;
-        o->owner = (struct tc_diskd_identity){p->pid, p->born};
-        signature += (unsigned long long)p->pid * 2654435761ULL + p->born;
-        if (p->pid == m->handoff.owner.pid && p->born == m->handoff.owner.born)
-            o->current_present = 1;
-        if (p->pid == m->diskd.child.pid && m->diskd.child.group) {
-            m->diskd_child_execd = 1;
-            m->diskd_child_identity = (struct tc_diskd_identity){p->pid, p->born};
-        }
+    tc_diskd_scan(t, m->handoff.owner, &scan);
+    o->owners = scan.owners;
+    o->owner = scan.owner;
+    o->current_present = scan.current_present;
+    o->disk_work = scan.disk_work;
+    o->acp_clients = scan.acp_clients;
+    /* Our launch child has exec'd once its row shows diskd: it is an owner
+     * from then on, and its exit is reported by PID and start time. */
+    child = m->diskd.child.group ? tc_proctable_live(t, m->diskd.child.pid) : NULL;
+    if (tc_diskd_row(child) && !tc_diskd_row(tc_proctable_live(t, child->parent))) {
+        m->diskd_child_execd = 1;
+        m->diskd_child_identity = (struct tc_diskd_identity){child->pid, child->born};
     }
     /* A new owner needs an audit read after it appeared: ask for one now
      * rather than at the next scheduled audit. */
-    if (signature != m->owners_signature) {
-        m->owners_signature = signature;
+    if (scan.signature != m->owners_signature) {
+        m->owners_signature = scan.signature;
         m->audit_at = 0;
     }
     o->launch = m->diskd.child.group && !m->diskd_child_execd;
@@ -1037,6 +1014,15 @@ static void observe_diskd(struct manager *m, struct tc_diskd_observation *o) {
     }
     o->valid = o->owners != 1 || classified;
     o->mounts = o->owners ? 0 : tc_storage_data_mounted();
+    /* Only a stock owner is ever TERMed, and only from a table this pass
+     * read (pump_sample); an older one asks the next pass for a fresh read,
+     * as pump_audit does. */
+    o->fresh = m->sample_at == now;
+    if (o->owners == 1 && classified && !o->loopback) {
+        o->owner_idle = tc_diskd_owner_idle(t, o->owner.pid);
+        if (!o->fresh)
+            m->sample_at = 0;
+    }
     /* Nothing may still hold a file on the volumes. Our discovery logs to the
      * payload disk while smbd serves; quiesce stops smbd, so discovery
      * restarts with its log in RAM, and the old one must have exited. A
@@ -1084,7 +1070,7 @@ static void pump_diskd(struct manager *m, long long now) {
         tc_diskd_probed(&m->handoff, m->probe_token, tc_child_ok(&m->diskd_probe) && !m->diskd_probe.stopping, now);
         tc_child_close(&m->diskd_probe);
     }
-    observe_diskd(m, &o);
+    observe_diskd(m, &o, now);
     actions |= tc_diskd_step(&m->handoff, &o, now);
     if (actions & TC_DISKD_RETIRE) {
         /* Apple keeps claims inside the diskd process: the next owner gets a
@@ -1097,8 +1083,10 @@ static void pump_diskd(struct manager *m, long long now) {
     } else if (before == TC_DISKD_READY && !tc_diskd_ready(&m->handoff) && m->storage_job.group)
         /* A conflict moved ready back to starting: claims wait for the next answer. */
         invalidate_storage(m, now);
-    if (m->handoff.phase == TC_DISKD_QUIESCE) {
-        /* The stock owner unmounts on TERM: nothing of ours may hold a volume. */
+    if (actions & TC_DISKD_ENTER_QUIESCE) {
+        /* The stock owner unmounts on TERM: nothing of ours may hold a volume.
+         * Once is enough: smbd, rsync, staging and storage passes start only
+         * in `ready`, and stopping a child runs to its end on its own. */
         stop_role(&m->smb, now, 1);
         stop_role(&m->rsync, now, 1);
         unit_superseded(&m->samba_unit, now);
@@ -1108,8 +1096,8 @@ static void pump_diskd(struct manager *m, long long now) {
         m->have_applied = 0;
     }
     if (actions & TC_DISKD_TERM) {
-        const struct tc_proc *p = live_row(&m->procs, m->handoff.owner.pid);
-        if (p && p->born == m->handoff.owner.born && diskd_row(p) && kill(p->pid, SIGTERM) && errno != ESRCH)
+        const struct tc_proc *p = tc_proctable_live(&m->procs, m->handoff.owner.pid);
+        if (p && p->born == m->handoff.owner.born && tc_diskd_row(p) && kill(p->pid, SIGTERM) && errno != ESRCH)
             timestamped_fprintf(stderr, "manager: diskd: cannot stop pid %ld: %s\n", (long)p->pid, strerror(errno));
     }
     if ((actions & TC_DISKD_LAUNCH) && m->diskd.child.group) {

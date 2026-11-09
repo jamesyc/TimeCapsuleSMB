@@ -3,12 +3,13 @@
 #include "service/diskd.h"
 #include "storage/settle.h"
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 
 static const struct tc_diskd_identity STOCK = {229, 100}, LOOPBACK = {680, 200}, OTHER = {700, 300};
 
 static struct tc_diskd_observation none(void) {
-    return (struct tc_diskd_observation){.kernel_valid = 1, .valid = 1, .drained = 1};
+    return (struct tc_diskd_observation){.kernel_valid = 1, .valid = 1, .drained = 1, .fresh = 1};
 }
 static struct tc_diskd_observation one(struct tc_diskd_identity owner, int loopback, const struct tc_diskd *s) {
     struct tc_diskd_observation o = none();
@@ -16,6 +17,12 @@ static struct tc_diskd_observation one(struct tc_diskd_identity owner, int loopb
     o.owner = owner;
     o.loopback = loopback;
     o.current_present = s->owner.pid == owner.pid && s->owner.born == owner.born;
+    return o;
+}
+/* A stock owner that has idled in kevent long enough to take its TERM (F19). */
+static struct tc_diskd_observation idle_stock(const struct tc_diskd *s) {
+    struct tc_diskd_observation o = one(STOCK, 0, s);
+    o.owner_idle = 1;
     return o;
 }
 static int named(const struct tc_diskd *s, const char *phase, const char *reason) {
@@ -39,13 +46,16 @@ static void boot_takeover_from_stock(void) {
     tc_diskd_init(&s, 0);
     struct tc_diskd_observation o = one(STOCK, 0, &s);
     o.drained = 0;
-    assert(!tc_diskd_step(&s, &o, 1) && named(&s, "quiesce", "none"));
+    /* Entering quiesce stops what of ours holds the volumes, once. */
+    assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_ENTER_QUIESCE && named(&s, "quiesce", "none"));
     o = one(STOCK, 0, &s);
     o.drained = 1;
     o.disk_work = 1;
     assert(!tc_diskd_step(&s, &o, 2) && named(&s, "quiesce", "maintenance") && s.since == 2);
     o.disk_work = 0;
-    assert(tc_diskd_step(&s, &o, 3) == TC_DISKD_TERM && named(&s, "stopping", "none"));
+    assert(!tc_diskd_step(&s, &o, 3) && named(&s, "quiesce", "busy") && s.since == 3);
+    o = idle_stock(&s);
+    assert(tc_diskd_step(&s, &o, 4) == TC_DISKD_TERM && named(&s, "stopping", "none"));
     /* TERM is sent once, however long the shutdown takes. */
     for (long long t = 4; t < 1000000; t += 1000)
         assert(!tc_diskd_step(&s, &o, t) && s.phase == TC_DISKD_STOPPING);
@@ -97,8 +107,8 @@ static void launch_and_failed_launch(void) {
     tc_diskd_init(&s, 0);
     o = none();
     assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_LAUNCH);
-    o = one(STOCK, 0, &s);
-    assert(tc_diskd_step(&s, &o, 2) == TC_DISKD_TERM && s.phase == TC_DISKD_STOPPING);
+    o = idle_stock(&s);
+    assert(tc_diskd_step(&s, &o, 2) == (TC_DISKD_ENTER_QUIESCE | TC_DISKD_TERM) && s.phase == TC_DISKD_STOPPING);
 }
 static void probe_replies(void) {
     struct tc_diskd s;
@@ -180,8 +190,8 @@ static void owner_exit_retires_generation(void) {
     }
     /* A stock owner exiting after its TERM is the handoff: launch at once. */
     tc_diskd_init(&s, 0);
-    o = one(STOCK, 0, &s);
-    assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_TERM);
+    o = idle_stock(&s);
+    assert(tc_diskd_step(&s, &o, 1) == (TC_DISKD_ENTER_QUIESCE | TC_DISKD_TERM));
     o = none();
     assert(tc_diskd_step(&s, &o, 2) == (TC_DISKD_RETIRE | TC_DISKD_LAUNCH) && named(&s, "launching", "none"));
     /* A reused PID is another owner. */
@@ -228,6 +238,7 @@ static void conflict_in_every_phase(void) {
          * answer again, since the other diskd's exit may have taken its names. */
         struct tc_diskd kept = s;
         o = one(s.owner, loopback, &s);
+        o.owner_idle = 1;
         unsigned actions = tc_diskd_step(&kept, &o, 7);
         enum tc_diskd_phase expected = phase == TC_DISKD_QUIESCE ? TC_DISKD_STOPPING : during;
         assert(kept.phase == expected && kept.reason == TC_DISKD_NONE && kept.generation == generation);
@@ -284,13 +295,197 @@ static void probe_failure_reasons(void) {
 static void stopping_waits_for_disk_work(void) {
     struct tc_diskd s;
     tc_diskd_init(&s, 0);
-    struct tc_diskd_observation o = one(STOCK, 0, &s);
-    assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_TERM);
+    struct tc_diskd_observation o = idle_stock(&s);
+    assert(tc_diskd_step(&s, &o, 1) == (TC_DISKD_ENTER_QUIESCE | TC_DISKD_TERM));
     o = one(STOCK, 0, &s);
     o.disk_work = 1; /* its TERM waits for the check to return */
     assert(!tc_diskd_step(&s, &o, 2) && named(&s, "stopping", "maintenance"));
     o.disk_work = 0;
     assert(!tc_diskd_step(&s, &o, 3) && named(&s, "stopping", "none") && s.since == 3);
+}
+/* F19: a TERM before Apple's diskd is back in its event loop can deadlock its
+ * unregisters with ACPd, so the TERM waits for an idle owner, however long. */
+static void stock_term_waits_for_an_idle_owner(void) {
+    struct tc_diskd s;
+    tc_diskd_init(&s, 0);
+    struct tc_diskd_observation o = one(STOCK, 0, &s);
+    assert(tc_diskd_step(&s, &o, 10) == TC_DISKD_ENTER_QUIESCE && named(&s, "quiesce", "busy") && s.since == 10);
+    o = one(STOCK, 0, &s); /* now the current owner */
+    /* Busy for good: still no TERM, and the reason keeps its start, which
+     * the host's ten-minute verdict is timed from. */
+    for (long long t = 11; t < 2000000; t += 1000)
+        assert(!tc_diskd_step(&s, &o, t) && named(&s, "quiesce", "busy") && s.since == 10);
+    /* Disk work explains the wait first: a tool diskd started is running. */
+    o.disk_work = 1;
+    assert(!tc_diskd_step(&s, &o, 2000001) && named(&s, "quiesce", "maintenance") && s.since == 2000001);
+    /* held_ms adds up each busy spell once it ends (the title's held=). */
+    assert(s.held_ms == 2000001 - 10);
+    o.disk_work = 0;
+    assert(!tc_diskd_step(&s, &o, 2000002) && named(&s, "quiesce", "busy") && s.since == 2000002);
+    /* An idle owner still waits while an acp client may have a call
+     * forwarded to it. */
+    o = idle_stock(&s);
+    o.acp_clients = 1;
+    assert(!tc_diskd_step(&s, &o, 2000003) && named(&s, "quiesce", "busy") && s.since == 2000002);
+    /* Idle in a table an earlier pass read: up to a read interval old, so it
+     * waits for this pass's own read. */
+    o = idle_stock(&s);
+    o.fresh = 0;
+    assert(!tc_diskd_step(&s, &o, 2000003) && named(&s, "quiesce", "busy") && s.since == 2000002);
+    /* An idle owner still waits while something holds the volumes. */
+    o = idle_stock(&s);
+    o.drained = 0;
+    assert(!tc_diskd_step(&s, &o, 2000003) && named(&s, "quiesce", "none"));
+    o.drained = 1;
+    assert(tc_diskd_step(&s, &o, 2000004) == TC_DISKD_TERM && named(&s, "stopping", "none"));
+    assert(s.held_ms == 2000001 - 10 + 1); /* busy from 2000002 to 2000003 */
+    /* The TERM is sent once: an owner that is busy again changes nothing. */
+    o = one(STOCK, 0, &s);
+    assert(!tc_diskd_step(&s, &o, 2000005) && named(&s, "stopping", "none"));
+    o = idle_stock(&s);
+    assert(!tc_diskd_step(&s, &o, 2000006) && named(&s, "stopping", "none"));
+    /* An owner that exits while busy is retired like any other. */
+    tc_diskd_init(&s, 0);
+    o = one(STOCK, 0, &s);
+    assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_ENTER_QUIESCE && named(&s, "quiesce", "busy"));
+    o = none();
+    assert(tc_diskd_step(&s, &o, 2) == (TC_DISKD_RETIRE | TC_DISKD_LAUNCH) && named(&s, "launching", "none"));
+    /* Only a stock owner in quiesce waits: a loopback owner is probed whether
+     * or not it is idle. */
+    tc_diskd_init(&s, 0);
+    o = one(LOOPBACK, 1, &s);
+    assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_PROBE && named(&s, "starting", "none"));
+}
+/* QUIESCE is an entry action: once per entry, again after a retire brings
+ * in a new stock owner, never for a conflict that kept the phase. */
+static void quiesce_is_entered_once(void) {
+    struct tc_diskd s;
+    struct tc_diskd_identity second = {STOCK.pid + 1, STOCK.born + 1};
+    tc_diskd_init(&s, 0);
+    struct tc_diskd_observation o = one(STOCK, 0, &s);
+    assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_ENTER_QUIESCE);
+    o = one(STOCK, 0, &s);
+    assert(!tc_diskd_step(&s, &o, 2) && s.phase == TC_DISKD_QUIESCE);
+    o.owners = 2;
+    assert(!tc_diskd_step(&s, &o, 3) && named(&s, "quiesce", "conflict"));
+    o = one(STOCK, 0, &s);
+    assert(!tc_diskd_step(&s, &o, 4) && named(&s, "quiesce", "busy"));
+    /* The owner is replaced by another stock diskd between two samples. */
+    o = one(second, 0, &s);
+    assert(tc_diskd_step(&s, &o, 5) == (TC_DISKD_RETIRE | TC_DISKD_ENTER_QUIESCE) && s.owner.pid == second.pid);
+    /* Our own launch execs as a stock role: it is quiesced like any other. */
+    tc_diskd_init(&s, 0);
+    o = none();
+    assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_LAUNCH);
+    o = one(STOCK, 0, &s);
+    assert(tc_diskd_step(&s, &o, 2) == TC_DISKD_ENTER_QUIESCE && named(&s, "quiesce", "busy"));
+    /* A loopback owner never enters it. */
+    tc_diskd_init(&s, 0);
+    o = one(LOOPBACK, 1, &s);
+    assert(!(tc_diskd_step(&s, &o, 1) & TC_DISKD_ENTER_QUIESCE));
+}
+
+/* Process-table rows for the scan and the idle rule. */
+static struct tc_proc row(pid_t pid, pid_t parent, const char *comm, const char *wmesg, unsigned slept) {
+    struct tc_proc p;
+    memset(&p, 0, sizeof(p));
+    p.pid = pid;
+    p.parent = parent;
+    p.group = pid;
+    p.stat = TC_LSSLEEP;
+    p.slept = slept;
+    p.born = (unsigned long long)pid * 10;
+    snprintf(p.comm, sizeof(p.comm), "%s", comm);
+    snprintf(p.wmesg, sizeof(p.wmesg), "%s", wmesg);
+    return p;
+}
+static struct tc_diskd_identity who(pid_t pid) {
+    return (struct tc_diskd_identity){pid, (unsigned long long)pid * 10};
+}
+static struct tc_proctable table(const struct tc_proc *rows, size_t count) {
+    struct tc_proctable t;
+    t.count = count;
+    memcpy(t.procs, rows, count * sizeof(rows[0]));
+    return t;
+}
+static void scan_classifies_the_table(void) {
+    static struct tc_proctable t;
+    struct tc_diskd_scan scan;
+    struct tc_proc zombie = row(60, 1, "diskd", "", 0);
+    zombie.stat = TC_LSZOMB;
+    const struct tc_proc rows[] = {
+        row(1, 0, "init", "wait", 9),
+        row(229, 190, "diskd", "kqread", 4),     /* Apple's: ACPd's child */
+        row(230, 229, "diskd", "-", 0),          /* forked, not exec'd: a helper */
+        row(231, 229, "sh", "wait", 0),          /* the shell its tool runs in */
+        row(40, 1, "sh", "wait", 0),             /* someone else's shell */
+        row(41, 1, "acp", "netio", 0),
+        row(42, 1, "acp", "netio", 0),
+        zombie,
+    };
+    t = table(rows, sizeof(rows) / sizeof(rows[0]));
+    tc_diskd_scan(&t, who(229), &scan);
+    assert(scan.owners == 1 && scan.owner.pid == 229 && scan.owner.born == 2290 && scan.current_present);
+    assert(scan.disk_work && scan.acp_clients == 2);
+    unsigned long long one_owner = scan.signature;
+    /* A disk tool counts wherever it runs; a reused PID is not the current owner. */
+    t.procs[3] = row(231, 1, "fsck_hfs", "biowait", 0);
+    tc_diskd_scan(&t, (struct tc_diskd_identity){229, 1}, &scan);
+    assert(scan.disk_work && !scan.current_present && scan.signature == one_owner);
+    t.procs[3] = row(231, 1, "newfs_hfs", "biowait", 0);
+    tc_diskd_scan(&t, who(229), &scan);
+    assert(scan.disk_work);
+    /* Without them, nothing; a second owner changes the signature. */
+    t.procs[2] = row(232, 1, "diskd", "kqread", 0);
+    t.procs[3] = row(231, 1, "sh", "wait", 0);
+    tc_diskd_scan(&t, (struct tc_diskd_identity){0, 0}, &scan);
+    assert(scan.owners == 2 && !scan.disk_work && !scan.current_present && scan.signature != one_owner);
+}
+
+static void owner_idle_rule(void) {
+    static struct tc_proctable t;
+    const struct tc_proc rows[] = {row(229, 190, "diskd", "kqread", 3), row(41, 1, "sh", "wait", 0)};
+    t = table(rows, 2);
+    /* Asleep in kevent with p_slptime 3 and no child; NetBSD 6 names it kqueue. */
+    assert(tc_diskd_owner_idle(&t, 229));
+    t.procs[0] = row(229, 190, "diskd", "kqueue", 7);
+    assert(tc_diskd_owner_idle(&t, 229));
+    /* p_slptime 2 can be just over a second: a scan may have just ended. */
+    t.procs[0] = row(229, 190, "diskd", "kqread", 2);
+    assert(!tc_diskd_owner_idle(&t, 229));
+    t.procs[0] = row(229, 190, "diskd", "wait", 30); /* its scan waits on a tool */
+    assert(!tc_diskd_owner_idle(&t, 229));
+    t.procs[0] = row(229, 190, "diskd", "netio", 30); /* its own request to ACPd */
+    assert(!tc_diskd_owner_idle(&t, 229));
+    t.procs[0] = row(229, 190, "diskd", "kqread", 3);
+    t.procs[1] = row(41, 229, "diskd", "-", 0); /* a forked child, before its exec */
+    assert(!tc_diskd_owner_idle(&t, 229));
+    /* A child that exited and is not reaped yet is no work. */
+    t.procs[1].stat = TC_LSZOMB;
+    assert(tc_diskd_owner_idle(&t, 229));
+    assert(!tc_diskd_owner_idle(&t, 230)); /* not in the table */
+}
+/* The title's handoff word: held= only once busy spells add up to a second. */
+static void handoff_word(void) {
+    struct tc_diskd s;
+    char word[64], tiny[8];
+    tc_diskd_init(&s, 0);
+    struct tc_diskd_observation o = one(STOCK, 0, &s);
+    assert(tc_diskd_step(&s, &o, 2000) && tc_diskd_word(&s, word, sizeof(word)) > 0);
+    assert(!strcmp(word, "quiesce:2:busy"));
+    o = idle_stock(&s);
+    o.drained = 0;
+    tc_diskd_step(&s, &o, 2999); /* busy for 999 ms */
+    tc_diskd_word(&s, word, sizeof(word));
+    assert(!strcmp(word, "quiesce:2:none"));
+    o = one(STOCK, 0, &s);
+    tc_diskd_step(&s, &o, 3000);
+    o = idle_stock(&s);
+    assert(tc_diskd_step(&s, &o, 4500) == TC_DISKD_TERM); /* 1.5 s more */
+    tc_diskd_word(&s, word, sizeof(word));
+    assert(!strcmp(word, "stopping:4:none held=2"));
+    /* Cut to fit, like snprintf: the count is then size or more. */
+    assert(tc_diskd_word(&s, tiny, sizeof(tiny)) >= (int)sizeof(tiny) && !strcmp(tiny, "stoppin"));
 }
 static void ready_survives_audit_failure_and_helpers(void) {
     struct tc_diskd s;
@@ -317,6 +512,11 @@ int main(void) {
     answers_from_before_a_conflict_do_not_count();
     probe_failure_reasons();
     stopping_waits_for_disk_work();
+    stock_term_waits_for_an_idle_owner();
+    quiesce_is_entered_once();
+    scan_classifies_the_table();
+    owner_idle_rule();
+    handoff_word();
     ready_survives_audit_failure_and_helpers();
     return 0;
 }

@@ -1,9 +1,14 @@
 #include "diskd.h"
 #include "../storage/settle.h"
+#include <stdio.h>
+#include <string.h>
 
 static void set_state(struct tc_diskd *s, enum tc_diskd_phase phase, enum tc_diskd_reason reason, long long now) {
-    if (s->phase != phase || s->reason != reason)
+    if (s->phase != phase || s->reason != reason) {
+        if (s->reason == TC_DISKD_BUSY)
+            s->held_ms += now - s->since;
         s->since = now;
+    }
     s->phase = phase;
     s->reason = reason;
 }
@@ -40,6 +45,49 @@ static unsigned retire(struct tc_diskd *s, long long now) {
 static enum tc_diskd_phase owner_phase(struct tc_diskd *s, const struct tc_diskd_observation *o) {
     s->owner = o->owner;
     return o->loopback ? TC_DISKD_STARTING : TC_DISKD_QUIESCE;
+}
+/* README "Disk owner handoff", Observation. diskd runs these tools through
+ * `sh -c`, so the shell counts as one while it is diskd's child. */
+static int disk_job_name(const char *name) {
+    return !strncmp(name, "fsck", 4) || !strncmp(name, "newfs", 5) || !strcmp(name, "mount") ||
+           !strcmp(name, "mount_hfs") || !strcmp(name, "umount") || !strcmp(name, "gpt");
+}
+int tc_diskd_row(const struct tc_proc *p) {
+    return p && !strcmp(p->comm, "diskd");
+}
+/* A child diskd forks keeps its name and argv until it execs, so only a
+ * diskd whose parent is not a diskd is an owner. */
+void tc_diskd_scan(const struct tc_proctable *t, struct tc_diskd_identity current, struct tc_diskd_scan *out) {
+    size_t i;
+    memset(out, 0, sizeof(*out));
+    for (i = 0; i < t->count; i++) {
+        const struct tc_proc *p = &t->procs[i];
+        int child_of_diskd;
+        if (tc_proc_exited(p))
+            continue;
+        child_of_diskd = tc_diskd_row(tc_proctable_live(t, p->parent));
+        if (disk_job_name(p->comm) || (child_of_diskd && !strcmp(p->comm, "sh")))
+            out->disk_work = 1;
+        if (!strcmp(p->comm, "acp"))
+            out->acp_clients++;
+        if (!tc_diskd_row(p) || child_of_diskd)
+            continue;
+        out->owners++;
+        out->owner = (struct tc_diskd_identity){p->pid, p->born};
+        out->signature += (unsigned long long)p->pid * 2654435761ULL + p->born;
+        if (current.pid && p->pid == current.pid && p->born == current.born)
+            out->current_present = 1;
+    }
+}
+int tc_diskd_owner_idle(const struct tc_proctable *t, pid_t owner) {
+    const struct tc_proc *p = tc_proctable_live(t, owner);
+    size_t i;
+    if (!p || (strcmp(p->wmesg, "kqread") && strcmp(p->wmesg, "kqueue")) || p->slept < TC_DISKD_IDLE_SECONDS)
+        return 0;
+    for (i = 0; i < t->count; i++)
+        if (t->procs[i].parent == owner && !tc_proc_exited(&t->procs[i]))
+            return 0;
+    return 1;
 }
 unsigned tc_diskd_step(struct tc_diskd *s, const struct tc_diskd_observation *o, long long now) {
     enum tc_diskd_phase phase;
@@ -89,9 +137,17 @@ unsigned tc_diskd_step(struct tc_diskd *s, const struct tc_diskd_observation *o,
             actions |= TC_DISKD_LAUNCH;
         }
     }
+    /* Entered from another phase, or again after the last owner retired. */
+    if (phase == TC_DISKD_QUIESCE && s->phase != TC_DISKD_QUIESCE)
+        actions |= TC_DISKD_ENTER_QUIESCE;
     if (phase == TC_DISKD_QUIESCE && o->drained) {
+        /* A TERM before diskd is back in its event loop, or while an acp call
+         * may be forwarded to it, can leave its unregisters and an ACPd
+         * forward waiting on each other for good (F19). */
         if (o->disk_work)
             why = TC_DISKD_MAINTENANCE;
+        else if (o->acp_clients || !o->owner_idle || !o->fresh)
+            why = TC_DISKD_BUSY;
         else {
             phase = TC_DISKD_STOPPING;
             actions |= TC_DISKD_TERM;
@@ -143,12 +199,19 @@ void tc_diskd_probed(struct tc_diskd *s, unsigned token, int answered, long long
 int tc_diskd_ready(const struct tc_diskd *s) {
     return s->phase == TC_DISKD_READY;
 }
+int tc_diskd_word(const struct tc_diskd *s, char *out, size_t size) {
+    int n = snprintf(out, size, "%s:%lld:%s", tc_diskd_phase_name(s->phase), s->since / 1000,
+                     tc_diskd_reason_name(s->reason));
+    if (s->held_ms >= 1000 && n >= 0 && (size_t)n < size)
+        n += snprintf(out + n, size - (size_t)n, " held=%lld", s->held_ms / 1000);
+    return n;
+}
 const char *tc_diskd_phase_name(enum tc_diskd_phase p) {
     static const char *const names[] = {"inspect", "quiesce", "stopping", "launching", "starting", "ready"};
     return names[p];
 }
 const char *tc_diskd_reason_name(enum tc_diskd_reason r) {
-    static const char *const names[] = {"none",      "maintenance",   "residual_mounts", "conflict",
-                                        "no_answer", "relaunch_wait", "observation"};
+    static const char *const names[] = {"none",          "maintenance", "residual_mounts", "conflict", "no_answer",
+                                        "relaunch_wait", "observation", "busy"};
     return names[r];
 }

@@ -167,6 +167,10 @@ def acpd_after_start_measurement(
         manager_started_sec=state.started_monotonic_s,
         checked_at_sec=None if state.now_monotonic_ms is None else state.now_monotonic_ms // 1000,
     )
+    if state.handoff_held_s is not None:
+        # How long the manager's TERM waited for Apple's diskd to idle
+        # (README F19): on successful starts too, which carry no log.
+        fields["diskd_held_sec"] = state.handoff_held_s
     return fields
 
 

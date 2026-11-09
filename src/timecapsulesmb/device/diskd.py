@@ -17,6 +17,9 @@ claiming only this much:
 - relaunch_wait: no diskd runs and the next launch waits out its backoff
   (the last launch exited before exec, or the manager's diskd exited).
 - observation: the manager could not tell this pass.
+- busy: Apple's diskd is not idle in its event loop, or an acp client runs,
+  so its TERM waits: one sent before then can deadlock it with ACPd
+  (build/native/README.md, F19).
 """
 from __future__ import annotations
 
@@ -30,6 +33,7 @@ RESTART_REASONS = {
     "no_answer": ("Apple's disk service has not answered the manager's requests: each one failed, timed out, "
                   "or could not be sent."),
     "residual_mounts": "A volume is still mounted from a disk service that is no longer running.",
+    "busy": "Apple's own disk service never became idle, so it could not be asked to hand over the disks.",
 }
 # Apple's own diskd that has not exited since its TERM, with no disk tool
 # running to explain it: diskd can hang on a disk that stopped answering.

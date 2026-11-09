@@ -88,7 +88,8 @@ void tc_stuck_word(char *out, size_t size, const char *text);
 /* The uninterruptible sleepers in this pass's process table. */
 int tc_stuck_read(struct tc_stuck_sample *out, const struct tc_proctable *table);
 /* The manager's process title, which doctor reads from ps:
- *   role=manager started=S[ diskd=PHASE:S:REASON][ waiting=hostname][ payload=missing|damaged][ rsync=missing|damaged][ unmounted=S][ stuck=PID:COMM:WAIT:SECONDS,...[,+N]]
+ *   role=manager started=S[ diskd=PHASE:S:REASON[ held=S]][ waiting=hostname][ payload=missing|damaged][ rsync=missing|damaged][ unmounted=S][ stuck=PID:COMM:WAIT:SECONDS,...[,+N]]
+ * The caller's diskd string carries held= too (README "Host reading").
  * started= is when the manager started, in whole seconds on the kernel's
  * monotonic clock (started_ms; omitted when negative, a failed clock read).
  * Doctor subtracts it from `service --print-monotonic-ms`, the same clock:
