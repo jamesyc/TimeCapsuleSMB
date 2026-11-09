@@ -237,6 +237,34 @@ the existing `/mnt/Memory` directory to exclude concurrent cycles, including
 manual runs, without a lock file or job directory. That directory must be
 root-owned, with sticky permissions if writable by other users.
 
+## Stopping processes
+
+The manager stops processes three ways, each for a different kind of process:
+
+| What | Where | How |
+| --- | --- | --- |
+| Its own children (smbd, rsync, discovery, telemetry, jobs) | `common/process.c` `tc_child_stop` | SIGTERM to the child, then SIGKILL to it and its process group after `TC_CHILD_GRACE_MS` when killing is allowed. Telemetry is not killed: its signed jobs drain. Its loopback diskd is never stopped: stopping the manager leaves diskd and its claims alone. |
+| Foreign copies of its roles, and Apple's wcifsfs and wcifsnd | `service/stopper.c`, from each audit | TERM at every audit, SIGKILL from `TC_STALE_KILL_MS` (10 s) after first seen, logged once; never SIGKILL for a foreign telemetry. A target is its PID and kernel start time, so a reused PID starts over with TERM. While one runs, its block bit holds back what it would collide with (smbd, rsync, discovery, telemetry). |
+| Apple's stock diskd | `service/diskd.c`, the handoff | TERM once, only while it idles in its event loop (F19); never SIGKILL. |
+
+What counts as foreign, by the audit's role (`inspect.c`, from the name and
+command line):
+
+| Role | Foreign when | SIGKILL | Blocks |
+| --- | --- | --- | --- |
+| wcifsfs | always (Apple's file server on TCP 445) | yes | smbd, discovery |
+| wcifsnd | not our discovery's child | yes | discovery |
+| smbd | not in our smbd's process group | yes | smbd |
+| rsync daemon | not in our rsync's process group | yes | rsync |
+| discovery | not our discovery | yes | discovery |
+| telemetry | not our telemetry | never | telemetry |
+
+Apple's `mDNSResponder` and `afpserver` are never stopped, and neither are
+rsync clients or the `rsync --server` processes sshd starts for a user's
+transfer. `tests/native/unit/test_stopper.c` drives the stopper on a
+simulated clock; `tests/native/test_manager.py` covers foreign processes
+end to end.
+
 ## Disk owner handoff
 
 The goal is exactly one `diskd`, started as `/usr/libexec/diskd -i lo0 -d

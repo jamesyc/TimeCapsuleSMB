@@ -9,6 +9,7 @@
 #include "bufstall.h"
 #include "diskd.h"
 #include "procfacts.h"
+#include "stopper.h"
 #include "inspect.h"
 #include "proctable.h"
 #include "stuck.h"
@@ -72,9 +73,6 @@ typedef char stage_job_fits_two_payload_reads[2 * TC_PAYLOAD_READ_BUDGET_MS + 30
 #ifndef TC_ROLE_RETRY_MS
 #define TC_ROLE_RETRY_MS 1000
 #endif
-#ifndef TC_STALE_KILL_MS
-#define TC_STALE_KILL_MS 10000
-#endif
 /* The loop wakes at least this often without an event; buffer-stall sampling
  * (bufstall.h) runs on these passes. Host tests shorten it with the stall
  * timings. */
@@ -117,12 +115,6 @@ typedef char stage_job_fits_two_payload_reads[2 * TC_PAYLOAD_READ_BUDGET_MS + 30
 #endif
 /* Stuck processes named in the manager's process title, longest first. */
 #define STUCK_TITLE_MAX 4
-enum { BLOCK_SMB = 1, BLOCK_RSYNC = 2, BLOCK_DISCOVERY = 4, BLOCK_TELEMETRY = 8 };
-struct stale_process {
-    pid_t pid;
-    long long since;
-    int killed;
-};
 
 struct unit;
 struct managed {
@@ -259,8 +251,7 @@ struct manager {
     int have_settings, have_applied, stopping, tune_ata;
     int storage_dirty, ownership_ready;
     unsigned blocked;
-    struct stale_process stale[TC_PROCESS_MAX];
-    size_t stale_count;
+    struct tc_stopper stopper;
     unsigned storage_revision, storage_generation;
     long long mast_at, settings_at, storage_at, audit_at;
     /* Samba's files were published while smbd was still starting: it gets
@@ -839,12 +830,12 @@ static int audit_serving(struct managed *role, pid_t pid, int probed, int listen
     return 0;
 }
 static void apply_audit(struct manager *m, long long now) {
-    size_t i;
-    int external = 0;
-    struct stale_process stale[TC_PROCESS_MAX];
-    size_t stale_count = 0;
-    m->blocked = 0;
+    static struct tc_stop_signal signals[TC_PROCESS_MAX];
+    const struct tc_stop_ours ours = {m->smb.child.group, m->rsync.child.group, m->discovery.child.pid,
+                                      m->telemetry.child.pid};
     const struct tc_process_table *table = &m->audit_result.table;
+    size_t i, count;
+    unsigned blocked;
 #ifdef TC_AUDIT_TEST_LOG
     /* Device validation builds only: the classified table, to compare with ps. */
     for (i = 0; i < table->count; i++)
@@ -852,61 +843,22 @@ static void apply_audit(struct manager *m, long long now) {
                             (long)table->processes[i].parent, (long)table->processes[i].group,
                             role_name(table->processes[i].role));
 #endif
-    for (i = 0; i < table->count; i++) {
-        const struct tc_process_info *p = &table->processes[i];
-        /* Discovery verifies its own child's sockets before registering names.
-         * Clear only a foreign child; discovery can keep Bonjour alive
-         * and retry native NBNS locally without surrendering a working socket. */
-        /* A stock diskd is the handoff's to stop (pump_diskd), never by KILL. */
-        int stop = p->role == TC_PROC_WCIFSFS ||
-                   (p->role == TC_PROC_WCIFSND && p->parent != m->discovery.child.pid);
-        if (p->role == TC_PROC_SMBD && p->group != m->smb.child.group)
-            stop = 1;
-        if (p->role == TC_PROC_RSYNC && p->group != m->rsync.child.group)
-            stop = 1;
-        if (p->role == TC_PROC_DISCOVERY && p->pid != m->discovery.child.pid)
-            stop = 1;
-        if (p->role == TC_PROC_TELEMETRY && p->pid != m->telemetry.child.pid)
-            stop = 1;
-        if (stop) {
-            size_t j;
-            long long since = now;
-            int killed = 0;
-            for (j = 0; j < m->stale_count; j++)
-                if (m->stale[j].pid == p->pid) {
-                    since = m->stale[j].since;
-                    killed = m->stale[j].killed;
-                }
-            int sig = now - since >= TC_STALE_KILL_MS && p->role != TC_PROC_TELEMETRY ? SIGKILL : SIGTERM;
-            /* SIGTERM is routine cleanup. A process that outlives it is
-             * rare and worth one line; later audits resend SIGKILL quietly. */
-            if (sig == SIGKILL && !killed) {
-                timestamped_fprintf(stderr, "manager: foreign %s pid %d (group %d) ignored SIGTERM for %lld ms; sending SIGKILL\n",
-                                    role_name(p->role), (int)p->pid, (int)p->group, now - since);
-                killed = 1;
-            }
-            stale[stale_count].pid = p->pid;
-            stale[stale_count].since = since;
-            stale[stale_count++].killed = killed;
-            kill(p->pid, sig);
-            external = 1;
-            if (p->role == TC_PROC_TELEMETRY)
-                m->blocked |= BLOCK_TELEMETRY;
-            else if (p->role == TC_PROC_RSYNC)
-                m->blocked |= BLOCK_RSYNC;
-            else if (p->role == TC_PROC_SMBD)
-                m->blocked |= BLOCK_SMB;
-            else if (p->role == TC_PROC_WCIFSFS)
-                m->blocked |= BLOCK_SMB | BLOCK_DISCOVERY;
-            else
-                m->blocked |= BLOCK_DISCOVERY;
-        }
+    /* Discovery verifies its own child's sockets before registering names, so
+     * only a foreign wcifsnd is a target; discovery keeps Bonjour alive and
+     * retries native NBNS locally without surrendering a working socket. */
+    count = tc_stopper_step(&m->stopper, table, &ours, now, signals, &blocked);
+    for (i = 0; i < count; i++) {
+        /* SIGTERM is routine cleanup. A process that outlives it is rare and
+         * worth one line; later audits resend SIGKILL quietly. */
+        if (signals[i].first_kill)
+            timestamped_fprintf(stderr, "manager: foreign %s pid %d (group %d) ignored SIGTERM for %lld ms; sending SIGKILL\n",
+                                role_name(signals[i].role), (int)signals[i].pid, (int)signals[i].group,
+                                signals[i].waited_ms);
+        kill(signals[i].pid, signals[i].sig);
     }
-    memcpy(m->stale, stale, stale_count * sizeof(stale[0]));
-    m->stale_count = stale_count;
-    if (external) {
+    m->blocked = blocked;
+    if (count)
         m->audit_at = now + 1000;
-    }
     m->ownership_ready = 1;
     m->audited = *table;
     if (audit_serving(&m->smb, m->audit_result.smb_pid, m->audit_result.smb_probe,
