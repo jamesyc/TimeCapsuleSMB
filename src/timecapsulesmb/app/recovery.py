@@ -7,9 +7,11 @@ from dataclasses import dataclass, replace
 from timecapsulesmb.checks.network import CLI_TERMINAL_APP_BLOCKED
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.disk_errors import DISK_CHECK_STALL_WAIT
+from timecapsulesmb.device.storage import DISK_WRITE_TEST_UNRESPONSIVE_MESSAGE
 from timecapsulesmb.device.wipe import SEAGATE_FAILED_GUIDE_URL, SEAGATE_FAILED_REPORTS_URL
 from timecapsulesmb.transport.errors import LOCAL_NETWORK_FILTERED_MESSAGE, SSH_TIMEOUT_SLOW_DEVICE_MESSAGE
 from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
+from timecapsulesmb.services.runtime import WIFI_LINK_SLOW_MESSAGE
 
 
 @dataclass(frozen=True)
@@ -64,11 +66,12 @@ _DISK_FAILING_STEPS = (
     "full backup on it.",
 )
 # A process stuck on the disk: a restart clears a passing stall; one that
-# comes back is a failing disk, whose way out follows.
+# comes back may be a failing disk, whose way out follows. A wait is not
+# proof of one (a diskd and ACPd race, F19, looked the same), so only "may".
 _DISK_NOT_RESPONDING_STEPS = (
     "Unplug the device, wait 10 seconds and plug it back in.",
     "Wait 2 minutes for the device to start up, then try again.",
-    "If the disk stops responding again, it is probably failing: copy off the files you need. Connect a USB "
+    "If the disk stops responding again, it may be failing: copy off the files you need. Connect a USB "
     "disk to a Mac; if file sharing is off, take an internal disk out and connect it to a Mac with a "
     "SATA-to-USB adapter.",
     *_DISK_FAILING_STEPS[1:],
@@ -88,6 +91,27 @@ _MISMATCH_STEPS = (
     "Update or reinstall TimeCapsuleSMB.",
     "If “Helper path” is set in “Settings”, clear it.",
 )
+
+# After a restart on NetBSD 4, whose boot hook may be missing.
+_NETBSD4_ACTIVATE_STEP = "On NetBSD 4 devices, run “Activate” if the checkup says Samba is not running."
+# services.reboot.reboot_device: two ACP reads just before the request did
+# not answer, so nothing was requested. SSH answered moments before, so a
+# slow link and a busy or deaf ACPd are both possible.
+_REBOOT_NOT_REQUESTED = RecoveryInfo(
+    "The restart was not requested",
+    "The device did not answer AirPort ACP just before the restart, so TimeCapsuleSMB did not ask it to restart. "
+    "The connection may be slow, or Apple's AirPort service may be busy or no longer answer the network (a bug in "
+    "Apple's firmware). The work before the restart is finished; file sharing may stay off until the device "
+    "restarts.",
+    (
+        "Try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in.",
+        "Then run “Checkup”.",
+    ),
+    retryable=True,
+    suggested_operation="doctor",
+    action_ids=("run_checkup",),
+)
+
 
 _DEFAULTS: dict[str, RecoveryInfo] = {
     ErrorCode.INVALID_REQUEST: RecoveryInfo(
@@ -297,6 +321,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         retryable=True,
     ),
+    ErrorCode.REBOOT_NOT_REQUESTED: _REBOOT_NOT_REQUESTED,
     # services.reboot.reboot_device: every reboot that does not finish.
     ErrorCode.REBOOT_NOT_STARTED: RecoveryInfo(
         "Reboot did not start",
@@ -346,6 +371,25 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ("Wait a few minutes for the device to start up, then try again.",),
         retryable=True,
     ),
+    # A read or an upload timed out on a device whose link to its network is
+    # Wi-Fi (services.runtime.wifi_link_error): such a link can crawl at a few
+    # KB/s for hours. A restart comes first, as for any device that did not
+    # answer: devices up for years answer slowly until one, and the device
+    # joins the network afresh. Then a cable that leaves the Wi-Fi link out,
+    # and last the lasting fix, which takes AirPort Utility. The timeout does
+    # not prove the link was the cause, so only "can".
+    ErrorCode.WIFI_LINK_SLOW: RecoveryInfo(
+        "The device did not answer in time over Wi-Fi",
+        WIFI_LINK_SLOW_MESSAGE,
+        (
+            "Restart the device, then try again: it joins the Wi-Fi network afresh, which can make the link faster.",
+            "If it times out again, connect this Mac with a cable to one of the device's LAN ports, then try again.",
+            "Or try again later: the link is often fast again within a few hours.",
+            "For a lasting fix, connect the device to your router with an Ethernet cable, then in AirPort Utility "
+            "change its wireless mode so it no longer joins another network.",
+        ),
+        retryable=True,
+    ),
     # Apple's firmware, not ours: a stuck ACPd refused before anything changed,
     # tore itself down without restarting the device, stopped answering
     # syUT (services.runtime.require_acpd_ready, services.reboot), or left its
@@ -360,6 +404,24 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         (
             "Unplug the device, wait 10 seconds and plug it back in.",
             "Wait 2 minutes for the device to start up, then try again.",
+        ),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
+    # Neither this Mac's ACP read nor one through SSH answered
+    # (device.acpd's network_silent). The SSH read is tunnelled over the same
+    # link, so a slow link comes first, then a full kernel file table (which
+    # leaves connections queued, as a silent ACPd does), then ACPd's listener.
+    ErrorCode.ACPD_NETWORK_SILENT: RecoveryInfo(
+        "No answer from Apple ACPd over the network",
+        "The device did not answer an AirPort ACP read, either from this Mac or through SSH. Either the connection to "
+        "the device is too slow, the device has too many files open (several Macs connected at once can cause this), "
+        "or Apple's AirPort service (ACPd) no longer answers the network (a bug in Apple's firmware). File sharing may "
+        "still work. Nothing was changed.",
+        (
+            "If the connection to the device may be slow, such as a weak Wi-Fi link, try again over Ethernet.",
+            "Otherwise, try unplugging the device for 10 seconds, plugging it back in and waiting 2 minutes.",
         ),
         retryable=True,
         suggested_operation="doctor",
@@ -381,7 +443,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         (
             "Unplug the device, wait 10 seconds and plug it back in.",
             "Wait 2 minutes for the device to start up, then run “Checkup”.",
-            "On NetBSD 4 devices, run “Activate” if the checkup says Samba is not running.",
+            _NETBSD4_ACTIVATE_STEP,
         ),
         retryable=False,
         suggested_operation="doctor",
@@ -397,6 +459,21 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
             "Turn off any VPN or firewall that filters local network traffic, then try again.",
         ),
         retryable=True,
+    ),
+    # Every service check that did not pass timed out
+    # (services.runtime_verification.runtime_failure_error): the services'
+    # state is unknown, beside a slow link or a device still starting.
+    ErrorCode.RUNTIME_NOT_ANSWERED: RecoveryInfo(
+        "Services not checked",
+        "The device did not answer TimeCapsuleSMB's service checks in time, so it is not known whether file sharing "
+        "started. The device may still be starting up or busy, or the connection may be slow.",
+        (
+            "Wait a few minutes, then run “Checkup”.",
+            "If Checkup cannot reach the device either, try restarting it.",
+        ),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
     ),
     # fsck: the reboot finished, but the installed runtime did not start again
     # (services.activation.start_netbsd4_runtime_after_reboot).
@@ -695,11 +772,61 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     # Past the wipe: the device did not format the disk, or the new volume was
     # gone after the restart. The disk's old files are gone either way.
+    # The zeroing never reported its end: the disk may be failing, but a
+    # timeout is not proof, so the wipe is run again before the disk is
+    # replaced. Its partition table may already be cleared.
+    ErrorCode.WIPE_DISK_NO_RESPONSE: RecoveryInfo(
+        "The wipe did not finish",
+        "The disk did not finish being wiped in time, so it may be failing. Its partition table may already be "
+        "cleared, so its volumes may not show up anywhere. File sharing stays off until the device restarts.",
+        (
+            "Restart the device.",
+            "Then run “Wipe Internal Disk” again.",
+            "If the wipe stops again, the disk may be failing: replace it.",
+        ),
+        retryable=True,
+    ),
+    # The connection dropped mid-wipe: nothing is known of the disk, but its
+    # partition table may already be cleared.
+    ErrorCode.WIPE_DISK_CONNECTION_LOST: RecoveryInfo(
+        "Connection lost during the wipe",
+        "The connection to the device was lost while the disk was being wiped. Its partition table may already be "
+        "cleared, so its volumes may not show up anywhere. File sharing may stay off until the device restarts.",
+        ("Restart the device.", "Then run “Wipe Internal Disk” again."),
+        retryable=True,
+    ),
+    # After the restart MaSt never answered: the new volume is unconfirmed,
+    # not gone (services.wipe_disk._check_persisted).
+    ErrorCode.WIPE_DISK_UNCONFIRMED: RecoveryInfo(
+        "The new volume was not confirmed",
+        "The device restarted after the wipe but did not list its disks in time, so it is not known whether the new "
+        "volume is there. The device may still be starting up, its AirPort service may be slow to answer, or the "
+        "connection may have stalled.",
+        (
+            "Wait a few minutes, then run “Checkup” to see whether the disk shows up.",
+            "If it is missing, run “Wipe Internal Disk” again.",
+        ),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
+    # The kernel's disk list did not come back, so other disks could not be
+    # checked; nothing was changed (services.wipe_disk.disks_with_apple_labels).
+    ErrorCode.WIPE_DISK_CHECK_UNANSWERED: RecoveryInfo(
+        "Could not check for other disks",
+        "The device did not list its disks in time, so TimeCapsuleSMB could not check whether another disk is "
+        "connected. Nothing on the disk was changed. The device or the connection may be slow.",
+        (
+            "Try again in a few minutes.",
+            "If it keeps happening, try restarting the device, then run “Wipe Internal Disk” again.",
+        ),
+        retryable=True,
+    ),
     ErrorCode.WIPE_DISK_ERASE_FAILED: RecoveryInfo(
         "The disk was not formatted",
         "The device did not finish formatting the disk after wiping it, or the new volume was gone after the "
         "restart. The files that were on the disk are gone.",
-        ("Run “Wipe Internal Disk” again.", "If it fails again, the disk is probably failing; replace it."),
+        ("Run “Wipe Internal Disk” again.", "If it fails again, the disk may be failing."),
         retryable=True,
     ),
     ErrorCode.SSH_STILL_ENABLED: RecoveryInfo(
@@ -743,10 +870,12 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         retryable=True,
     ),
+    # An SSH command timed out (device.storage.volume_root_is_writable_conn):
+    # a slow link or a slow disk, so the cheaper step comes first.
     ErrorCode.DISK_WRITE_TEST_UNRESPONSIVE: RecoveryInfo(
-        "The disk did not respond",
-        "The disk did not answer a test write. It may be failing or unable to spin up.",
-        ("Run “Disk Repair”.", "If this keeps happening, the disk may need replacing."),
+        "The test write did not finish",
+        DISK_WRITE_TEST_UNRESPONSIVE_MESSAGE,
+        ("If this Mac or the device is on Wi-Fi, connect it by Ethernet, then try again.", "If it times out again, run “Disk Repair”."),
         retryable=True,
         action_ids=("disk_repair",),
     ),
@@ -757,9 +886,24 @@ _STUCK_DEVICE_STEPS = (
     "Unplug the device, wait 10 seconds and plug it back in.",
     "Wait 2 minutes for the device to start up, then run “Install / Update Samba” again.",
 )
-_MIGRATION_DISK_MESSAGE = (
+_MIGRATION_INTRO = (
     "During the install, Samba metadata from the earlier version moves into the files' extended attributes. "
-    "What was already moved is kept. A slow or failing disk often causes this."
+    "What was already moved is kept."
+)
+# The migrator stopped itself after no progress: it was waiting on something
+# on the device, maybe the disk.
+_MIGRATION_DISK_MESSAGE = f"{_MIGRATION_INTRO} The migration may be waiting on the disk."
+# A command around the migrator, such as saving its progress, ran out its SSH
+# deadline (the migrator itself has none): a slow link or a slow disk.
+_MIGRATION_TIMEOUT_MESSAGE = (
+    f"{_MIGRATION_INTRO} A command sent to the device during the migration did not finish in time. A slow "
+    "connection to the device can cause this, and so can a slow disk."
+)
+# Steps for an SSH deadline that ran out: the cheaper step first. The Ethernet
+# step names Wi-Fi so it reads right for a device known to be cabled too.
+_SLOW_LINK_OR_DISK_STEPS = (
+    "If this Mac or the device is on Wi-Fi, connect it by Ethernet, then run “Install / Update Samba” again.",
+    "If it times out again, run “Disk Repair”.",
 )
 _MIGRATION_DISK_STEPS = ("Run “Disk Repair”.", "Then run “Install / Update Samba” again.")
 _MIGRATION_RERUN_MESSAGE = (
@@ -773,28 +917,31 @@ _UNREADABLE_FOLDER_MESSAGE = (
 _UNREADABLE_FOLDER_REPAIR = "Run “Disk Repair” on the disk, then run “Install / Update Samba” again."
 
 _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
+    # An install whose restart was never requested: NetBSD 4 without the boot
+    # hook also needs Activate once the device is back.
+    ("deploy", ErrorCode.REBOOT_NOT_REQUESTED): replace(
+        _REBOOT_NOT_REQUESTED, actions=(*_REBOOT_NOT_REQUESTED.actions, _NETBSD4_ACTIVATE_STEP),
+    ),
     ("deploy", ErrorCode.PAYLOAD_UPLOAD_TIMEOUT): RecoveryInfo(
         "Copying the installation files timed out",
-        "The disk may be failing or slow to spin up, or the connection to the device may be too slow, "
-        "such as a weak Wi-Fi link.",
-        (
-            "Run “Disk Repair”.",
-            "Connect this Mac or the device by Ethernet, then run “Install / Update Samba” again.",
-            "If this keeps happening, the disk may need replacing.",
-        ),
+        "The files did not reach the device in time. A slow connection between this Mac and the device can cause "
+        "this, and so can a disk that is slow to respond.",
+        _SLOW_LINK_OR_DISK_STEPS,
         retryable=True,
         action_ids=("disk_repair",),
     ),
+    # The stop script waited for a process asleep in the kernel: maybe on the
+    # disk, maybe not (F19 looked the same).
     ("deploy", ErrorCode.MANAGER_STOP_TIMEOUT): RecoveryInfo(
         "A service on the device is stuck",
-        "It did not stop for the install. A failing disk often causes this.",
+        "It did not stop for the install. It may be waiting on the disk.",
         _STUCK_DEVICE_STEPS,
         retryable=True,
     ),
     ("deploy", ErrorCode.PREVIOUS_MIGRATION_STALLED): RecoveryInfo(
         "An earlier metadata migration is stuck",
         "A Samba metadata migration left running by an earlier install stopped making progress. "
-        "A failing disk often causes this.",
+        "It may be waiting on the disk.",
         _STUCK_DEVICE_STEPS,
         retryable=True,
     ),
@@ -814,9 +961,9 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
     ),
     ("deploy", ErrorCode.XATTR_MIGRATION_TIMEOUT): RecoveryInfo(
-        "The metadata migration took too long",
-        _MIGRATION_DISK_MESSAGE,
-        _MIGRATION_DISK_STEPS,
+        "A step of the metadata migration timed out",
+        _MIGRATION_TIMEOUT_MESSAGE,
+        _SLOW_LINK_OR_DISK_STEPS,
         retryable=True,
         action_ids=("disk_repair",),
     ),
@@ -865,7 +1012,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         (
             "Connect this Mac to the device's network again, by Wi-Fi or one of its LAN ports.",
             "Then run “Checkup”.",
-            "On NetBSD 4 devices, run “Activate” if the checkup says Samba is not running.",
+            _NETBSD4_ACTIVATE_STEP,
         ),
         retryable=True,
         suggested_operation="doctor",
@@ -1044,7 +1191,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         "The disk has an HFS volume, but the device has not mounted it, and did not when asked.",
         (
             "Wait a minute, then run “Install / Update Samba” again.",
-            "Restart the device if the disk still does not mount.",
+            "If the disk still does not mount, try restarting the device.",
         ),
         retryable=True,
         suggested_operation="deploy",
@@ -1258,7 +1405,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
             "If the device is still formatting the disk, wait until it finishes.",
             "Unplug the device, wait 10 seconds and plug it back in.",
             "Wait 2 minutes for the device to start up, then run “Wipe Internal Disk” again.",
-            "If the disk stops responding again, it is probably failing: replace the disk.",
+            "If the disk stops responding again, it may be failing: replace the disk.",
         ),
         retryable=True,
     ),
@@ -1365,7 +1512,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         (
             "Unplug the device, wait 10 seconds and plug it back in.",
             "Wait 2 minutes for the device to start up, then run “Checkup”.",
-            "On NetBSD 4 devices, run “Activate” if the checkup says Samba is not running.",
+            _NETBSD4_ACTIVATE_STEP,
         ),
         retryable=False,
         suggested_operation="doctor",
@@ -1430,14 +1577,14 @@ _STAGE_RECOVERY.update(dict.fromkeys(
     (("deploy", ErrorCode.ACPD_QUIT, stage) for stage in ("verify_runtime_reboot", "verify_runtime_activation")),
     _DEPLOY_ACPD_QUIT_AFTER_UPDATE,
 ))
-# The disk failed while Wipe Internal Disk zeroed its ends (wipe_disk) or
-# read them back (check_wipe): unlike a failing disk found anywhere else, its
-# partition table may be gone, so a Mac may not show its volumes, and file
-# sharing is off until a restart (nothing reboots a disk that stopped
-# answering). One card for both.
+# The disk failed a write while Wipe Internal Disk zeroed its ends
+# (wipe_disk), or did not keep the zeros (check_wipe): unlike a failing disk
+# found anywhere else, its partition table may be gone, so a Mac may not show
+# its volumes, and file sharing is off until a restart. One card for both. A
+# zeroing that only never finished is wipe_disk_no_response.
 _WIPE_DISK_FAILED_DURING_WIPE = RecoveryInfo(
     "The disk failed while it was being wiped",
-    "The disk did not respond, or did not keep the zeros written to it, so it is probably failing. Its partition "
+    "The disk failed a write or a read, or did not keep the zeros written to it, so it is probably failing. Its partition "
     "table may already be cleared, so its volumes may not show up anywhere. File sharing stays off until the device "
     "restarts.",
     (
@@ -1452,15 +1599,33 @@ _STAGE_RECOVERY.update(dict.fromkeys(
     (("wipe-disk", ErrorCode.DISK_FAILING, stage) for stage in ("wipe_disk", "check_wipe")),
     _WIPE_DISK_FAILED_DURING_WIPE,
 ))
+# Reading the zeros back did not finish: nothing was read, so the disk is
+# only possibly at fault, beside a stalled link.
+_STAGE_RECOVERY[("wipe-disk", ErrorCode.WIPE_DISK_NO_RESPONSE, "check_wipe")] = RecoveryInfo(
+    "Checking the wipe did not finish",
+    "The disk was zeroed, but reading it back did not finish in time. The connection to the device may have "
+    "stalled, or the disk may be slow or failing. Its partition table is cleared, so its volumes do not show up "
+    "anywhere, and file sharing stays off until the device restarts.",
+    (
+        "Try restarting the device, then run “Wipe Internal Disk” again.",
+        "If it stops here again, the disk may be failing.",
+    ),
+    retryable=True,
+    localization_key="wipe-disk.wipe_disk_no_response.check_wipe",
+)
 
 
+# Any SSH timeout without a cause of its own. The reboot comes first: devices
+# up for years answer slowly until one. The timeout alone does not say the
+# device was slow, so the connection is the last step.
 _SSH_TIMEOUT_SLOW_DEVICE_RECOVERY = RecoveryInfo(
-    "Device is responding very slowly",
+    "Device did not answer in time",
     SSH_TIMEOUT_SLOW_DEVICE_MESSAGE,
     (
         "Reboot the device.",
         "Wait for SSH to come back.",
         "Retry the operation.",
+        "If it still does not answer, check the network connection to the device, such as Wi-Fi or a VPN.",
     ),
     retryable=True,
     suggested_operation="doctor",

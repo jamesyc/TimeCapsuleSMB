@@ -88,7 +88,7 @@ class RebootDeviceTests(unittest.TestCase):
                 self.assertEqual(device.ssh_master_closes, [("10.0.0.2", False)])
 
     def test_unreadable_baseline_keeps_the_shared_ssh_connection(self) -> None:
-        device = FakeAcpDevice(first_read_error=ACPConnectionError("refused"))
+        device = unanswered_baseline_device()
         error, _recorder = run(device)
         self.assertIsNotNone(error)
         self.assertEqual(device.ssh_master_closes, [])
@@ -244,18 +244,32 @@ class RebootDeviceTests(unittest.TestCase):
         self.assertEqual(recorder.measurement("reboot_cycle")["result"], "ssh_still_open")
         self.assertNotIn("device_came_back_after_reboot", recorder.fields)
 
-    def test_unreadable_baseline_uptime_never_sends_the_request(self) -> None:
-        for error_value, code in (
-            (ACPConnectionError("Could not connect to ACP on 10.0.0.2:5009: refused"), "device_unreachable"),
-            (ACPAuthError("ACP command failed (likely wrong AirPort admin password)"), "auth_failed"),
-        ):
-            with self.subTest(code=code):
-                device = FakeAcpDevice(first_read_error=error_value)
-                error, recorder = run(device)
-                self.assertEqual(error.code, code)
-                self.assertIn("before rebooting", str(error))
-                self.assertNotIn("request", device.calls)
-                self.assertEqual(recorder.stages, [])
+    def test_an_unanswered_baseline_uptime_is_read_twice_then_requests_nothing(self) -> None:
+        # Both reads unanswered: no restart is requested, and the error says
+        # so rather than that the device cannot be reached (SSH just was).
+        device = unanswered_baseline_device()
+        error, recorder = run(device)
+        self.assertEqual(error.code, "reboot_not_requested")
+        self.assertIn("so the restart was not requested", str(error))
+        self.assertNotIn("request", device.calls)
+        self.assertEqual(device.calls.count("sleep 5"), 1)
+        self.assertEqual(recorder.stages, [])
+
+    def test_a_rejected_password_stops_at_the_first_read(self) -> None:
+        device = FakeAcpDevice(first_read_error=ACPAuthError("ACP command failed (likely wrong AirPort admin password)"))
+        error, recorder = run(device)
+        self.assertEqual(error.code, "auth_failed")
+        self.assertIn("before rebooting", str(error))
+        self.assertNotIn("request", device.calls)
+        self.assertNotIn("sleep 5", device.calls)
+        self.assertEqual(recorder.stages, [])
+
+    def test_one_missed_baseline_read_is_read_again_and_the_restart_goes_on(self) -> None:
+        # A busy ACPd or a lossy link can miss one read.
+        device = FakeAcpDevice(first_read_error=ACPConnectionError("Could not connect to ACP on 10.0.0.2:5009: timed out"))
+        error, _recorder = run(device)
+        self.assertIsNone(error)
+        self.assertIn("request", device.calls)
 
     def test_request_error_after_the_device_acted_is_observed(self) -> None:
         device = FakeAcpDevice(request_error=ACPConnectionError("ACP connection closed while reading 128 bytes"))
@@ -380,8 +394,8 @@ class RandomTimelineTests(unittest.TestCase):
             expect_ssh = rng.random() < 0.8
             with self.subTest(case=case):
                 error, _recorder = run(device, expect_ssh=expect_ssh)
-                if error is not None and error.code == "device_unreachable":
-                    # A flaky first read stops everything before the request.
+                if error is not None and error.code == "reboot_not_requested":
+                    # Two flaky baseline reads stop everything before the request.
                     self.assertNotIn("request", device.calls)
                     continue
                 if not reboots:
@@ -397,6 +411,13 @@ class RandomTimelineTests(unittest.TestCase):
                     # it came back inside the start limit with time to spare.
                     if device.kernel_after + device.acp_up_after_boot + 15 < 90:
                         self.assertNotEqual(error.code, "reboot_not_started")
+
+
+def unanswered_baseline_device() -> FakeAcpDevice:
+    """A device up all along whose ACP reads go unanswered for the first minute."""
+    device = FakeAcpDevice()
+    device.flaky_reads_at = ((device.now, device.now + 60),)
+    return device
 
 
 def run_returning(device: FakeAcpDevice, **kwargs):
@@ -630,10 +651,10 @@ class AcpdHangTests(unittest.TestCase):
         self.assertEqual(seen, [(1, None)])
 
     def test_a_failed_uptime_read_marks_nothing(self) -> None:
-        device = FakeAcpDevice(first_read_error=ACPConnectionError("timed out"))
+        device = unanswered_baseline_device()
         error, _recorder = run(device, ssh=self.SSH)
 
-        self.assertEqual(error.code, "device_unreachable")
+        self.assertEqual(error.code, "reboot_not_requested")
         self.assertEqual(device.ssh_reads, [])
         self.assertIsNone(device.marked_at)
 

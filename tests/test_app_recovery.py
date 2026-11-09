@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from timecapsulesmb.app import recovery
-from timecapsulesmb.app.recovery import cli_steps, recovery_for
+from timecapsulesmb.app.recovery import cli_steps, recovery_for, ssh_timeout_slow_device_recovery
 from timecapsulesmb.core.error_codes import ErrorCode
 
 
@@ -345,13 +345,52 @@ class CliStepsTests(unittest.TestCase):
         )
         return [entry for entry in entries if not entry[-1].local_network_block]
 
+    def test_timeouts_and_disk_waits_never_claim_a_probable_cause(self) -> None:
+        # A timeout or a process waiting on the disk is not proof: a slow link
+        # or a firmware race (F19) looks the same. Their guidance offers
+        # causes with "may" or "can", and never says to replace the disk on
+        # the first try.
+        cards = {
+            "payload upload": recovery_for("deploy", ErrorCode.PAYLOAD_UPLOAD_TIMEOUT),
+            "write test": recovery_for("deploy", ErrorCode.DISK_WRITE_TEST_UNRESPONSIVE),
+            "migration timeout": recovery_for("deploy", ErrorCode.XATTR_MIGRATION_TIMEOUT),
+            "migration stalled": recovery_for("deploy", ErrorCode.XATTR_MIGRATION_STALLED),
+            "stuck service": recovery_for("deploy", ErrorCode.MANAGER_STOP_TIMEOUT),
+            "earlier migration": recovery_for("deploy", ErrorCode.PREVIOUS_MIGRATION_STALLED),
+            "wifi link": recovery_for("deploy", ErrorCode.WIFI_LINK_SLOW),
+            "unfinished wipe": recovery_for("wipe-disk", ErrorCode.WIPE_DISK_NO_RESPONSE),
+            "disk wait": recovery_for("deploy", ErrorCode.DISK_NOT_RESPONDING),
+            "disk check wait": recovery_for("deploy", ErrorCode.DISK_CHECK_NOT_RESPONDING),
+            "wipe disk wait": recovery_for("wipe-disk", ErrorCode.DISK_NOT_RESPONDING, stage="erase_disk"),
+            "no answer": ssh_timeout_slow_device_recovery(),
+        }
+        for name, card in cards.items():
+            with self.subTest(name):
+                text = " ".join([card["title"], card["message"], *card["actions"]])
+                self.assertNotIn("probably", text)
+                self.assertNotIn("often causes", text)
+                self.assertNotIn("too slowly", text)
+                self.assertFalse(any("replac" in step for step in card["actions"][:2]), card["actions"])
+        # Evidence keeps its word: a write the device saw fail.
+        self.assertIn("probably failing", recovery_for("wipe-disk", ErrorCode.DISK_FAILING, stage="wipe_disk")["message"])
+
+    def test_a_command_that_did_not_answer_still_starts_with_a_reboot(self) -> None:
+        # Devices up for years answer slowly until a restart; the connection
+        # is the last thing to check.
+        card = ssh_timeout_slow_device_recovery(device_name="Time Capsule 4th generation")
+        self.assertEqual(card["actions"][0], "Reboot the device.")
+        self.assertIn("did not answer in time", card["message"])
+        self.assertNotIn("very slowly", card["message"])
+        self.assertIn("check the network connection to the device", card["actions"][-1])
+
     def test_app_controls_become_commands(self) -> None:
         self.assertEqual(
             cli_steps("deploy", ErrorCode.PAYLOAD_UPLOAD_TIMEOUT),
             (
-                "Run `tcapsule fsck`.",
-                "Connect this computer or the device by Ethernet, then run `tcapsule deploy` again.",
-                "If this keeps happening, the disk may need replacing.",
+                # The connection first, Disk Repair only if it times out again:
+                # a timeout alone never says to replace the disk.
+                "If this computer or the device is on Wi-Fi, connect it by Ethernet, then run `tcapsule deploy` again.",
+                "If it times out again, run `tcapsule fsck`.",
             ),
         )
         self.assertEqual(

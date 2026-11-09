@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
 from timecapsulesmb.device import acpd
@@ -35,6 +36,10 @@ from timecapsulesmb.transport.ssh import SshConnection
 # manager's restart of an smbd without listeners (manager.c TC_ROLE_READY_MS).
 RUNTIME_ACTIVATION_WAIT_SECONDS = 200
 MANAGER_NOT_RUNNING_MESSAGE = "The runtime manager is not running."
+# Every check that did not pass timed out: nothing says how the services are.
+RUNTIME_NOT_ANSWERED_MESSAGE = (
+    "The device did not answer the service checks in time, so it is not known whether file sharing started."
+)
 RUNTIME_REBOOT_WAIT_SECONDS = 240
 
 
@@ -223,6 +228,17 @@ def runtime_failure_error(
         # No verdict says why: Checkup's rsync check does.
         return RsyncNotRunningError(
             "File sharing and Time Machine are running, but rsync is not.",
+            detail=verification.detail.strip() or None,
+        )
+    failures = [step for step in verification.steps
+                if step.status in ("fail", "timeout") and step.id != "runtime_timeout"]
+    if failures and not verification.smbd.ready and all(step.status == "timeout" for step in failures):
+        # No check that failed answered, and smbd's checks did not pass: a
+        # slow link or a device still starting looks the same as services
+        # that did not start. Once smbd passed, file sharing started, and
+        # the failure message with the timed-out check says what is missing.
+        return DeviceError(
+            RUNTIME_NOT_ANSWERED_MESSAGE, code=ErrorCode.RUNTIME_NOT_ANSWERED,
             detail=verification.detail.strip() or None,
         )
     return DeviceError(failure_message.rstrip(), detail=verification.detail.strip() or None)

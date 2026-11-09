@@ -87,6 +87,9 @@ def doctor_finished_fields(
         # wedges formatted, which gpt rejected), on passing runs too, so "no
         # evidence" can be told from "nothing in memory".
         "erase_log": debug_fields.get("erase_log"),
+        # Whether the device reaches its network over Wi-Fi (processes.wifi_client),
+        # as the preflight of other commands records it.
+        "wifi_client": debug_fields.get("wifi_client"),
         "doctor_status": report["status"],
         "doctor_sections": report["sections"],
     }

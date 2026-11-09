@@ -15,7 +15,8 @@ from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.integrations.acp import ACP_PORT, ACPConnectionError
-from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, ACPNoRouteUnprovenError, ACPStuckError
+from timecapsulesmb.services.acp_ssh import ACPNoRouteUnprovenError, ACPStuckError
+from timecapsulesmb.services.reboot import SSH_ENABLE_NO_RETURN_MESSAGE, SSH_ENABLE_TIMEOUT_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.set_ssh import (
     SSH_PORT,
@@ -77,7 +78,7 @@ class SetSshServiceTests(unittest.TestCase):
                 mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
                 mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
                 mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug, \
-                mock.patch("timecapsulesmb.services.set_ssh.reboot_device") as reboot:
+                mock.patch("timecapsulesmb.services.reboot.reboot_device") as reboot:
             with self.assertRaises(ACPStuckError) as raised:
                 enable_set_ssh(CONNECTION, no_wait=False, initial=closed_then_open)
 
@@ -132,9 +133,12 @@ class SetSshServiceTests(unittest.TestCase):
     def test_enable_fails_with_the_enable_message_and_says_whether_the_device_came_back(self) -> None:
         # Back on a new boot with SSH still closed, or no new boot at all
         # within the restart wait: each has its own code and next steps.
-        for device, wait_result, code in (
-            (FakeAcpDevice(ssh_open=False, ssh_up_after_boot=None), "ssh_not_open", "ssh_closed_after_restart"),
-            (FakeAcpDevice(ssh_open=False, kernel_after=10_000.0), "did_not_come_back_up", "ssh_enable_timeout"),
+        # A device that never came back is not said to have SSH closed.
+        for device, wait_result, code, message in (
+            (FakeAcpDevice(ssh_open=False, ssh_up_after_boot=None), "ssh_not_open", "ssh_closed_after_restart",
+             SSH_ENABLE_TIMEOUT_MESSAGE),
+            (FakeAcpDevice(ssh_open=False, kernel_after=10_000.0), "did_not_come_back_up", "ssh_enable_timeout",
+             SSH_ENABLE_NO_RETURN_MESSAGE),
         ):
             with self.subTest(wait_result=wait_result):
                 result, recorder, _enable = self.enable(device)
@@ -142,7 +146,7 @@ class SetSshServiceTests(unittest.TestCase):
                 self.assertIsInstance(result, RebootFlowError)
                 self.assertEqual(result.code, code)
                 self.assertEqual(result.result, wait_result)
-                self.assertEqual(str(result), SSH_ENABLE_TIMEOUT_MESSAGE)
+                self.assertEqual(str(result), message)
                 self.assertEqual(recorder.measurement("reboot_cycle")["result"], wait_result)
 
     def test_enable_passes_on_a_mac_that_left_the_devices_network(self) -> None:

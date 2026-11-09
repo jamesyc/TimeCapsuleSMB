@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.errors import DeviceRestartingError
 from timecapsulesmb.device.probe import AirportAcpReading, read_kern_limits_conn
 from timecapsulesmb.device.processes import (
@@ -61,7 +62,9 @@ _HEX_LINE = re.compile(r"0x[0-9A-Fa-f]+")
 # restart was asked for, without trusting the device's clock, which NTP steps
 # by weeks just after boot. Nothing on the device reads it.
 RESTART_MARKER = "/mnt/Memory/acp-reboot"
-RESTART_MARKER_TIMEOUT_SECONDS = 15
+# A Wi-Fi link that loses packets for seconds can hold even this short read
+# that long (probe.PROCESS_SNAPSHOT_TIMEOUT_SECONDS).
+RESTART_MARKER_TIMEOUT_SECONDS = 30
 # The statistics clock's ticks since this kernel booted, as five counters
 # (user, nice, sys, intr, idle) whose sum grows 100 a second on these
 # single-CPU devices. ACPd plays no part in it.
@@ -109,7 +112,13 @@ class AcpdProblem:
     # Words for acpd_broken_message.
     what: str
     note: str = ""
+    # The whole sentence, in place of acpd_broken_message's, for a problem
+    # that does not prove ACPd broken (network_silent: a slow link looks the
+    # same).
+    sentence: str = ""
     details: dict[str, object] = field(default_factory=dict)
+    # The error code a command that refuses for it reports.
+    error_code: ErrorCode = ErrorCode.ACPD_BROKEN
     # ACPd is gone: it quit, or a restart tore it down without restarting the
     # kernel. Only unplugging the device brings it back.
     gone: bool = False
@@ -144,6 +153,27 @@ def disk_stall_could_explain(problems: list[AcpdProblem]) -> bool:
 def acpd_broken_message(what: str, *, note: str = "") -> str:
     """Every caller's words for a broken ACPd: what failed, and why it matters."""
     return f"Apple ACPd is broken: {what}, a bug in Apple's firmware. {note}".rstrip()
+
+
+def problem_message(problem: AcpdProblem, *, note: str = "") -> str:
+    """The words for one problem: its own sentence when it has one, else
+    acpd_broken_message's."""
+    if problem.sentence:
+        return f"{problem.sentence} {note}".rstrip()
+    return acpd_broken_message(problem.what, note=note)
+
+
+# Neither this computer's ACP read nor one through SSH answered, and each of
+# three causes looks the same: the SSH read is tunnelled over the same link,
+# so a link that loses packets for seconds stalls it too; a full kernel file
+# table leaves both connections queued (TABLE_FULL_COMMAND); or ACPd's network
+# listener stopped. dmesg keeps its "table is full" lines from the whole boot,
+# so they cannot say which cause this is: the sentence names all three.
+NETWORK_SILENT_SENTENCE = (
+    "No answer from Apple ACPd over the network: either the connection to the device is too slow, the device has "
+    "too many files open (several Macs connected at once can cause this), or the AirPort service no longer answers "
+    "the network (a bug in Apple's firmware)."
+)
 
 
 # ACPd gone from the process list (processes.acpd_running). Its children,
@@ -186,12 +216,15 @@ def acpd_answers(connection: SshConnection) -> bool:
 def acpd_answers_network(connection: SshConnection) -> bool:
     """True when ACPd's TCP listener answers a syUT read through SSH.
 
-    The read goes to the device's own 127.0.0.1:5009, so the network between
-    this computer and the device plays no part. Any reply is an answer, a
-    rejected password or a malformed one too. It gets the local read's
-    deadline: a busy ACPd answers within it, and a listener that stopped
-    answering stays silent for hours. Raises TransportError when the forward
-    cannot be set up.
+    The read goes to the device's own 127.0.0.1:5009, so no address, route or
+    filter between this computer and the device plays a part. Its bytes still
+    travel inside the SSH connection, though, so a link that stalls for
+    longer than the deadline makes it fail as a silent listener would. Any
+    reply is an answer, a rejected password or a malformed one too. It gets
+    the local read's deadline: a busy ACPd answers within it, and a listener
+    that stopped answering stays silent for hours. Raises TransportError when
+    the forward cannot be set up (SshCommandTimeout when it was not ready in
+    time).
     """
     port = find_free_local_port()
     with ssh_local_forward(connection, local_port=port, remote_host="127.0.0.1", remote_port=ACP_PORT):
@@ -416,6 +449,7 @@ def acpd_quit(connection: SshConnection, ps_output: str) -> AcpdProblem | None:
         ACPD_QUIT_WHAT,
         note=ACPD_QUIT_SERVING_NOTE if serving else ACPD_QUIT_NOTE,
         details={"acpd_quit_smbd_running": serving},
+        error_code=ErrorCode.ACPD_QUIT,
         gone=True,
         sharing_off=not serving,
     )
@@ -499,6 +533,8 @@ def acpd_problems(
             "network_silent",
             "the AirPort service stopped answering the network",
             note="Sharing may work now, but the device cannot be updated or restarted over the network while this lasts. ",
+            sentence=NETWORK_SILENT_SENTENCE,
+            error_code=ErrorCode.ACPD_NETWORK_SILENT,
             details=network_silent_details(connection),
         ))
     return problems

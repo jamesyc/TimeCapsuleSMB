@@ -16,7 +16,7 @@ from timecapsulesmb.services.deploy import (
     DEPLOY_ACPD_STOPPED_MESSAGE,
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
 )
-from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
+from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, WIFI_LINK_SLOW_MESSAGE
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.compat import DeviceCompatibility, classify_device_compatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
@@ -39,7 +39,7 @@ from timecapsulesmb.deploy.planner import (
     PACKAGED_BOOT_SOURCE,
     BINARY_SERVICE_SOURCE,
 )
-from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
+from timecapsulesmb.transport.errors import SshUploadTimeout, ssh_timeout_slow_device_message
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
@@ -809,7 +809,7 @@ class CliDeployTests(CliTestCase):
             "MaSt found 1 deployable HFS volume(s).\n\n"
             "Next steps:\n"
             "  1. Wait a minute, then run `tcapsule deploy` again.\n"
-            "  2. Restart the device if the disk still does not mount.",
+            "  2. If the disk still does not mount, try restarting the device.",
         )
         result.mocks.run_remote_actions.assert_not_called()
         telemetry_error = self.telemetry_payload("deploy_finished")["error"]
@@ -1214,13 +1214,16 @@ class CliDeployTests(CliTestCase):
                 on_uploading(next(transfer for transfer in plan.uploads if transfer.destination == "/mnt/Flash/service"))
             raise SshCommandTimeout(timeout)
 
-        result = self.run_deploy_cli(
-            ["--yes"],
-            patch_actions=True,
-            patch_upload=True,
-            upload_side_effect=timeout_upload,
-            raises=SystemExit,
-        )
+        # A cabled device (no wpa_supplicant), recorded by the preflight.
+        with mock.patch("timecapsulesmb.device.acpd.read_processes",
+                        return_value="  107 1 15 S 0 select 0:00.32 sshd\n  190 1 15 Ia 127 select 0:01.40 ACPd\ntcapsule-ps: end"):
+            result = self.run_deploy_cli(
+                ["--yes"],
+                patch_actions=True,
+                patch_upload=True,
+                upload_side_effect=timeout_upload,
+                raises=SystemExit,
+            )
 
         slow_message = ssh_timeout_slow_device_message("Time Capsule 5th generation")
         self.assertIn(f"{ANSI_RED}{slow_message}{ANSI_RESET}", str(result.exception))
@@ -1232,7 +1235,7 @@ class CliDeployTests(CliTestCase):
         self.assertIn("stage=upload_boot_files", finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
 
-    def test_deploy_payload_upload_timeout_shows_disk_guidance(self) -> None:
+    def test_deploy_payload_upload_timeout_names_the_connection_and_the_disk(self) -> None:
         timeout = "Timed out waiting for ssh command to finish: runtime probe"
 
         def timeout_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
@@ -1240,23 +1243,67 @@ class CliDeployTests(CliTestCase):
                 return
             if on_uploading is not None:
                 on_uploading(plan.uploads[0])
-            raise SshCommandTimeout(timeout)
+            raise SshUploadTimeout(timeout, bytes_on_device=4096)
 
-        result = self.run_deploy_cli(
-            ["--yes"],
-            values=self.make_valid_env(TC_AIRPORT_SYAP="120", TC_MDNS_DEVICE_MODEL="AirPort7,120"),
-            patch_actions=True,
-            patch_upload=True,
-            upload_side_effect=timeout_upload,
-            raises=SystemExit,
-        )
+        # A cabled device: no wpa_supplicant in its process list.
+        with mock.patch("timecapsulesmb.device.acpd.read_processes",
+                        return_value="  107 1 15 S 0 select 0:00.32 sshd\n  190 1 15 Ia 127 select 0:01.40 ACPd\ntcapsule-ps: end"):
+            result = self.run_deploy_cli(
+                ["--yes"],
+                values=self.make_valid_env(TC_AIRPORT_SYAP="120", TC_MDNS_DEVICE_MODEL="AirPort7,120"),
+                patch_actions=True,
+                patch_upload=True,
+                upload_side_effect=timeout_upload,
+                raises=SystemExit,
+            )
 
-        self.assertIn("Copying the SMB payload timed out. The disk may be failing or unable to spin up, or the network connection to the device may be too slow", str(result.exception))
+        self.assertIn("Copying the SMB payload timed out. A slow connection between this computer and the device can cause this, and so can a disk that is slow to respond.", str(result.exception))
         self.assertNotIn(timeout, str(result.exception))
         finished = self.telemetry_payload("deploy_finished")
         self.assertEqual(finished["result"], "failure")
-        self.assertIn("Copying the SMB payload timed out. The disk may be failing or unable to spin up, or the network connection to the device may be too slow", finished["error"])
+        self.assertIn("Copying the SMB payload timed out. A slow connection between this computer and the device can cause this, and so can a disk that is slow to respond.", finished["error"])
         self.assertIn(f"Caused by: {timeout}", finished["error"])
+
+    def test_deploy_upload_timeout_on_a_wifi_device_names_the_link(self) -> None:
+        timeout = "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH"
+
+        def timeout_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
+            if plan.uploads == [plan.migration_upload]:
+                return
+            if on_uploading is not None:
+                on_uploading(plan.uploads[0])
+            raise SshUploadTimeout(timeout, bytes_on_device=4096)
+
+        # The preflight's listing shows wpa_supplicant: the device joins
+        # another Wi-Fi network, which the command records and reuses.
+        listing = ("  107 1 15 S 0 select 0:00.32 sshd\n  190 1 15 Ia 127 select 0:01.40 ACPd\n"
+                   "  381 190 15 S 6 select 0:00.14 wpa_supplicant\ntcapsule-ps: end")
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing) as read:
+            result = self.run_deploy_cli(
+                ["--yes"],
+                values=self.make_valid_env(TC_AIRPORT_SYAP="120", TC_MDNS_DEVICE_MODEL="AirPort7,120"),
+                patch_actions=True,
+                patch_upload=True,
+                upload_side_effect=timeout_upload,
+                raises=SystemExit,
+            )
+
+        # The preflight's listing answered it: no second look at the device.
+        read.assert_called_once()
+        output = str(result.exception)
+        # The Wi-Fi line, then deploy's own line, which says what timed out.
+        self.assertIn(f"{ANSI_RED}{WIFI_LINK_SLOW_MESSAGE}{ANSI_RESET}\nCopying the SMB payload timed out.", output)
+        self.assertIn("1. Restart the device, then try again", output)
+        self.assertIn("2. If it times out again, connect this computer with a cable to one of the device's LAN ports",
+                      output)
+        self.assertNotIn("Disk Repair", output)
+        self.assertNotIn("tcapsule fsck", output)
+        # Telemetry keeps the error deploy raised, and the link it recorded.
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertIn("Copying the SMB payload timed out.", finished["error"])
+        self.assertIn("wifi_link_slow=true", finished["error"])
+        self.assertIs(finished["wifi_client"], True)
+        self.assertNotIn(ANSI_RED, finished["error"])
 
     def test_deploy_finished_telemetry_reports_ssh_pipe_upload_transport(self) -> None:
         result = self.run_deploy_cli(

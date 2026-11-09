@@ -197,6 +197,18 @@ def smbd_running(output: str) -> bool | None:
     return _running(output, "smbd")
 
 
+def wifi_client(output: str) -> bool | None:
+    """Whether the AirPort reaches its network over Wi-Fi rather than an
+    Ethernet cable: Apple's ACPd runs wpa_supplicant, one of its own
+    programs, only while the AirPort joins or extends another Wi-Fi network.
+    Such a link can slow to a few KB/s for hours. A live wpa_supplicant row
+    says yes in any listing, one cut short included; only a listing that
+    finished can say no (_running)."""
+    if any(p.ucomm == "wpa_supplicant" and not p.zombie for p in parse_ps_rows(output)):
+        return True
+    return _running(output, "wpa_supplicant")
+
+
 def service_role_processes(ps_output: str, role: str) -> list[Process]:
     """The live processes holding role: by the role title, or by argv before
     the native title is installed."""
@@ -241,7 +253,7 @@ SUPERVISOR_STOP_SECONDS = 2 * MANAGER_CHILD_GRACE_SECONDS
 STUCK_PROCESS_PS_COMMAND = f"/bin/ps ax {PS_COLUMNS}"
 # How the stop script names a service process it waited for in vain without
 # reading its command line: asleep in the kernel throughout, like a manager
-# that does not stop, and nearly always on a failing disk.
+# that does not stop, often waiting on the disk.
 UNREADABLE_SERVICE_STOP_MESSAGE = "process service did not show its command line"
 
 

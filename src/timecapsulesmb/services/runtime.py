@@ -14,7 +14,7 @@ from timecapsulesmb.checks.network import (
     ssh_reached_device,
 )
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
-from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.core.error_codes import ErrorCode, coded_error_in
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.paths import AppPaths, resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility
@@ -40,12 +40,13 @@ from timecapsulesmb.device.disk_errors import (
     disk_stall_facts,
 )
 from timecapsulesmb.device.processes import (
-    Process, StuckProcess, disk_io_stalls, disk_jobs_running, is_disk_check, listing_complete,
+    Process, StuckProcess, disk_io_stalls, disk_jobs_running, is_disk_check, listing_complete, wifi_client,
 )
 from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
 from timecapsulesmb.transport.local import tcp_open
+from timecapsulesmb.transport.errors import bare_timeout
 from timecapsulesmb.transport.ssh import SshConnection
 
 PasswordProvider = Callable[[str], str]
@@ -146,6 +147,7 @@ def acpd_problems_and_disk_stalls(
         return stalls
 
     listing = require_no_disk_check(connection, callbacks) if disk_check else acpd.read_processes(connection)
+    record_wifi_client(callbacks, listing)
     stalls = stalls_in(listing)
     if stalls:
         return [], stalls
@@ -278,6 +280,55 @@ def require_no_disk_check(connection: SshConnection, callbacks: OperationCallbac
     raise DiskCheckRunningError(refused, unanswered=not lasting and looks[-1] == "unreadable")
 
 
+WIFI_LINK_SLOW_MESSAGE = (
+    "The device reaches your network over Wi-Fi rather than an Ethernet cable, and it did not answer in time. "
+    "A slow Wi-Fi link can cause this."
+)
+
+
+def record_wifi_client(callbacks: OperationCallbacks, listing: str) -> None:
+    """Record, as an operation field (telemetry on every run, and
+    wifi_link_error's answer later in the operation), whether a finished
+    listing shows the device reaching its network over Wi-Fi
+    (processes.wifi_client). The link does not change during an operation:
+    changing it takes AirPort Utility and a restart."""
+    callbacks.update(wifi_client=wifi_client(listing))
+
+
+# Coded errors that are an SSH deadline running out, which a slow link hits
+# as surely as a slow disk.
+_SLOW_LINK_CODES = frozenset({
+    ErrorCode.PAYLOAD_UPLOAD_TIMEOUT,
+    ErrorCode.DISK_WRITE_TEST_UNRESPONSIVE,
+    ErrorCode.XATTR_MIGRATION_TIMEOUT,
+    ErrorCode.RUNTIME_NOT_ANSWERED,
+})
+
+
+def _slow_link_symptom(exc: BaseException) -> bool:
+    """An SSH command that timed out (transport.errors.bare_timeout), or a
+    coded error that is one (_SLOW_LINK_CODES), even behind a wrapper such as
+    a command's exit message: what a crawling link does. Other coded errors
+    keep their own diagnosis."""
+    coded = coded_error_in(exc)
+    if coded is not None and coded.code in _SLOW_LINK_CODES:
+        return True
+    return bare_timeout(exc)
+
+
+def wifi_link_error(exc: BaseException, *, known: object) -> bool:
+    """Whether the error an operation ends with is the device's Wi-Fi link
+    (code wifi_link_slow): an SSH or upload timeout on a device that reaches
+    its network over Wi-Fi. `known` is the operation's wifi_client field
+    (record_wifi_client); unrecorded counts as no, and the error keeps its
+    own message, so a restart is still advised for a device that is just slow.
+    It does not look at the device itself when nothing was recorded: that
+    happens when the preflight's listing did not finish, on a link that was
+    already not answering, or before any preflight, and a new login after a
+    timeout could add more than a minute of silence before the error."""
+    return known is True and _slow_link_symptom(exc)
+
+
 def require_acpd_ready(
     connection: SshConnection,
     callbacks: OperationCallbacks,
@@ -299,7 +350,9 @@ def require_acpd_ready(
     (require_no_disk_check), unless `restarts` is False: a flash backup,
     plan or patch neither restarts the device nor uses its disk, so it
     cannot interrupt the check. A restart under way, such as another
-    command's, refuses it as well (code device_restarting). `reading` is
+    command's, refuses it as well (code device_restarting). The first
+    listing also records whether the device reaches its network over Wi-Fi
+    (record_wifi_client). `reading` is
     this command's earlier network read of the device at this address
     (confirm_device_address); an unanswered one is not read again from here,
     as the second read would only repeat the same retry, but ACPd's listener
@@ -328,8 +381,8 @@ def require_acpd_ready(
         callbacks.debug(acpd_problems=[problem.code for problem in problems], **details)
         # Apple's firmware, not ours (build/native/README.md, "Apple ACPd").
         raise DeviceAccessError(
-            acpd.acpd_broken_message(problems[0].what, note=f"{problems[0].note}Nothing was changed."),
-            code=ErrorCode.ACPD_QUIT if problems[0].code == "quit" else ErrorCode.ACPD_BROKEN,
+            acpd.problem_message(problems[0], note=f"{problems[0].note}Nothing was changed."),
+            code=problems[0].error_code,
         )
     if reading.password_matches is None and reading.error:
         # ACPd answered its own acp and, through SSH, the network: the path
@@ -430,7 +483,8 @@ def follow_saved_device(
 
 
 # Apple's ssh, asked whether the device is up when this program's own
-# connections get no route: a reachable device answers within seconds.
+# connections get no route: a reachable device answers within seconds. Its
+# login has transport.ssh.SSH_LOGIN_SECONDS on top.
 SSH_PROOF_TIMEOUT_SECONDS = 15
 
 
@@ -462,6 +516,12 @@ def probe_failure_error(probe_result: ProbeResult, connection: SshConnection) ->
                 # block (no route) or the device is gone (a timeout).
                 detail = f"{detail} SSH from this computer did not reach it either ({ssh.detail})."
         return DeviceAccessError(closed.message, code=closed.code, detail=detail)
+    if probe_result.timeout is not None:
+        # The device did not answer in time; nothing closed the connection.
+        # The timeout stays the cause, so the error gets its guidance.
+        timed_out = DeviceAccessError(probe_result.error or str(probe_result.timeout), code=ErrorCode.REMOTE_ERROR)
+        timed_out.__cause__ = probe_result.timeout
+        return timed_out
     return DeviceAccessError(
         probe_result.error or "Failed to probe device compatibility.",
         code=PROBE_STATUS_ERROR_CODES.get(probe_result.ssh_status, ErrorCode.REMOTE_ERROR),

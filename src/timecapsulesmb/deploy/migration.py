@@ -28,14 +28,11 @@ MAX_RECEIPT_BYTES = 32 * 1024 * 1024
 STALL_SECONDS = 300
 # A progressing migration may legitimately run for hours. Direct exec preserves
 # its real status; if SSH disappears it may finish without the client, while the
-# process-local inactivity guard still bounds a stalled disk operation.
+# process-local inactivity guard still bounds a stalled disk operation. It
+# runs over the shared connection with the transport's own keepalive, which a
+# Wi-Fi link that loses packets for seconds outlasts (transport.ssh).
 NATIVE_TIMEOUT_SECONDS: int | None = None
 DIAGNOSTIC_TIMEOUT_SECONDS = 30
-NATIVE_SSH_ARGS = (
-    "-o", "ConnectTimeout=20",
-    "-o", "ServerAliveInterval=10",
-    "-o", "ServerAliveCountMax=2",
-)
 RECEIPT_SUFFIX = ".migration-progress.json"
 RAM_HELPER = "/mnt/Memory/tc-xattr-hfs-migrate"
 _UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
@@ -472,7 +469,6 @@ def _native(connection: SshConnection, arguments: list[str], *, request: bytes =
             input_bytes=request,
             timeout=NATIVE_TIMEOUT_SECONDS,
             raw_remote_status=True,
-            extra_ssh_args=NATIVE_SSH_ARGS,
         )
     except SshError as exc:
         tail = _saved_log_snapshot(connection, log)

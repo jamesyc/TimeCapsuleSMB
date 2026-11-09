@@ -95,10 +95,11 @@ def disk_failing_message(errors: tuple[str, ...]) -> str:
 
 # A process stuck on the disk for minutes (processes.disk_io_stalls): the disk
 # has stopped answering. Apple's ACPd waits on diskd, which waits on the disk,
-# so ACPd stops answering MaSt and the network as well; the disk is the cause,
-# not Apple's firmware. A restart clears a stall a passing fault caused; one
-# that comes back is a failing disk. The stuck processes do not say which
-# disk, internal or USB, so the words fit either.
+# so ACPd stops answering MaSt and the network as well. A restart clears a
+# stall a passing fault caused; one that comes back may be a failing disk, but
+# a wait like this is not proof of one (a diskd and ACPd race, F19, looked
+# the same). The stuck processes do not say which disk, internal or USB, so
+# the words fit either.
 DISK_NOT_RESPONDING_MESSAGE = (
     "A disk on the device has stopped responding: a disk operation has waited for minutes without finishing. "
     "Apple's AirPort service waits for the disk too, so the device's disks cannot be read, and it cannot be "
@@ -107,7 +108,7 @@ DISK_NOT_RESPONDING_MESSAGE = (
 # Checkup's result says the way out; an error's next steps come from its code.
 DISK_NOT_RESPONDING_WAY_OUT = (
     "Unplug the device, wait 10 seconds, plug it back in and wait 2 minutes, then check again. If the disk "
-    f"stops responding again, it is probably failing: {DISK_STALL_REPLACE}."
+    f"stops responding again, it may be failing: {DISK_STALL_REPLACE}."
 )
 
 

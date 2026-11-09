@@ -978,7 +978,7 @@ class ProbeTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="syAP=0x00000077\nsyAM=TimeCapsule8,119\nwaMA = 02-AA-BB-CC-DD-EE\n")
             self.fail(f"unexpected remote command: {remote_cmd}")
 
-        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+        with mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value=None):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=fake_run_ssh) as run_ssh_mock:
                 result = probe.probe_device_conn(connection)
 
@@ -1011,7 +1011,7 @@ class ProbeTests(unittest.TestCase):
     def test_probe_device_conn_reports_closed_ssh_port_without_remote_probe(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 
-        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False) as tcp_open_mock:
+        with mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value="timed out") as connect_mock:
             with mock.patch("timecapsulesmb.device.probe.run_ssh") as run_ssh_mock:
                 result = probe.probe_device_conn(connection)
 
@@ -1019,13 +1019,28 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse(result.ssh_port_reachable)
         self.assertFalse(result.ssh_authenticated)
         self.assertEqual(result.error, "SSH is not reachable yet.")
-        tcp_open_mock.assert_called_once_with("10.0.0.2", 22)
+        # Why the port failed is kept: a refused connect is SSH off, a timeout
+        # may be a slow device (services.configure looks again).
+        self.assertEqual(result.ssh_port_error, "timed out")
+        connect_mock.assert_called_once_with("10.0.0.2", 22)
         run_ssh_mock.assert_not_called()
+
+    def test_probe_keeps_an_ssh_timeout_so_its_error_keeps_the_timeouts_guidance(self) -> None:
+        # A probe command that does not answer is a timeout, not a dropped
+        # connection: the result keeps the exception for the error raised later.
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        timeout = probe.SshCommandTimeout("Timed out waiting for ssh command to finish: uname")
+        with mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value=None), \
+                mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", side_effect=timeout):
+            result = probe.probe_device_conn(connection)
+        self.assertEqual(result.ssh_status, SshAccessStatus.TRANSPORT_FAILED)
+        self.assertIs(result.timeout, timeout)
+        self.assertEqual(result.error, str(timeout))
 
     def test_probe_device_conn_reports_auth_rejection_separately(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 
-        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+        with mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value=None):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshAuthenticationError("Permission denied")):
                 result = probe.probe_device_conn(connection)
 
@@ -1042,7 +1057,7 @@ class ProbeTests(unittest.TestCase):
             offered=("hmac-md5", "hmac-sha1"),
         )
 
-        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+        with mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value=None):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=error):
                 result = probe.probe_device_conn(connection)
 
@@ -1054,7 +1069,7 @@ class ProbeTests(unittest.TestCase):
     def test_probe_device_conn_reports_transport_failure_without_auth_rejection(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 
-        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+        with mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value=None):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshNetworkError("Connection timed out")):
                 result = probe.probe_device_conn(connection)
 
@@ -1071,7 +1086,7 @@ class ProbeTests(unittest.TestCase):
         errors = [SshClientConfigError("Upgrade OpenSSH"), *(ssh_signal_error(n) for n in (signal.SIGKILL, signal.SIGTERM, signal.SIGINT, 99))]
         for error in errors:
             with self.subTest(error=error), \
-                 mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True), \
+                 mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value=None), \
                  mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=error), \
                  mock.patch("timecapsulesmb.device.probe.mac_network_filters") as collect:
                 result = probe.probe_device_conn(SshConnection("root@10.0.0.2", "pw", ""))
@@ -1085,7 +1100,7 @@ class ProbeTests(unittest.TestCase):
         dropped = SshLocalNetworkFilteredError("This Mac dropped the connection ... (ssh: ...)")
         filters = {"mac_network_extensions": ["com.objective-see.lulu.extension [activated enabled]"]}
 
-        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+        with mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value=None):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=dropped):
                 with mock.patch("timecapsulesmb.device.probe.mac_network_filters", return_value=filters) as collect:
                     result = probe.probe_device_conn(connection)
@@ -1103,7 +1118,7 @@ class ProbeTests(unittest.TestCase):
     def test_probe_device_conn_reports_device_probe_failure_after_ssh_auth(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 
-        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+        with mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value=None):
             with mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", side_effect=DeviceError("bad uname")):
                 result = probe.probe_device_conn(connection)
 

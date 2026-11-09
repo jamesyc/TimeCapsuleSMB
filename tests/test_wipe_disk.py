@@ -41,7 +41,7 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import DeployDeviceError, mast_no_volume_error, select_deploy_payload_home
 from timecapsulesmb.services.maintenance import SharingRestart, reboot_and_restart_sharing
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.transport.errors import SshNetworkError
+from timecapsulesmb.transport.errors import SshConnectTimeout, SshNetworkError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 
 
@@ -887,7 +887,10 @@ class FakeDevice:
         self.probe = DiskdRpcReply(0, -6705, None)
         self.erase = DiskdRpcReply(0, 0, None)
         self.wipe_output: str | None = None
+        self.wipe_returncode = 0
         self.readback = bytes(3 * TWO_TB.sector_size)
+        # The readback's exit status: dd's, or ssh's 255 for a dropped session.
+        self.readback_returncode = 0
         self.mast_after_erase: list[object] = []
         self.calls: list[str] = []
         self.erased = False
@@ -948,7 +951,7 @@ class FakeDevice:
                 ) + wipe.WIPE_DONE_LINE + "\n"
             if isinstance(self.wipe_output, BaseException):
                 raise self.wipe_output
-            return subprocess.CompletedProcess(command, 0, self.wipe_output, "")
+            return subprocess.CompletedProcess(command, self.wipe_returncode, self.wipe_output, "")
         if script.startswith("/usr/bin/acp MaSt"):
             self.calls.append("mast")
             if self.mast_after_erase:
@@ -961,7 +964,9 @@ class FakeDevice:
 
     def capture(self, _connection, command, **_kwargs):
         self.calls.append("readback")
-        return self.readback
+        if isinstance(self.readback, BaseException):
+            raise self.readback
+        return subprocess.CompletedProcess(command, self.readback_returncode, self.readback, b"")
 
     def clock(self) -> float:
         return self.now
@@ -983,7 +988,7 @@ class FakeDevice:
             mock.patch("timecapsulesmb.device.acpd.pause"),
             mock.patch.object(wipe_disk, "diskd_rpc_conn", side_effect=self.rpc),
             mock.patch.object(wipe_disk, "run_ssh", side_effect=self.run_ssh),
-            mock.patch.object(wipe_disk, "run_ssh_capture_bytes", side_effect=self.capture),
+            mock.patch.object(wipe_disk, "run_ssh_input", side_effect=self.capture),
             mock.patch.object(wipe_disk, "reboot_and_restart_sharing", side_effect=self.reboot),
             mock.patch.object(wipe_disk, "disks_with_apple_labels", side_effect=self.apple_labels),
         )
@@ -1168,7 +1173,8 @@ class RunWipeTests(unittest.TestCase):
         recovery = recovery_for("wipe-disk", ErrorCode.DISK_NOT_RESPONDING, stage="erase_disk")
         self.assertEqual(recovery["title"], "The disk stopped responding during the wipe")
         self.assertEqual(recovery["actions"][0], "If the device is still formatting the disk, wait until it finishes.")
-        self.assertEqual(recovery["actions"][-1], "If the disk stops responding again, it is probably failing: replace the disk.")
+        # A disk wait is not proof of a failing disk: only "may".
+        self.assertEqual(recovery["actions"][-1], "If the disk stops responding again, it may be failing: replace the disk.")
 
     def test_an_unanswered_erase_with_acpd_answering_waits_for_diskd(self) -> None:
         device = FakeDevice()
@@ -1187,16 +1193,20 @@ class RunWipeTests(unittest.TestCase):
         self.assertNotIn("wipe", device.calls)
 
     def test_a_disk_that_does_not_take_the_zeros_is_failing_and_is_not_erased(self) -> None:
+        # A write the device saw fail, or zeros the disk did not keep, is
+        # evidence: the disk is probably failing.
         from timecapsulesmb.app.recovery import recovery_for
         cases = {
-            "short write": ("tcapsule-wipe: head: 0+0 records out\ntcapsule-wipe: head exit 0\n", None, "short_write"),
-            "timeout": (SshCommandTimeout("dd"), None, "no_response"),
-            "read-back": (None, bytes(512) + b"EFI PART" + bytes(1016), "readback"),
+            "short write": ("tcapsule-wipe: head: 0+0 records out\ntcapsule-wipe: head exit 0\n", None, 0, "short_write"),
+            "read-back": (None, bytes(512) + b"EFI PART" + bytes(1016), 0, "readback"),
+            # dd failed a read of the disk it just wrote.
+            "read error": (None, bytes(512), 1, "readback_read_failed"),
         }
-        for name, (output, readback, reason) in cases.items():
+        for name, (output, readback, returncode, reason) in cases.items():
             with self.subTest(name):
                 device = FakeDevice()
                 device.wipe_output = output
+                device.readback_returncode = returncode
                 if readback is not None:
                     device.readback = readback
                 stages: list[str] = []
@@ -1213,6 +1223,101 @@ class RunWipeTests(unittest.TestCase):
                 self.assertEqual(card["localization_key"], "wipe-disk.disk_failing.during_wipe")
                 self.assertEqual(card["actions"][0], "Restart the device.")
                 self.assertFalse(card["retryable"])
+
+    def test_a_readback_that_gets_no_answer_proves_nothing_about_the_disk(self) -> None:
+        # Nothing was read back: a timeout says the disk or the link did not
+        # answer, a dropped session says the connection went. Neither card
+        # says "probably failing", and nothing is erased or restarted.
+        from timecapsulesmb.app.recovery import recovery_for
+        from timecapsulesmb.transport.ssh import SshError
+        cases = (
+            ("timeout", SshCommandTimeout("Timed out waiting for ssh command to finish: dd"), 0,
+             ErrorCode.WIPE_DISK_NO_RESPONSE, "readback_no_response"),
+            ("dropped session", bytes(512), 255, ErrorCode.WIPE_DISK_CONNECTION_LOST, "readback_connection_lost"),
+            ("refused login", SshError("Connection closed by remote host"), 0,
+             ErrorCode.WIPE_DISK_CONNECTION_LOST, "readback_connection_lost"),
+        )
+        for name, readback, returncode, code, reason in cases:
+            with self.subTest(name):
+                device = FakeDevice()
+                device.readback = readback
+                device.readback_returncode = returncode
+                stages: list[str] = []
+                with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+                    device.run(callbacks=OperationCallbacks(set_stage=stages.append))
+                self.assertEqual((raised.exception.code, raised.exception.reason), (code, reason))
+                self.assertNotIn("rpc eraseDisk method:i:0", device.calls)
+                self.assertFalse(any(call.startswith("reboot") for call in device.calls))
+                card = recovery_for("wipe-disk", code, stage=stages[-1])
+                self.assertNotIn("probably", card["message"])
+        card = recovery_for("wipe-disk", ErrorCode.WIPE_DISK_NO_RESPONSE, stage="check_wipe")
+        self.assertEqual(card["localization_key"], "wipe-disk.wipe_disk_no_response.check_wipe")
+        self.assertIn("reading it back did not finish in time", card["message"])
+        self.assertIn("connection to the device may have stalled", card["message"])
+        self.assertTrue(card["actions"][0].startswith("Try restarting the device"))
+
+    def test_a_wipe_that_never_finishes_says_the_disk_may_be_failing(self) -> None:
+        # A timeout, or a report that stops short, proves nothing about the
+        # disk: the card says "may", has the wipe run again before a new disk,
+        # and still warns that the partition table may be gone.
+        from timecapsulesmb.app.recovery import recovery_for
+        for name, output in (("timeout", SshCommandTimeout("dd")), ("cut short", "tcapsule-wipe: head: 1+0 records out\n")):
+            with self.subTest(name):
+                device = FakeDevice()
+                device.wipe_output = output
+                with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+                    device.run()
+                self.assertEqual((raised.exception.code, raised.exception.reason),
+                                 (ErrorCode.WIPE_DISK_NO_RESPONSE, "no_response"))
+                self.assertEqual(raised.exception.message, wipe_disk.NO_RESPONSE_MESSAGE)
+                self.assertNotIn("rpc eraseDisk method:i:0", device.calls)
+                self.assertFalse(any(call.startswith("reboot") for call in device.calls))
+        card = recovery_for("wipe-disk", ErrorCode.WIPE_DISK_NO_RESPONSE, stage="wipe_disk")
+        self.assertEqual(card["localization_key"], "wipe_disk_no_response")
+        self.assertIn("so it may be failing", card["message"])
+        self.assertNotIn("probably", card["message"])
+        self.assertIn("partition table may already be cleared", card["message"])
+        self.assertEqual(card["actions"], [
+            "Restart the device.",
+            "Then run “Wipe Internal Disk” again.",
+            "If the wipe stops again, the disk may be failing: replace it.",
+        ])
+        self.assertTrue(card["retryable"])
+
+    def test_a_connection_that_drops_mid_wipe_says_so(self) -> None:
+        # ssh exits 255: the output so far (none, or one end) says nothing of
+        # the disk, and the stop may already have run.
+        from timecapsulesmb.app.recovery import recovery_for
+        for name, output in (("before any output", ""), ("after one end", "tcapsule-wipe: head: 1+0 records out\n")):
+            with self.subTest(name):
+                device = FakeDevice()
+                device.wipe_output = output
+                device.wipe_returncode = 255
+                with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+                    device.run()
+                self.assertEqual((raised.exception.code, raised.exception.reason),
+                                 (ErrorCode.WIPE_DISK_CONNECTION_LOST, "connection_lost"))
+                self.assertEqual(raised.exception.message, wipe_disk.CONNECTION_LOST_MESSAGE)
+                self.assertNotIn("rpc eraseDisk method:i:0", device.calls)
+        card = recovery_for("wipe-disk", ErrorCode.WIPE_DISK_CONNECTION_LOST, stage="wipe_disk")
+        self.assertEqual(card["actions"], ["Restart the device.", "Then run “Wipe Internal Disk” again."])
+        self.assertNotIn("failing", card["message"])
+
+    def test_a_wipe_that_finished_before_the_connection_dropped_goes_on(self) -> None:
+        # The done line arrived: the readback decides, as after any wipe.
+        device = FakeDevice()
+        device.wipe_returncode = 255
+        device.run()
+        self.assertIn("rpc eraseDisk method:i:0", device.calls)
+
+    def test_a_connect_timeout_on_the_wipe_is_the_connections_error_not_the_disks(self) -> None:
+        # The wipe never started: the error stays the connection's timeout,
+        # whose card puts the reboot first, and says nothing of the disk.
+        device = FakeDevice()
+        device.wipe_output = SshConnectTimeout("Timed out connecting to the device over SSH")
+        with self.assertRaises(SshConnectTimeout):
+            device.run()
+        self.assertNotIn("rpc eraseDisk method:i:0", device.calls)
 
     def test_a_stop_that_failed_wrote_nothing_and_needs_a_restart(self) -> None:
         device = FakeDevice()
@@ -1987,3 +2092,119 @@ class AppleLabelsElsewhereTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PersistenceAfterRestartTests(unittest.TestCase):
+    """After the restart, only MaSt reads that answered can show the new
+    volume gone; a run of reads that did not answer ends the wait unconfirmed,
+    or with the verdict the read's fallback found."""
+
+    def check(self, reads: list[object]) -> list[object]:
+        answers = list(reads)
+        asked: list[object] = []
+
+        def read(_connection):
+            answer = answers.pop(0)
+            asked.append(answer)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+        check = wipe_disk._check_persisted(FakeDevice().plan(), NEW_VOLUME_UUID, lambda _seconds: None)
+        with mock.patch.object(wipe_disk, "read_disks_conn", side_effect=read):
+            check(CONNECTION)
+        return asked
+
+    TIMEOUT = SshCommandTimeout("Timed out waiting for ssh command to finish: /usr/bin/acp MaSt")
+    WITH_VOLUME = (disk(partitions=(MaStPartitionSnapshot("dk2", "Data", "hfs", uuid=NEW_VOLUME_UUID),)),)
+    WITHOUT_VOLUME = (disk(partitions=()),)
+
+    def test_reads_that_never_answer_leave_the_volume_unconfirmed_after_three(self) -> None:
+        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+            self.check([self.TIMEOUT] * wipe_disk.PERSIST_READS)
+        self.assertEqual((raised.exception.code, raised.exception.reason),
+                         (ErrorCode.WIPE_DISK_UNCONFIRMED, "unconfirmed"))
+        self.assertEqual(raised.exception.message, wipe_disk.UNCONFIRMED_MESSAGE)
+
+    def test_a_verdict_the_fallback_found_is_raised_instead(self) -> None:
+        from timecapsulesmb.device.storage import StorageDeviceError
+        stuck = StorageDeviceError("disk stopped responding", code=ErrorCode.DISK_NOT_RESPONDING)
+        with self.assertRaises(StorageDeviceError) as raised:
+            self.check([self.TIMEOUT, stuck, self.TIMEOUT, self.TIMEOUT])
+        self.assertIs(raised.exception, stuck)
+
+    def test_a_verdict_from_before_a_usable_answer_is_dropped(self) -> None:
+        # ACPd answered after the read that found it silent: the run that
+        # follows says nothing about ACPd, so the volume is only unconfirmed.
+        from timecapsulesmb.device.storage import StorageDeviceError
+        silent = StorageDeviceError("ACPd silent", code=ErrorCode.ACPD_BROKEN)
+        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+            self.check([self.TIMEOUT, silent, self.WITHOUT_VOLUME, self.TIMEOUT, self.TIMEOUT, self.TIMEOUT])
+        self.assertEqual((raised.exception.code, raised.exception.reason),
+                         (ErrorCode.WIPE_DISK_UNCONFIRMED, "unconfirmed"))
+
+    def test_a_remote_error_is_no_verdict(self) -> None:
+        # remote_error names no cause, so the run ends unconfirmed.
+        from timecapsulesmb.device.storage import StorageDeviceError
+        unnamed = StorageDeviceError("acp failed", code=ErrorCode.REMOTE_ERROR)
+        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+            self.check([unnamed, self.TIMEOUT, unnamed])
+        self.assertEqual((raised.exception.code, raised.exception.reason),
+                         (ErrorCode.WIPE_DISK_UNCONFIRMED, "unconfirmed"))
+        self.assertIsInstance(raised.exception.__cause__, StorageDeviceError)
+
+    def test_an_uncoded_device_error_is_no_verdict(self) -> None:
+        from timecapsulesmb.device.storage import StorageDeviceError
+        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+            self.check([StorageDeviceError("no code")] * 3)
+        self.assertEqual(raised.exception.code, ErrorCode.WIPE_DISK_UNCONFIRMED)
+
+    def test_output_that_cannot_be_parsed_counts_as_no_usable_answer(self) -> None:
+        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+            self.check([ValueError("bad plist")] * wipe_disk.PERSIST_READS)
+        self.assertEqual(raised.exception.code, ErrorCode.WIPE_DISK_UNCONFIRMED)
+        self.assertEqual(raised.exception.message, wipe_disk.UNCONFIRMED_MESSAGE)
+
+    def test_a_dropped_connection_counts_as_no_usable_answer(self) -> None:
+        dropped = SshNetworkError("Connection closed by remote host")
+        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+            self.check([dropped] * wipe_disk.PERSIST_READS)
+        self.assertEqual(raised.exception.code, ErrorCode.WIPE_DISK_UNCONFIRMED)
+        self.assertIs(raised.exception.__cause__, dropped)
+
+    def test_two_reads_without_an_answer_do_not_end_the_wait(self) -> None:
+        asked = self.check([ValueError("bad plist"), self.TIMEOUT, self.WITHOUT_VOLUME,
+                            ValueError("bad plist"), self.TIMEOUT, self.WITH_VOLUME])
+        self.assertEqual(len(asked), 6)
+
+    def test_a_late_answer_with_the_volume_confirms_it(self) -> None:
+        asked = self.check([self.TIMEOUT, self.TIMEOUT, self.WITH_VOLUME])
+        self.assertEqual(len(asked), 3)
+
+    def test_answered_reads_without_the_volume_show_it_gone(self) -> None:
+        # Reads that answer reset the run, so a few unanswered ones between
+        # them do not end the wait early.
+        reads = [self.WITHOUT_VOLUME, self.TIMEOUT, self.TIMEOUT] * 7
+        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+            self.check(reads[:wipe_disk.PERSIST_READS])
+        self.assertEqual((raised.exception.code, raised.exception.reason),
+                         (ErrorCode.WIPE_DISK_ERASE_FAILED, "not_persisted"))
+
+
+class UnlistedDisksTests(unittest.TestCase):
+    def test_a_disk_list_that_does_not_come_back_refuses_without_blaming_another_disk(self) -> None:
+        # Nothing says another disk is there, but nothing rules one out: the
+        # wipe stops with nothing changed and its own code.
+        internal = disk()
+        with mock.patch.object(wipe_disk, "_read_text", return_value=None) as read, \
+                mock.patch.object(wipe_disk, "run_ssh_capture_bytes") as capture:
+            with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+                wipe_disk.disks_with_apple_labels(CONNECTION, (internal,), internal, 2)
+        self.assertEqual((raised.exception.code, raised.exception.reason),
+                         (ErrorCode.WIPE_DISK_CHECK_UNANSWERED, "disks_unlisted"))
+        read.assert_called_once()
+        capture.assert_not_called()
+        from timecapsulesmb.app.recovery import recovery_for
+        card = recovery_for("wipe-disk", ErrorCode.WIPE_DISK_CHECK_UNANSWERED)
+        self.assertIn("Nothing on the disk was changed", card["message"])
+        self.assertNotIn("USB", " ".join(card["actions"]))

@@ -135,7 +135,7 @@ final class RecoveryActionMapperTests: XCTestCase {
             [noHFS, writeTest, managerStop, upload].map(\.message),
             [
                 "The disk is not ready for installation",
-                "The disk did not respond",
+                "The test write did not finish",
                 "A service on the device is stuck",
                 "Copying the installation files timed out",
             ]
@@ -144,7 +144,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         L10n.apply(language: .simplifiedChinese)
         XCTAssertEqual(
             [noHFS, writeTest, managerStop, upload].map(\.message),
-            ["磁盘尚未准备好用于安装", "磁盘没有响应", "设备上的某项服务卡住了", "复制安装文件超时"]
+            ["磁盘尚未准备好用于安装", "测试写入没有完成", "设备上的某项服务卡住了", "复制安装文件超时"]
         )
     }
 
@@ -482,14 +482,15 @@ final class RecoveryActionMapperTests: XCTestCase {
 
     func testRecoveryGuidancePresentationLocalizesSlowDeviceSshTimeoutDetails() throws {
         let recovery = try recoveryValue(
-            title: "Device is responding very slowly",
+            title: "Device did not answer in time",
             actions: [
                 "Reboot the device.",
                 "Wait for SSH to come back.",
-                "Retry the operation."
+                "Retry the operation.",
+                "If it still does not answer, check the network connection to the device, such as Wi-Fi or a VPN."
             ],
             actionIDs: ["run_checkup"],
-            message: "The AirPort Extreme 6th generation is responding very slowly. Please reboot the device. Then wait for SSH to come back and retry.",
+            message: "The AirPort Extreme 6th generation did not answer in time. Please reboot the device. Then wait for SSH to come back and retry. If it still does not answer, check the network connection to the device, such as Wi-Fi or a VPN.",
             localizationKey: "remote_error.ssh_timeout_slow_device",
             localizationValues: ["device_name": "AirPort Extreme 6th generation"]
         ).decode(BackendRecoveryPayload.self)
@@ -502,36 +503,43 @@ final class RecoveryActionMapperTests: XCTestCase {
 
         L10n.apply(language: .english)
         let english = RecoveryGuidancePresentation(error: error)
-        XCTAssertEqual(english.title, "Device is responding very slowly")
+        XCTAssertEqual(english.title, "Device did not answer in time")
         XCTAssertEqual(
             english.message,
-            "The AirPort Extreme 6th generation is responding very slowly. Please reboot the device. Then wait for SSH to come back and retry."
+            "The AirPort Extreme 6th generation did not answer in time. Please reboot the device. Then wait for SSH to come back and retry. If it still does not answer, check the network connection to the device, such as Wi-Fi or a VPN."
         )
+        // The reboot stays first; this Mac's connection is the last step.
         XCTAssertEqual(english.steps, [
             "Reboot the device.",
             "Wait for SSH to come back.",
-            "Retry the operation."
+            "Retry the operation.",
+            "If it still does not answer, check the network connection to the device, such as Wi-Fi or a VPN."
         ])
 
         L10n.apply(language: .simplifiedChinese)
         let chinese = RecoveryGuidancePresentation(error: error)
-        XCTAssertEqual(chinese.title, "设备响应非常慢")
-        XCTAssertEqual(chinese.message, "AirPort Extreme 6th generation 响应非常慢。请重启设备。然后等待 SSH 恢复，再重试。")
+        XCTAssertEqual(chinese.title, "设备没有及时响应")
+        XCTAssertEqual(
+            chinese.message,
+            "AirPort Extreme 6th generation 没有及时响应。请重启设备。然后等待 SSH 恢复，再重试。如果仍然没有响应，请检查与设备之间的网络连接，例如 Wi-Fi 或 VPN。"
+        )
         XCTAssertEqual(chinese.steps, [
             "重启设备。",
             "等待 SSH 恢复。",
-            "重试此操作。"
+            "重试此操作。",
+            "如果仍然没有响应，请检查与设备之间的网络连接，例如 Wi-Fi 或 VPN。"
         ])
     }
 
     func testRecoveryGuidancePresentationFallsBackWhenLocalizedPlaceholderValueIsMissing() throws {
-        let fallbackMessage = "The device is responding very slowly. Please reboot the device. Then wait for SSH to come back and retry."
+        let fallbackMessage = "The device did not answer in time. Please reboot the device. Then wait for SSH to come back and retry. If it still does not answer, check the network connection to the device, such as Wi-Fi or a VPN."
         let recovery = try recoveryValue(
-            title: "Device is responding very slowly",
+            title: "Device did not answer in time",
             actions: [
                 "Reboot the device.",
                 "Wait for SSH to come back.",
-                "Retry the operation."
+                "Retry the operation.",
+                "If it still does not answer, check the network connection to the device, such as Wi-Fi or a VPN."
             ],
             message: fallbackMessage,
             localizationKey: "remote_error.ssh_timeout_slow_device"
@@ -585,15 +593,15 @@ final class RecoveryActionMapperTests: XCTestCase {
     }
 
     func testErrorBoxShowsGuidanceInTheAppLanguageAndTheHelpersEnglishBelow() throws {
-        let raw = "Copying the SMB payload timed out. The disk may be failing or unable to spin up."
+        let raw = "Copying the SMB payload timed out. A slow connection between this computer and the device can cause this, and so can a disk that is slow to respond."
         let error = BackendErrorViewModel(
             operation: "deploy",
             code: "payload_upload_timeout",
             message: raw,
             recovery: try recoveryValue(
                 title: "Copying the installation files timed out",
-                actions: ["Run “Disk Repair”.", "Connect by Ethernet.", "Replace the disk."],
-                message: "The disk may be failing.",
+                actions: ["Connect by Ethernet.", "If it times out again, run “Disk Repair”."],
+                message: "The files did not reach the device in time.",
                 localizationKey: "deploy.payload_upload_timeout"
             ).decode(BackendRecoveryPayload.self)
         )
@@ -602,9 +610,12 @@ final class RecoveryActionMapperTests: XCTestCase {
         let german = RecoveryGuidancePresentation(error: error)
 
         XCTAssertEqual(german.title, "Das Kopieren der Installationsdateien hat das Zeitlimit überschritten")
-        XCTAssertTrue(german.message?.hasPrefix("Die Festplatte fällt möglicherweise aus") == true, german.message ?? "")
-        XCTAssertEqual(german.steps.first, "Führen Sie die „Festplattenreparatur“ aus.")
-        XCTAssertEqual(german.steps.count, 3)
+        XCTAssertTrue(german.message?.hasPrefix("Die Dateien sind nicht rechtzeitig auf dem Gerät angekommen") == true, german.message ?? "")
+        XCTAssertEqual(
+            german.steps.first,
+            "Wenn dieser Mac oder das Gerät über Wi-Fi verbunden ist, verbinden Sie es per Ethernet und führen Sie dann „Samba installieren / aktualisieren“ erneut aus."
+        )
+        XCTAssertEqual(german.steps.count, 2)
         // The helper's text is diagnostics: English, whatever the app language.
         XCTAssertEqual(german.details, raw)
         let lines = [german.title, german.message ?? ""] + german.steps

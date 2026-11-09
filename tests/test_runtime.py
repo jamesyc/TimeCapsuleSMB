@@ -32,10 +32,11 @@ from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.services.runtime import resolve_env_connection
 from timecapsulesmb.device.compat import classify_device_compatibility
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.probe import AirportAcpReading, ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import DeployDeviceError, require_supported_payload
-from timecapsulesmb.transport.errors import SshCommandTimeout, SshError
+from timecapsulesmb.transport.errors import SshCommandTimeout, SshConnectTimeout, SshError
 from timecapsulesmb.transport.ssh import SshConnection
 
 from tests.cli_support import app_config, valid_env
@@ -779,7 +780,8 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         processes.assert_called_once_with(self.CONNECTION)
         steps = cli_steps("deploy", error.code)
         self.assertEqual(steps[0], "Unplug the device, wait 10 seconds and plug it back in.")
-        self.assertTrue(any(step.startswith("If the disk stops responding again, it is probably failing") for step in steps))
+        # A disk wait is not proof of a failing disk: only "may".
+        self.assertTrue(any(step.startswith("If the disk stops responding again, it may be failing") for step in steps))
 
     def test_a_disk_stall_that_passes_the_threshold_during_acpds_reads_is_still_the_disk(self) -> None:
         # Right after a restart, mount_hfs has slept under 120 s at the first
@@ -846,11 +848,13 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         # The evidence goes with the problem to telemetry.
         self.assertEqual(debug["remote_kern_limits"], "kern.maxfiles = 1024")
         self.assertEqual(debug["remote_kernel_table_full"], ["file: table is full"])
-        self.assertEqual(error.code, "acpd_broken")
-        self.assertTrue(str(error).startswith("Apple ACPd is broken: the AirPort service stopped answering the network"))
+        self.assertEqual(error.code, "acpd_network_silent")
+        self.assertTrue(str(error).startswith("No answer from Apple ACPd over the network: either the connection"))
         self.assertIn("Nothing was changed", str(error))
-        # acpd_broken's next steps say to unplug it.
-        self.assertIn("Unplug the device, wait 10 seconds and plug it back in.", cli_steps("deploy", error.code))
+        # The connection comes first in its next steps, then the unplug.
+        steps = cli_steps("deploy", error.code)
+        self.assertIn("over Ethernet", steps[0])
+        self.assertIn("unplugging the device for 10 seconds", steps[1])
         self.assertNotIn("VPN", str(error))
         self.assertEqual(debug["acpd_problems"], ["network_silent"])
         self.assertEqual(debug["acp_read_error"], "Could not connect to ACP on 10.0.0.2:5009: timed out")
@@ -896,7 +900,7 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
                 service_runtime.require_acpd_ready(self.CONNECTION, OperationCallbacks(add_debug_fields=debug.update))
         read.assert_called_once()
         network.assert_called_once_with(self.CONNECTION)
-        self.assertEqual(raised.exception.code, "acpd_broken")
+        self.assertEqual(raised.exception.code, "acpd_network_silent")
         self.assertEqual(debug["acpd_problems"], ["network_silent"])
 
     def test_a_silent_listener_is_named_off_this_computers_network_too(self) -> None:
@@ -904,7 +908,7 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         unanswered = AirportAcpReading(password_matches=None, error="No route to host")
         networks = [ipaddress.ip_network("192.168.5.0/24")]
         error, debug, _answer, _processes = self.gate(reading=unanswered, off_network=networks, network_answers=False)
-        self.assertEqual(error.code, "acpd_broken")
+        self.assertEqual(error.code, "acpd_network_silent")
         self.assertEqual(debug["acpd_problems"], ["network_silent"])
 
     def test_an_unanswered_network_read_off_this_computers_network_says_so(self) -> None:
@@ -1192,6 +1196,153 @@ class RequireAcpdReadyDiskCheckTests(unittest.TestCase):
                 service_runtime.require_acpd_ready(self.CONNECTION, OperationCallbacks(), reading=acp_reading(False))
         self.assertEqual(raised.exception.code, "auth_failed")
         processes.assert_not_called()
+
+
+def finished_listing(*rows: str) -> str:
+    """A PROCESS_SNAPSHOT_COMMAND listing that finished, with this login's sshd and ACPd."""
+    from timecapsulesmb.device.processes import PS_LISTING_END
+
+    return "\n".join(("  107 1 15 S 0 select 0:00.32 sshd", "  190 1 15 Ia 127 select 0:01.40 ACPd", *rows, PS_LISTING_END))
+
+
+WPA_ROW = "  381 190 15 S 6 select 0:00.14 wpa_supplicant"
+
+
+class PreflightRecordsWifiClientTests(unittest.TestCase):
+    """The preflight's first listing records whether the device reaches its
+    network over Wi-Fi, as an operation field: telemetry on every run, and the
+    answer wifi_link_error uses when the operation fails later."""
+
+    def preflight(self, listing: str) -> dict[str, object]:
+        fields: dict[str, object] = {}
+        callbacks = OperationCallbacks(update_fields=fields.update)
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True), \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("none")), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=True):
+            service_runtime.require_acpd_ready(SshConnection("root@10.0.0.2", "pw", ""), callbacks, reading=acp_reading(True))
+        return fields
+
+    def test_a_device_joined_to_another_wifi_network_is_recorded_as_a_wifi_client(self) -> None:
+        self.assertIs(self.preflight(finished_listing(WPA_ROW))["wifi_client"], True)
+
+    def test_a_cabled_device_is_recorded_as_not_a_wifi_client(self) -> None:
+        self.assertIs(self.preflight(finished_listing())["wifi_client"], False)
+
+    def test_a_listing_that_did_not_finish_records_nothing(self) -> None:
+        # update_fields drops None, so wifi_link_error later looks for itself.
+        self.assertIsNone(self.preflight("  107 1 15 S 0 select 0:00.32 sshd")["wifi_client"])
+
+
+class ProbeTimeoutErrorTests(unittest.TestCase):
+    def test_a_probe_that_timed_out_raises_with_the_timeout_as_its_cause(self) -> None:
+        # Not "SSH connection dropped": the error keeps the timeout, so the app
+        # and the CLI give it the timeout's guidance (bare_timeout).
+        from timecapsulesmb.transport.errors import bare_timeout
+        timeout = SshCommandTimeout("Timed out waiting for ssh command to finish: uname")
+        probe = ProbeResult(ssh_status=SshAccessStatus.TRANSPORT_FAILED, error=str(timeout), os_name="",
+                            os_release="", arch="", elf_endianness="unknown", timeout=timeout)
+        error = service_runtime.probe_failure_error(probe, SshConnection("root@10.0.0.2", "pw", ""))
+        self.assertEqual(error.code, ErrorCode.REMOTE_ERROR)
+        self.assertIs(error.__cause__, timeout)
+        self.assertTrue(bare_timeout(error))
+
+    def test_a_probe_whose_connection_closed_keeps_its_own_code(self) -> None:
+        probe = ProbeResult(ssh_status=SshAccessStatus.TRANSPORT_FAILED, error="Connection closed by remote host",
+                            os_name="", os_release="", arch="", elf_endianness="unknown")
+        error = service_runtime.probe_failure_error(probe, SshConnection("root@10.0.0.2", "pw", ""))
+        self.assertEqual(error.code, ErrorCode.SSH_TRANSPORT_FAILED)
+
+
+class WifiLinkErrorTests(unittest.TestCase):
+    """wifi_link_error decides, for the error an operation ends with, whether
+    it is the device's Wi-Fi link: only SSH and upload timeouts qualify, and
+    only the operation's recorded answer decides. It never reads the device
+    itself: a look after a timeout could add more than a minute of silence."""
+
+    TIMEOUT = SshCommandTimeout("Timed out waiting for ssh command to finish: /usr/bin/acp MaSt")
+
+    def classify(self, exc: BaseException, *, known: object) -> bool:
+        with mock.patch("timecapsulesmb.device.acpd.read_processes") as read, \
+                mock.patch("timecapsulesmb.transport.ssh.run_process") as ssh:
+            verdict = service_runtime.wifi_link_error(exc, known=known)
+        read.assert_not_called()
+        ssh.assert_not_called()
+        return verdict
+
+    def test_the_recorded_answer_decides(self) -> None:
+        self.assertIs(self.classify(self.TIMEOUT, known=True), True)
+        self.assertIs(self.classify(self.TIMEOUT, known=False), False)
+
+    def test_a_connect_timeout_counts_as_a_timeout(self) -> None:
+        # ssh's ConnectTimeout: the link that did not answer the login.
+        error = SshConnectTimeout("Timed out connecting to the device over SSH")
+        self.assertIs(self.classify(error, known=True), True)
+        self.assertIs(self.classify(error, known=False), False)
+
+    def test_an_unrecorded_link_says_no_without_reading_the_device(self) -> None:
+        # The preflight's listing did not finish, or there was no preflight.
+        self.assertIs(self.classify(self.TIMEOUT, known=None), False)
+
+    def test_coded_errors_that_are_an_ssh_deadline_qualify_like_an_ssh_timeout(self) -> None:
+        # A slow link runs these deadlines out as surely as a slow disk.
+        for code in ("payload_upload_timeout", "disk_write_test_unresponsive", "xattr_migration_timeout",
+                     "runtime_not_answered"):
+            with self.subTest(code=code):
+                self.assertIs(self.classify(DeployDeviceError("timed out", code=code), known=True), True)
+                self.assertIs(self.classify(DeployDeviceError("timed out", code=code), known=False), False)
+
+    def test_service_checks_that_all_timed_out_get_the_wifi_card_on_a_wifi_device(self) -> None:
+        # The error runtime_failure_error builds when no check answered after
+        # the restart: on a Wi-Fi device that is the link's symptom.
+        from timecapsulesmb.device.probe import ManagedRuntimeProbeResult, ProbeStepResult, ReadinessProbeResult
+        from timecapsulesmb.services.runtime_verification import runtime_failure_error
+        timed_out = ManagedRuntimeProbeResult(
+            ready=False,
+            detail="runtime verification timed out",
+            smbd=ReadinessProbeResult(ready=False, detail="smbd probe timed out", steps=(
+                ProbeStepResult("smbd", "timeout", "smbd probe timed out"),
+            )),
+            mdns=ReadinessProbeResult(ready=False, detail="mDNS probe timed out", steps=(
+                ProbeStepResult("mdns_process_table", "timeout", "mDNS probe timed out"),
+            )),
+        )
+        error = runtime_failure_error(timed_out, "Managed runtime did not become ready after reboot.")
+        self.assertEqual(error.code, ErrorCode.RUNTIME_NOT_ANSWERED)
+        self.assertIs(self.classify(error, known=True), True)
+        self.assertIs(self.classify(error, known=False), False)
+
+    def test_a_command_exit_made_from_an_error_is_judged_by_that_error(self) -> None:
+        # The CLI sees the SystemExit a command turned the error into.
+        def exit_from(error: BaseException) -> SystemExit:
+            try:
+                raise error
+            except BaseException as exc:
+                try:
+                    raise SystemExit(str(exc)) from exc
+                except SystemExit as exit_:
+                    return exit_
+        slow = exit_from(DeployDeviceError("timed out", code="payload_upload_timeout"))
+        self.assertIs(self.classify(slow, known=True), True)
+        stuck = DeployDeviceError("A service on the device is stuck", code="manager_stop_timeout")
+        stuck.__cause__ = self.TIMEOUT
+        self.assertIs(self.classify(exit_from(stuck), known=True), False)
+        self.assertIs(self.classify(exit_from(self.TIMEOUT), known=True), True)
+
+    def test_an_error_that_wrapped_a_timeout_without_a_cause_qualifies(self) -> None:
+        for code in (None, "remote_error"):
+            with self.subTest(code=code):
+                wrapped = DeployDeviceError("The disks could not be read.", code=code)
+                wrapped.__cause__ = self.TIMEOUT
+                self.assertIs(self.classify(wrapped, known=True), True)
+
+    def test_other_errors_keep_their_own_diagnosis_on_a_wifi_device(self) -> None:
+        # A coded error has its own diagnosis, even one an SSH timeout caused.
+        stuck = DeployDeviceError("A service on the device is stuck", code="manager_stop_timeout")
+        stuck.__cause__ = self.TIMEOUT
+        for exc in (SshError("Connection refused"), stuck, ConfigError("bad .env")):
+            with self.subTest(exc=type(exc).__name__):
+                self.assertIs(self.classify(exc, known=True), False)
 
 
 class StrictDiskCheckTests(unittest.TestCase):

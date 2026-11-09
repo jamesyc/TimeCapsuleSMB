@@ -76,7 +76,7 @@ from timecapsulesmb.deploy.executor import XattrMigrationResult
 from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
 from timecapsulesmb.discovery.bonjour import BonjourQueryDiagnostics, BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import DBUG_SSH_VALUE, ACPAuthError, ACPConnectionError
-from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE
+from timecapsulesmb.services.reboot import SSH_ENABLE_NO_RETURN_MESSAGE, SSH_ENABLE_TIMEOUT_MESSAGE
 from timecapsulesmb.services.activation import OLDEST_ACTIVATABLE_RELEASE_TAG
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.services.app import AppOperationError, jsonable
@@ -95,8 +95,10 @@ from timecapsulesmb.transport.errors import (
     SshClientConfigError,
     SshClientStoppedError,
     SshCommandTimeout,
+    SshConnectTimeout,
     SshError,
     SshLocalNetworkFilteredError,
+    SshUploadTimeout,
     TransportError,
     ssh_timeout_slow_device_message,
 )
@@ -1692,7 +1694,10 @@ class AppApiTests(unittest.TestCase):
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "remote_error")
         self.assertEqual(error["message"], timeout)
-        self.assertEqual(error["recovery"]["title"], "Device is responding very slowly")
+        self.assertEqual(error["recovery"]["title"], "Device did not answer in time")
+        # The reboot stays first; this Mac's connection is the last step.
+        self.assertEqual(error["recovery"]["actions"][0], "Reboot the device.")
+        self.assertIn("check the network connection to the device", error["recovery"]["actions"][-1])
         expected_message = ssh_timeout_slow_device_message("Time Capsule 3rd generation")
         self.assertEqual(error["recovery"]["message"], expected_message)
         self.assertEqual(error["recovery"]["localization_key"], "remote_error.ssh_timeout_slow_device")
@@ -1702,6 +1707,105 @@ class AppApiTests(unittest.TestCase):
         self.assertIn(timeout, telemetry_error)
         self.assertIn("stage=upload_boot_files", telemetry_error)
         self._telemetry_urlopen.assert_not_called()
+
+    def run_failing(self, raise_error, *, wifi_client: bool | None = None, connection: SshConnection | None = None):
+        """A deploy that fails with raise_error(); `wifi_client` is what its
+        preflight recorded (None: nothing recorded)."""
+        collector = CollectingSink()
+
+        def fail(_params, context):
+            context.stage("upload_smbd")
+            context.connection = connection
+            context.update_fields(device_model="TimeCapsule6,116", device_syap="116", wifi_client=wifi_client)
+            raise raise_error()
+
+        with mock.patch.dict(service.OPERATIONS, {"deploy": fail}):
+            rc = service.run_api_request({"operation": "deploy", "params": {}}, collector.sink)
+        self.assertEqual(rc, 1)
+        return self.assert_single_terminal_event(collector, "error"), self._telemetry_client.emit.call_args_list[-1].kwargs
+
+    def test_dispatcher_names_the_wifi_link_for_an_ssh_timeout_on_a_wifi_device(self) -> None:
+        timeout = "Timed out waiting for ssh command to finish: /usr/bin/acp MaSt"
+        error, finished = self.run_failing(lambda: SshCommandTimeout(timeout), wifi_client=True)
+        self.assertEqual(error["code"], "wifi_link_slow")
+        # The helper's own text stays as the diagnostic line.
+        self.assertEqual(error["message"], timeout)
+        self.assertEqual(error["recovery"]["localization_key"], "wifi_link_slow")
+        self.assertEqual(error["recovery"]["title"], "The device did not answer in time over Wi-Fi")
+        self.assertIn("A slow Wi-Fi link can cause this.", error["recovery"]["message"])
+        self.assertNotIn("run_checkup", error["recovery"]["action_ids"])
+        self.assertEqual(finished["error_code"], "wifi_link_slow")
+        self.assertIs(finished["wifi_client"], True)
+
+    def test_dispatcher_keeps_the_slow_device_advice_for_a_cabled_device(self) -> None:
+        error, finished = self.run_failing(lambda: SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+                                           wifi_client=False)
+        self.assertEqual(error["code"], "remote_error")
+        self.assertEqual(error["recovery"]["localization_key"], "remote_error.ssh_timeout_slow_device")
+        self.assertIs(finished["wifi_client"], False)
+
+    def test_dispatcher_gives_a_connect_timeout_the_timeout_cards(self) -> None:
+        # ssh's ConnectTimeout ran out: the device did not answer in time, so
+        # the reboot comes first, or the Wi-Fi card on a device on Wi-Fi.
+        line = "ssh: connect to host 10.0.0.2 port 22: Operation timed out"
+        for wifi, key in ((False, "remote_error.ssh_timeout_slow_device"), (True, "wifi_link_slow")):
+            with self.subTest(wifi_client=wifi):
+                error, _finished = self.run_failing(
+                    lambda: SshConnectTimeout(f"Timed out connecting to the device over SSH: {line}"), wifi_client=wifi,
+                )
+                self.assertEqual(error["recovery"]["localization_key"], key)
+                self.assertIn(line, error["message"])
+
+    def test_dispatcher_gives_a_wrapped_timeout_the_timeout_cards(self) -> None:
+        # A step wrapped the timeout without naming a cause (code remote_error),
+        # as a probe that did not answer is: the timeout's cards, not "The
+        # device reported an error".
+        def wrapped():
+            timeout = SshCommandTimeout("Timed out waiting for ssh command to finish: uname")
+            error = AppOperationError(str(timeout), code="remote_error")
+            error.__cause__ = timeout
+            return error
+
+        for wifi, key in ((False, "remote_error.ssh_timeout_slow_device"), (True, "wifi_link_slow")):
+            with self.subTest(wifi_client=wifi):
+                error, _finished = self.run_failing(wrapped, wifi_client=wifi)
+                self.assertEqual(error["recovery"]["localization_key"], key)
+
+    def test_dispatcher_keeps_the_card_of_a_cause_found_while_handling_a_timeout(self) -> None:
+        def verdict():
+            # Raised while handling the timeout, as raise_if_acpd_silent does:
+            # the timeout is its context.
+            error = AppOperationError("A disk on the device has stopped responding.", code="disk_not_responding")
+            error.__context__ = SshCommandTimeout("Timed out waiting for ssh command to finish: acp MaSt")
+            return error
+
+        error, _finished = self.run_failing(verdict, wifi_client=True)
+        self.assertEqual(error["code"], "disk_not_responding")
+        self.assertEqual(error["recovery"]["localization_key"], "disk_not_responding")
+
+    def test_dispatcher_names_the_wifi_link_for_a_payload_upload_timeout(self) -> None:
+        for wifi, code in ((True, "wifi_link_slow"), (False, "payload_upload_timeout")):
+            with self.subTest(wifi_client=wifi):
+                error, finished = self.run_failing(
+                    lambda: AppOperationError("Copying the SMB payload timed out.", code="payload_upload_timeout"),
+                    wifi_client=wifi,
+                )
+                self.assertEqual(error["code"], code)
+                self.assertEqual(error["recovery"]["localization_key"],
+                                 "wifi_link_slow" if wifi else "deploy.payload_upload_timeout")
+                self.assertEqual(finished["error_code"], code)
+
+    def test_dispatcher_keeps_the_slow_device_advice_when_nothing_recorded_the_link(self) -> None:
+        # No preflight listing finished: the device is not read again after
+        # the timeout, and the reboot-first card stays.
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        with mock.patch("timecapsulesmb.device.acpd.read_processes") as look:
+            error, _finished = self.run_failing(
+                lambda: SshCommandTimeout("Timed out waiting for ssh command to finish: ps"), connection=connection,
+            )
+        look.assert_not_called()
+        self.assertEqual(error["code"], "remote_error")
+        self.assertEqual(error["recovery"]["localization_key"], "remote_error.ssh_timeout_slow_device")
 
     def test_dispatcher_gives_a_connection_this_mac_dropped_its_own_code_over_the_stages_advice(self) -> None:
         collector = CollectingSink()
@@ -3717,7 +3821,7 @@ class AppApiTests(unittest.TestCase):
             ) as probe:
                 with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None) as tcp_connect_error:
                     with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
-                        with mock.patch("timecapsulesmb.services.configure.reboot_device", return_value=None) as wait_for_ssh:
+                        with mock.patch("timecapsulesmb.services.reboot.reboot_device", return_value=None) as wait_for_ssh:
                             rc = service.run_api_request(
                                 {
                                     "operation": "configure",
@@ -3742,7 +3846,8 @@ class AppApiTests(unittest.TestCase):
             "secret",
             wait=True,
             callbacks=mock.ANY,
-            up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE,
+            up_timeout_message=SSH_ENABLE_NO_RETURN_MESSAGE,
+            ssh_closed_message=SSH_ENABLE_TIMEOUT_MESSAGE,
             wifi_name=None,
         )
         self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
@@ -4346,7 +4451,7 @@ class AppApiTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
                     mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
                     mock.patch("timecapsulesmb.services.acp_ssh.set_dbug", side_effect=ACPConnectionError("ACP connection closed")), \
-                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device") as reboot:
+                    mock.patch("timecapsulesmb.services.reboot.reboot_device") as reboot:
                 rc = service.run_api_request({"operation": "set-ssh", "params": params}, collector.sink)
 
         self.assertEqual(rc, 1)
@@ -4387,7 +4492,7 @@ class AppApiTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
                     mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
                     mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug, \
-                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device", return_value=None) as reboot:
+                    mock.patch("timecapsulesmb.services.reboot.reboot_device", return_value=None) as reboot:
                 rc = service.run_api_request(
                     {
                         "operation": "set-ssh",
@@ -4485,7 +4590,7 @@ class AppApiTests(unittest.TestCase):
                     mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
                     mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=elsewhere), \
                     mock.patch("timecapsulesmb.core.install.sys.platform", "darwin"), \
-                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device", return_value=None) as reboot:
+                    mock.patch("timecapsulesmb.services.reboot.reboot_device", return_value=None) as reboot:
                 rc = service.run_api_request({"operation": "set-ssh", "params": params}, collector.sink)
 
         self.assertEqual(rc, 1)
@@ -4522,7 +4627,7 @@ class AppApiTests(unittest.TestCase):
                         password_matches=None, error="Could not connect to ACP on 10.0.0.2:5009: [Errno 65] No route to host",
                     )), \
                     mock.patch("timecapsulesmb.services.runtime.locate_airport", locate), \
-                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device", return_value=None) as reboot, \
+                    mock.patch("timecapsulesmb.services.reboot.reboot_device", return_value=None) as reboot, \
                     mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": "macos_gui"}):
                 rc = service.run_api_request({"operation": "set-ssh", "params": params}, collector.sink)
         self.assertEqual(rc, 1)
@@ -4787,11 +4892,11 @@ class AppApiTests(unittest.TestCase):
                         config_path.write_text(original)
                     # Keep the real probe, Configure service and error translation.
                     # Only the SSH boundary fails; the device's port is reachable.
-                    with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True), \
+                    with mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value=None), \
                          mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=failure) as ssh, \
                          mock.patch("timecapsulesmb.device.probe.mac_network_filters") as filters, \
                          mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe") as enable, \
-                         mock.patch("timecapsulesmb.services.configure.reboot_device") as reboot:
+                         mock.patch("timecapsulesmb.services.reboot.reboot_device") as reboot:
                         rc = service.run_api_request(
                             {
                                 "operation": "configure",
@@ -6707,8 +6812,8 @@ MaSt = (
         rc, collector = self.run_confirmed_deploy_with_mast(
             MaStDiscoveryResult((volume,), 1, ""),
             select_payload_home_side_effect=StorageDeviceError(
-                "The disk did not respond when tested. It may be failing or unable to spin up. "
-                "Run Disk Repair; if this keeps happening, the disk may need replacing.",
+                "The device did not finish a test write to the disk in time. A slow connection to the device can "
+                "cause this, and so can a disk that is slow to respond.",
                 code="disk_write_test_unresponsive",
             ),
         )
@@ -6716,7 +6821,8 @@ MaSt = (
         self.assertEqual(rc, 1)
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "disk_write_test_unresponsive")
-        self.assertIn("The disk did not respond when tested.", error["message"])
+        self.assertIn("did not finish a test write to the disk in time", error["message"])
+        self.assertEqual(error["recovery"]["title"], "The test write did not finish")
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["stage"], "select_payload_home")
@@ -6761,19 +6867,24 @@ MaSt = (
                 return
             if on_uploading is not None:
                 on_uploading(plan.uploads[0])
-            raise SshCommandTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH")
+            raise SshUploadTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH",
+                                   bytes_on_device=4096)
 
-        rc, collector = self.run_confirmed_deploy_with_mast(
-            MaStDiscoveryResult((volume,), 1, ""),
-            payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
-            run_remote_actions_side_effect=lambda *args, **kwargs: None,
-            upload_side_effect=timeout_upload,
-        )
+        # A cabled device: no wpa_supplicant in its process list.
+        with mock.patch("timecapsulesmb.device.acpd.read_processes",
+                        return_value="  107 1 15 S 0 select 0:00.32 sshd\n  190 1 15 Ia 127 select 0:01.40 ACPd\ntcapsule-ps: end") as listing:
+            rc, collector = self.run_confirmed_deploy_with_mast(
+                MaStDiscoveryResult((volume,), 1, ""),
+                payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
+                run_remote_actions_side_effect=lambda *args, **kwargs: None,
+                upload_side_effect=timeout_upload,
+            )
 
         self.assertEqual(rc, 1)
+        listing.assert_called()
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "payload_upload_timeout")
-        self.assertIn("Copying the SMB payload timed out. The disk may be failing or unable to spin up, or the network connection to the device may be too slow", error["message"])
+        self.assertIn("Copying the SMB payload timed out. A slow connection between this computer and the device can cause this, and so can a disk that is slow to respond.", error["message"])
         self.assertEqual(error["debug"]["cause"], "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH")
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")
@@ -8286,3 +8397,28 @@ MaSt = (
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnableSshConfirmationTests(unittest.TestCase):
+    """The question before ACP turns SSH on and reboots: a port that refused
+    is SSH off; one that only did not answer may be SSH on behind a slow link."""
+
+    def ask(self, *, unanswered: bool):
+        from timecapsulesmb.app.confirmations import AppConfirmationRequired
+        from timecapsulesmb.app.ops.configure import require_enable_ssh_confirmation
+        with self.assertRaises(AppConfirmationRequired) as raised:
+            require_enable_ssh_confirmation({}, host="root@10.0.0.2", unanswered=unanswered)
+        return raised.exception.confirmation
+
+    def test_a_refused_port_says_ssh_is_closed(self) -> None:
+        confirmation = self.ask(unanswered=False)
+        self.assertEqual(confirmation.presentation_id, "configure.enable_ssh_reboot")
+        self.assertIn("SSH is closed on 10.0.0.2", confirmation.message)
+
+    def test_an_unanswered_port_names_every_cause_and_what_a_restart_changes(self) -> None:
+        confirmation = self.ask(unanswered=True)
+        self.assertEqual(confirmation.presentation_id, "configure.enable_ssh_reboot_unanswered")
+        self.assertIn("SSH on 10.0.0.2 did not answer", confirmation.message)
+        self.assertIn("It may be turned off, or the device or the connection may be slow", confirmation.message)
+        self.assertIn("If SSH was already on, the restart changes nothing", confirmation.message)
+        self.assertNotIn("closed", confirmation.message)

@@ -18,6 +18,7 @@ from timecapsulesmb.device.processes import (
     UNREADABLE_COMMAND,
     Process,
     acpd_running,
+    wifi_client,
     listing_complete,
     describe_uninterruptible,
     parse_ps_rows,
@@ -288,6 +289,23 @@ def test_smbd_running_says_whether_samba_outlived_acpd_by_the_same_rules():
     assert smbd_running(f"{sshd}\n{ps_row(320, 'smbd', stat='Z')}\n{PS_LISTING_END}") is False
     assert smbd_running(f"{sshd}\n{ps_row(320, 'smbd')}") is None  # cut short
     assert smbd_running(f"ps: kvm_getprocs: Cannot allocate memory\n{PS_LISTING_END}") is None
+
+
+def test_wifi_client_says_whether_the_airport_joins_another_wifi_network():
+    # ACPd runs wpa_supplicant only while the AirPort joins or extends another
+    # Wi-Fi network, beside hostapd when it also offers its own network.
+    sshd = ps_row(107, "sshd")
+    wpa = ps_row(381, "wpa_supplicant")
+    assert wifi_client(f"{sshd}\n{wpa}\n{PS_LISTING_END}") is True
+    assert wifi_client(f"{sshd}\n{wpa}\n{ps_row(382, 'hostapd')}\n{PS_LISTING_END}") is True
+    assert wifi_client(f"{sshd}\n{ps_row(382, 'hostapd')}\n{PS_LISTING_END}") is False
+    assert wifi_client(f"{sshd}\n{ps_row(381, 'wpa_supplicant', stat='Z')}\n{PS_LISTING_END}") is False
+    # A live row proves it even in a listing cut short, such as the table
+    # Checkup reads after its listing timed out; only a finished one says no.
+    assert wifi_client(f"{sshd}\n{wpa}") is True
+    assert wifi_client(sshd) is None
+    assert wifi_client(f"{sshd}\n{ps_row(381, 'wpa_supplicant', stat='Z')}") is None
+    assert wifi_client("") is None  # the listing timed out
 
 
 def test_the_startup_age_listing_ends_with_its_end_line_and_says_whether_acpd_runs(tmp_path):

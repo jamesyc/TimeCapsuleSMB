@@ -50,6 +50,9 @@ class ErrorCode(str, Enum):
     LINK_LOCAL_INTERFACE_GONE = "link_local_interface_gone"
     ACPD_BROKEN = "acpd_broken"
     ACPD_QUIT = "acpd_quit"
+    # Neither this computer's ACP read nor one through SSH answered: a slow
+    # link or ACPd's network listener (device.acpd's network_silent).
+    ACPD_NETWORK_SILENT = "acpd_network_silent"
     LOCAL_NETWORK_FILTERED = "local_network_filtered"
     LOCAL_NETWORK_PERMISSION_DENIED = "local_network_permission_denied"
     DISCOVERY_TIMEOUT_TOO_SHORT = "discovery_timeout_too_short"
@@ -66,6 +69,9 @@ class ErrorCode(str, Enum):
 
     # Restarting the device.
     REBOOT_NOT_STARTED = "reboot_not_started"
+    # The uptime read just before the request did not answer, so no restart
+    # was requested (services.reboot).
+    REBOOT_NOT_REQUESTED = "reboot_not_requested"
     REBOOT_NOT_FINISHED = "reboot_not_finished"
     # This Mac left the device's network during the restart wait and never
     # came back to it (services.reboot): whether the device restarted is unknown.
@@ -78,6 +84,9 @@ class ErrorCode(str, Enum):
     RUNTIME_NOT_INSTALLED = "runtime_not_installed"
     RUNTIME_OUTDATED = "runtime_outdated"
     RUNTIME_NOT_RESTARTED = "runtime_not_restarted"
+    # After a restart every service check that did not pass timed out: the
+    # services' state is unknown (services.runtime_verification).
+    RUNTIME_NOT_ANSWERED = "runtime_not_answered"
     CLIENT_OUTDATED = "client_outdated"
     PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
     PAYLOAD_DAMAGED_ON_DISK = "payload_damaged_on_disk"
@@ -108,6 +117,17 @@ class ErrorCode(str, Enum):
     WIPE_DISK_BUSY = "wipe_disk_busy"
     WIPE_DISK_CHANGED = "wipe_disk_changed"
     WIPE_DISK_ERASE_FAILED = "wipe_disk_erase_failed"
+    # The zeroing never reported its end (the SSH deadline ran out, or its
+    # output stopped short): the disk may be failing, but nothing proves it.
+    WIPE_DISK_NO_RESPONSE = "wipe_disk_no_response"
+    # The SSH connection dropped before the zeroing reported its end.
+    WIPE_DISK_CONNECTION_LOST = "wipe_disk_connection_lost"
+    # The kernel's disk list did not come back, so other disks could not be
+    # checked; nothing was changed.
+    WIPE_DISK_CHECK_UNANSWERED = "wipe_disk_check_unanswered"
+    # After the restart, MaSt did not answer, so the new volume is
+    # unconfirmed, not gone.
+    WIPE_DISK_UNCONFIRMED = "wipe_disk_unconfirmed"
 
     # Installing.
     DEPLOY_NO_DISK_DETECTED = "deploy_no_disk_detected"
@@ -125,6 +145,9 @@ class ErrorCode(str, Enum):
     INSUFFICIENT_FLASH_SPACE = "insufficient_flash_space"
     MANAGER_STOP_TIMEOUT = "manager_stop_timeout"
     PAYLOAD_UPLOAD_TIMEOUT = "payload_upload_timeout"
+    # The device reaches its network over Wi-Fi (processes.wifi_client) and
+    # timed out on a read or an upload.
+    WIFI_LINK_SLOW = "wifi_link_slow"
     INSTALL_INTERRUPTED = "install_interrupted"
     PREVIOUS_MIGRATION_STALLED = "previous_migration_stalled"
     XATTR_MIGRATION_TIMEOUT = "xattr_migration_timeout"

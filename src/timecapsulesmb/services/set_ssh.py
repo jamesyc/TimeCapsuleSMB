@@ -11,9 +11,9 @@ from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.device.probe import AirportAcpReading
 from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH, ACPConnectionError
 from timecapsulesmb.services import storage as storage_service
-from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_ssh_with_port_preflight
+from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.reboot import RebootFlowError, reboot_device, ssh_enable_error_code
+from timecapsulesmb.services.reboot import reboot_device, reboot_to_enable_ssh
 from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.errors import SshAuthenticationError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
@@ -150,19 +150,7 @@ def enable_set_ssh(
         target_host, connection.password, callbacks=callbacks, before_enable=before_enable,
         listed_by_bonjour=reading is not None and reading.listed_by_bonjour,
     )
-    try:
-        moved = reboot_device(
-            target_host,
-            connection.password,
-            wait=not no_wait,
-            callbacks=callbacks,
-            up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE,
-        )
-    except RebootFlowError as exc:
-        if exc.code != ErrorCode.REBOOT_NOT_FINISHED:
-            raise
-        # Whether the device came back at all decides what the user does next.
-        raise RebootFlowError(str(exc), code=ssh_enable_error_code(exc), result=exc.result) from exc
+    moved = reboot_to_enable_ssh(target_host, connection.password, wait=not no_wait, callbacks=callbacks)
     target_host = endpoint_host(moved or target_host)
     if no_wait:
         return SetSshResult(

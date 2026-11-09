@@ -70,7 +70,7 @@ from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE, DOCTOR_COD
 from tests.test_client_network import router_plan
 from tests.reboot_support import acp_password_answer, acp_reading
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.services.doctor import doctor_report
+from timecapsulesmb.services.doctor import doctor_finished_fields, doctor_report
 from timecapsulesmb.checks.network import LocalInterfaceNetwork, check_smb_port, check_ssh_login, closed_ssh_port_error
 from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.checks.nbns import (
@@ -3093,7 +3093,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(stuck[0].status, "FAIL")
         self.assertTrue(stuck[0].message.startswith("A disk on the device has stopped responding"))
         self.assertIn("smbd (pid 3166) waiting on biowait for 127+ s", stuck[0].message)
-        self.assertIn("If the disk stops responding again, it is probably failing", stuck[0].message)
+        self.assertIn("If the disk stops responding again, it may be failing", stuck[0].message)
         self.assertEqual(
             stuck[0].details["stuck_processes"],
             [{"pid": 3166, "name": "smbd", "wchan": "biowait", "sleep_seconds": 127}],
@@ -3403,7 +3403,9 @@ class CheckTests(unittest.TestCase):
         self.assertIn("SshCommandTimeout", run.debug_fields["remote_process_snapshot_error"])
         self.assertNotIn("remote_process_snapshot", run.debug_fields)
         self.assertEqual(run.debug_fields["remote_process_table"], "(unavailable)")
-        self.assertEqual(warnings[0].details, {})
+        # The app shows its own line for the code; nothing says the device is on Wi-Fi.
+        self.assertEqual(warnings[0].details, {"code": "process_listing_timed_out", "wifi_client": False})
+        self.assertNotIn("wifi_client", run.debug_fields)
 
     def test_run_doctor_checks_names_what_a_timed_out_snapshot_waited_for(self) -> None:
         # The table without command lines never waits, and shows the
@@ -3420,8 +3422,67 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         # The warning keeps one text; the sleepers ride in its details.
         self.assertNotIn("asleep", warnings[0].message)
-        self.assertEqual(warnings[0].details, {"asleep_in_kernel": asleep})
+        self.assertEqual(warnings[0].details, {
+            "code": "process_listing_timed_out", "wifi_client": False, "asleep_in_kernel": asleep,
+        })
         self.assertEqual(run.debug_fields["remote_process_table"], table.rstrip())
+
+    WPA_ROW = "  381 190 15 S 6 select 0:00.14 wpa_supplicant"
+
+    def test_doctor_says_when_the_device_reaches_its_network_over_wifi(self) -> None:
+        run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, self.WPA_ROW]))
+        notes = [result for result in run.results if "over Wi-Fi" in result.message]
+        self.assertEqual([note.status for note in notes], ["INFO"])
+        self.assertIn("rather than an Ethernet cable (wpa_supplicant runs)", notes[0].message)
+        # The app shows its own line for the code; telemetry gets the link on every run.
+        self.assertEqual(notes[0].details, {"code": "wifi_client"})
+        self.assertIs(run.debug_fields["wifi_client"], True)
+        self.assertIs(doctor_finished_fields(run.results, False, run.debug_fields)["wifi_client"], True)
+
+    def test_doctor_says_nothing_about_wifi_for_a_cabled_device(self) -> None:
+        from timecapsulesmb.device.processes import PS_LISTING_END
+        run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
+        self.assertFalse(any("Wi-Fi" in result.message for result in run.results))
+        # A listing that did not finish cannot say no.
+        self.assertNotIn("wifi_client", run.debug_fields)
+        # A finished one without wpa_supplicant says no, for telemetry.
+        sshd = "  107 1 15 S 0 select 0:00.32 sshd"
+        run = self.run_doctor_with_process_snapshot("\n".join([sshd, self.HEALTHY_SMBD_ROW, PS_LISTING_END]))
+        self.assertFalse(any("Wi-Fi" in result.message for result in run.results))
+        self.assertIs(run.debug_fields["wifi_client"], False)
+
+    def test_a_timed_out_listing_on_a_wifi_device_names_the_link_as_a_possible_cause(self) -> None:
+        # The table read after the timeout shows wpa_supplicant: a slow link,
+        # not a device short of processes.
+        run = self.run_doctor_with_process_snapshot(
+            SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+            smb_listing=self.connection_shaped_smb_failure(),
+            process_table=(f"{self.WPA_ROW}\n", ""),
+        )
+        [warning] = [result for result in run.results if "listing the device's processes timed out" in result.message]
+        self.assertIn("over Wi-Fi rather than an Ethernet cable, and a slow link may be the cause", warning.message)
+        self.assertNotIn("running out of processes", warning.message)
+        # The app picks its Wi-Fi line from the detail; a live row in a table
+        # cut short is enough for telemetry too.
+        self.assertEqual(warning.details, {"code": "process_listing_timed_out", "wifi_client": True})
+        self.assertIs(run.debug_fields["wifi_client"], True)
+
+    def test_a_timed_out_listing_on_a_cabled_device_keeps_its_cause_without_a_deadline(self) -> None:
+        # A listing that had to log in waited longer than its own deadline,
+        # so the line names none.
+        run = self.run_doctor_with_process_snapshot(
+            SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+            smb_listing=self.connection_shaped_smb_failure(),
+            process_table=("  107 1 15 S 0 select 0:00.32 sshd\n", ""),
+        )
+        [warning] = [result for result in run.results if "listing the device's processes timed out" in result.message]
+        # Several possible causes, none of them claimed.
+        self.assertIn(
+            "a process holding its memory map, a device running out of processes or a slow connection may be the cause",
+            warning.message,
+        )
+        self.assertNotIn("Wi-Fi", warning.message)
+        self.assertNotRegex(warning.message, r"after \d+s")
 
     def test_doctor_names_what_a_timed_out_mdns_process_listing_waited_for(self) -> None:
         table = "  812 700 812 D 127 vmmapbsy 0:00.00 ps\n"
@@ -3904,7 +3965,15 @@ class CheckTests(unittest.TestCase):
         network.assert_called_once()
         failures = self.apple_acpd_failures(run)
         self.assertEqual([result.details["acpd_problem"] for result in failures], ["network_silent"])
-        self.assertTrue(failures[0].message.startswith("Apple ACPd is broken: the AirPort service stopped answering the network"))
+        # The SSH read is tunnelled over the same link: a slow link and a full
+        # file table are named beside ACPd's listener, and the unplug comes
+        # after the link.
+        self.assertTrue(failures[0].message.startswith(
+            "No answer from Apple ACPd over the network: either the connection to the device is too slow, the "
+            "device has too many files open (several Macs connected at once can cause this), or the AirPort "
+            "service no longer answers the network (a bug in Apple's firmware)."
+        ))
+        self.assertIn("If the connection to the device is not slow, unplug the device", failures[0].message)
         self.assertIn("then check again", failures[0].message)
         self.assertEqual(failures[0].domain, "device")
         self.assertEqual(run.debug_fields["acpd_problems"], ["network_silent"])

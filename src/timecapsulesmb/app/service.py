@@ -18,7 +18,7 @@ from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.app import AppOperationError, OperationResult, config_path
-from timecapsulesmb.services.runtime import load_optional_env_config
+from timecapsulesmb.services.runtime import load_optional_env_config, wifi_link_error
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.telemetry.operation import (
     OperationTelemetrySession,
@@ -27,7 +27,7 @@ from timecapsulesmb.telemetry.operation import (
     telemetry_details_from_payload,
     telemetry_options_from_params,
 )
-from timecapsulesmb.transport.errors import is_ssh_timeout_error, transport_error_code, TransportError
+from timecapsulesmb.transport.errors import bare_timeout, transport_error_code, TransportError
 
 
 # The result of an operation that exits cleanly without emitting its own.
@@ -106,11 +106,11 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         )
         return 1
     except AppOperationError as exc:
-        recovery = exc.recovery or recovery_for(operation, exc.code, stage=context.current_stage)
+        code, recovery = _failure_card(exc, context, operation, exc.code, exc.recovery)
         sink.error(
             operation,
             str(exc),
-            code=exc.code,
+            code=code,
             details=exc.details,
             debug=context.failure_debug(exc),
             recovery=recovery,
@@ -120,7 +120,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             context,
             result="failure",
             error=context.diagnostic_error(str(exc)) or str(exc),
-            error_code=exc.code,
+            error_code=code,
         )
         return 1
     except ConfigError as exc:
@@ -140,13 +140,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         )
         return 1
     except TransportError as exc:
-        device_name = context.known_airport_display_name()
-        code = transport_error_code(exc)
-        recovery = (
-            ssh_timeout_slow_device_recovery(device_name=device_name)
-            if is_ssh_timeout_error(exc)
-            else recovery_for(operation, code, stage=context.current_stage)
-        )
+        code, recovery = _failure_card(exc, context, operation, transport_error_code(exc))
         sink.error(
             operation,
             str(exc),
@@ -298,6 +292,22 @@ def _should_emit_api_telemetry(operation: str, params: dict[str, object]) -> boo
         action = str(params.get("action") or "status").strip().lower() or "status"
         return action != "status"
     return True
+
+
+def _failure_card(
+    exc: BaseException, context: AppOperationContext, operation: str, code: ErrorCode | str,
+    recovery: object | None = None,
+) -> tuple[ErrorCode | str, object]:
+    """The code and card for the error an operation ends with: the Wi-Fi
+    card for the device's Wi-Fi link (services.runtime.wifi_link_error),
+    the timeout card for an SSH timeout no error in its chain names a cause
+    for, wrapped or not (transport.errors.bare_timeout), else `recovery` or
+    the code's own card."""
+    if wifi_link_error(exc, known=context.finish_fields.get("wifi_client")):
+        return ErrorCode.WIFI_LINK_SLOW, recovery_for(operation, ErrorCode.WIFI_LINK_SLOW, stage=context.current_stage)
+    if recovery is None and bare_timeout(exc):
+        return code, ssh_timeout_slow_device_recovery(device_name=context.known_airport_display_name())
+    return code, recovery or recovery_for(operation, code, stage=context.current_stage)
 
 
 def _finish_api_telemetry(

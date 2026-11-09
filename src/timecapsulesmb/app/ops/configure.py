@@ -55,15 +55,25 @@ def selected_record_name(params: dict[str, object]) -> str:
     return name
 
 
-def require_enable_ssh_confirmation(params: dict[str, object], *, host: str) -> None:
+def require_enable_ssh_confirmation(params: dict[str, object], *, host: str, unanswered: bool = False) -> None:
+    """Ask before ACP turns SSH on and reboots. `unanswered`: SSH's port did
+    not answer rather than refuse, so SSH may be on already."""
     device_name = selected_record_name(params) or endpoint_host(host)
+    if unanswered:
+        message = (
+            f"SSH on {device_name} did not answer. It may be turned off, or the device or the connection may be "
+            "slow. Enable SSH using AirPort ACP and reboot this AirPort device? If SSH was already on, the "
+            "restart changes nothing."
+        )
+    else:
+        message = f"SSH is closed on {device_name}. Enable SSH using AirPort ACP and reboot this AirPort device?"
     require_confirmation(
         params,
         build_confirmation(
             operation="configure",
             params=params,
             title="Enable SSH and reboot?",
-            message=f"SSH is closed on {device_name}. Enable SSH using AirPort ACP and reboot this AirPort device?",
+            message=message,
             action_title="Enable SSH and reboot",
             risk="reboot",
             summary="Enable SSH through AirPort ACP and reboot the AirPort device",
@@ -72,7 +82,7 @@ def require_enable_ssh_confirmation(params: dict[str, object], *, host: str) -> 
                 "device_name": device_name,
                 "requires_reboot": True,
             },
-            presentation_id="configure.enable_ssh_reboot",
+            presentation_id="configure.enable_ssh_reboot_unanswered" if unanswered else "configure.enable_ssh_reboot",
             presentation_values={
                 "device_name": device_name,
                 "requires_reboot": True,
@@ -179,11 +189,11 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     except ValueError as exc:
         raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
 
-    def confirm_enable_ssh(acp_host: str) -> None:
+    def confirm_enable_ssh(acp_host: str, unanswered: bool) -> None:
         # Name the address ACP answered at: the device may have moved.
         context.stage("confirm_enable_ssh")
         located = host if acp_host == endpoint_host(host) else canonical_ssh_target(acp_host)
-        require_enable_ssh_confirmation(params, host=located)
+        require_enable_ssh_confirmation(params, host=located, unanswered=unanswered)
 
     def probe_for_context(connection):
         context.connection = connection

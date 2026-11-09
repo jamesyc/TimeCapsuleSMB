@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import atexit
 import hashlib
+import math
 import shlex
 import shutil
 import subprocess
@@ -26,6 +27,7 @@ from timecapsulesmb.transport.errors import (
     SshClientCrashedError as SshClientCrashedError,
     ssh_signal_error,
     SshCommandTimeout,
+    SshConnectTimeout,
     SshError,
     SshLocalNetworkFilteredError,
     SshNetworkError,
@@ -54,6 +56,12 @@ class SshClientDiagnostics:
     error: SshError | None
 
 
+# ssh's lines when its ConnectTimeout runs out: on the TCP connection (macOS
+# says "Operation timed out", Linux "Connection timed out"), or on the SSH
+# banner exchange.
+SSH_CONNECT_TIMEOUT_PATTERN = re.compile(
+    r"ssh: connect to host .+ port \d+: (?:Operation|Connection) timed out|Connection timed out during banner exchange"
+)
 SSH_TRANSPORT_ERROR_PATTERNS = (
     "bind [",
     "channel_setup_fwd_listener_tcpip:",
@@ -117,6 +125,9 @@ SSH_ASKPASS_PATH = Path(__file__).with_name("ssh-askpass")
 SSH_PASSWORD_ENV = "TCAPSULE_SSH_PASSWORD"
 # ssh logs this when SSH_ASKPASS cannot run; it then sends an empty password.
 SSH_ASKPASS_EXEC_FAILURE = "ssh_askpass: exec("
+# Uploads get at least their size at this rate. A Time Capsule that joins
+# another Wi-Fi network can move the 10 MB smbd at 13-16 KB/s for hours.
+UPLOAD_MIN_BYTES_PER_SECOND = 12288
 # Every command shares one authenticated SSH connection per device. A new
 # login costs about a second against a Time Capsule (key exchange on its CPU,
 # then password authentication), a shared session about 40 ms, and a deploy
@@ -125,14 +136,26 @@ SSH_ASKPASS_EXEC_FAILURE = "ssh_askpass: exec("
 # commands open sessions over it, and once it is gone ssh logs in afresh.
 # A master quits after ControlPersist idle seconds, when this process exits,
 # and before every reboot request; ServerAlive ends one whose device vanished
-# some other way, so commands then reconnect instead of waiting on it. During
-# an upload the device answers only when it opens more window, after each
-# 1 MiB it takes in, so a slow link or disk can go a minute without a reply:
-# ServerAlive allows 90 s.
+# some other way. During an upload the device answers only when it opens more
+# window, after each 1 MiB it takes in, so ServerAlive allows twice the time
+# 1 MiB takes at the slowest upload rate allowed (180 s). A command over the
+# master that times out stops it taking new sessions (_stop_master), so a
+# dead link holds that one command, not every command until ServerAlive ends.
 SSH_CONTROL_DIR_PREFIX = "tcsmb-ssh-"
 SSH_CONTROL_PERSIST_SECONDS = 180
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 15
-SSH_SERVER_ALIVE_COUNT_MAX = 6
+SSH_SERVER_ALIVE_COUNT_MAX = math.ceil(2 * 1024 * 1024 / UPLOAD_MIN_BYTES_PER_SECOND / SSH_SERVER_ALIVE_INTERVAL_SECONDS)
+# Added to the deadline of an ssh run that logs in, so the command's own
+# deadline times the command. Apple's sshd looks the client up in DNS at
+# every password login (client_hosts_line_command), 15 s or more per lookup
+# when the DNS server never answers, and a Time Capsule that joins another
+# Wi-Fi network can lose packets for seconds at a time, each loss doubling
+# TCP's retransmission wait (1+2+4+8+16 s). It stays under sshd's default
+# LoginGraceTime of 120 s. It is also ssh's ConnectTimeout, its own limit on
+# the TCP connection, the SSH handshake and the key exchange: a device that
+# is off then fails within it, as a timeout (SshConnectTimeout), rather than
+# a command's deadline plus this.
+SSH_LOGIN_SECONDS = 60
 SSH_CONTROL_EXIT_TIMEOUT_SECONDS = 5
 SSH_MASTER_CHECK_TIMEOUT_SECONDS = 5
 # A session over a master never authenticates itself, so its log has no
@@ -141,9 +164,6 @@ SSH_MUX_SESSION_MARKER = "mux_client_request_session: master session id:"
 REMOTE_COMMAND_SUMMARY_LIMIT = 500
 SSH_ERROR_STDERR_LIMIT_BYTES = 65536
 SSH_ERROR_STDOUT_PREFIX_BYTES = 8192
-# Uploads get at least their size at this rate: a slow disk or Wi-Fi link moved
-# the 10 MB smbd under 57 KB/s (telemetry install c7d5d991).
-UPLOAD_MIN_BYTES_PER_SECOND = 16384
 UPLOAD_SIZE_PROBE_TIMEOUT_SECONDS = 30
 DEVICE_HOSTS_PATH = "/etc/hosts"
 
@@ -239,6 +259,8 @@ def _classify_ssh_client_error_line(line: str) -> SshError | None:
         return SshClientConfigError(f"The SSH password helper could not run; reinstall TimeCapsuleSMB. ({line})")
     if SSH_LOCAL_NETWORK_FILTERED_PATTERN.fullmatch(line):
         return SshLocalNetworkFilteredError(f"{local_network_filtered_message()} ({line})")
+    if SSH_CONNECT_TIMEOUT_PATTERN.fullmatch(line):
+        return SshConnectTimeout(f"Timed out connecting to the device over SSH: {line}")
     if any(pattern in lowered for pattern in SSH_TRANSPORT_ERROR_PATTERNS):
         return SshNetworkError(f"Connecting to the device failed, SSH error: {line}")
     if any(pattern.fullmatch(line) for pattern in SSH_AUTH_FAILURE_PATTERNS):
@@ -595,19 +617,8 @@ def close_ssh_masters(host: str | None = None) -> None:
             # The directory goes too; the next shared command makes a new one.
             directory, _control_dir = _control_dir, None
     for path in paths:
-        if not os.path.exists(path):
-            continue
-        try:
-            run_process(
-                ["ssh", "-F", "/dev/null", "-o", f"ControlPath={path}", "-O", "exit", "tcsmb-master"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=SSH_CONTROL_EXIT_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        if os.path.exists(path):
+            _master_control(path, "exit", SSH_CONTROL_EXIT_TIMEOUT_SECONDS)
     if directory is not None:
         shutil.rmtree(directory, ignore_errors=True)
 
@@ -624,18 +635,49 @@ def ssh_master_alive(connection: SshConnection) -> bool:
     commands run over a master: every shared command does (ControlMaster=auto),
     and close_ssh_masters only runs before a reboot or at exit.
     """
+    status = _master_control(_control_path(connection), "check", SSH_MASTER_CHECK_TIMEOUT_SECONDS)
+    return status is None or status == 0
+
+
+def _stop_master(connection: SshConnection) -> None:
+    """Stop the device's master taking new sessions, after a command over it
+    timed out: its link may be dead, and ServerAlive would hold every later
+    command for minutes. Sessions still open over it, such as the migrator's,
+    keep running; the master exits after the last one, and the next command
+    logs in afresh (ssh -O stop removes the socket)."""
+    path = _control_path(connection)
+    if os.path.exists(path):
+        _master_control(path, "stop", SSH_CONTROL_EXIT_TIMEOUT_SECONDS)
+
+
+def _master_control(path: str, operation: str, timeout: int) -> int | None:
+    """`ssh -O operation` (exit, check or stop) on the master at `path`: its
+    exit status, or None when it could not run in time."""
     try:
-        proc = run_process(
-            ["ssh", "-F", "/dev/null", "-o", f"ControlPath={_control_path(connection)}", "-O", "check", "tcsmb-master"],
+        return run_process(
+            ["ssh", "-F", "/dev/null", "-o", f"ControlPath={path}", "-O", operation, "tcsmb-master"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=SSH_MASTER_CHECK_TIMEOUT_SECONDS,
+            timeout=timeout,
             check=False,
-        )
+        ).returncode
     except (OSError, subprocess.TimeoutExpired):
-        return True
-    return proc.returncode == 0
+        return None
+
+
+def _with_login_allowance(connection: SshConnection, timeout: int | None, *, shared: bool) -> int | None:
+    """`timeout` plus SSH_LOGIN_SECONDS when this run logs in.
+
+    A shared run logs in when the device has no master socket yet. A master
+    removes its socket when it exits, so a missing socket means a login; a
+    socket left by a killed master makes ssh log in without the allowance.
+    """
+    if timeout is None:
+        return None
+    if shared and os.path.exists(_control_path(connection)):
+        return timeout
+    return timeout + SSH_LOGIN_SECONDS
 
 
 def _connection_ssh_args(
@@ -643,7 +685,6 @@ def _connection_ssh_args(
     *,
     client_log: Path,
     stdin_null: bool,
-    extra_args: tuple[str, ...] = (),
     shared: bool = False,
     tty: bool = False,
 ) -> list[str]:
@@ -669,7 +710,8 @@ def _connection_ssh_args(
             "-o", f"ControlPath={_control_path(connection)}",
             "-o", f"ControlPersist={SSH_CONTROL_PERSIST_SECONDS}",
         ]
-        # After the caller's options, which may set their own keepalive.
+        # After the user's options (TC_SSH_OPTS), which may set their own:
+        # ssh takes an option's first value.
         keepalive_args = [
             "-o", f"ServerAliveInterval={SSH_SERVER_ALIVE_INTERVAL_SECONDS}",
             "-o", f"ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}",
@@ -684,8 +726,8 @@ def _connection_ssh_args(
         "-o", "NumberOfPasswordPrompts=1",
         "-o", "ExitOnForwardFailure=yes",
         *auth_args,
-        *extra_args,
         *tokens,
+        "-o", f"ConnectTimeout={SSH_LOGIN_SECONDS}",
         *keepalive_args,
         "-E", str(client_log),
         *session_args,
@@ -787,7 +829,6 @@ def _run_ssh(
     merge_stderr: bool = False,
     timeout: int | None,
     timeout_message: str,
-    extra_ssh_args: tuple[str, ...] = (),
     shared: bool = True,
     tty: bool = False,
     on_line: Callable[[str], None] | None = None,
@@ -814,6 +855,7 @@ def _run_ssh(
     )
     executable = require_local_ssh() if connection.password else "ssh"
     join_stderr = merge_stderr and not tty
+    timeout = _with_login_allowance(connection, timeout, shared=shared)
     attempt = 0
     while True:
         with _ssh_client_log_path() as client_log:
@@ -823,7 +865,6 @@ def _run_ssh(
                     connection,
                     client_log=client_log,
                     stdin_null=input_bytes is None,
-                    extra_args=extra_ssh_args,
                     shared=shared,
                     tty=tty,
                 ),
@@ -849,6 +890,8 @@ def _run_ssh(
                 diagnostics = _read_ssh_client_diagnostics(client_log)
                 if diagnostics.error is not None:
                     raise diagnostics.error
+                if shared:
+                    _stop_master(connection)
                 raise SshCommandTimeout(timeout_message) from exc
             except OSError as exc:
                 raise SshClientConfigError(f"Could not start local SSH client: {exc}") from exc
@@ -908,7 +951,6 @@ def run_ssh_input(
     input_bytes: bytes = b"",
     timeout: int | None = 120,
     raw_remote_status: bool = False,
-    extra_ssh_args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[bytes]:
     """Send a bounded request, keeping stdout and logs separate.
 
@@ -917,7 +959,6 @@ def run_ssh_input(
     proc = _run_ssh(
         connection, remote_cmd, input_bytes=input_bytes, timeout=timeout,
         timeout_message=f"Timed out waiting for ssh command to finish: {_summarize_remote_command(remote_cmd)}",
-        extra_ssh_args=extra_ssh_args,
     )
     if proc.returncode and not raw_remote_status:
         raise SshError(_decode_remote_error_output(proc.stderr, proc.stdout).strip()
@@ -971,7 +1012,8 @@ def ssh_local_forward(
         except OSError as exc:
             raise SshClientConfigError(f"Could not start local SSH client: {exc}") from exc
         try:
-            deadline = time.monotonic() + ready_timeout
+            # A tunnel always logs in on a connection of its own.
+            deadline = time.monotonic() + ready_timeout + SSH_LOGIN_SECONDS
             while True:
                 diagnostics = _read_ssh_client_diagnostics(client_log)
                 if diagnostics.error is not None:
@@ -992,7 +1034,9 @@ def ssh_local_forward(
                 if tcp_open("127.0.0.1", local_port, timeout=0.2):
                     break
                 if time.monotonic() >= deadline:
-                    raise SshError(
+                    # A timeout like a command's: the device did not answer the
+                    # login in time, and gets the same guidance.
+                    raise SshCommandTimeout(
                         "Timed out waiting for ssh tunnel to become ready: "
                         f"127.0.0.1:{local_port} -> {remote_host}:{remote_port} via {connection.host}"
                     )
@@ -1049,6 +1093,7 @@ def upload_file(connection: SshConnection, src: Path, dest: str, *, timeout: int
     expected_size = src.stat().st_size
     remote_cmd = f"/bin/sh -c {shlex.quote(remote_script)}"
     message = f"Timed out copying {src.name} to remote path {dest} over SSH"
+    started = time.monotonic()
     try:
         proc = _run_ssh(
             connection,
@@ -1058,10 +1103,12 @@ def upload_file(connection: SshConnection, src: Path, dest: str, *, timeout: int
             timeout_message=message,
         )
     except SshCommandTimeout as exc:
+        elapsed = time.monotonic() - started
         on_device = _remote_size(connection, quoted_dest)
         reached = "unknown" if on_device is None else str(on_device)
         raise SshUploadTimeout(
-            f"{message} ({reached} of {expected_size} bytes reached the device)", bytes_on_device=on_device,
+            f"{message} ({reached} of {expected_size} bytes reached the device)",
+            bytes_on_device=on_device, elapsed_sec=elapsed,
         ) from exc
     if proc.returncode != 0:
         stdout = _decode_remote_error_output(proc.stderr, proc.stdout).strip()

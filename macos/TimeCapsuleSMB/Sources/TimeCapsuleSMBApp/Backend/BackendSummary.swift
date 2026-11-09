@@ -273,6 +273,16 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.disk_failing")
         case "debug_logging_on":
             return L10n.string("doctor.check.debug_logging_on")
+        // The device joins or extends another Wi-Fi network (wpa_supplicant runs).
+        case "wifi_client":
+            return L10n.string("doctor.check.wifi_client")
+        // The process listing timed out; on a device on Wi-Fi the line names
+        // the link as a possible cause, otherwise the device's own.
+        case "process_listing_timed_out":
+            if case .object(let values) = details, values["wifi_client"] == .bool(true) {
+                return L10n.string("doctor.check.process_listing_timed_out_wifi")
+            }
+            return L10n.string("doctor.check.process_listing_timed_out")
         // The helper's line names the stuck processes; the catalog's says
         // what it means and what to do. A stuck disk check gives a running
         // repair a few more minutes before the unplug.

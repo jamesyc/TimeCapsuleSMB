@@ -145,6 +145,7 @@ from timecapsulesmb.device.processes import (
     smbd_lock_waits,
     smbd_running,
     stuck_processes,
+    wifi_client,
 )
 from timecapsulesmb.device.probe import (
     FILE_LOCKS_DISK_TDBS,
@@ -158,7 +159,6 @@ from timecapsulesmb.device.probe import (
     MDNS_REGISTRATION_STATE_UNAVAILABLE,
     MDNS_REGISTRATIONS_DEGRADED,
     MDNS_REGISTRATIONS_STILL_STARTING,
-    PROCESS_SNAPSHOT_TIMEOUT_SECONDS,
     ReadinessProbeResult,
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
@@ -2350,6 +2350,23 @@ def _doctor_check_restart_under_way(target: DoctorTarget, remote: RemoteAccess, 
     )
 
 
+# Apple's ACPd runs wpa_supplicant only while the device joins or extends
+# another Wi-Fi network (processes.wifi_client).
+WIFI_CLIENT_NOTE = "the device reaches its network over Wi-Fi rather than an Ethernet cable"
+# The app shows its own line for each in the user's language: the INFO line
+# for a device on Wi-Fi, and the warning for a process listing that timed
+# out, whose `wifi_client` detail picks the cause it names.
+DOCTOR_CODE_WIFI_CLIENT = "wifi_client"
+DOCTOR_CODE_PROCESS_LISTING_TIMED_OUT = "process_listing_timed_out"
+
+
+def _record_wifi_client(sink: DoctorSink, on_wifi: bool | None) -> None:
+    """Keep whether the device is on Wi-Fi for telemetry on every run
+    (services.doctor.doctor_finished_fields); unknown records nothing."""
+    if sink.debug_fields is not None and on_wifi is not None:
+        sink.debug_fields["wifi_client"] = on_wifi
+
+
 def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> ProcessSnapshotState:
     """List the device's processes before any check touches the data disk."""
     if not remote.remote_checks_enabled:
@@ -2363,13 +2380,25 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
         if sink.debug_fields is not None:
             sink.debug_fields["remote_process_snapshot_error"] = f"{type(e).__name__}: {e}"
             sink.debug_fields["remote_process_table"] = limit_remote_log_tail(listing.rstrip() or "(unavailable)")
+        # A listing that logged in had longer than probe.PROCESS_SNAPSHOT_TIMEOUT_SECONDS
+        # (transport.ssh.SSH_LOGIN_SECONDS), so the line names no deadline.
+        on_wifi = wifi_client(listing)
+        _record_wifi_client(sink, on_wifi)
+        cause = (
+            f"{WIFI_CLIENT_NOTE}, and a slow link may be the cause"
+            if on_wifi
+            else "a process holding its memory map, a device running out of processes or a slow connection may "
+            "be the cause"
+        )
+        details: dict[str, object] = {"code": DOCTOR_CODE_PROCESS_LISTING_TIMED_OUT, "wifi_client": on_wifi is True}
+        if asleep:
+            details["asleep_in_kernel"] = asleep
         sink.add(
             CheckResult(
                 "WARN",
-                f"listing the device's processes timed out after {PROCESS_SNAPSHOT_TIMEOUT_SECONDS}s although "
-                "SSH login worked; the device may be running out of processes, so doctor does not retry SMB "
-                "and does not read logs from the data disk",
-                details={"asleep_in_kernel": asleep} if asleep else {},
+                f"listing the device's processes timed out although SSH login worked; {cause}, so doctor does "
+                "not retry SMB and does not read logs from the data disk",
+                details=details,
             )
         )
         return ProcessSnapshotState(timed_out=True)
@@ -2379,6 +2408,15 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
         return ProcessSnapshotState()
     if sink.debug_fields is not None:
         sink.debug_fields["remote_process_snapshot"] = limit_remote_log_tail(snapshot.rstrip() or "(empty)")
+    on_wifi = wifi_client(snapshot)
+    _record_wifi_client(sink, on_wifi)
+    if on_wifi:
+        sink.add(CheckResult(
+            "INFO",
+            f"{WIFI_CLIENT_NOTE} (wpa_supplicant runs); when that link is weak, file sharing and these checks slow "
+            "down or time out",
+            {"code": DOCTOR_CODE_WIFI_CLIENT},
+        ))
     stuck = tuple(stuck_processes(snapshot))
     if sink.debug_fields is not None and smbd_lock_waits(snapshot):
         long_waits = smbd_lock_waits(snapshot, LOCK_WAIT_READ_SECONDS)
@@ -2573,7 +2611,10 @@ def _doctor_check_apple_acpd(
     if disk_stalls:
         problems = [problem for problem in problems if problem.code not in acpd.DISK_STALL_PROBLEMS]
     for problem in problems:
-        message = f"{acpd.acpd_broken_message(problem.what, note=problem.note)} {acpd.ACPD_FIX}, then check again"
+        # A problem a slow link can also cause puts the unplug after the link.
+        fix = (f"If the connection to the device is not slow, {acpd.ACPD_FIX[0].lower()}{acpd.ACPD_FIX[1:]}"
+               if problem.sentence else acpd.ACPD_FIX)
+        message = f"{acpd.problem_message(problem, note=problem.note)} {fix}, then check again"
         if problem.gone:
             message = f"{message}. {ACPD_GONE_ACTIVATE_NOTE}"
         sink.add(

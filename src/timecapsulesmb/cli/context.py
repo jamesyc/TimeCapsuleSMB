@@ -29,8 +29,7 @@ from timecapsulesmb.telemetry.operation import (
 )
 from timecapsulesmb.integrations.acp import ACPError
 from timecapsulesmb.transport.errors import (
-    format_ssh_timeout_slow_device_error,
-    is_ssh_timeout_error,
+    bare_timeout,
     ssh_timeout_slow_device_message,
     transport_error_code,
     TransportError,
@@ -53,13 +52,13 @@ def cli_error_code(exc: BaseException) -> ErrorCode | None:
     """The code the app's helper reports for the same failure (app.service):
     the error's own, else remote_error for a device or connection failure
     that names none. None for any other error, which has no next steps."""
+    if bare_timeout(exc):
+        # Its message already says the device did not answer and what to do.
+        return None
     coded = coded_error_in(exc)
     if coded is not None:
         return coded.code
     for error in exception_chain(exc):
-        if is_ssh_timeout_error(error):
-            # Its message already says the device is slow and what to do.
-            return None
         if isinstance(error, TransportError):
             return transport_error_code(error)
         if isinstance(error, (DeviceError, ACPError)):
@@ -204,20 +203,19 @@ class CommandContext:
             message = str(exc)
             display_message = message
             telemetry_message = message_with_exception_cause(message, exc)
-            if isinstance(exc, TransportError) and is_ssh_timeout_error(exc):
-                device_name = self.known_airport_display_name()
-                slow_message = ssh_timeout_slow_device_message(device_name)
-                telemetry_message = format_ssh_timeout_slow_device_error(exc, device_name=device_name)
-                display_message = telemetry_message.replace(
-                    slow_message,
-                    color_red(slow_message),
-                    1,
-                )
+            lead, code = self._timeout_lead(exc)
+            if lead is not None:
+                display_message = self._with_lead(lead, message)
+                if code is None:
+                    # The timeout's own advice goes to telemetry too, with the
+                    # cause: for an error that wrapped the timeout, the cause
+                    # says which command timed out.
+                    telemetry_message = (f"{lead}\n{telemetry_message}" if telemetry_message.strip() else lead)
             self.result = "failure"
             if telemetry_message and not self.error_lines:
                 self.set_error(telemetry_message)
             self.finish(result=self.result, **self.finish_fields)
-            raise SystemExit(self.with_next_steps(display_message, exc)) from exc
+            raise SystemExit(self.with_next_steps(display_message, exc, code=code)) from exc
         elif exc_type is SystemExit:
             message = system_exit_message(exc)
             if message and message not in {"0", "None"}:
@@ -228,7 +226,11 @@ class CommandContext:
                 # still prints that error's next steps. A numeric exit prints
                 # nothing of its own, so it gets none.
                 exit_code = getattr(exc, "code", None)
-                with_steps = message if not isinstance(exit_code, str) else self.with_next_steps(message, exc)
+                lead, code = self._timeout_lead(exc) if isinstance(exit_code, str) else (None, None)
+                shown = message if lead is None else self._with_lead(lead, message)
+                with_steps = (
+                    shown if not isinstance(exit_code, str) else self.with_next_steps(shown, exc, code=code)
+                )
                 if with_steps != message:
                     self.finish(result=self.result, **self.finish_fields)
                     raise SystemExit(with_steps) from exc
@@ -240,6 +242,27 @@ class CommandContext:
                 self.set_error(f"{exc_name}: {message}" if message else exc_name)
         self.finish(result=self.result, **self.finish_fields)
         return False
+
+    def _timeout_lead(self, exc: BaseException) -> tuple[str | None, ErrorCode | None]:
+        """For an error that is a timeout, the line shown before its own and
+        the code whose next steps follow: the Wi-Fi line and wifi_link_slow
+        for the device's Wi-Fi link (services.runtime.wifi_link_error), the
+        timeout's own advice and no code for an SSH timeout no error in its
+        chain names a cause for (transport.errors.bare_timeout: the advice
+        says what to do). (None, None) for any other error."""
+        if service_runtime.wifi_link_error(exc, known=self.finish_fields.get("wifi_client")):
+            # Telemetry keeps the error's own text; this says the Wi-Fi card was shown.
+            self.add_debug_fields(wifi_link_slow=True)
+            return service_runtime.WIFI_LINK_SLOW_MESSAGE, ErrorCode.WIFI_LINK_SLOW
+        if bare_timeout(exc):
+            return ssh_timeout_slow_device_message(self.known_airport_display_name()), None
+        return None, None
+
+    @staticmethod
+    def _with_lead(lead: str, message: str) -> str:
+        """The lead in red, then the error's own line, which says what timed
+        out and how far it got."""
+        return f"{color_red(lead)}\n{message}" if message.strip() else color_red(lead)
 
     def with_next_steps(self, message: str, exc: BaseException, *, code: ErrorCode | None = None) -> str:
         """The message, then the next steps for the code of the error behind it

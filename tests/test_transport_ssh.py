@@ -206,6 +206,31 @@ class SSHTransportTests(unittest.TestCase):
 
                 self.assertIs(type(error), expected)
 
+    def test_client_diagnostics_read_a_connect_timeout_as_a_timeout(self) -> None:
+        # ConnectTimeout ran out on the TCP connection (macOS and Linux words)
+        # or the banner: the device did not answer in time, which gets the
+        # timeout guidance, not a generic connection failure.
+        for line in (
+            "ssh: connect to host 10.255.255.1 port 22: Operation timed out",
+            "ssh: connect to host fe80::1%en0 port 22: Connection timed out",
+            "Connection timed out during banner exchange",
+        ):
+            with self.subTest(line=line):
+                error = ssh_transport.parse_ssh_client_diagnostics(f"{line}\n").error
+                self.assertIsInstance(error, transport_errors.SshConnectTimeout)
+                self.assertTrue(transport_errors.is_ssh_timeout_error(error))
+                self.assertIn(line, str(error))
+
+    def test_a_connect_timeout_is_raised_at_once_and_stops_no_master(self) -> None:
+        # The command never started: no retry, and no master to stop.
+        run = self.ssh_runs((255, "", "ssh: connect to host 10.0.0.2 port 22: Operation timed out\n"))
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run) as ran:
+            with self.assertRaises(transport_errors.SshConnectTimeout):
+                ssh_transport.run_ssh(ssh_transport.SshConnection("root@10.0.0.2", "pw", ""), "true")
+        commands = [call.args[0] for call in ran.call_args_list]
+        self.assertEqual(sum("-E" in command for command in commands), 1)
+        self.assertFalse(any("-O" in command for command in commands))
+
     def test_dropped_connection_message_names_a_mac_only_on_macos(self) -> None:
         self.assertTrue(transport_errors.local_network_filtered_message(platform="darwin").startswith("This Mac dropped"))
         self.assertTrue(transport_errors.local_network_filtered_message(platform="linux").startswith("This computer dropped"))
@@ -709,6 +734,18 @@ class SSHTransportTests(unittest.TestCase):
         self.assertIs(probe["shared"], False)
         self.assertEqual(probe["timeout"], ssh_transport.UPLOAD_SIZE_PROBE_TIMEOUT_SECONDS)
 
+    def test_upload_timeout_reports_how_long_the_upload_itself_ran(self) -> None:
+        # The upload ran 512 s; the size read after it took 40 s more, which
+        # the rate the caller computes must not count.
+        clock = iter([1000.0, 1512.0])
+
+        def slow_probe(remote_cmd):
+            return self.run_locally(remote_cmd)
+
+        with mock.patch.object(ssh_transport.time, "monotonic", side_effect=lambda: next(clock, 1552.0)):
+            error, _ssh = self.timed_out_upload(slow_probe)
+        self.assertEqual(error.elapsed_sec, 512.0)
+
     def test_upload_timeout_without_a_readable_size_still_times_out(self) -> None:
         # Nothing on the device yet, or the device stopped answering: the
         # upload still fails as a timeout, with the size unknown.
@@ -1050,8 +1087,10 @@ class SharedConnectionTests(unittest.TestCase):
         # The DEBUG1 log carries the shared-session marker.
         self.assertEqual(self.option(args, "LogLevel"), "DEBUG1")
         self.assertEqual(self.option(args, "ServerAliveInterval"), "15")
-        # 90 s: an upload's device replies only after each 1 MiB it takes in.
-        self.assertEqual(self.option(args, "ServerAliveCountMax"), "6")
+        # 180 s: twice what 1 MiB of upload takes at 12 KB/s, the device's
+        # only replies during an upload coming after each 1 MiB it takes in.
+        self.assertEqual(self.option(args, "ServerAliveCountMax"), "12")
+        self.assertEqual(self.option(args, "ConnectTimeout"), str(ssh_transport.SSH_LOGIN_SECONDS))
         self.assertNotIn("-S", args)
 
     def test_unshared_args_keep_their_own_connection(self) -> None:
@@ -1064,7 +1103,14 @@ class SharedConnectionTests(unittest.TestCase):
         self.assertEqual(self.option(args, "LogLevel"), "VERBOSE")
         self.assertIsNone(self.option(args, "ControlMaster"))
         self.assertIsNone(self.option(args, "ServerAliveInterval"))
+        # A device that is off fails within ConnectTimeout, the login allowance.
+        self.assertEqual(self.option(args, "ConnectTimeout"), str(ssh_transport.SSH_LOGIN_SECONDS))
         self.assertEqual(ssh_transport._control_hosts, {})
+
+    def test_the_users_connect_timeout_comes_first_and_wins(self) -> None:
+        # ssh takes an option's first value.
+        args = self.shared_args(ssh_transport.SshConnection("device", "pw", "-o ConnectTimeout=9"))
+        self.assertEqual(self.option(args, "ConnectTimeout"), "9")
 
     def test_callers_cannot_take_over_the_master_settings(self) -> None:
         args = self.shared_args(ssh_transport.SshConnection(
@@ -1188,13 +1234,58 @@ class SharedConnectionTests(unittest.TestCase):
                 ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "ls /missing")
 
     def test_a_command_that_hangs_times_out_naming_the_command(self) -> None:
+        self.make_master("root@device")
         with mock.patch("timecapsulesmb.transport.ssh.run_process",
                         side_effect=subprocess.TimeoutExpired("ssh", 7)) as run:
             with self.assertRaises(ssh_transport.SshCommandTimeout) as raised:
                 ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "sleep 99", timeout=7)
-        run.assert_called_once()
-        self.assertEqual(run.call_args.kwargs["timeout"], 7)
+        command, stop = run.call_args_list
+        # Over a live master the command's own deadline is all it gets.
+        self.assertEqual(command.kwargs["timeout"], 7)
         self.assertEqual(str(raised.exception), "Timed out waiting for ssh command to finish: sleep 99")
+        # The master's link may be dead: it stops taking new sessions, so the
+        # next command logs in instead of waiting out ServerAlive behind it.
+        self.assertEqual(stop.args[0][-3:-1], ["-O", "stop"])
+        self.assertEqual(stop.kwargs["timeout"], ssh_transport.SSH_CONTROL_EXIT_TIMEOUT_SECONDS)
+
+    def test_a_timeout_without_a_master_or_on_its_own_connection_stops_nothing(self) -> None:
+        connection = ssh_transport.SshConnection("root@device", "pw", "")
+        for shared, master in ((True, False), (False, True)):
+            with self.subTest(shared=shared, master=master):
+                if master:
+                    self.make_master("root@device")
+                with mock.patch("timecapsulesmb.transport.ssh.run_process",
+                                side_effect=subprocess.TimeoutExpired("ssh", 7)) as run:
+                    with self.assertRaises(ssh_transport.SshCommandTimeout):
+                        ssh_transport._run_ssh(connection, "sleep 99", timeout=7, timeout_message="t", shared=shared)
+                run.assert_called_once()
+
+    def deadline_of(self, *, shared: bool = True, timeout: int | None = 7) -> int | None:
+        run = SSHTransportTests.ssh_runs((0, "ok\n", MUX_SESSION_LOG))
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run) as ran:
+            ssh_transport._run_ssh(
+                ssh_transport.SshConnection("root@device", "pw", ""), "true",
+                timeout=timeout, timeout_message="timed out", shared=shared,
+            )
+        return ran.call_args.kwargs["timeout"]
+
+    def test_a_command_that_logs_in_also_gets_the_login_allowance(self) -> None:
+        # No master yet: this run authenticates before its command starts.
+        self.assertEqual(self.deadline_of(), 7 + ssh_transport.SSH_LOGIN_SECONDS)
+
+    def test_a_command_on_its_own_connection_logs_in_even_beside_a_master(self) -> None:
+        self.make_master("root@device")
+        self.assertEqual(self.deadline_of(shared=False), 7 + ssh_transport.SSH_LOGIN_SECONDS)
+        self.assertEqual(self.deadline_of(), 7)
+
+    def test_a_master_that_exited_brings_the_allowance_back(self) -> None:
+        path = self.make_master("root@device")
+        self.assertEqual(self.deadline_of(), 7)
+        os.unlink(path)
+        self.assertEqual(self.deadline_of(), 7 + ssh_transport.SSH_LOGIN_SECONDS)
+
+    def test_an_unlimited_command_stays_unlimited_when_it_logs_in(self) -> None:
+        self.assertIsNone(self.deadline_of(timeout=None))
 
     def make_master(self, host: str, *, opts: str = "", live: bool = True) -> str:
         path = self.option(self.shared_args(ssh_transport.SshConnection(host, "pw", opts)), "ControlPath")
@@ -1310,12 +1401,10 @@ class MigrationInputTransportTests(unittest.TestCase):
                 input_bytes=b"TCMIGRATE1\nE\n",
                 timeout=900,
                 raw_remote_status=True,
-                extra_ssh_args=("-o", "ConnectTimeout=20"),
             )
         self.assertIs(result, process)
         self.assertEqual(run.call_args.kwargs["input_bytes"], b"TCMIGRATE1\nE\n")
         self.assertEqual(run.call_args.kwargs["timeout"], 900)
-        self.assertEqual(run.call_args.kwargs["extra_ssh_args"], ("-o", "ConnectTimeout=20"))
         self.assertFalse(run.call_args.kwargs.get("merge_stderr", False))
 
     def test_raw_remote_status_is_single_attempt_and_keeps_native_stderr(self):
@@ -1330,13 +1419,10 @@ class MigrationInputTransportTests(unittest.TestCase):
                     connection,
                     "helper multi copy",
                     raw_remote_status=True,
-                    extra_ssh_args=("-o", "ConnectTimeout=20"),
                 )
         self.assertIs(result, process)
         run.assert_called_once()
         sleep.assert_not_called()
-        command = run.call_args.args[0]
-        self.assertLess(command.index("ConnectTimeout=20"), command.index("device"))
 
     def test_raw_remote_status_does_not_retry_a_host_key_failure(self):
         # The command may or may not be safe to rerun; only a rejected login
@@ -1428,7 +1514,8 @@ class MigrationInputTransportTests(unittest.TestCase):
             side_effect=SSHTransportTests.completed_run(process),
         ) as run:
             ssh_transport.run_ssh_input(connection, "helper")
-        self.assertEqual(run.call_args.kwargs["timeout"], 120)
+        # No master: the default deadline plus the login's.
+        self.assertEqual(run.call_args.kwargs["timeout"], 120 + ssh_transport.SSH_LOGIN_SECONDS)
 
     def test_failed_remote_helper_cannot_look_like_a_json_success(self):
         process = subprocess.CompletedProcess(["ssh"], 4, b'{"version":1}', b'corrupt TDB')
@@ -1609,7 +1696,9 @@ if "-N" in args:
         sys.exit(255)
     if tunnel == "crash":
         os.kill(os.getpid(), signal.SIGSEGV)
-    if tunnel == "ready":
+    if tunnel == "late":
+        time.sleep(scenario["listen_after"])
+    if tunnel in ("ready", "late"):
         listener = socket.socket()
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", port))
@@ -1748,10 +1837,12 @@ class RealSshProcessTests(unittest.TestCase):
         began = time.monotonic()
         def clock():
             # Hold the transport's clock at its start until the real fake ssh
-            # has printed its line, then move it past the 1 s timeout and let
-            # it run on. A line that never comes still times out after 10 s.
+            # has printed its line, then move it past the 1 s timeout and the
+            # login allowance (no master here) and let it run on. A line that
+            # never comes still times out after 10 s.
             now = time.monotonic()
-            return now + 2.0 if lines or now - began > 10 else began
+            skip = 2.0 + ssh_transport.SSH_LOGIN_SECONDS
+            return now + skip if lines or now - began > 10 else began
         with mock.patch.object(ssh_transport.time, "monotonic", side_effect=clock):
             with self.assertRaises(ssh_transport.SshCommandTimeout) as raised:
                 self.streamed("echo started; sleep 30", timeout=1, on_line=lines.append)
@@ -1902,6 +1993,14 @@ class RealSshProcessTests(unittest.TestCase):
             with self.forward():
                 pass
 
+    def test_tunnel_that_logs_in_slowly_still_becomes_ready(self) -> None:
+        # Ready 2 s in: past its own 1 s, within the login allowance.
+        self.scenario(tunnel="late", listen_after=2)
+        with mock.patch.object(ssh_transport, "SSH_LOGIN_SECONDS", 10):
+            with self.forward(ready_timeout=1):
+                [run] = self.recorded()
+                os.kill(run["pid"], 0)
+
     def test_tunnel_that_never_listens_times_out_naming_its_target(self) -> None:
         self.scenario(tunnel="silent")
         children = []
@@ -1911,9 +2010,11 @@ class RealSshProcessTests(unittest.TestCase):
             children.append(real_popen(*args, **kwargs))
             return children[-1]
 
-        with mock.patch.object(ssh_transport, "popen_process", recording_popen):
+        with mock.patch.object(ssh_transport, "popen_process", recording_popen), \
+                mock.patch.object(ssh_transport, "SSH_LOGIN_SECONDS", 1):
+            # A timeout, so the error gets the timeout's guidance.
             with self.assertRaisesRegex(
-                ssh_transport.SshError,
+                ssh_transport.SshCommandTimeout,
                 r"^Timed out waiting for ssh tunnel to become ready: 127\.0\.0\.1:\d+ -> 127\.0\.0\.1:445 via root@fe80::1%en0$",
             ):
                 with self.forward(ready_timeout=1):

@@ -19,7 +19,7 @@ from timecapsulesmb.core.config import (
     shell_quote,
     vfs_aio_fork_enabled_in,
 )
-from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.core.error_codes import ErrorCode, coded_error_in, exception_chain
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.summaries import Summary
@@ -131,7 +131,7 @@ from timecapsulesmb.transport.ssh import (
     ssh_master_alive,
     upload_timeout_seconds,
 )
-from timecapsulesmb.transport.errors import SshError, SshUploadTimeout, TransportError, is_ssh_timeout_error
+from timecapsulesmb.transport.errors import SshError, SshUploadTimeout, TransportError, bare_timeout, is_ssh_timeout_error
 
 
 DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
@@ -154,13 +154,15 @@ DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     PACKAGED_BOOT_SOURCE,
 })
 INSTALL_INTERRUPTED_MESSAGE = "The install was interrupted."
-MANAGER_STOP_TIMEOUT_MESSAGE = "A service on the device is stuck and did not stop for the install, often due to a failing disk."
+MANAGER_STOP_TIMEOUT_MESSAGE = "A service on the device is stuck and did not stop for the install. It may be waiting on the disk."
 PAYLOAD_UPLOAD_TIMEOUT_MESSAGE = (
-    "Copying the SMB payload timed out. The disk may be failing or unable to spin up, or the network "
-    "connection to the device may be too slow, such as a weak Wi-Fi link."
+    "Copying the SMB payload timed out. A slow connection between this computer and the device can cause this, "
+    "and so can a disk that is slow to respond."
 )
+# The migrator itself has no deadline (migration.NATIVE_TIMEOUT_SECONDS): a
+# command around it, such as saving its progress, timed out.
 XATTR_MIGRATION_TIMEOUT_MESSAGE = (
-    "Timed out migrating Samba metadata into native HFS attributes. "
+    "A command sent to the device during the Samba metadata migration timed out. "
     "Verified exports may already be committed; unexported metadata is retained."
 )
 XATTR_MIGRATION_STALLED_MESSAGE = (
@@ -198,8 +200,8 @@ def unreadable_folder_summary(folder: str) -> Summary:
 
 
 PREVIOUS_MIGRATION_STALLED_MESSAGE = (
-    "A metadata migration left on the device by an earlier installation stopped making progress, "
-    "often due to a failing disk."
+    "A metadata migration left on the device by an earlier installation stopped making progress. "
+    "It may be waiting on the disk."
 )
 MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
 # A service process the stop script waited for without reading its command
@@ -207,7 +209,7 @@ MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
 MANAGER_STOP_TIMEOUT_SENTINELS = (MANAGER_STOP_TIMEOUT_SENTINEL, UNREADABLE_SERVICE_STOP_MESSAGE)
 # A migrator left by an interrupted deploy is polled this often. It kills
 # itself after STALL_SECONDS without progress, so one that still runs a
-# minute past that is stuck in the kernel (a failing disk).
+# minute past that is stuck in the kernel, maybe on the disk.
 PREVIOUS_MIGRATION_POLL_SECONDS = 5
 PREVIOUS_MIGRATION_STALL_SECONDS = STALL_SECONDS + 60
 PREVIOUS_MIGRATION_PROBE_ATTEMPTS = 3
@@ -707,9 +709,10 @@ def _report_interrupted_install(connection: SshConnection) -> Iterator[None]:
 
     From the stop of the old runtime until the boot hook is flushed, the device
     shares nothing until an install finishes. Timeouts keep their own message:
-    a failing disk shows up as one. A failure the device reported, or our own
-    command killing its shell, leaves the shared connection up and keeps its
-    own message too.
+    a slow disk or link shows up as one, and so does a device that did not
+    answer a new login in time (transport.errors.SshConnectTimeout). A failure
+    the device reported, or our own command killing its shell, leaves the
+    shared connection up and keeps its own message too.
     """
     try:
         yield
@@ -732,15 +735,25 @@ def _upload_timeout_sec(transfer: FileTransfer, sources: Mapping[str, Path]) -> 
 
 
 def _upload_timeout_fields(exc: BaseException) -> dict[str, object]:
-    # With duration_sec, how much arrived tells a slow disk or link from a stuck one.
-    return {"bytes_on_device": exc.bytes_on_device} if isinstance(exc, SshUploadTimeout) else {}
+    # How much arrived, and how fast, tells a slow disk or link from a stuck one.
+    if not isinstance(exc, SshUploadTimeout):
+        return {}
+    fields: dict[str, object] = {"bytes_on_device": exc.bytes_on_device}
+    if exc.bytes_on_device is not None and exc.elapsed_sec > 0:
+        fields["upload_rate_bps"] = round(exc.bytes_on_device / exc.elapsed_sec)
+    return fields
 
 
 def _payload_upload_timed_out(exc: BaseException, transfer: FileTransfer | None, plan: DeploymentPlan) -> bool:
+    """A payload file's copy itself timed out. The mount check before it
+    keeps its own error: a timeout there is the device not answering, and a
+    verdict its fallback found (a disk not responding, ACPd broken) names
+    the cause (transport.errors.bare_timeout)."""
     return (
         transfer is not None
         and _upload_destination_kind(transfer, plan) == "payload"
-        and is_ssh_timeout_error(exc)
+        and any(isinstance(error, SshUploadTimeout) for error in exception_chain(exc))
+        and bare_timeout(exc)
     )
 
 
@@ -1238,6 +1251,12 @@ def upload_and_verify_deployment_payload(
                 callbacks.message(line)
         callbacks.debug(**{f"xattr_migration_{phase}_failure": diagnostic,
                            f"xattr_migration_{phase}_error": str(exc)})
+        verdict = coded_error_in(exc)
+        if verdict is not None and verdict.code != ErrorCode.REMOTE_ERROR:
+            # A cause one of the migration's reads found (a disk not
+            # responding, ACPd broken), even while handling a timeout: its
+            # guidance, not the migration's.
+            raise verdict
         detail = f"{diagnostic}\n{exc}"
         if stalled:
             raise DeployDeviceError(

@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 
 from timecapsulesmb.deploy.commands import RemoteAction, RemovePathsAction, render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, FileTransfer, UninstallPlan
-from timecapsulesmb.device.storage import MaStVolume, VolumeClaims, ensure_volume_root_mounted_conn
+from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.device.storage import MaStVolume, StorageDeviceError, VolumeClaims, ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.errors import SshCommandTimeout
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, upload_file
 
@@ -71,6 +72,14 @@ def _destination_is_under(path: str, root: str) -> bool:
     return normalized_path == normalized_root or normalized_path.startswith(f"{normalized_root}/")
 
 
+# Apple's diskd unmounted the volume during the install and did not mount it
+# again when asked: deploy_disk_not_mounted's guidance fits.
+PAYLOAD_VOLUME_UNMOUNTED_MESSAGE = (
+    "The disk was not mounted when the install files were about to be copied, and the device did not mount it "
+    "when asked."
+)
+
+
 def _ensure_payload_volume_before_transfer(
     connection: SshConnection, plan: DeploymentPlan, transfer: FileTransfer, claims: VolumeClaims,
 ) -> None:
@@ -87,7 +96,10 @@ def _ensure_payload_volume_before_transfer(
         claims=claims,
     ):
         return
-    raise RuntimeError(f"payload volume {plan.volume_root} is not mounted before upload to {transfer.destination}")
+    raise StorageDeviceError(
+        PAYLOAD_VOLUME_UNMOUNTED_MESSAGE, code=ErrorCode.DEPLOY_DISK_NOT_MOUNTED,
+        detail=f"{plan.volume_root} was not mounted before the upload to {transfer.destination}.",
+    )
 
 
 def upload_deployment_payload(

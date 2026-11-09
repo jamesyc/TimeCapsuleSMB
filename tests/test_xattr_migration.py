@@ -415,7 +415,6 @@ def test_native_command_is_one_guarded_attempt_carrying_the_request(monkeypatch)
         "input_bytes": b"request",
         "timeout": None,
         "raw_remote_status": True,
-        "extra_ssh_args": m.NATIVE_SSH_ARGS,
     }
 
 

@@ -267,7 +267,10 @@ class CliTestCase(unittest.TestCase):
             "timecapsulesmb.cli.validate_install.TelemetryClient.from_config",
         ):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
-        self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
+        # Port 22 refuses, as on a device with SSH off.
+        self._exit_stack.enter_context(mock.patch(
+            "timecapsulesmb.device.probe.tcp_connect_error", return_value="[Errno 61] Connection refused",
+        ))
         # A command's background read of the device's model (CommandContext)
         # answers nothing, as from a device without ACP. Tests that read a
         # model patch it themselves.

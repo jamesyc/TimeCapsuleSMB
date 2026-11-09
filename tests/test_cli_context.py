@@ -222,6 +222,87 @@ class CommandContextHelperTests(unittest.TestCase):
         text = self.exit_text(SshCommandTimeout("ssh command timed out after 30s"))
         self.assertNotIn("Next steps:", text)
 
+    TIMEOUT_TEXT = "Timed out waiting for ssh command to finish: /usr/bin/acp MaSt"
+
+    def wrapped_timeout(self, wrapper: BaseException) -> None:
+        from timecapsulesmb.transport.errors import SshCommandTimeout
+        try:
+            raise SshCommandTimeout(self.TIMEOUT_TEXT)
+        except SshCommandTimeout as exc:
+            raise wrapper from exc
+
+    def run_in_context(self, body) -> tuple[str | int, CommandContext]:
+        context = CommandContext(mock.Mock(), "deploy", "deploy_started", "deploy_finished")
+        with self.assertRaises(SystemExit) as raised:
+            with context:
+                body()
+        return raised.exception.code, context
+
+    def test_a_device_error_that_wrapped_a_timeout_gets_the_timeout_advice(self) -> None:
+        from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
+
+        slow = ssh_timeout_slow_device_message(None)
+        for code in (None, "remote_error"):
+            with self.subTest(code=code):
+                text, context = self.run_in_context(
+                    lambda: self.wrapped_timeout(DeviceError("The disks could not be read.", code=code)))
+                # The advice first, then the error's own line, and no steps:
+                # the advice says what to do.
+                self.assertIn(slow, text)
+                self.assertLess(text.index(slow), text.index("The disks could not be read."))
+                self.assertNotIn("Next steps:", text)
+                # Telemetry keeps the cause, which says what timed out.
+                error = context.telemetry.emit.call_args.kwargs["error"]
+                self.assertTrue(error.startswith(slow))
+                self.assertIn("The disks could not be read.", error)
+                self.assertIn(f"Caused by: {self.TIMEOUT_TEXT}", error)
+
+    def test_a_raw_timeout_keeps_its_text_once_in_telemetry(self) -> None:
+        from timecapsulesmb.transport.errors import SshCommandTimeout, ssh_timeout_slow_device_message
+
+        _text, context = self.run_in_context(lambda: (_ for _ in ()).throw(SshCommandTimeout(self.TIMEOUT_TEXT)))
+        error = context.telemetry.emit.call_args.kwargs["error"]
+        self.assertTrue(error.startswith(f"{ssh_timeout_slow_device_message(None)}\n{self.TIMEOUT_TEXT}\n\n"))
+        self.assertEqual(error.count(self.TIMEOUT_TEXT), 1)
+        self.assertNotIn("Caused by:", error)
+
+    def test_a_cause_found_while_handling_a_timeout_keeps_its_own_steps(self) -> None:
+        from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
+
+        text, _context = self.run_in_context(
+            lambda: self.wrapped_timeout(DeviceError("The device's disk stopped responding.",
+                                                     code="disk_not_responding")))
+        self.assertNotIn(ssh_timeout_slow_device_message(None), text)
+        self.assertIn("Next steps:", text)
+
+    def test_an_exit_a_command_made_from_a_wrapped_timeout_gets_the_timeout_advice(self) -> None:
+        from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
+
+        slow = ssh_timeout_slow_device_message(None)
+        text, context = self.run_in_context(lambda: self.wrapped_timeout(SystemExit("Disk Repair stopped.")))
+        self.assertIn(slow, text)
+        self.assertLess(text.index(slow), text.index("Disk Repair stopped."))
+        self.assertNotIn("Next steps:", text)
+        # Telemetry keeps the command's own line.
+        self.assertTrue(context.telemetry.emit.call_args.kwargs["error"].startswith("Disk Repair stopped."))
+
+    def test_an_exit_made_from_a_coded_cause_found_while_handling_a_timeout_gets_its_steps(self) -> None:
+        from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
+
+        def exit_from_verdict() -> None:
+            try:
+                self.wrapped_timeout(DeviceError("The device's disk stopped responding.", code="disk_not_responding"))
+            except DeviceError as exc:
+                raise SystemExit(str(exc)) from exc
+
+        text, _context = self.run_in_context(exit_from_verdict)
+        self.assertNotIn(ssh_timeout_slow_device_message(None), text)
+        self.assertIn("Next steps:", text)
+
+    def test_a_numeric_exit_while_handling_a_timeout_adds_nothing(self) -> None:
+        code, _context = self.run_in_context(lambda: self.wrapped_timeout(SystemExit(2)))
+        self.assertEqual(code, 2)
+
     def test_an_exit_raised_from_none_gets_no_steps_of_the_error_it_hid(self) -> None:
         from timecapsulesmb.services.runtime import DeviceAccessError
 

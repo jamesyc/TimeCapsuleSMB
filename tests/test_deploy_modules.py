@@ -135,6 +135,7 @@ from timecapsulesmb.device.storage import (
     PayloadHome,
     PayloadHomeSelection,
     PayloadVerificationResult,
+    StorageDeviceError,
     VolumeClaims,
     mounted_mast_volumes_conn,
 )
@@ -144,6 +145,8 @@ from timecapsulesmb.device.disk_errors import DiskFailingError
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, DiskPayloadError, RsyncNotRunningError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.services import deploy as deploy_service
 from timecapsulesmb.services.deploy import (
     DeployArtifactPaths,
     DeployCompletionMessages,
@@ -165,7 +168,7 @@ from timecapsulesmb.services.runtime_verification import (
     recheck_cached_adisk,
     verify_managed_runtime_ready,
 )
-from timecapsulesmb.transport.errors import SshLocalNetworkFilteredError, SshUploadTimeout
+from timecapsulesmb.transport.errors import SshConnectTimeout, SshLocalNetworkFilteredError, SshUploadTimeout
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError, upload_timeout_seconds
 from timecapsulesmb.device.acpd import RestartVerdict
 
@@ -646,10 +649,10 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(mounted, ())
 
     def test_probe_device_direct_target_fails_before_ssh_when_port_closed(self) -> None:
-        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False) as tcp_open_mock:
+        with mock.patch("timecapsulesmb.device.probe.tcp_connect_error", return_value="timed out") as connect_mock:
             with mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", side_effect=AssertionError("should not ssh")):
                 result = probe_device_conn(SshConnection("root@10.0.0.2", "pw", "-o HostKeyAlgorithms=+ssh-rsa"))
-        tcp_open_mock.assert_called_once_with("10.0.0.2", 22)
+        connect_mock.assert_called_once_with("10.0.0.2", 22)
         self.assertFalse(result.ssh_port_reachable)
         self.assertFalse(result.ssh_authenticated)
         self.assertEqual(result.error, "SSH is not reachable yet.")
@@ -1660,6 +1663,44 @@ class DeployModuleTests(unittest.TestCase):
             )
         return caught.exception, alive, stages[-1] if stages else None
 
+    @staticmethod
+    def _verdict_found_while_handling_a_timeout(code: ErrorCode) -> StorageDeviceError:
+        """A fallback's verdict raised in the timeout's except block, as
+        storage.raise_if_acpd_silent raises it: the timeout is its context."""
+        try:
+            try:
+                raise SshCommandTimeout("Timed out waiting for ssh command to finish: mount check")
+            except SshCommandTimeout:
+                raise StorageDeviceError("found while handling the timeout", code=code)
+        except StorageDeviceError as verdict:
+            return verdict
+
+    def test_only_a_payload_copy_that_timed_out_is_reported_as_the_upload_timing_out(self) -> None:
+        plan = self._prepared_deploy_plan().plan
+        payload = next(transfer for transfer in plan.uploads
+                       if deploy_service._upload_destination_kind(transfer, plan) == "payload")
+        cases = (
+            ("the copy timed out", SshUploadTimeout("Timed out copying smbd", bytes_on_device=4096), True),
+            # The mount check before the copy: the device did not answer.
+            ("the mount check timed out", SshCommandTimeout("Timed out waiting for ssh command to finish: mount"), False),
+            # The mount check's fallback found the disk stuck: that verdict stands.
+            ("a verdict", self._verdict_found_while_handling_a_timeout(ErrorCode.DISK_NOT_RESPONDING), False),
+        )
+        for name, exc, relabelled in cases:
+            with self.subTest(name):
+                self.assertIs(deploy_service._payload_upload_timed_out(exc, payload, plan), relabelled)
+
+    def test_a_verdict_a_migration_read_found_while_handling_a_timeout_keeps_its_code(self) -> None:
+        # Not "a step of the metadata migration timed out": the disk or ACPd
+        # was found at fault, and its guidance (unplug first) applies.
+        for code in (ErrorCode.DISK_NOT_RESPONDING, ErrorCode.ACPD_BROKEN):
+            with self.subTest(code=code):
+                verdict = self._verdict_found_while_handling_a_timeout(code)
+                error, _alive, failed_in = self._deploy_failing(
+                    master_alive=True, migrate=mock.Mock(side_effect=verdict), stage="migrate_xattrs_copy")
+                self.assertIs(error, verdict)
+                self.assertEqual(failed_in, "migrate_xattrs_copy")
+
     def test_a_connection_lost_mid_install_says_to_run_the_install_again(self) -> None:
         dropped = SshError("ssh command failed with rc=255")
         lost_migration = MigrationExitError("exit status 255", 255)
@@ -1703,13 +1744,17 @@ class DeployModuleTests(unittest.TestCase):
                         self.assertIs(error.__cause__, dropped)
 
     def test_a_timeout_mid_install_keeps_its_own_message_with_the_connection_gone(self) -> None:
-        # A failing disk shows up as a timeout; it is not an interrupted install.
-        timeout = SshCommandTimeout("Timed out waiting for ssh")
-        error, alive, failed_in = self._deploy_failing(
-            master_alive=False, error=timeout, step="flush", stage="flush_payload_upload")
-        self.assertIs(error, timeout)
-        self.assertEqual(failed_in, "flush_payload_upload")
-        alive.assert_not_called()
+        # A slow disk or link shows up as a timeout, and so does a device that
+        # did not answer a new login in time (ssh's ConnectTimeout): neither is
+        # an interrupted install.
+        for timeout in (SshCommandTimeout("Timed out waiting for ssh"),
+                        SshConnectTimeout("Timed out connecting to the device over SSH")):
+            with self.subTest(error=type(timeout).__name__):
+                error, alive, failed_in = self._deploy_failing(
+                    master_alive=False, error=timeout, step="flush", stage="flush_payload_upload")
+                self.assertIs(error, timeout)
+                self.assertEqual(failed_in, "flush_payload_upload")
+                alive.assert_not_called()
 
     def test_a_connection_lost_before_the_install_starts_keeps_its_own_message(self) -> None:
         # Nothing on the device has changed before the old runtime stops.
@@ -1789,8 +1834,9 @@ class DeployModuleTests(unittest.TestCase):
         cases = (
             (SshUploadTimeout(message, bytes_on_device=4_194_304), {"bytes_on_device": 4_194_304}),
             (SshUploadTimeout(message, bytes_on_device=None), {"bytes_on_device": None}),
-            (SshCommandTimeout(message), {}),
         )
+        # A plain command timeout in the batch (the mount check before a copy)
+        # is not the copy: test_only_a_payload_copy_that_timed_out_... covers it.
         for error, expected_fields in cases:
             with self.subTest(error=type(error).__name__, fields=expected_fields):
                 prepared_plan = self._prepared_deploy_plan()
@@ -1822,12 +1868,63 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertIn("Copying the SMB payload timed out.", str(raised.exception))
                 # The code's next steps say what to do about a slow disk or link.
                 steps = cli_steps("deploy", raised.exception.code)
-                self.assertIn("Connect this computer or the device by Ethernet, then run `tcapsule deploy` again.", steps)
-                self.assertIn("If this keeps happening, the disk may need replacing.", steps)
+                self.assertIn("If this computer or the device is on Wi-Fi, connect it by Ethernet, then run `tcapsule deploy` again.", steps)
+                self.assertIn("If it times out again, run `tcapsule fsck`.", steps)
+                self.assertFalse(any("replac" in step for step in steps))
                 self.assertIs(raised.exception.__cause__, error)
                 [upload] = [fields for kind, fields in measurements if kind == "upload" and fields["result"] == "failure"]
                 self.assertEqual(upload["error_type"], type(error).__name__)
                 self.assertEqual({key: upload[key] for key in upload if key == "bytes_on_device"}, expected_fields)
+
+    def timed_out_upload_measurement(self, error: SshUploadTimeout) -> dict[str, object]:
+        """The failed upload measurement of a deploy whose smbd upload raises `error`."""
+        prepared_plan = self._prepared_deploy_plan()
+        measurements: list[tuple[str, dict[str, object]]] = []
+
+        def timeout_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
+            if plan.uploads == [plan.migration_upload]:
+                return
+            on_uploading(plan.uploads[0])
+            raise error
+
+        with self.assertRaises(DeployDeviceError) as raised:
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}),
+                SshConnection("host", "pw", "-o foo"),
+                prepared_plan,
+                DeployRuntimeConfig(),
+                callbacks=OperationCallbacks(
+                    record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields)),
+                ),
+                run_remote_actions_func=mock.Mock(),
+                upload_payload_func=timeout_upload,
+                migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            )
+        # Deploy names the timeout; whether it is a Wi-Fi link is decided
+        # where every error ends (services.runtime.wifi_link_error).
+        self.assertEqual(raised.exception.code, "payload_upload_timeout")
+        [upload] = [fields for kind, fields in measurements if kind == "upload" and fields["result"] == "failure"]
+        return upload
+
+    def test_upload_timeout_records_the_rate_over_the_upload_itself(self) -> None:
+        # 4 MiB in 512 s of upload: the rate that tells a crawling link from a
+        # stuck one, without the size read after it.
+        upload = self.timed_out_upload_measurement(
+            SshUploadTimeout("Timed out copying smbd", bytes_on_device=4_194_304, elapsed_sec=512.0),
+        )
+        self.assertEqual(upload["bytes_on_device"], 4_194_304)
+        self.assertEqual(upload["upload_rate_bps"], 8192)
+
+    def test_upload_timeout_with_an_unknown_size_or_time_records_no_rate(self) -> None:
+        for error in (
+            SshUploadTimeout("Timed out copying smbd", bytes_on_device=None, elapsed_sec=512.0),
+            SshUploadTimeout("Timed out copying smbd", bytes_on_device=4_194_304),
+        ):
+            with self.subTest(bytes=error.bytes_on_device, elapsed=error.elapsed_sec):
+                upload = self.timed_out_upload_measurement(error)
+                self.assertEqual(upload["bytes_on_device"], error.bytes_on_device)
+                self.assertNotIn("upload_rate_bps", upload)
 
     def test_upload_deployment_payload_stops_when_payload_volume_guard_fails(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
@@ -1838,8 +1935,12 @@ class DeployModuleTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn", return_value=False) as mount_mock:
             with mock.patch("timecapsulesmb.deploy.executor.upload_file") as upload_mock:
-                with self.assertRaisesRegex(RuntimeError, "payload volume /Volumes/dk2 is not mounted before upload"):
+                with self.assertRaises(StorageDeviceError) as raised:
                     upload_deployment_payload(plan, connection=connection, source_resolver=source_resolver, claims=VolumeClaims())
+        # The disk-not-mounted card, not "Something went wrong".
+        self.assertEqual(raised.exception.code, ErrorCode.DEPLOY_DISK_NOT_MOUNTED)
+        self.assertIn("the device did not mount it when asked", str(raised.exception))
+        self.assertIn("/Volumes/dk2 was not mounted before the upload", raised.exception.detail)
 
         mount_mock.assert_called_once_with(
             connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS, claims=mock.ANY,
@@ -1896,6 +1997,47 @@ class DeployModuleTests(unittest.TestCase):
         connection = SshConnection("host", "pw", "-o foo")
         with self.assertRaisesRegex(KeyError, "No local source for planned transfer 'binary:smbd'"):
             upload_deployment_payload(plan, connection=connection, source_resolver={}, claims=VolumeClaims())
+
+    def test_checks_that_all_timed_out_say_the_services_state_is_unknown(self) -> None:
+        # Nothing answered: not "did not become healthy", whose evidence is
+        # a check that answered not ready.
+        from timecapsulesmb.services.runtime_verification import runtime_failure_error
+        timed_out = ManagedRuntimeProbeResult(
+            ready=False,
+            detail="runtime verification timed out after 240s plus 2 final checks",
+            smbd=ReadinessProbeResult(ready=False, detail="managed smbd readiness probe timed out", steps=(
+                ProbeStepResult("smbd", "timeout", "managed smbd readiness probe timed out"),
+            )),
+            mdns=ReadinessProbeResult(ready=False, detail="mDNS process table probe timed out after 30s", steps=(
+                ProbeStepResult("mdns_process_table", "timeout", "mDNS process table probe timed out after 30s"),
+            )),
+            extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out"),),
+        )
+        error = runtime_failure_error(timed_out, "Managed runtime did not become ready after reboot.")
+        self.assertEqual(error.code, ErrorCode.RUNTIME_NOT_ANSWERED)
+        self.assertIn("did not answer the service checks in time", str(error))
+        # One check that answered "not ready" is evidence: the old message stays.
+        failed = replace(timed_out, smbd=ReadinessProbeResult(ready=False, detail="smbd is not running", steps=(
+            ProbeStepResult("smbd", "fail", "smbd is not running"),
+        )))
+        error = runtime_failure_error(failed, "Managed runtime did not become ready after reboot.")
+        self.assertIsNone(error.code)
+        self.assertIn("did not become ready after reboot", str(error))
+        # smbd passed and only the mDNS check timed out: file sharing started,
+        # so its state is not unknown; the failure message names what is not
+        # ready, and the detail the check that timed out.
+        smbd_up = replace(timed_out, smbd=ReadinessProbeResult(ready=True, detail="managed smbd ready", steps=(
+            ProbeStepResult("smbd", "pass", "managed smbd ready"),
+        )))
+        error = runtime_failure_error(smbd_up, "Managed runtime did not become ready after reboot.")
+        self.assertIsNone(error.code)
+        self.assertNotIn("not known whether file sharing started", str(error))
+        self.assertIn("did not become ready after reboot", str(error))
+        # With no step that failed at all there is nothing to call unanswered.
+        nothing_failed = replace(timed_out, mdns=ReadinessProbeResult(ready=False, detail="mDNS not settled"))
+        nothing_failed = replace(nothing_failed, smbd=ReadinessProbeResult(ready=False, detail="smbd not ready"))
+        error = runtime_failure_error(nothing_failed, "Managed runtime did not become ready after reboot.")
+        self.assertIsNone(error.code)
 
     def test_render_managed_runtime_verification_passes_when_runtime_probe_succeeds(self) -> None:
         verification = ManagedRuntimeProbeResult(
@@ -4274,8 +4416,8 @@ describe_managed_smbd_status "" ""
         self.assertNotIn("generated smbpasswd", text)
         self.assertNotIn("generated:username.map", text)
         self.assertIn("upload generated flash runtime config -> /mnt/Flash/tcapsulesmb.conf", text)
-        self.assertIn(f"checked-in rsync ({BINARY_RSYNC_SOURCE}, timeout 180s or 16 KiB/s, whichever is longer) -> {payload_dir}/rsync", text)
-        self.assertIn(f"generated rsync daemon config ({GENERATED_RSYNC_CONFIG_SOURCE}, timeout 120s or 16 KiB/s, whichever is longer) -> {payload_dir}/rsyncd.conf", text)
+        self.assertIn(f"checked-in rsync ({BINARY_RSYNC_SOURCE}, timeout 180s or 12 KiB/s, whichever is longer) -> {payload_dir}/rsync", text)
+        self.assertIn(f"generated rsync daemon config ({GENERATED_RSYNC_CONFIG_SOURCE}, timeout 120s or 12 KiB/s, whichever is longer) -> {payload_dir}/rsyncd.conf", text)
         self.assertIn("/usr/bin/pkill '^rsync$' >/dev/null 2>&1 || true", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4le", text)

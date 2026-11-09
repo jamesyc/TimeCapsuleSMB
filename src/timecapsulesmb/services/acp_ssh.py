@@ -35,8 +35,6 @@ from timecapsulesmb.services.locate import locate_airport
 from timecapsulesmb.transport.local import connect_answered, connect_error_kind, connect_unanswered, tcp_connect_error
 
 
-# The dashboard groups enable timeouts by this message's text.
-SSH_ENABLE_TIMEOUT_MESSAGE = "SSH did not open after enabling via ACP."
 ACP_PORT_PROBE_ATTEMPTS = 3
 ACP_PORT_PROBE_RETRY_WINDOW_SECONDS = 4.0
 ACP_PORT_PROBE_RETRY_DELAY_SECONDS = ACP_PORT_PROBE_RETRY_WINDOW_SECONDS / (ACP_PORT_PROBE_ATTEMPTS - 1)

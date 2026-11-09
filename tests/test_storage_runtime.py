@@ -1133,7 +1133,9 @@ MaSt = (
                 volume_root_is_writable_conn(connection, "/Volumes/dk2")
 
         self.assertEqual(raised.exception.code, "disk_write_test_unresponsive")
-        self.assertIn("The disk did not respond when tested.", str(raised.exception))
+        # An SSH deadline: the message names the connection as well as the disk.
+        self.assertIn("did not finish a test write to the disk in time", str(raised.exception))
+        self.assertIn("A slow connection to the device can cause this", str(raised.exception))
         self.assertIsInstance(raised.exception.__cause__, SshCommandTimeout)
 
     def test_select_payload_home_records_unmountable_candidates(self) -> None:

@@ -472,6 +472,32 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(summary.checks.first?.localizedMessage(), L10n.string("doctor.check.debug_logging_on"))
     }
 
+    func testWifiClientNoteShowsItsCatalogText() throws {
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "INFO", message: "the device reaches its network over Wi-Fi", domain: "device",
+                            code: "wifi_client")
+        ])
+
+        XCTAssertNotEqual(L10n.string("doctor.check.wifi_client"), "doctor.check.wifi_client")
+        XCTAssertEqual(summary.checks.first?.localizedMessage(), L10n.string("doctor.check.wifi_client"))
+    }
+
+    func testTimedOutProcessListingNamesTheLinkOnlyOnAWifiDevice() throws {
+        // The helper's wifi_client detail picks the line: the link as a
+        // possible cause on Wi-Fi, the device's own causes otherwise.
+        for (onWifi, key) in [(true, "doctor.check.process_listing_timed_out_wifi"),
+                              (false, "doctor.check.process_listing_timed_out")] {
+            let summary = try makeDoctorSummary(checks: [
+                testDoctorCheck(status: "WARN", message: "listing the device's processes timed out", domain: "device",
+                                code: "process_listing_timed_out", extraDetails: ["wifi_client": .bool(onWifi)])
+            ])
+            XCTAssertNotEqual(L10n.string(key), key)
+            XCTAssertEqual(summary.checks.first?.localizedMessage(), L10n.string(key))
+        }
+        XCTAssertNotEqual(L10n.string("doctor.check.process_listing_timed_out_wifi"),
+                          L10n.string("doctor.check.process_listing_timed_out"))
+    }
+
     func testDebugLoggingWarningBesideAnotherWarningLeavesTheRuntimeUnverified() throws {
         let summary = try makeDoctorSummary(checks: [
             testDoctorCheck(status: "WARN", message: "debug logging is on", domain: "device",

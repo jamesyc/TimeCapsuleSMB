@@ -283,6 +283,34 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(confirmation.actionTitle, "Enable SSH and Reboot")
     }
 
+    func testPendingConfirmationNamesTheCausesWhenTheSSHPortOnlyDidNotAnswer() throws {
+        let event = BackendEvent(
+            type: "error",
+            operation: "configure",
+            code: "confirmation_required",
+            message: "Backend fallback.",
+            details: .object([
+                "title": .string("Backend title"),
+                "message": .string("Backend message."),
+                "action_title": .string("Backend action"),
+                "confirmation_id": .string("abc123"),
+                "presentation_id": .string("configure.enable_ssh_reboot_unanswered"),
+                "presentation_values": .object(["device_name": .string("Office Capsule")])
+            ])
+        )
+
+        let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
+
+        XCTAssertEqual(confirmation.title, "Enable SSH And Reboot?")
+        XCTAssertEqual(
+            confirmation.message,
+            "SSH on Office Capsule did not answer. It may be turned off, or the device or the connection may be slow. "
+                + "Enable SSH using AirPort ACP and reboot this AirPort device? If SSH was already on, the restart "
+                + "changes nothing."
+        )
+        XCTAssertEqual(confirmation.actionTitle, "Enable SSH and Reboot")
+    }
+
     func testPendingConfirmationUsesLocalizedActivationCopy() throws {
         let event = BackendEvent(
             type: "error",

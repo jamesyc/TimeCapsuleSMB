@@ -177,11 +177,11 @@ def check_wipe_output(output: str, offsets: WipeOffsets) -> WipeReport:
 def readback_command(disk: str, raw_partition: int, geometry: DiskGeometry) -> str:
     """Sectors 0 and 1 (the MBR and the GPT header) and the last sector (the
     backup GPT header), raw, to check on the Mac (the device has no od, cmp or
-    tr)."""
+    tr). The exit status is a failed read's, from either dd."""
     raw = shlex.quote(raw_disk_path(disk, raw_partition))
     size = geometry.sector_size
     return (
-        f"/bin/dd if={raw} bs={size} count=2 2>/dev/null; "
+        f"/bin/dd if={raw} bs={size} count=2 2>/dev/null && "
         f"/bin/dd if={raw} bs={size} skip={geometry.sectors - 1} count=1 2>/dev/null"
     )
 

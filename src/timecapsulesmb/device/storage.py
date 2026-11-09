@@ -36,7 +36,11 @@ MAST_GET_FAILED_TEXT = "### get 'MaSt' failed"
 ACPD_DISKS_UNREADABLE_MESSAGE = acpd.acpd_broken_message(
     "the AirPort service on this device is not answering", note="Its disks cannot be read. ",
 )
-DISK_WRITE_TEST_UNRESPONSIVE_MESSAGE = "The disk did not respond when tested. It may be failing or unable to spin up."
+# The test is an SSH command: a slow link times it out as surely as a slow disk.
+DISK_WRITE_TEST_UNRESPONSIVE_MESSAGE = (
+    "The device did not finish a test write to the disk in time. A slow connection to the device can cause this, "
+    "and so can a disk that is slow to respond."
+)
 
 
 class StorageDeviceError(DeviceError):

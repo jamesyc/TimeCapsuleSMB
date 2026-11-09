@@ -91,6 +91,7 @@ private struct ConfirmationPresentation {
         let values = detailObject(details, "presentation_values")
         switch presentationKey {
         case "configure.enable_ssh_reboot",
+             "configure.enable_ssh_reboot_unanswered",
              "ssh_access.enable_reboot",
              "deploy.netbsd4",
              "deploy.netbsd4_no_wait",

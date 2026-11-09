@@ -39,7 +39,7 @@ from timecapsulesmb.device.processes import (
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
-from timecapsulesmb.transport.local import mac_network_filters, tcp_open
+from timecapsulesmb.transport.local import mac_network_filters, tcp_connect_error
 from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
     SshAuthenticationError,
@@ -73,10 +73,13 @@ REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 30
 # The listing answers in a second or two on both kernels, even with processes
 # stuck on the disk (a second more when a service or diskd is asleep in the
 # kernel); taking much longer means the device is short of processes, or one
-# of those went to sleep holding its map lock between two reads.
-PROCESS_SNAPSHOT_TIMEOUT_SECONDS = 15
+# of those went to sleep holding its map lock between two reads. The rest of
+# the deadline is for a Time Capsule that joins another Wi-Fi network, whose
+# link can lose packets for seconds at a time. The same listing gets the same
+# deadline in every command's preflight (acpd.ACPD_SSH_TIMEOUT_SECONDS).
+PROCESS_SNAPSHOT_TIMEOUT_SECONDS = 30
 # A listing without command lines, read after one that timed out.
-UNINTERRUPTIBLE_LISTING_TIMEOUT_SECONDS = 15
+UNINTERRUPTIBLE_LISTING_TIMEOUT_SECONDS = 30
 # A process whose command line a listing did not read (UNREADABLE_COMMAND)
 # may hold the role a check looks for: the check says so, never that the role
 # is missing. Such a process is nearly always waiting on the disk briefly.
@@ -362,6 +365,13 @@ class ProbeResult:
     # For LOCAL_NETWORK_FILTERED: transport.local.mac_network_filters().
     # Left out of the hash: a dict cannot be hashed, and every other field can.
     mac_network_filters: dict[str, object] | None = field(default=None, hash=False)
+    # For TRANSPORT_FAILED: the SSH timeout itself, when a command or the
+    # connection did not answer in time, so the error raised for it keeps the
+    # timeout's guidance (transport.errors.bare_timeout).
+    timeout: SshCommandTimeout | None = field(default=None, hash=False, compare=False)
+    # For CLOSED: transport.local.tcp_connect_error's text for port 22. A
+    # refused connect is SSH off; one that timed out may be a slow device.
+    ssh_port_error: str | None = None
 
     @property
     def ssh_port_reachable(self) -> bool:
@@ -509,7 +519,8 @@ class RuntimeNamingIdentityProbeResult:
 
 def probe_device_conn(connection: SshConnection) -> ProbeResult:
     probe_host = connection.host.split("@", 1)[1] if "@" in connection.host else connection.host
-    if not tcp_open(probe_host, 22):
+    port_error = tcp_connect_error(probe_host, 22)
+    if port_error is not None:
         return ProbeResult(
             ssh_status=SshAccessStatus.CLOSED,
             error="SSH is not reachable yet.",
@@ -517,6 +528,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
             os_release="",
             arch="",
             elf_endianness="unknown",
+            ssh_port_error=port_error,
         )
 
     try:
@@ -564,6 +576,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
             os_release="",
             arch="",
             elf_endianness="unknown",
+            timeout=exc if isinstance(exc, SshCommandTimeout) else None,
         )
     except DeviceError as exc:
         return ProbeResult(

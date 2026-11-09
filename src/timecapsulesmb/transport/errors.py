@@ -3,7 +3,7 @@ from __future__ import annotations
 import signal
 import sys
 
-from timecapsulesmb.core.error_codes import ErrorCode, exception_chain
+from timecapsulesmb.core.error_codes import ErrorCode, coded_error_in, exception_chain
 from timecapsulesmb.core.install import this_computer
 
 
@@ -112,16 +112,26 @@ class SshCommandTimeout(SshError):
     """Raised when the local SSH client times out waiting for command completion."""
 
 
-class SshUploadTimeout(SshCommandTimeout):
-    """An upload that timed out, with how many bytes reached the device.
+class SshConnectTimeout(SshCommandTimeout):
+    """ssh's own limit on reaching the device ran out (ConnectTimeout): the
+    TCP connection or the SSH handshake did not finish. The device did not
+    answer in time, as for a command that timed out, so it gets the same
+    guidance; the command itself never started."""
 
-    With the elapsed time, the size tells a slow disk or link from a stuck
-    one. It is None when the device could not be asked.
+
+class SshUploadTimeout(SshCommandTimeout):
+    """An upload that timed out, with how many bytes reached the device and
+    how long the upload ran before it was stopped (not counting the read of
+    the size after it).
+
+    The two tell a slow disk or link from a stuck one. The size is None when
+    the device could not be asked.
     """
 
-    def __init__(self, message: str, *, bytes_on_device: int | None) -> None:
+    def __init__(self, message: str, *, bytes_on_device: int | None, elapsed_sec: float = 0.0) -> None:
         super().__init__(message)
         self.bytes_on_device = bytes_on_device
+        self.elapsed_sec = elapsed_sec
 
 
 SSH_TIMEOUT_SLOW_DEVICE_FALLBACK_DEVICE_NAME = "device"
@@ -129,7 +139,10 @@ SSH_TIMEOUT_SLOW_DEVICE_FALLBACK_DEVICE_NAME = "device"
 
 def ssh_timeout_slow_device_message(device_name: str | None = None) -> str:
     name = (device_name or "").strip() or SSH_TIMEOUT_SLOW_DEVICE_FALLBACK_DEVICE_NAME
-    return f"The {name} is responding very slowly. Please reboot the device. Then wait for SSH to come back and retry."
+    return (
+        f"The {name} did not answer in time. Please reboot the device. Then wait for SSH to come back and retry. "
+        "If it still does not answer, check the network connection to the device, such as Wi-Fi or a VPN."
+    )
 
 
 SSH_TIMEOUT_SLOW_DEVICE_MESSAGE = ssh_timeout_slow_device_message()
@@ -139,12 +152,23 @@ def is_ssh_timeout_error(exc: BaseException | None) -> bool:
     return any(isinstance(error, SshCommandTimeout) for error in exception_chain(exc))
 
 
-def format_ssh_timeout_slow_device_error(exc: BaseException, *, device_name: str | None = None) -> str:
-    message = ssh_timeout_slow_device_message(device_name)
-    detail = str(exc).strip()
-    if not detail:
-        return message
-    return f"{message}\n{detail}"
+def bare_timeout(exc: BaseException | None) -> bool:
+    """An SSH timeout that no error in its chain names a cause for: none has
+    an error code, or only remote_error, the code of a failure the helper
+    cannot name. It gets the timeout's guidance; an error that names its
+    cause (a disk not responding, ACPd broken) keeps its own, even when it
+    was found while handling a timeout.
+
+    The chain follows `__context__` as well as `__cause__`
+    (core.error_codes.exception_chain), so an error with no code raised
+    anywhere inside an `except SshCommandTimeout:` block counts as that
+    timeout, even when it has a definite cause of its own. Such an error
+    must carry a code, or be raised `from None` when the timeout is not its
+    cause."""
+    if not is_ssh_timeout_error(exc):
+        return False
+    coded = coded_error_in(exc)
+    return coded is None or coded.code == ErrorCode.REMOTE_ERROR
 
 
 def transport_error_code(exc: TransportError) -> ErrorCode:

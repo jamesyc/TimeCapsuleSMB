@@ -38,8 +38,8 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
-from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, AirportIdentityMismatchError, enable_ssh_with_port_preflight
-from timecapsulesmb.services.reboot import RebootFlowError, followed, reboot_device, ssh_enable_error_code
+from timecapsulesmb.services.acp_ssh import AirportIdentityMismatchError, enable_ssh_with_port_preflight
+from timecapsulesmb.services.reboot import SSH_ENABLE_FAILURE_CODES, RebootFlowError, followed, reboot_to_enable_ssh
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
@@ -47,7 +47,11 @@ from timecapsulesmb.services.runtime import (
     DeviceAccessError,
     confirm_device_address,
 )
+from timecapsulesmb.transport.local import connect_error_kind, connect_unanswered, tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection
+
+# SSH's port did not answer, where a device with SSH off refuses it at once.
+SSH_UNANSWERED_MESSAGE = "SSH did not answer. It may be turned off, or the device or the connection may be slow."
 
 
 SSH_ONLY_PASSWORD_DEBUG = "SSH accepted the password, but it is not the device's AirPort admin password (syPW)."
@@ -144,8 +148,9 @@ class ConfigureFlowHooks:
     # enabling SSH at all.
     before_enable_ssh: Callable[[SshConnection, ProbedDeviceState], None] | None = None
     # Gets the address that answered AirPort ACP, just before SSH is turned on
-    # there: the place to ask before a device reboots.
-    confirm_enable_ssh: Callable[[str], None] | None = None
+    # there: the place to ask before a device reboots. The flag says SSH's
+    # port only did not answer, so SSH may be on already.
+    confirm_enable_ssh: Callable[[str, bool], None] | None = None
     save_without_authentication: Callable[[ProbedDeviceState], bool] | None = None
 
 
@@ -186,13 +191,15 @@ def enable_ssh_and_reprobe(
     probe: Callable[[SshConnection], ProbedDeviceState] | None = None,
     record: BonjourResolvedService | None = None,
     before_enable: Callable[[str], None] | None = None,
+    unanswered: bool = False,
 ) -> tuple[SshConnection, ProbedDeviceState]:
-    """Turn SSH on through ACP, reboot, and probe again.
+    """Turn SSH on through ACP, reboot, and probe again. `unanswered`: SSH's
+    port did not answer rather than refuse, so SSH may be on already.
 
     Returns the connection to the address SSH was turned on at, which moves
     when the device is found at a new address by its AirPort MAC, and the new
     probe. SSH that did not open in time raises ConfigureFlowError with
-    reboot.ssh_enable_error_code's code: whether the device came back at all
+    reboot.reboot_to_enable_ssh's code: whether the device came back at all
     decides what the user does next.
     """
     callbacks = callbacks or OperationCallbacks()
@@ -202,7 +209,10 @@ def enable_ssh_and_reprobe(
         configure_acp_enable_attempted=True,
         ssh_initially_reachable=False,
     )
-    callbacks.message("\nSSH is not reachable. Checking AirPort ACP so SSH can be turned on...")
+    if unanswered:
+        callbacks.message(f"\n{SSH_UNANSWERED_MESSAGE} Checking AirPort ACP so SSH can be turned on...")
+    else:
+        callbacks.message("\nSSH is not reachable. Checking AirPort ACP so SSH can be turned on...")
     try:
         host = enable_ssh_with_port_preflight(
             endpoint_host(connection.host),
@@ -227,17 +237,17 @@ def enable_ssh_and_reprobe(
     try:
         connection = followed(
             connection,
-            reboot_device(
-                host, connection.password, wait=True, callbacks=callbacks, up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE,
+            reboot_to_enable_ssh(
+                host, connection.password, wait=True, callbacks=callbacks,
                 # The device's Wi-Fi name, for the hint if this Mac leaves it.
                 wifi_name=record.properties.get("raNm") if record is not None else None,
             ),
         )
     except RebootFlowError as exc:
-        if exc.code != ErrorCode.REBOOT_NOT_FINISHED:
+        if exc.code not in SSH_ENABLE_FAILURE_CODES:
             raise
         callbacks.update(ssh_final_reachable=False)
-        raise ConfigureFlowError(str(exc), code=ssh_enable_error_code(exc)) from exc
+        raise ConfigureFlowError(str(exc), code=exc.code) from exc
 
     callbacks.update(ssh_final_reachable=True)
     callbacks.stage("ssh_probe_after_acp")
@@ -334,6 +344,24 @@ def run_configure_flow(
         hooks.after_probe(connection, probed_state)
     probe = probed_state.probe_result
 
+    # A device with SSH off refuses port 22 at once. A connect that only did
+    # not answer may be a slow device or link: one more connect decides, and a
+    # port that answers it gets probed again.
+    ssh_port_unanswered = False
+    if not probe.ssh_port_reachable and connect_unanswered(probe.ssh_port_error):
+        port_error = tcp_connect_error(endpoint_host(host), 22)
+        if port_error is None:
+            probed_state = probe_connection(connection)
+            if hooks.after_probe is not None:
+                hooks.after_probe(connection, probed_state)
+            probe = probed_state.probe_result
+        # The new probe's own connect can time out again after the port
+        # answered: still unanswered, not refused.
+        ssh_port_unanswered = connect_unanswered(port_error) or (
+            not probe.ssh_port_reachable and connect_unanswered(probe.ssh_port_error)
+        )
+        callbacks.update(ssh_port_second_look=connect_error_kind(port_error) or "open")
+
     if not probe.ssh_port_reachable:
         if not request.enable_ssh:
             raise ConfigureFlowError("SSH is not reachable and enable_ssh is false.", code=ErrorCode.SSH_UNREACHABLE)
@@ -345,7 +373,11 @@ def run_configure_flow(
                 callbacks=callbacks,
                 probe=probe_connection,
                 record=request.selected_record,
-                before_enable=hooks.confirm_enable_ssh,
+                unanswered=ssh_port_unanswered,
+                before_enable=(
+                    (lambda acp_host: hooks.confirm_enable_ssh(acp_host, ssh_port_unanswered))
+                    if hooks.confirm_enable_ssh is not None else None
+                ),
             )
         except ACPAuthError as exc:
             raise ConfigureFlowError(
@@ -407,6 +439,9 @@ def run_configure_flow(
         )
     elif probe.ssh_status in (SshAccessStatus.TRANSPORT_FAILED, SshAccessStatus.LOCAL_NETWORK_FILTERED):
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
+        if probe.timeout is not None:
+            # The device did not answer in time: the timeout stays the cause.
+            raise ConfigureFlowError(probe.error or str(probe.timeout), code=ErrorCode.REMOTE_ERROR) from probe.timeout
         raise ConfigureFlowError(probe.error or "SSH transport failed.", code=PROBE_STATUS_ERROR_CODES[probe.ssh_status])
     elif probe.ssh_status == SshAccessStatus.DEVICE_PROBE_FAILED:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)

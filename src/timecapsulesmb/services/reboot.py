@@ -90,6 +90,12 @@ PERSONAL_HOTSPOT_NETWORK = ipaddress.ip_network("172.20.10.0/28")
 
 REBOOT_NO_DOWN_MESSAGE = "Reboot was requested but the device did not restart."
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
+# Two ACP reads of the uptime just before the request did not answer, so
+# nothing was requested: SSH worked moments before, and the work before the
+# restart is done.
+REBOOT_NOT_REQUESTED_MESSAGE = (
+    "The device did not answer AirPort ACP just before the restart, so the restart was not requested."
+)
 SSH_STILL_OPEN_MESSAGE = "SSH reopened after reboot. Disable did not persist."
 ACPD_STOPPED_MESSAGE = acpd.acpd_broken_message(
     "the AirPort service on this device stopped but did not restart the device",
@@ -110,12 +116,34 @@ class RebootFlowError(CodedError):
         self.result = result
 
 
-def ssh_enable_error_code(exc: RebootFlowError) -> ErrorCode:
-    """The code for SSH that did not open after the restart that turns it on:
-    ssh_closed_after_restart when the device came back on a new boot and only
-    SSH stayed closed for REBOOT_SSH_TIMEOUT_SECONDS, ssh_enable_timeout when
-    no new boot answered within the restart wait (REBOOT_UP_TIMEOUT_SECONDS)."""
-    return ErrorCode.SSH_CLOSED_AFTER_RESTART if exc.result == "ssh_not_open" else ErrorCode.SSH_ENABLE_TIMEOUT
+# The restart that turns SSH on (reboot_to_enable_ssh). The dashboard groups
+# enable timeouts by the first message's text.
+SSH_ENABLE_TIMEOUT_MESSAGE = "SSH did not open after enabling via ACP."
+SSH_ENABLE_NO_RETURN_MESSAGE = "The device did not answer within 10 minutes of the restart that turns on SSH."
+SSH_ENABLE_FAILURE_CODES = frozenset({ErrorCode.SSH_CLOSED_AFTER_RESTART, ErrorCode.SSH_ENABLE_TIMEOUT})
+
+
+def reboot_to_enable_ssh(
+    host: str, password: str, *, wait: bool, callbacks: OperationCallbacks | None = None,
+    wifi_name: str | None = None,
+) -> str | None:
+    """reboot_device for the restart that turns SSH on (configure, set-ssh).
+    SSH that did not open in time raises RebootFlowError with a code that
+    says whether the device came back at all, which decides what the user
+    does next: ssh_closed_after_restart when it came back on a new boot and
+    only SSH stayed closed for REBOOT_SSH_TIMEOUT_SECONDS, ssh_enable_timeout
+    when no new boot answered within the restart wait
+    (REBOOT_UP_TIMEOUT_SECONDS), so nothing tried SSH yet."""
+    try:
+        return reboot_device(
+            host, password, wait=wait, callbacks=callbacks, wifi_name=wifi_name,
+            up_timeout_message=SSH_ENABLE_NO_RETURN_MESSAGE, ssh_closed_message=SSH_ENABLE_TIMEOUT_MESSAGE,
+        )
+    except RebootFlowError as exc:
+        if exc.code != ErrorCode.REBOOT_NOT_FINISHED:
+            raise
+        code = ErrorCode.SSH_CLOSED_AFTER_RESTART if exc.result == "ssh_not_open" else ErrorCode.SSH_ENABLE_TIMEOUT
+        raise RebootFlowError(str(exc), code=code, result=exc.result) from exc
 
 
 def reboot_device(
@@ -129,6 +157,7 @@ def reboot_device(
     up_timeout_seconds: int = REBOOT_UP_TIMEOUT_SECONDS,
     no_down_message: str = REBOOT_NO_DOWN_MESSAGE,
     up_timeout_message: str = REBOOT_UP_TIMEOUT_MESSAGE,
+    ssh_closed_message: str | None = None,
     stopped_message: str = ACPD_STOPPED_MESSAGE,
     ssh: SshConnection | None = None,
     wifi_name: str | None = None,
@@ -144,6 +173,9 @@ def reboot_device(
     asks the user to unplug the device (wait_for_reboot_up's progress,
     acpd_hung) and waits on for the new boot; one that never comes is
     reported as ACPd's hang.
+    `up_timeout_message` ends a wait no new boot answered, and
+    `ssh_closed_message` (by default the same) one whose new boot kept SSH
+    closed.
     Returns the device's SSH target when the new boot came up at another
     address (see services.locate), else None. Raises RebootFlowError.
     When this Mac shared a network with the device before the request, the
@@ -158,10 +190,20 @@ def reboot_device(
             callbacks.debug(restart_marker=restart_marker)
         _request(host, password, callbacks, raise_errors=True)
         return None
+    # Two reads, as the preflight's identity read makes: a busy ACPd or a
+    # lossy link can miss one. Nothing is requested without the uptime that
+    # proves the restart later.
     u0, airport_mac, error = _read_uptime(host, password)
+    if u0 is None and not isinstance(error, acp.ACPAuthError):
+        time.sleep(REBOOT_POLL_SECONDS)
+        u0, airport_mac, error = _read_uptime(host, password)
     if u0 is None:
-        code = ErrorCode.AUTH_FAILED if isinstance(error, acp.ACPAuthError) else ErrorCode.DEVICE_UNREACHABLE
-        raise RebootFlowError(f"Could not read the device's uptime through AirPort ACP before rebooting: {error}", code=code)
+        if isinstance(error, acp.ACPAuthError):
+            raise RebootFlowError(
+                f"Could not read the device's uptime through AirPort ACP before rebooting: {error}",
+                code=ErrorCode.AUTH_FAILED,
+            )
+        raise RebootFlowError(f"{REBOOT_NOT_REQUESTED_MESSAGE} ({error})", code=ErrorCode.REBOOT_NOT_REQUESTED)
     started = time.monotonic()
     restart_marker = _mark(ssh)
     # Resolved before the device goes down, when a name still resolves.
@@ -186,6 +228,7 @@ def reboot_device(
         up_timeout_seconds=up_timeout_seconds,
         no_down_message=no_down_message,
         up_timeout_message=up_timeout_message,
+        ssh_closed_message=ssh_closed_message or up_timeout_message,
         stopped_message=stopped_message,
         ssh=ssh,
         restart_marker=restart_marker,
@@ -375,6 +418,7 @@ def _wait(
     up_timeout_seconds: int,
     no_down_message: str,
     up_timeout_message: str,
+    ssh_closed_message: str,
     stopped_message: str,
     ssh: SshConnection | None,
     restart_marker: str | None,
@@ -566,7 +610,7 @@ def _wait(
         deadline = now + REBOOT_SSH_TIMEOUT_SECONDS
         while not tcp_open(host, SSH_PORT):
             if time.monotonic() >= deadline:
-                finish("ssh_not_open", ErrorCode.REBOOT_NOT_FINISHED, up_timeout_message)
+                finish("ssh_not_open", ErrorCode.REBOOT_NOT_FINISHED, ssh_closed_message)
             time.sleep(REBOOT_POLL_SECONDS)
     else:
         # The device's uptime now is the reading plus the time since it.

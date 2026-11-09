@@ -64,6 +64,7 @@ from timecapsulesmb.device.wipe import (
     PS_DISK_JOBS_COMMAND,
     RAW_PARTITION_COMMAND,
     SEAGATE_FAILED_MESSAGE,
+    WIPE_DONE_LINE,
     WIPE_LINE_PREFIX,
     DiskGeometry,
     GptVerdict,
@@ -93,8 +94,8 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.maintenance import render_disk_maintenance_preamble, reboot_and_restart_sharing
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import DiskCheckRunningError, require_no_disk_check
-from timecapsulesmb.transport.errors import TransportError
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_capture_bytes
+from timecapsulesmb.transport.errors import SshConnectTimeout, TransportError
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_capture_bytes, run_ssh_input
 
 
 # 20 MiB at a failing disk's worst seen 32 KB/s is 640 s.
@@ -105,6 +106,10 @@ ERASE_IDLE_SECONDS = 60
 # A disk job still running at this point is left to finish; nothing reboots.
 ERASE_CAP_SECONDS = 30 * 60
 PERSIST_READS = 20
+# After the restart, this many MaSt reads in a row without a usable answer (a
+# timeout, a dropped connection, output that could not be read) end the
+# wait: the volume is then unconfirmed, not gone.
+PERSIST_UNANSWERED_READS = 3
 PROBE_METHOD = 9
 QUICK_ERASE_METHOD = 0
 RPC_STATUS_BAD_ARGUMENT = -6705
@@ -128,8 +133,16 @@ DISK_CHANGED_MESSAGE = "The device stopped reporting the internal disk the way i
 GEOMETRY_UNREADABLE_MESSAGE = "The device did not report this disk's size."
 RPC_MISSING_MESSAGE = "The device's disk service did not accept the erase request."
 STOP_FAILED_MESSAGE = "File sharing could not be stopped, so the disk was not wiped."
-NO_RESPONSE_MESSAGE = "The disk did not respond while it was being wiped."
+NO_RESPONSE_MESSAGE = "The disk did not finish being wiped in time."
+WRITE_FAILED_MESSAGE = "The disk failed a write while it was being wiped."
+CONNECTION_LOST_MESSAGE = "The connection to the device was lost while the disk was being wiped."
 READBACK_MESSAGE = "The disk did not keep the zeros written to it."
+READ_FAILED_MESSAGE = "The disk failed a read right after it was wiped."
+READBACK_NO_RESPONSE_MESSAGE = "Reading the disk back after the wipe did not finish in time."
+DISKS_UNLISTED_MESSAGE = "The device did not list its disks in time, so the check for other disks could not run."
+UNCONFIRMED_MESSAGE = (
+    "The device restarted after the wipe but did not list its disks, so the new volume could not be confirmed."
+)
 UNKNOWN_DISK_MESSAGE = "The device did not find this disk when it tried to format it."
 ERASE_FAILED_MESSAGE = "The device did not finish formatting the disk."
 ERASE_TABLE_CLEARED = "The disk's partition table was already cleared."
@@ -194,6 +207,9 @@ def read_raw_partition_conn(connection: SshConnection) -> int | None:
     return int(text) if text.isdigit() else None
 
 
+# Short reads of the kernel's disks; a Wi-Fi link that loses packets for
+# seconds can hold one this long (probe.PROCESS_SNAPSHOT_TIMEOUT_SECONDS).
+WIPE_READ_TIMEOUT_SECONDS = 30
 # The disks the kernel has attached: the wedge names that clash live in the
 # kernel, and a disk diskd has not listed (just plugged in, or diskd slow) has
 # wedges all the same.
@@ -205,9 +221,12 @@ KERNEL_DISKS_KEY = "hw.disknames"
 OTHER_DISK_UNREADABLE = "unreadable"
 
 
-def kernel_disks_conn(connection: SshConnection) -> tuple[str, ...]:
-    """The `sd` and `wd` disks in hw.disknames (no flash, RAM disk or wedge)."""
-    text = _read_text(connection, KERNEL_DISKS_COMMAND, timeout=15) or ""
+def kernel_disks_conn(connection: SshConnection) -> tuple[str, ...] | None:
+    """The `sd` and `wd` disks in hw.disknames (no flash, RAM disk or wedge);
+    None when the device did not answer."""
+    text = _read_text(connection, KERNEL_DISKS_COMMAND, timeout=WIPE_READ_TIMEOUT_SECONDS)
+    if text is None:
+        return None
     return tuple(name for name in text.split() if _KERNEL_DISK.fullmatch(name))
 
 
@@ -246,13 +265,17 @@ def disks_with_apple_labels(
     and dk0 to dk2 are formatted, which is wrong only if another disk owns
     them."""
     kernel = kernel_disks_conn(connection)
+    if kernel is None:
+        # No list to check against: nothing says another disk is there, but
+        # nothing rules one out either.
+        raise WipeDiskError(DISKS_UNLISTED_MESSAGE, code=ErrorCode.WIPE_DISK_CHECK_UNANSWERED, reason="disks_unlisted")
     found: dict[str, str] = {}
     if target.device not in kernel:
         found[KERNEL_DISKS_KEY] = OTHER_DISK_UNREADABLE
     devices = [device for device in dict.fromkeys([*(disk.device for disk in disks), *kernel])
                if device != target.device]
     for device in devices:
-        geometry = parse_drvctl_geometry(_read_text(connection, drvctl_command(device), timeout=15) or "")
+        geometry = parse_drvctl_geometry(_read_text(connection, drvctl_command(device), timeout=WIPE_READ_TIMEOUT_SECONDS) or "")
         names = None
         if geometry is not None:
             # A disk too small for both tables reads short: unreadable.
@@ -597,14 +620,34 @@ def _wait_for_erase(
 def _check_persisted(plan: WipePlan, new_uuid: str, sleep: Callable[[float], None]) -> Callable[[SshConnection], None]:
     """After the reboot: the new volume must still be there."""
     def check(connection: SshConnection) -> None:
+        # Only reads with a usable answer can show the volume gone. A run of
+        # reads without one (a timeout, a dropped connection, MaSt output
+        # that could not be parsed) ends the wait unconfirmed, or with the
+        # verdict a read's fallback found in that run (a disk not responding,
+        # ACPd broken). A usable answer ends the run, and the run's verdict
+        # with it: ACPd answered since. remote_error names no cause, as in
+        # transport.errors.bare_timeout.
+        unanswered = 0
+        verdict: DeviceError | None = None
         for read in range(PERSIST_READS):
             try:
                 disks = read_disks_conn(connection)
-            except (DeviceError, TransportError, ValueError):
-                disks = ()
-            for disk in disks:
-                if disk.uuid == plan.disk.uuid and any(partition.uuid == new_uuid for partition in disk.partitions):
-                    return
+            except (DeviceError, TransportError, ValueError) as exc:
+                if (isinstance(exc, DeviceError) and exc.code is not None
+                        and exc.code != ErrorCode.REMOTE_ERROR):
+                    verdict = exc
+                unanswered += 1
+                if unanswered >= PERSIST_UNANSWERED_READS:
+                    if verdict is not None:
+                        raise verdict
+                    raise WipeDiskError(UNCONFIRMED_MESSAGE, code=ErrorCode.WIPE_DISK_UNCONFIRMED,
+                                        reason="unconfirmed") from exc
+            else:
+                unanswered = 0
+                verdict = None
+                for disk in disks:
+                    if disk.uuid == plan.disk.uuid and any(partition.uuid == new_uuid for partition in disk.partitions):
+                        return
             if read + 1 < PERSIST_READS:
                 sleep(ERASE_POLL_SECONDS)
         raise WipeDiskError(NOT_PERSISTED_MESSAGE, code=ErrorCode.WIPE_DISK_ERASE_FAILED, reason="not_persisted")
@@ -639,12 +682,21 @@ def run_wipe(
     try:
         proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=WIPE_REMOTE_TIMEOUT_SECONDS)
         output = proc.stdout or ""
+    except SshConnectTimeout:
+        # The device did not answer the connection: the wipe never started,
+        # so this is the connection's error, not the disk's.
+        raise
     except SshCommandTimeout:
         output, timed_out = "", True
     callbacks.update(wipe_seconds=round(clock() - wipe_started, 1))
+    # ssh exits 255 when the connection drops after logging in; the script
+    # itself exits 0 or 1. Whatever it printed so far says nothing of the disk.
+    if not timed_out and proc.returncode == 255 and WIPE_DONE_LINE not in output:
+        raise WipeDiskError(CONNECTION_LOST_MESSAGE, code=ErrorCode.WIPE_DISK_CONNECTION_LOST, reason="connection_lost",
+                            detail=output.strip()[-500:] or None)
     if WIPE_LINE_PREFIX not in output:
         if timed_out:
-            raise WipeDiskError(NO_RESPONSE_MESSAGE, code=ErrorCode.DISK_FAILING, reason="no_response")
+            raise WipeDiskError(NO_RESPONSE_MESSAGE, code=ErrorCode.WIPE_DISK_NO_RESPONSE, reason="no_response")
         # The managed stop failed before anything was written.
         raise WipeDiskError(STOP_FAILED_MESSAGE, code=ErrorCode.WIPE_DISK_RESTART_NEEDED, reason="stop_failed",
                             detail=output.strip()[-500:] or None)
@@ -652,16 +704,31 @@ def run_wipe(
     if not report.complete:
         if report.reason == "disk_changed":
             raise WipeDiskError(DISK_CHANGED_MESSAGE, code=ErrorCode.WIPE_DISK_CHANGED, reason="target_changed")
-        raise WipeDiskError(NO_RESPONSE_MESSAGE, code=ErrorCode.DISK_FAILING, reason=report.reason or "no_response")
+        # A write the device saw fail is evidence of a failing disk; output
+        # that stopped short says only that the zeroing did not finish.
+        if report.reason in ("write_failed", "short_write"):
+            raise WipeDiskError(WRITE_FAILED_MESSAGE, code=ErrorCode.DISK_FAILING, reason=report.reason)
+        raise WipeDiskError(NO_RESPONSE_MESSAGE, code=ErrorCode.WIPE_DISK_NO_RESPONSE, reason=report.reason or "no_response")
 
     callbacks.stage("check_wipe")
+    readback = f"/bin/sh -c {shlex.quote(readback_command(plan.disk.device, plan.raw_partition, plan.geometry))}"
     try:
-        data = run_ssh_capture_bytes(
-            connection, f"/bin/sh -c {shlex.quote(readback_command(plan.disk.device, plan.raw_partition, plan.geometry))}",
-            timeout=120,
-        )
-    except TransportError:
-        data = b""
+        proc = run_ssh_input(connection, readback, timeout=120, raw_remote_status=True)
+    except SshCommandTimeout as exc:
+        # Nothing was read back: the disk may be stuck, or the link stalled.
+        raise WipeDiskError(READBACK_NO_RESPONSE_MESSAGE, code=ErrorCode.WIPE_DISK_NO_RESPONSE,
+                            reason="readback_no_response") from exc
+    except TransportError as exc:
+        raise WipeDiskError(CONNECTION_LOST_MESSAGE, code=ErrorCode.WIPE_DISK_CONNECTION_LOST,
+                            reason="readback_connection_lost", detail=str(exc)) from exc
+    data = proc.stdout or b""
+    if proc.returncode == 255:
+        raise WipeDiskError(CONNECTION_LOST_MESSAGE, code=ErrorCode.WIPE_DISK_CONNECTION_LOST,
+                            reason="readback_connection_lost")
+    if proc.returncode != 0:
+        # dd failed a read of the raw disk it just wrote.
+        raise WipeDiskError(READ_FAILED_MESSAGE, code=ErrorCode.DISK_FAILING, reason="readback_read_failed",
+                            detail=f"exit status {proc.returncode}, read {len(data)} bytes")
     if not readback_is_blank(data, plan.geometry):
         raise WipeDiskError(READBACK_MESSAGE, code=ErrorCode.DISK_FAILING, reason="readback",
                             detail=f"read {len(data)} bytes")
