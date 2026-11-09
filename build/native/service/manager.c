@@ -8,6 +8,7 @@
 #include "../storage/settle.h"
 #include "bufstall.h"
 #include "diskd.h"
+#include "procfacts.h"
 #include "inspect.h"
 #include "proctable.h"
 #include "stuck.h"
@@ -242,7 +243,7 @@ struct manager {
     unsigned probe_token;
     /* Our launched diskd once it has exec'd: its identity, so its reaped exit
      * retires it at once (tc_diskd_owner_exited). */
-    struct tc_diskd_identity diskd_child_identity;
+    struct tc_proc_identity diskd_child_identity;
     /* The handoff generation the storage job started under, and the one the
      * accepted storage snapshot belongs to: a new owner's first pass starts
      * from no previous snapshot, so every volume is claimed again. */
@@ -946,7 +947,6 @@ static void pump_audit(struct manager *m, long long now) {
             m->audit_at = now + JOB_RETRY_MS;
     }
 }
-static int foreign_netbios(const struct manager *m);
 /* Disk owner handoff: the adapter between the process table and diskd.c.
  * README "Disk owner handoff" has the phases and what each observation means. */
 /* The readiness probe, read-only. acp exits 0 once diskd's event loop has
@@ -967,8 +967,13 @@ static int diskd_probe_job(void *unused) {
     fprintf(stderr, "diskd readiness: no answer: %s\n", reply[0] ? reply : "no output");
     return tc_worker_finish(1);
 }
+/* What the facts depend on, as the manager's state is now. */
+static struct tc_proc_context proc_context(const struct manager *m) {
+    struct tc_proc_context c = {m->discovery.child.pid, m->diskd.child.group ? m->diskd.child.pid : 0, m->handoff.owner};
+    return c;
+}
 /* The observation diskd.c needs: what this pass's kernel table says
- * (tc_diskd_scan), the last completed audit and the manager's own state. The
+ * (tc_proc_facts), the last completed audit and the manager's own state. The
  * audit only says whether a single owner is stock or loopback. Its row
  * counts only when it has the owner's PID and kernel start time: that is the
  * same process, exec keeps the start time, and diskd never execs again, so a
@@ -976,31 +981,30 @@ static int diskd_probe_job(void *unused) {
  * since keeps the role for the process's life, also across failed audits. */
 static void observe_diskd(struct manager *m, struct tc_diskd_observation *o, long long now) {
     const struct tc_proctable *t = &m->procs;
-    struct tc_diskd_scan scan;
-    const struct tc_proc *child;
+    const struct tc_proc_context context = proc_context(m);
+    struct tc_proc_facts facts;
     int classified = 0;
     size_t i;
     memset(o, 0, sizeof(*o));
     o->kernel_valid = m->procs_valid;
     if (!o->kernel_valid)
         return;
-    tc_diskd_scan(t, m->handoff.owner, &scan);
-    o->owners = scan.owners;
-    o->owner = scan.owner;
-    o->current_present = scan.current_present;
-    o->disk_work = scan.disk_work;
-    o->acp_clients = scan.acp_clients;
+    tc_proc_facts(t, &context, &facts);
+    o->owners = facts.owners;
+    o->owner = facts.owner;
+    o->current_present = facts.current_present;
+    o->disk_work = facts.disk_work;
+    o->acp_clients = facts.acp_clients;
     /* Our launch child has exec'd once its row shows diskd: it is an owner
      * from then on, and its exit is reported by PID and start time. */
-    child = m->diskd.child.group ? tc_proctable_live(t, m->diskd.child.pid) : NULL;
-    if (tc_diskd_row(child) && !tc_diskd_row(tc_proctable_live(t, child->parent))) {
+    if (facts.launch_execd.pid) {
         m->diskd_child_execd = 1;
-        m->diskd_child_identity = (struct tc_diskd_identity){child->pid, child->born};
+        m->diskd_child_identity = facts.launch_execd;
     }
     /* A new owner needs an audit read after it appeared: ask for one now
      * rather than at the next scheduled audit. */
-    if (scan.signature != m->owners_signature) {
-        m->owners_signature = scan.signature;
+    if (facts.signature != m->owners_signature) {
+        m->owners_signature = facts.signature;
         m->audit_at = 0;
     }
     o->launch = m->diskd.child.group && !m->diskd_child_execd;
@@ -1015,14 +1019,12 @@ static void observe_diskd(struct manager *m, struct tc_diskd_observation *o, lon
     o->valid = o->owners != 1 || classified;
     o->mounts = o->owners ? 0 : tc_storage_data_mounted();
     /* Only a stock owner is ever TERMed, and only from a table this pass
-     * read (pump_sample); an older one asks the next pass for a fresh read,
-     * as pump_audit does. */
+     * read (pump_sample). An idle one in an older table asks the next pass
+     * for a fresh read, as pump_audit does. */
     o->fresh = m->sample_at == now;
-    if (o->owners == 1 && classified && !o->loopback) {
-        o->owner_idle = tc_diskd_owner_idle(t, o->owner.pid);
-        if (!o->fresh)
-            m->sample_at = 0;
-    }
+    o->owner_idle = o->owners == 1 && classified && !o->loopback && facts.owner_idle;
+    if (o->owner_idle && !o->fresh)
+        m->sample_at = 0;
     /* Nothing may still hold a file on the volumes. Our discovery logs to the
      * payload disk while smbd serves; quiesce stops smbd, so discovery
      * restarts with its log in RAM, and the old one must have exited. A
@@ -1038,7 +1040,7 @@ static void observe_diskd(struct manager *m, struct tc_diskd_observation *o, lon
      * volumes mounted with no diskd (`residual_mounts`). */
     o->drained = !m->smb.child.group && !m->rsync.child.group && !m->storage_job.group && !units_staging(m) &&
                  !(m->discovery.child.group && !m->discovery_diskless) &&
-                 !(m->blocked & (BLOCK_SMB | BLOCK_RSYNC | BLOCK_DISCOVERY)) && !foreign_netbios(m);
+                 !(m->blocked & (BLOCK_SMB | BLOCK_RSYNC | BLOCK_DISCOVERY)) && !facts.foreign_netbios;
 }
 static void report_handoff(struct manager *m) {
     const struct tc_diskd *s = &m->handoff;
@@ -1064,7 +1066,7 @@ static void pump_diskd(struct manager *m, long long now) {
             actions |= tc_diskd_owner_exited(&m->handoff, m->diskd_child_identity, now);
         tc_child_close(&m->diskd.child);
         m->diskd_child_execd = 0;
-        m->diskd_child_identity = (struct tc_diskd_identity){0};
+        m->diskd_child_identity = (struct tc_proc_identity){0};
     }
     if (m->diskd_probe.group && tc_child_poll(&m->diskd_probe, now)) {
         tc_diskd_probed(&m->handoff, m->probe_token, tc_child_ok(&m->diskd_probe) && !m->diskd_probe.stopping, now);
@@ -1097,7 +1099,7 @@ static void pump_diskd(struct manager *m, long long now) {
     }
     if (actions & TC_DISKD_TERM) {
         const struct tc_proc *p = tc_proctable_live(&m->procs, m->handoff.owner.pid);
-        if (p && p->born == m->handoff.owner.born && tc_diskd_row(p) && kill(p->pid, SIGTERM) && errno != ESRCH)
+        if (p && p->born == m->handoff.owner.born && tc_proc_diskd(p) && kill(p->pid, SIGTERM) && errno != ESRCH)
             timestamped_fprintf(stderr, "manager: diskd: cannot stop pid %ld: %s\n", (long)p->pid, strerror(errno));
     }
     if ((actions & TC_DISKD_LAUNCH) && m->diskd.child.group) {
@@ -1466,38 +1468,6 @@ static void sample_bufstall(struct manager *m, long long now) {
             m->report_longest = m->bufstall.ended_longest;
     }
 }
-/* ACPd starts Apple's wcifsfs at boot and on address changes, and it can
- * take TCP 445 from Samba. A wcifsnd discovery did not start (an orphan, or
- * ACPd's where boot.sh could not guard /sbin/wcifsnd) takes the NBNS ports
- * from discovery's own. Both are named by the process table alone, which the
- * manager reads every second, so the audit that stops them (apply_audit)
- * starts now rather than up to AUDIT_MS later. diskd needs its command line,
- * which only the audit reads, so it waits for the next audit. */
-static int foreign_netbios(const struct manager *m) {
-    size_t i;
-    for (i = 0; i < m->procs.count; i++) {
-        const struct tc_proc *p = &m->procs.procs[i];
-        if (p->pid <= 1 || tc_proc_exited(p))
-            continue;
-        if (!strcmp(p->comm, "wcifsfs") || (!strcmp(p->comm, "wcifsnd") && p->parent != m->discovery.child.pid))
-            return 1;
-    }
-    return 0;
-}
-/* Apple's diskd checks a volume with fsck_hfs before mounting it: about a
- * second for the quick check after most claims, and up to an hour on 2-3 TB
- * for the repair after an unclean power-off. newfs_hfs formats one. Neither
- * is a disk that stopped answering. (An Erase in AirPort Utility also
- * repartitions the disk, which removes its volumes from MaSt.) */
-static int disk_maintenance(const struct manager *m) {
-    size_t i;
-    for (i = 0; i < m->procs.count; i++) {
-        const struct tc_proc *p = &m->procs.procs[i];
-        if (!tc_proc_exited(p) && (!strcmp(p->comm, "fsck_hfs") || !strcmp(p->comm, "newfs_hfs")))
-            return 1;
-    }
-    return 0;
-}
 /* File sharing has no disk: one MaSt lists failed activation (retry_prepare
  * without mounted; a disk that mounted but failed later preparation keeps
  * mounted), and no available disk holds the Samba files, so Samba is off
@@ -1512,14 +1482,20 @@ static int disk_maintenance(const struct manager *m) {
  * claims, and to that diskd's own storage results: leaving `ready` (the owner
  * retired, or a conflict) ends it, and a new owner starts one only once its
  * own full storage pass has failed too, never from its predecessor's.
- * Reporting only: the manager never restarts the device. */
-static void sample_unmounted(struct manager *m, long long now) {
+ * Reporting only: the manager never restarts the device. `repair` is
+ * tc_proc_facts' disk_repair: Apple's diskd checks a volume with fsck_hfs
+ * before mounting it, about a second for the quick check after most claims
+ * and up to an hour on 2-3 TB for the repair after an unclean power-off, or
+ * formats one with newfs_hfs. Neither is a disk that stopped answering. (An
+ * Erase in AirPort Utility also repartitions the disk, which removes its
+ * volumes from MaSt.) */
+static void sample_unmounted(struct manager *m, long long now, int repair) {
     uint32_t pending = m->storage.retry_prepare & ~m->storage.mounted;
     int failing = tc_diskd_ready(&m->handoff) && m->storage_owner_generation == m->handoff.generation && pending &&
                   m->storage.payload_index < 0,
         internal = 0, maintenance, shown;
     size_t i;
-    maintenance = failing && disk_maintenance(m);
+    maintenance = failing && repair;
     if (!failing) {
         m->unmounted_since = -1;
     } else if (m->unmounted_since < 0) {
@@ -1574,11 +1550,24 @@ static void pump_sample(struct manager *m, long long now) {
         timestamped_fprintf(stderr, "manager: process table readable again\n");
     m->procs_unreadable = 0;
     m->procs_valid = 1;
-    sample_bufstall(m, now);
-    sample_stuck(m, now);
-    sample_unmounted(m, now);
-    if (!m->stopping && foreign_netbios(m))
-        lower(&m->audit_at, now);
+    {
+        const struct tc_proc_context context = proc_context(m);
+        struct tc_proc_facts facts;
+        tc_proc_facts(&m->procs, &context, &facts);
+        sample_bufstall(m, now);
+        sample_stuck(m, now);
+        sample_unmounted(m, now, facts.disk_repair);
+        /* ACPd starts Apple's wcifsfs at boot and on address changes, and it
+         * can take TCP 445 from Samba. A wcifsnd discovery did not start (an
+         * orphan, or ACPd's where boot.sh could not guard /sbin/wcifsnd)
+         * takes the NBNS ports from discovery's own. Both are named by the
+         * process table alone, which the manager reads every second, so the
+         * audit that stops them (apply_audit) starts now rather than up to
+         * AUDIT_MS later. diskd needs its command line, which only the audit
+         * reads, so it waits for the next audit. */
+        if (!m->stopping && facts.foreign_netbios)
+            lower(&m->audit_at, now);
+    }
 }
 /* When the unit's next run may start: after its retry, and, when the run
  * copies the binary, after the image's wait (damage, a refused launch). A

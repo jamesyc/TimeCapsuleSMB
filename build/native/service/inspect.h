@@ -33,6 +33,11 @@ typedef int (*tc_argv_fn)(pid_t, char *out, size_t size);
  * any other failure to read one fails the whole table (-1): an empty command
  * line would make the loopback diskd look foreign. */
 int tc_process_table_build(struct tc_process_table *, const struct tc_proctable *snapshot, tc_argv_fn argv);
+/* A wcifsnd with this parent is not our discovery's own (none runs when
+ * discovery is 0): the process table's drain check and the stopper agree. */
+static inline int tc_proc_foreign_wcifsnd(pid_t parent, pid_t discovery) {
+    return !discovery || parent != discovery;
+}
 int tc_listener_present(const char *text, unsigned port);
 /* Bit 1 = IPv4 wildcard, bit 2 = IPv6 wildcard. */
 unsigned tc_wildcard_listener_families(const char *text, unsigned port);

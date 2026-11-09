@@ -33,7 +33,7 @@ static unsigned retire(struct tc_diskd *s, long long now) {
     int ours = s->phase == TC_DISKD_STARTING || s->phase == TC_DISKD_READY;
     if (ours)
         s->retry_at = backoff(&s->launch_failures, now);
-    s->owner = (struct tc_diskd_identity){0};
+    s->owner = (struct tc_proc_identity){0};
     s->generation++;
     s->probe_token++;
     s->probing = 0;
@@ -45,49 +45,6 @@ static unsigned retire(struct tc_diskd *s, long long now) {
 static enum tc_diskd_phase owner_phase(struct tc_diskd *s, const struct tc_diskd_observation *o) {
     s->owner = o->owner;
     return o->loopback ? TC_DISKD_STARTING : TC_DISKD_QUIESCE;
-}
-/* README "Disk owner handoff", Observation. diskd runs these tools through
- * `sh -c`, so the shell counts as one while it is diskd's child. */
-static int disk_job_name(const char *name) {
-    return !strncmp(name, "fsck", 4) || !strncmp(name, "newfs", 5) || !strcmp(name, "mount") ||
-           !strcmp(name, "mount_hfs") || !strcmp(name, "umount") || !strcmp(name, "gpt");
-}
-int tc_diskd_row(const struct tc_proc *p) {
-    return p && !strcmp(p->comm, "diskd");
-}
-/* A child diskd forks keeps its name and argv until it execs, so only a
- * diskd whose parent is not a diskd is an owner. */
-void tc_diskd_scan(const struct tc_proctable *t, struct tc_diskd_identity current, struct tc_diskd_scan *out) {
-    size_t i;
-    memset(out, 0, sizeof(*out));
-    for (i = 0; i < t->count; i++) {
-        const struct tc_proc *p = &t->procs[i];
-        int child_of_diskd;
-        if (tc_proc_exited(p))
-            continue;
-        child_of_diskd = tc_diskd_row(tc_proctable_live(t, p->parent));
-        if (disk_job_name(p->comm) || (child_of_diskd && !strcmp(p->comm, "sh")))
-            out->disk_work = 1;
-        if (!strcmp(p->comm, "acp"))
-            out->acp_clients++;
-        if (!tc_diskd_row(p) || child_of_diskd)
-            continue;
-        out->owners++;
-        out->owner = (struct tc_diskd_identity){p->pid, p->born};
-        out->signature += (unsigned long long)p->pid * 2654435761ULL + p->born;
-        if (current.pid && p->pid == current.pid && p->born == current.born)
-            out->current_present = 1;
-    }
-}
-int tc_diskd_owner_idle(const struct tc_proctable *t, pid_t owner) {
-    const struct tc_proc *p = tc_proctable_live(t, owner);
-    size_t i;
-    if (!p || (strcmp(p->wmesg, "kqread") && strcmp(p->wmesg, "kqueue")) || p->slept < TC_DISKD_IDLE_SECONDS)
-        return 0;
-    for (i = 0; i < t->count; i++)
-        if (t->procs[i].parent == owner && !tc_proc_exited(&t->procs[i]))
-            return 0;
-    return 1;
 }
 unsigned tc_diskd_step(struct tc_diskd *s, const struct tc_diskd_observation *o, long long now) {
     enum tc_diskd_phase phase;
@@ -175,7 +132,7 @@ void tc_diskd_launch_exited(struct tc_diskd *s, long long now) {
     if (s->phase == TC_DISKD_LAUNCHING)
         set_state(s, TC_DISKD_INSPECT, TC_DISKD_RELAUNCH_WAIT, now);
 }
-unsigned tc_diskd_owner_exited(struct tc_diskd *s, struct tc_diskd_identity owner, long long now) {
+unsigned tc_diskd_owner_exited(struct tc_diskd *s, struct tc_proc_identity owner, long long now) {
     if (!owner.pid || owner.pid != s->owner.pid || owner.born != s->owner.born)
         return 0;
     return retire(s, now);

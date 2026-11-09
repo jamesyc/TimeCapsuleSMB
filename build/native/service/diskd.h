@@ -1,7 +1,7 @@
 #ifndef TC_DISKD_H
 #define TC_DISKD_H
 #include <sys/types.h>
-
+#include <stddef.h>
 #include "proctable.h"
 
 /* Hands the disks from Apple's stock diskd to the manager's loopback diskd.
@@ -43,27 +43,18 @@ enum tc_diskd_reason {
      * its TERM waits (F19). */
     TC_DISKD_BUSY
 };
-/* The stock owner's kevent sleep, in the kernel's p_slptime, before its TERM.
- * The kernel adds one each second to every sleeping thread, the first time as
- * soon as the next second starts, so 3 means asleep for more than 2 s. */
-#define TC_DISKD_IDLE_SECONDS 3
-/* PID and kernel start time: a reused PID is another owner. */
-struct tc_diskd_identity {
-    pid_t pid;
-    unsigned long long born;
-};
 struct tc_diskd_observation {
     int kernel_valid;    /* this pass read the kernel process table */
     int valid;           /* the owner's role is known: always with 0 or 2+ owners */
     int owners;          /* diskd rows whose parent is not a diskd row */
-    struct tc_diskd_identity owner; /* when owners == 1 */
+    struct tc_proc_identity owner; /* when owners == 1 */
     int loopback;        /* that owner's role from its argv */
     int current_present; /* the machine's current owner is among the owners */
     int launch;          /* our launch child has not exec'd yet */
     int disk_work;       /* a disk tool, or a shell diskd started */
     int mounts;          /* HFS data volumes mounted: 1, 0, or -1 unreadable */
     int drained;         /* nothing of ours or foreign holds a file on the volumes (manager.c observe_diskd) */
-    int owner_idle; /* the single stock owner may take its TERM (tc_diskd_owner_idle) */
+    int owner_idle; /* the single stock owner may take its TERM (procfacts.h owner_idle) */
     /* The kernel table was read this pass. Passes come sooner than table
      * reads (a child's exit, an audit), and a TERM must not follow an idle
      * seen up to a read interval ago: a scan or forwarded call can have begun
@@ -89,7 +80,7 @@ struct tc_diskd {
     enum tc_diskd_reason reason;
     long long since; /* when the phase or the reason last changed */
     long long held_ms; /* how long `busy` held a TERM back, spells that ended */
-    struct tc_diskd_identity owner;
+    struct tc_proc_identity owner;
     unsigned generation; /* advances whenever an owner is retired */
     unsigned probe_token; /* a probe's reply counts only for this token */
     int probing;
@@ -102,33 +93,13 @@ unsigned tc_diskd_step(struct tc_diskd *, const struct tc_diskd_observation *, l
 void tc_diskd_launch_exited(struct tc_diskd *, long long now);
 /* Our exec'd child was reaped: when it is the owner, retire it now rather
  * than at the next process sample. Returns TC_DISKD_RETIRE or 0. */
-unsigned tc_diskd_owner_exited(struct tc_diskd *, struct tc_diskd_identity, long long now);
+unsigned tc_diskd_owner_exited(struct tc_diskd *, struct tc_proc_identity, long long now);
 /* A probe started when probe_token had this value; a reply under an older
  * token (owner retired, or a conflict since) is ignored. answered: acp exited
  * 0, so diskd dispatched the call (a handler error still counts). 0: any
  * other end, including a probe the manager could not start. */
 void tc_diskd_probed(struct tc_diskd *, unsigned token, int answered, long long now);
 int tc_diskd_ready(const struct tc_diskd *);
-
-/* What one pass's kernel process table says about diskd, before the audit
- * and the manager's own state: README "Disk owner handoff", Observation. */
-struct tc_diskd_scan {
-    int owners;                     /* diskd rows whose parent is not a diskd row */
-    struct tc_diskd_identity owner; /* the last of them; the one when owners == 1 */
-    int current_present;            /* `current` is among them */
-    unsigned long long signature;   /* changes whenever the set of owners does */
-    int disk_work;                  /* a disk tool, or a shell a diskd started */
-    int acp_clients;                /* acp CLI processes */
-};
-void tc_diskd_scan(const struct tc_proctable *, struct tc_diskd_identity current, struct tc_diskd_scan *);
-/* Whether stock owner PID may take its TERM (F19): asleep in kevent (wmesg
- * kqread on NetBSD 4, kqueue on NetBSD 6) with p_slptime of at least
- * TC_DISKD_IDLE_SECONDS, and no child. Its disk scans run outside that sleep
- * and the sleep time restarts on every wakeup, so it has had nothing to do
- * for that long. */
-int tc_diskd_owner_idle(const struct tc_proctable *, pid_t);
-/* A row named diskd. */
-int tc_diskd_row(const struct tc_proc *);
 /* The title's handoff word, PHASE:SINCE:REASON, then " held=S" once `busy`
  * has held a TERM back for a second or more (spells that ended). Cut to fit
  * like snprintf, and like it returns size or more when cut. */

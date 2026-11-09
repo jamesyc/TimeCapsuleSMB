@@ -46,6 +46,7 @@ native/samba/image.c
 native/service/inspect.c
 native/service/manager.c
 native/service/diskd.c
+native/service/procfacts.c
 native/service/bufstall.c
 native/service/stuck.c
 native/service/proctable.c

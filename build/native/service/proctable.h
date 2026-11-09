@@ -38,6 +38,11 @@ struct tc_proc {
     unsigned long long born; /* Kernel process start time; distinguishes PID reuse. */
     char wmesg[TC_PROC_WMESG], comm[TC_PROC_COMM];
 };
+/* A process: its PID and kernel start time. A reused PID is another process. */
+struct tc_proc_identity {
+    pid_t pid;
+    unsigned long long born;
+};
 struct tc_proctable {
     size_t count;
     struct tc_proc procs[TC_PROCESS_MAX];

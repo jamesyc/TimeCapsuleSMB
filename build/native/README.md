@@ -252,9 +252,11 @@ SIGKILL and never takes over because a timer expired.
 ### Observation
 
 Each pass uses the kernel process table the manager already reads; no argv.
-`tc_diskd_scan` and `tc_diskd_owner_idle` in `service/diskd.c` read it, pure
-functions beside the machine; the manager adds the audit's role, the mounts,
-its own children and the drain:
+`tc_proc_facts` in `service/procfacts.c` is the one pure function that reads
+it, for the handoff, the drain's foreign NetBIOS check and the unmounted
+clock, with the manager's own state (its discovery, its launch child, the
+current owner) as it is when the facts are used; the manager adds the audit's
+role, the mounts, its own children and the drain:
 
 - **Owners** are rows named `diskd` whose parent is not a `diskd` row. A child
   diskd forks keeps diskd's name and argv until it execs, so it is a helper,
@@ -263,6 +265,9 @@ its own children and the drain:
   `umount` or `gpt`, or a `sh` whose parent is a `diskd` row. Because diskd
   defers SIGTERM until `system()` returns, a tool's shell is always the child
   of a live diskd, and an orphaned tool still carries its own name.
+- **Disk repair** is narrower: only `fsck_hfs` or `newfs_hfs`. It pauses the
+  `unmounted=` clock (a check or a format is no hang; a mount that never
+  finishes is), while disk work holds the handoff.
 - **Role**: the existing audit classifies each owner from its argv as loopback
   (`-i lo0`) or stock. That is all the handoff takes from the audit, and only
   for a single owner. An owner is identified by PID and kernel start time,
@@ -456,7 +461,9 @@ show idle stock diskd asleep in `kevent` for many seconds between wakeups.
 `tests/native/unit/test_diskd.c` drives every row of the phase table,
 `conflict` in each phase, generation retirement, the launch backoff and the
 probe outcomes, the `quiesce` entry action, a table from an earlier pass,
-`held` and the title word, and the table scan and idle rule on their own. `tests/native/test_manager.py` covers the boot takeover
+and `held` and the title word. `tests/native/unit/test_procfacts.c` drives
+`tc_proc_facts`: owners and their helpers, disk work and repair, acp clients,
+our launch child before and after exec, foreign NetBIOS, and the idle rule. `tests/native/test_manager.py` covers the boot takeover
 (stock TERM, wait, launch), the stock TERM waiting for an idle owner and
 no acp client, adopting a loopback owner, disk work and a
 leftover mount holding launch, a foreign smbd, discovery or `wcifsfs`, and
