@@ -179,6 +179,9 @@
 "confirm.uninstall.disk_unreadable.action" = "Uninstall Anyway";
 "confirm.uninstall.disk_unreadable.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing. Uninstalling will not fix that, and AirPort Utility may still show the disk as OK. Copy off the files you need first. Uninstall anyway?";
 "confirm.uninstall.disk_unreadable.title" = "The Disk Is Failing";
+// Wipe Internal Disk's confirmation names what a disk holds in the user's words: partition formats
+// (maintenance.wipe_disk.format.*) keep APFS, exFAT, FAT32 and NTFS as they are and translate only
+// the joining word.
 "confirm.wipe-disk.confirm.title" = "Wipe Internal Disk?";
 "confirm.wipe-disk.confirm.action" = "Wipe Internal Disk";
 "confirm.wipe-disk.confirm.message" = "“Wipe Internal Disk” deletes everything on %@ and formats it for the device, then restarts the device. Any backup in progress will be interrupted.";
@@ -319,16 +322,26 @@
 "dialog.forget.title" = "Forget This Device?";
 "doctor.check.payload_missing_from_disk" = "The Samba files are missing from every disk, as after an Erase in AirPort Utility. Run “Install / Update Samba” to reinstall.";
 "doctor.check.payload_damaged_on_disk" = "The Samba files on the disk are damaged and no longer match what was installed. Run “Install / Update Samba” to reinstall.";
+// payload_unreadable_on_disk and rsync_unreadable_on_disk (Checkup, recovery and
+// confirm.<operation>.disk_unreadable): the disk returned an error or stalled while TimeCapsuleSMB
+// read its own files. Say both, “could not read … or only too slowly”, then the same “probably
+// failing” as disk_failing. It is its own cause, so the failing-disk preflight has its own
+// confirmation for it: the same title and button as disk_failing, with this first sentence instead
+// of the kernel's errors.
 "doctor.check.payload_unreadable_on_disk" = "The device's disk could not read the Samba files, or only too slowly, so it is probably failing and file sharing is off. Reinstalling will not fix the disk, and AirPort Utility may still show it as OK. Copy off the files you need, replace the disk, then erase the new disk in AirPort Utility and run “Install / Update Samba”.";
 "doctor.check.rsync_missing_from_disk" = "The rsync files are missing from the disk, so rsync is off. File sharing and Time Machine keep working. Run “Install / Update Samba” to reinstall.";
 "doctor.check.rsync_damaged_on_disk" = "The rsync file on the disk is damaged and no longer matches what was installed, so rsync is off. File sharing and Time Machine keep working. Run “Install / Update Samba” to reinstall.";
 "doctor.check.rsync_unreadable_on_disk" = "The device's disk could not read the rsync file, or only too slowly, so rsync is off and the disk is probably failing. File sharing and Time Machine keep working for now. Reinstalling will not fix the disk: copy off the files you need, replace the disk, then erase the new disk in AirPort Utility and run “Install / Update Samba”.";
 "doctor.check.metadata_migration_in_progress" = "A metadata migration is still running on the device. “Install / Update Samba” waits for it to finish before installing.";
 "doctor.check.disk_not_mounting" = "A disk on the device will not mount, so file sharing and Time Machine are off. Restart the device; if it does not come back, unplug it for 10 seconds. If the disk still does not mount, run “Disk Repair”; if this keeps happening, the disk may need replacing.";
+// See the note above backend.recovery.disk_seagate_failed.title.
 "doctor.check.disk_seagate_failed" = "The device's internal Seagate disk reports itself as 3.86 GB, as a Seagate disk does when it cannot load its own firmware, so it has failed and nothing can be installed on it. Restarting or reinstalling will not fix it. If you need its files, do not erase the disk: a data recovery service may be able to get them back. Otherwise replace the disk (replacement guide: https://github.com/jamesyc/TimeCapsuleSMB/blob/main/FAQ.md#a-seagate-disk-reports-386-gb).";
 "doctor.check.disk_size_misreported" = "The device reports its internal disk as far smaller than it is, so nothing can be installed on it. Restart the device; if it keeps reporting the wrong size, the disk needs replacing.";
 "doctor.check.disk_no_hfs_partition" = "A disk on the device has no HFS volume TimeCapsuleSMB can use. If it is the internal disk and holds nothing you need, use “Wipe Internal Disk” to format it for the device.";
 "doctor.check.debug_logging_on" = "Debug logging is on, which slows the device down. Disable debug logging unless you are troubleshooting a problem.";
+// doctor.check.wifi_client and process_listing_timed_out(_wifi): the words of
+// backend.recovery.wifi_link_slow for the device on Wi-Fi, and the same can/may for the link as a
+// cause; process_listing_timed_out lists its causes with the same may.
 "doctor.check.wifi_client" = "The device reaches its network over Wi-Fi rather than an Ethernet cable. When that link is weak, file sharing and these checks slow down or time out.";
 "doctor.check.process_listing_timed_out" = "Listing the device's processes timed out although SSH login worked. A stuck process, a device running out of processes or a slow connection may be the cause. SMB is not checked again, and logs on the device's disk are not read.";
 "doctor.check.process_listing_timed_out_wifi" = "Listing the device's processes timed out although SSH login worked. The device reaches its network over Wi-Fi rather than an Ethernet cable, and a slow link may be the cause. SMB is not checked again, and logs on the device's disk are not read.";
@@ -410,6 +423,16 @@
 "backend.summary.flash.restore_secondary_write_plan_generated" = "Restore will rewrite the invalid secondary (backup) firmware bank with Apple firmware; the primary bank is not changed.";
 "backend.summary.flash.restore_write_plan_generated" = "Flash restore write plan generated.";
 "backend.summary.fsck_failed" = "fsck_hfs exited with status %d; the disk may still need repair.";
+// fsck_crashed: Apple's checker crashed, not the disk; another repair on the device stops the same
+// way, so the way out is Disk Utility's First Aid on a Mac. First Aid keeps Apple's label in each
+// language, quoted like any other, except English, which writes it unquoted as Apple's own help
+// does, and Lithuanian, which keeps First Aid in English, unquoted. The labels come from Apple's
+// “Repair a storage device in Disk Utility” page in each language
+// (https://support.apple.com/<locale>/guide/disk-utility/dskutl1040/mac); Spanish keeps the
+// button's capital A (Primera Ayuda), Russian puts its label after функцию so it stays nominative.
+// “Crashed” is the program ending abnormally, as Apple says of apps that quit unexpectedly (French
+// uses Apple's s’est fermé inopinément); never an informal word (a planté) or one for hanging
+// (travou, užstrigo).
 "backend.summary.fsck_crashed" = "fsck_hfs crashed with %1$@ (exit status %2$d) before it finished. Apple's disk checker usually crashes the same way again on this volume, so repairing it again on the device will not get further. To repair the volume, take the disk out, connect it to a Mac with a SATA-to-USB adapter and run First Aid in Disk Utility.";
 "backend.summary.fsck_crashed_usb" = "fsck_hfs crashed with %1$@ (exit status %2$d) before it finished. Apple's disk checker usually crashes the same way again on this volume, so repairing it again on the device will not get further. To repair the volume, connect the disk to a Mac and run First Aid in Disk Utility.";
 "backend.summary.wipe_disk_completed" = "The disk was wiped and formatted.";
@@ -744,6 +767,19 @@
 "backend.recovery.local_network_permission_denied.action.2" = "Enable TimeCapsuleSMB in “Local Network”.";
 "backend.recovery.local_network_permission_denied.action.3" = "Quit and reopen TimeCapsuleSMB, then try again.";
 "backend.recovery.local_network_permission_denied.action.4" = "If TimeCapsuleSMB is already on, turn it off and on again. If that doesn't help, delete other copies of TimeCapsuleSMB and restart the Mac.";
+// recovery.local_network.*: the app's own steps on cards where macOS may block it from the local
+// network, from what it sees on this Mac (other copies of the app, a copy on a mounted disk image,
+// an update a few minutes ago). They are not helper steps and have no .action.N; the helper marks
+// each such card with local_network_block (proven or possible). On a proven block's card they go
+// first and state the cause; on a card for a device nothing showed is up (possible) the
+// if_blocked.* forms go last and only as a possibility, after the step that asks whether AirPort
+// Utility sees the device, so a user whose device is simply off is never told to delete files.
+// Checkup's Local Network line runs the first kind after its own sentence. Other copies are
+// deleted by the user, never the Uninstall operation: Dutch and Russian, whose Uninstall label is
+// their general delete verb, say move them to the Trash (naar de prullenmand, в Корзину). The
+// Trash, emptying it, a mounted disk image and ejecting it are Apple's names in each language,
+// ejected in the Finder as Apple names it (Chinese 访达); Lithuanian translates them as generic OS
+// concepts (išvalykite šiukšlinę, išstumkite disko atvaizdą) and keeps Finder in English.
 "recovery.local_network.just_updated" = "TimeCapsuleSMB was updated a few minutes ago, and macOS can block a new version for a few minutes. Wait 2 minutes, then try again.";
 "recovery.local_network.other_copies" = "Other copies of TimeCapsuleSMB are on this Mac (%@). Delete them, empty the Trash, then restart the Mac.";
 "recovery.local_network.disk_image_copies" = "TimeCapsuleSMB is also on a mounted disk image (%@). Eject it in Finder, then restart the Mac.";
@@ -753,6 +789,11 @@
 "backend.recovery.local_network_filtered.message" = "This Mac dropped the connection before it reached the device. A VPN, firewall or security app is filtering local network traffic.";
 "backend.recovery.device_off_network.title" = "Device not on this Mac's network";
 "backend.recovery.device_off_network.message" = "The device's address isn't on this Mac's network. Check the address, or connect this Mac to the device's network by Wi-Fi or one of its LAN ports, then try again.";
+// client_left_network and timeline.progress.client_away*: during a restart macOS joined another
+// network and stayed there. The Mac left and is reconnected to the device's network; the device's
+// Wi-Fi name, when known, follows as the device's (“(Wi-Fi “%@”)”), since the Mac may be on
+// Ethernet. The way out is reconnecting and a Checkup, which does not restart the device again;
+// Add Device has no saved device to check, so there it is reconnecting and trying again.
 "backend.recovery.client_left_network.title" = "This Mac left the device's network";
 "backend.recovery.client_left_network.message" = "While the device restarted, this Mac moved to another network and did not come back, so TimeCapsuleSMB could not see whether the device restarted.";
 "backend.recovery.client_left_network.action.1" = "Connect this Mac to the device's network again, by Wi-Fi or one of its LAN ports.";
@@ -874,6 +915,8 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "The disk has an HFS volume, but the device has not mounted it, and did not when asked.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Wait a minute, then run “Install / Update Samba” again.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.2" = "If the disk still does not mount, try restarting the device.";
+// deploy_disk_not_confirmed: “would not keep it mounted for TimeCapsuleSMB” means the device's
+// disk manager refused to hold the volume mounted for the install; it is not a mount failure.
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Disk not kept mounted";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "An HFS volume is mounted, but the device would not keep it mounted for TimeCapsuleSMB, so it could be unmounted during the install.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Wait a minute, then run “Install / Update Samba” again.";
@@ -1019,6 +1062,15 @@
 "backend.recovery.device_restarting.title" = "Device is restarting";
 "backend.recovery.device_restarting.message" = "The device is restarting, so nothing was done.";
 "backend.recovery.device_restarting.action.1" = "Wait a few minutes for the device to start up, then try again.";
+// wifi_link_slow: the device itself reaches its network over Wi-Fi (AirPort Utility's “Join a
+// wireless network” or “Extend a wireless network”), not this Mac's Wi-Fi. The link is the
+// payload-timeout line's word for a weak Wi-Fi link. The steps start with a restart, as for any
+// device that did not answer: it joins the Wi-Fi network afresh. Then a cable from this Mac to a
+// LAN port (the glossary's LAN port row), or trying again later. The lasting fix cables the device
+// to the router and changes its wireless mode; the step describes the change instead of quoting
+// AirPort Utility's menu items, whose localized labels the glossary does not have. The timeout
+// does not prove the link caused it: the device did not answer in time, and a slow Wi-Fi link can
+// cause that. Never say the device or its Wi-Fi failed.
 "backend.recovery.wifi_link_slow.title" = "The device did not answer in time over Wi-Fi";
 "backend.recovery.wifi_link_slow.message" = "The device reaches your network over Wi-Fi rather than an Ethernet cable, and it did not answer in time. A slow Wi-Fi link can cause this.";
 "backend.recovery.wifi_link_slow.action.1" = "Restart the device, then try again: it joins the Wi-Fi network afresh, which can make the link faster.";
@@ -1085,6 +1137,8 @@
 "backend.recovery.disk_failing.action.1" = "Copy off the files you need. If file sharing is off, take the disk out and connect it to a Mac with a SATA-to-USB adapter.";
 "backend.recovery.disk_failing.action.2" = "Replace the disk.";
 "backend.recovery.disk_failing.action.3" = "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, full backup on it.";
+// disk_not_responding: the first fix is a restart, the ACPd-broken unplug steps word for word; a
+// stall that comes back makes the disk only “may be failing”.
 "backend.recovery.disk_not_responding.title" = "The disk is not responding";
 "backend.recovery.disk_not_responding.message" = "A disk operation on the device has waited for minutes without finishing. Apple's AirPort service waits for the disk too, so the device cannot be updated or restarted over the network.";
 "backend.recovery.disk_not_responding.action.1" = "Unplug the device, wait 10 seconds and plug it back in.";
@@ -1092,6 +1146,13 @@
 "backend.recovery.disk_not_responding.action.3" = "If the disk stops responding again, it may be failing: copy off the files you need. Connect a USB disk to a Mac; if file sharing is off, take an internal disk out and connect it to a Mac with a SATA-to-USB adapter.";
 "backend.recovery.disk_not_responding.action.4" = "Replace the disk.";
 "backend.recovery.disk_not_responding.action.5" = "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, full backup on it.";
+// disk_check_not_responding: disk_not_responding's steps follow one that gives a running disk
+// repair a few more minutes, because unplugging stops it. Its title names the check, not the disk,
+// and Dutch says the disk is being checked (De schijf wordt gecontroleerd, maar reageert niet),
+// since Controle is Checkup. doctor.check.disk_check_not_responding is this card's message, its
+// first step and disk_not_responding's steps, word for word; doctor.check.disk_check_running names
+// the programs and then says what fsck_already_running's card says about using and restarting the
+// disk.
 "backend.recovery.disk_check_not_responding.title" = "A disk check is not responding";
 "backend.recovery.disk_check_not_responding.message" = "A disk check on the device, such as a disk repair, has waited for minutes on the disk without finishing. Apple's AirPort service waits for the disk too, so the device cannot be updated or restarted over the network. On a failing disk, a repair can wait that long on one read and still finish.";
 "backend.recovery.disk_check_not_responding.action.1" = "If a disk repair is running, give it a few more minutes first: unplugging the device stops it.";
@@ -1104,6 +1165,20 @@
 "backend.recovery.fsck_already_running.message" = "A disk check is still running on the device, such as a disk repair that kept running after this Mac's connection to the device ended. The disk cannot be used until it finishes, and restarting or unplugging the device now would interrupt it.";
 "backend.recovery.fsck_already_running.action.1" = "Keep the device plugged in and wait. On a large disk the check can take an hour or more.";
 "backend.recovery.fsck_already_running.action.2" = "Then try again.";
+// disk_seagate_failed (and doctor.check.disk_seagate_failed): a Seagate drive that cannot load its
+// own firmware runs from its chip and reports 3.86 GB whatever its real size. The drive itself
+// shows this state, so the guidance says it has failed, without disk_failing's “probably”. Keep
+// the cause hedged as in English (“usually because its heads or its firmware area failed”).
+// Seagate stays as it is. The size is the 3.86 GB owners search for, never the 4 GB of the disk's
+// decimal size, written with the locale's decimal separator and unit (3,86 GB; French 3,86 Go;
+// Russian 3,86 ГБ; Chinese 3.86 GB). “Reports itself as 3.86 GB” is a size the disk gives, not a
+// disk announcing itself. The data comes first: the first step says not to erase the disk if its
+// files are needed, with wipe-disk.disk_failing.during_wipe's data recovery wording; the steps end
+// with disk_failing's replace-and-erase step, word for word. The two URLs stay exactly as they
+// are, each in parentheses at the end of its sentence (full-width （） in Chinese), so no
+// punctuation touches them; the app makes them links. The forum is Tom's Hardware (Tom’s Hardware
+// in French and Italian, which write typographic apostrophes); Portuguese calls the other owners
+// usuários.
 "backend.recovery.disk_seagate_failed.title" = "The Seagate disk has failed";
 "backend.recovery.disk_seagate_failed.message" = "The internal disk reports itself as 3.86 GB. A Seagate disk does this when it cannot load its own firmware, usually because its heads or its firmware area failed. Restarting or reinstalling will not fix it, and the device cannot read its files.";
 "backend.recovery.disk_seagate_failed.action.1" = "If you need its files, do not erase the disk: a data recovery service may be able to get them back. Other owners describe the same failure on Tom's Hardware (https://forums.tomshardware.com/threads/seagate-1tb-st1000vm002-unallocated-3-86-gb.3657800/).";
@@ -1123,10 +1198,15 @@
 "backend.recovery.wipe_disk_erase_running.message" = "The device is still erasing or formatting this disk. Restarting it now could leave the disk unusable.";
 "backend.recovery.wipe_disk_erase_running.action.1" = "Wait half an hour.";
 "backend.recovery.wipe_disk_erase_running.action.2" = "Then restart the device, or run “Wipe Internal Disk” again.";
+// wipe_disk_job_running keeps disk and volume apart: a disk is formatted, a volume is checked or
+// mounted (the glossary's Disk mount verb).
 "backend.recovery.wipe_disk_job_running.title" = "The device is busy with a disk";
 "backend.recovery.wipe_disk_job_running.message" = "The device is formatting a disk, or checking or mounting a volume. Wiping a disk now could interrupt it.";
 "backend.recovery.wipe_disk_job_running.action.1" = "Wait until it finishes.";
 "backend.recovery.wipe_disk_job_running.action.2" = "Then run “Wipe Internal Disk” again.";
+// wipe_disk_other_disk unplugs a USB disk with a verb that cannot read as unmounting: Dutch
+// verwijderen, not loskoppelen (beside koppelen), and Lithuanian ištraukti and įkišti, not
+// atjungti/prijungti; Lithuanian also says a disk is įrenginyje rather than prijungtas.
 "backend.recovery.wipe_disk_other_disk.title" = "Disconnect the other disk first";
 "backend.recovery.wipe_disk_other_disk.message" = "Another connected disk has partitions named like an internal disk's, or could not be read. While it is connected, the device's erase can format that disk instead of the internal one.";
 "backend.recovery.wipe_disk_other_disk.action.1" = "Disconnect every USB disk from the device.";
@@ -1409,9 +1489,18 @@
 "timeline.state.succeeded" = "Succeeded";
 "timeline.state.warning" = "Warning";
 "timeline.fsck.keep_plugged_in" = "This can take an hour or more on a large disk. Keep the Time Capsule plugged in until it finishes.";
+// Wipe Internal Disk's long steps say the device, not Time Capsule: the disk can be on an AirPort
+// Extreme.
 "timeline.wipe_disk.keep_plugged_in" = "This can take several minutes, longer on a failing disk. Keep the device plugged in until it finishes.";
 "timeline.fsck.elapsed" = "Running for %@";
 "timeline.fsck.recheck" = "%@ (recheck)";
+// timeline.fsck.phase.*: the HFS structures fsck_hfs checks, written like the locale's other
+// progress lines (German passive, Dutch infinitive, French, Italian and Russian nouns, Spanish and
+// Portuguese gerunds, Chinese 正在…, Lithuanian passive participles). Name the structure instead of
+// quoting fsck_hfs's English: the catalog file, the extents overflow file, the volume bitmap, the
+// extended attributes file. The volume is the one being repaired (German Datenträger, Lithuanian
+// tomas); the disk is the hardware. After a repair fsck_hfs checks everything again, possibly more
+// than once; those steps say “(recheck)”, never a numbered pass.
 "timeline.fsck.phase.start" = "Starting the check";
 "timeline.fsck.phase.extents" = "Checking the extents overflow file";
 "timeline.fsck.phase.catalog" = "Checking the catalog file";
@@ -1423,6 +1512,7 @@
 "timeline.fsck.phase.repairing" = "Repairing the volume";
 "timeline.fsck.phase.rechecking" = "Rechecking the volume";
 "timeline.progress.migration_files" = "Files checked: %lld";
+// See the note above backend.recovery.client_left_network.title.
 "timeline.progress.client_away" = "This Mac left the device's network. Reconnect it; the device is still restarting.";
 "timeline.progress.client_away_named" = "This Mac left the device's network (Wi-Fi “%@”). Reconnect it; the device is still restarting.";
 "timeline.progress.acpd_hung" = "Apple's AirPort service stopped without restarting the device. Unplug it, wait 10 seconds and plug it back in; this continues when it starts up.";
