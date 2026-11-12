@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 # Update this version info for each release, including beta releases.
-CLI_VERSION = "3.8.6"
+CLI_VERSION = "3.8.7"
 RELEASE_TAG = f"v{CLI_VERSION}"
-CLI_VERSION_CODE = 30806
+CLI_VERSION_CODE = 30807
 # Apps below this code see the update as critical, without Skip or Remind Me
 # Later. 0 for none. The appcast holds one release, so the floor stays set across
 # releases: lowering it forgets the apps that missed that release.
