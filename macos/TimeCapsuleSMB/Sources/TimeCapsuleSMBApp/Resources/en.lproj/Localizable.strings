@@ -1669,10 +1669,12 @@
 "timeline.progress.client_away" = "This Mac left the device's network. Reconnect it; the device is still restarting.";
 "timeline.progress.client_away_named" = "This Mac left the device's network (Wi-Fi “%@”). Reconnect it; the device is still restarting.";
 "timeline.progress.acpd_hung" = "Apple's AirPort service stopped without restarting the device. Unplug it, wait 10 seconds and plug it back in; this continues when it starts up.";
-// restart_stuck*: the restart wait asks for an unplug and goes on waiting. The _offline text is for
+// restart_stuck*: the restart wait suggests an unplug and goes on waiting. Silence is all it has seen,
+// so restart_stuck says "try" and that on a network that blocks Bonjour the device may be at a new
+// address, as backend.recovery.restart_stuck.message does. The _offline text is for
 // a Mac with no network at all, which is right only if it reached the network through the device
 // (its Wi-Fi or one of its LAN ports), whose link the restart takes down too.
-"timeline.progress.restart_stuck" = "The device has not come back on this network. Unplug it, wait 10 seconds and plug it back in; this continues when it starts up.";
+"timeline.progress.restart_stuck" = "The device has not come back on this network. Try unplugging it, waiting 10 seconds and plugging it back in; this continues when it starts up. If the network blocks Bonjour, it may be at a new address instead.";
 "timeline.progress.restart_stuck_offline" = "This Mac has no network connection, and the device has not come back. If this Mac reached the network through the device (its Wi-Fi or one of its LAN ports), unplug the device, wait 10 seconds and plug it back in; this continues when it starts up.";
 "timeline.operation.saving_device" = "Saving Device";
 "toggle.internal_share_use_disk_root" = "Share internal disk root";

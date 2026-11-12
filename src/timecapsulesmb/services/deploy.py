@@ -814,14 +814,20 @@ def _naming_device_write_errors(connection: SshConnection) -> Iterator[None]:
 
 
 # A sync that outlived its timeout behind a process stuck on the disk: Samba
-# is already stopped for the install by then, so nothing is "unchanged".
+# is already stopped for the install by then, so nothing is "unchanged". The
+# first sync runs right after the services stop, before anything is copied,
+# so it names no installation files; the later ones follow the copies.
+SYNC_BEFORE_INSTALL_STUCK_DISK_PREFIX = "Writing out the disk before the install timed out."
 SYNC_STUCK_DISK_PREFIX = "The installation files could not be written out to the disk."
 
 
-def _flush_naming_a_stuck_disk(flush: Callable[[SshConnection], None]) -> Callable[[SshConnection], None]:
+def _flush_naming_a_stuck_disk(
+    flush: Callable[[SshConnection], None], prefix: str,
+) -> Callable[[SshConnection], None]:
     """`flush`, whose timeout names the disk when the process list shows a
     process stuck on it (processes.disk_io_stalls), as MaSt's does
-    (storage.raise_if_acpd_silent); any other timeout is left as it is."""
+    (storage.raise_if_acpd_silent), after `prefix`, what timed out; any other
+    timeout is left as it is."""
 
     def flushed(connection: SshConnection) -> None:
         try:
@@ -829,7 +835,7 @@ def _flush_naming_a_stuck_disk(flush: Callable[[SshConnection], None]) -> Callab
         except SshCommandTimeout as exc:
             stalls = disk_io_stalls(acpd.read_processes(connection))
             if stalls:
-                raise DiskNotRespondingError(stalls, prefix=SYNC_STUCK_DISK_PREFIX) from exc
+                raise DiskNotRespondingError(stalls, prefix=prefix) from exc
             raise
 
     return flushed
@@ -1287,7 +1293,12 @@ def upload_and_verify_deployment_payload(
         run_remote_actions_func = run_remote_actions
     if upload_payload_func is None:
         upload_payload_func = upload_deployment_payload
-    flush_remote_writes = _flush_naming_a_stuck_disk(flush_remote_writes or flush_remote_filesystem_writes)
+    flush_before_install = _flush_naming_a_stuck_disk(
+        flush_remote_writes or flush_remote_filesystem_writes, SYNC_BEFORE_INSTALL_STUCK_DISK_PREFIX,
+    )
+    flush_remote_writes = _flush_naming_a_stuck_disk(
+        flush_remote_writes or flush_remote_filesystem_writes, SYNC_STUCK_DISK_PREFIX,
+    )
     if migrate_xattrs_func is None:
         migrate_xattrs_func = migrate_xattr_tdb_to_hfs
     if probe_flash_capacity_func is None:
@@ -1496,7 +1507,7 @@ def upload_and_verify_deployment_payload(
         # rc.local is gone before any metadata conversion or removal of the
         # historical runtime. The synchronous Flash mount already wrote the
         # removal; the sync also writes out the new payload directories.
-        flush_remote_writes(connection)
+        flush_before_install(connection)
         # A legacy writer could create its first TDB between the initial
         # inventory and shutdown. Probe again now that writers are stopped;
         # old configuration and payload software are still available.

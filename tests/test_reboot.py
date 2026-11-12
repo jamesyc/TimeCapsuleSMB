@@ -1165,7 +1165,13 @@ class RestartStuckTests(unittest.TestCase):
         # The whole limit again after the hint, for the unplug and the start-up.
         self.assertGreaterEqual(device.now - start, stuck + UP_LIMIT)
         self.assertEqual(self.hints(recorder), [hint_state(restart_stuck=True)])
-        self.assertEqual([m for m in recorder.messages if "Unplug" in m], [RESTART_STUCK_HINT])
+        unplug_lines = [m for m in recorder.messages if "nplug" in m]
+        self.assertEqual(unplug_lines, [RESTART_STUCK_HINT])
+        # The same silence in the hint: the unplug is only something to try,
+        # and the device may instead be back at an address Bonjour did not show.
+        self.assertIn("Try unplugging the device, waiting 10 seconds and plugging it back in", unplug_lines[0])
+        self.assertIn("If the network blocks Bonjour, the device may be at a new address instead.", unplug_lines[0])
+        self.assertNotIn("Unplug the device", unplug_lines[0])
         # Telemetry carries the routers that decided it.
         self.assertEqual(cycle["routers_before"], [{"interface": "en0", "ip": "10.0.0.1", "mac": ROUTER}])
         self.assertEqual((cycle["client_place"], cycle["place_evidence"]), ("same", "router"))
@@ -1484,7 +1490,7 @@ class RestartStuckTests(unittest.TestCase):
             cycle["acpd_hang_seen_after_sec"] - cycle["stuck_hint_cleared_after_sec"], STUCK_AFTER,
         )
         # The CLI says each change: its last line would otherwise still ask for an unplug.
-        unplug_lines = [m for m in recorder.messages if "Unplug" in m or "plugged in" in m]
+        unplug_lines = [m for m in recorder.messages if "nplug" in m or "plugged in" in m]
         self.assertEqual(
             unplug_lines,
             [RESTART_STUCK_HINT, reboot_service.RESTART_STUCK_WITHDRAWN_MESSAGE, reboot_service.ACPD_REFUSED_UNPLUG_MESSAGE],

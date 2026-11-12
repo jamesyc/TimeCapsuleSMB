@@ -1543,7 +1543,7 @@
 "timeline.progress.client_away" = "Ce Mac a quitté le réseau de l’appareil. Reconnectez-le ; l’appareil redémarre encore.";
 "timeline.progress.client_away_named" = "Ce Mac a quitté le réseau de l’appareil (Wi-Fi « %@ »). Reconnectez-le ; l’appareil redémarre encore.";
 "timeline.progress.acpd_hung" = "Le service AirPort d’Apple s’est arrêté sans redémarrer l’appareil. Débranchez-le, attendez 10 secondes, puis rebranchez-le ; l’opération reprendra au démarrage.";
-"timeline.progress.restart_stuck" = "L’appareil n’est pas revenu sur ce réseau. Débranchez-le, attendez 10 secondes, puis rebranchez-le ; l’opération reprendra au démarrage.";
+"timeline.progress.restart_stuck" = "L’appareil n’est pas revenu sur ce réseau. Essayez de le débrancher, d’attendre 10 secondes, puis de le rebrancher ; l’opération reprendra au démarrage. Si le réseau bloque Bonjour, il est peut-être plutôt revenu à une nouvelle adresse.";
 "timeline.progress.restart_stuck_offline" = "Ce Mac n’a pas de connexion réseau, et l’appareil n’est pas revenu. Si ce Mac accédait au réseau par l’appareil (son Wi-Fi ou l’un de ses ports LAN), débranchez l’appareil, attendez 10 secondes, puis rebranchez-le ; l’opération reprendra au démarrage.";
 "timeline.operation.saving_device" = "Enregistrement de l’appareil";
 "toggle.internal_share_use_disk_root" = "Partager la racine du disque interne";

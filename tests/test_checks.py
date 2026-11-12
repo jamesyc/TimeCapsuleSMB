@@ -8278,7 +8278,8 @@ class CheckTests(unittest.TestCase):
 
     def test_run_doctor_checks_blames_the_device_when_samba_rejects_the_airport_password(self) -> None:
         # The password check said the saved password is the AirPort admin
-        # password, so Samba rejecting it means the device has not applied it.
+        # password, so Samba rejecting it means the device may not have applied
+        # it. A rejection alone does not say why, so the message says "may".
         rejected = CheckResult(
             "FAIL",
             "authenticated SMB listing failed after 1 attempt(s): attempt 1 127.0.0.1: NT_STATUS_LOGON_FAILURE",
@@ -8289,6 +8290,8 @@ class CheckTests(unittest.TestCase):
 
         failure = next(result for result in run.results if result.details.get("code") == "device_smb_password_stale")
         self.assertEqual((failure.status, failure.domain), ("FAIL", "device"))
+        self.assertIn("the device may not have applied its current password to Samba", failure.message)
+        self.assertNotIn("has not applied", failure.message)
         self.assertIn("restart the device", failure.message)
         self.assertNotIn("smb_login_rejected", doctor_report(run.results)["sections"]["computer"]["fail_codes"])
         listing.assert_called_once()

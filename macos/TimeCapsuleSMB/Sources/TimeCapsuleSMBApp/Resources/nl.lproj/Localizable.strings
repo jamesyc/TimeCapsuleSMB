@@ -1543,7 +1543,7 @@
 "timeline.progress.client_away" = "Deze Mac heeft het netwerk van het apparaat verlaten. Verbind hem opnieuw; het apparaat start nog opnieuw op.";
 "timeline.progress.client_away_named" = "Deze Mac heeft het netwerk van het apparaat (Wi-Fi ‘%@’) verlaten. Verbind hem opnieuw; het apparaat start nog opnieuw op.";
 "timeline.progress.acpd_hung" = "De AirPort-dienst van Apple is gestopt zonder het apparaat opnieuw op te starten. Koppel het los, wacht 10 seconden en sluit het weer aan; dit gaat verder zodra het is opgestart.";
-"timeline.progress.restart_stuck" = "Het apparaat is niet teruggekomen in dit netwerk. Koppel het los, wacht 10 seconden en sluit het weer aan; dit gaat verder zodra het is opgestart.";
+"timeline.progress.restart_stuck" = "Het apparaat is niet teruggekomen in dit netwerk. Probeer de stekker er 10 seconden uit te halen en hem er weer in te steken; dit gaat verder zodra het is opgestart. Als het netwerk Bonjour blokkeert, is het mogelijk in plaats daarvan teruggekomen op een nieuw adres.";
 "timeline.progress.restart_stuck_offline" = "Deze Mac heeft geen netwerkverbinding en het apparaat is niet teruggekomen. Als deze Mac via het apparaat met het netwerk verbonden was (via de Wi-Fi of een van de LAN-poorten van het apparaat), koppel het apparaat dan los, wacht 10 seconden en sluit het weer aan; dit gaat verder zodra het is opgestart.";
 "timeline.operation.saving_device" = "Apparaat opslaan";
 "toggle.internal_share_use_disk_root" = "Hoofdmap van interne schijf delen";

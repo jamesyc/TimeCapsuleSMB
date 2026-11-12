@@ -133,9 +133,14 @@ REBOOT_NOT_REQUESTED_MESSAGE = (
     "The device did not answer AirPort ACP just before the restart, so the restart was not requested."
 )
 SSH_STILL_OPEN_MESSAGE = "SSH reopened after reboot. Disable did not persist."
+# Silence is all the wait has seen, as for restart_stuck_message: the device
+# may have stopped partway through the restart, which an unplug ends, or be
+# back at an address only Bonjour could have shown. So the unplug is a
+# suggestion.
 RESTART_STUCK_HINT = (
-    "The device has not come back on this network. Unplug the device, wait 10 seconds and plug it back in. "
-    "TimeCapsuleSMB keeps waiting and carries on when it starts up."
+    "The device has not come back on this network. Try unplugging the device, waiting 10 seconds and plugging it "
+    "back in; TimeCapsuleSMB keeps waiting and carries on when it starts up. If the network blocks Bonjour, the "
+    "device may be at a new address instead."
 )
 # The device's address stopped looking silent after RESTART_STUCK_HINT:
 # something answered (the device starting up, which an unplug would

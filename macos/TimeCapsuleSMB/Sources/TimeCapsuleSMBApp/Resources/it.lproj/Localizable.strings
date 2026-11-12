@@ -1543,7 +1543,7 @@
 "timeline.progress.client_away" = "Questo Mac ha lasciato la rete del dispositivo. Ricollegalo; il dispositivo si sta ancora riavviando.";
 "timeline.progress.client_away_named" = "Questo Mac ha lasciato la rete del dispositivo (Wi-Fi “%@”). Ricollegalo; il dispositivo si sta ancora riavviando.";
 "timeline.progress.acpd_hung" = "Il servizio AirPort di Apple si è fermato senza riavviare il dispositivo. Scollegalo, attendi 10 secondi e ricollegalo; l’operazione riprenderà all’avvio.";
-"timeline.progress.restart_stuck" = "Il dispositivo non è tornato su questa rete. Scollegalo, attendi 10 secondi e ricollegalo; l’operazione riprenderà all’avvio.";
+"timeline.progress.restart_stuck" = "Il dispositivo non è tornato su questa rete. Prova a scollegarlo dall’alimentazione, attendere 10 secondi e ricollegarlo; l’operazione riprenderà all’avvio. Se la rete blocca Bonjour, potrebbe invece essere tornato con un nuovo indirizzo.";
 "timeline.progress.restart_stuck_offline" = "Questo Mac non ha una connessione di rete e il dispositivo non è tornato. Se questo Mac accedeva alla rete tramite il dispositivo (il suo Wi-Fi o una delle sue porte LAN), scollega il dispositivo, attendi 10 secondi e ricollegalo; l’operazione riprenderà all’avvio.";
 "timeline.operation.saving_device" = "Salvataggio del dispositivo";
 "toggle.internal_share_use_disk_root" = "Condividi la radice del disco interno";

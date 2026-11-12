@@ -357,8 +357,8 @@ DOCTOR_CODE_SMB_LISTING_FAILED = "smb_listing_failed"
 DOCTOR_CODE_SMB_LISTING_HOST_UNREACHABLE = "smb_listing_host_unreachable"
 # Samba rejected the saved password: the device works, the saved password does not.
 DOCTOR_CODE_SMB_LOGIN_REJECTED = "smb_login_rejected"
-# Samba rejected the AirPort admin password itself: the device has not applied
-# its current password to Samba.
+# Samba rejected the AirPort admin password itself: the device may not have
+# applied its current password to Samba.
 DOCTOR_CODE_DEVICE_SMB_PASSWORD_STALE = "device_smb_password_stale"
 # A problem on this computer kept the device's own SMB check from running.
 DOCTOR_CODE_DEVICE_SMB_NOT_CHECKED = "device_smb_not_checked"
@@ -1999,11 +1999,11 @@ def _add_tunneled_authenticated_smb_results(
             if _smb_login_rejected(listing_result):
                 if password_matches:
                     # The manager gives Samba the AirPort password; rejecting it
-                    # means the device has not applied the current one.
+                    # means the device may not have applied the current one.
                     add_result(CheckResult(
                         "FAIL",
                         "Samba on the device rejected the saved password although it is the AirPort admin password; "
-                        f"the device has not applied its current password to Samba, restart the device ({listing_result.message})",
+                        f"the device may not have applied its current password to Samba, restart the device ({listing_result.message})",
                         {**listing_result.details, "code": DOCTOR_CODE_DEVICE_SMB_PASSWORD_STALE},
                     ))
                     return DEVICE_SMB_BLOCKED

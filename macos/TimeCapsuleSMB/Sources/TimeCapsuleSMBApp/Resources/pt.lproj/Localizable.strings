@@ -1543,7 +1543,7 @@
 "timeline.progress.client_away" = "Este Mac saiu da rede do dispositivo. Conecte-o novamente; o dispositivo ainda está reiniciando.";
 "timeline.progress.client_away_named" = "Este Mac saiu da rede do dispositivo (Wi-Fi “%@”). Conecte-o novamente; o dispositivo ainda está reiniciando.";
 "timeline.progress.acpd_hung" = "O serviço AirPort da Apple parou sem reiniciar o dispositivo. Desconecte-o, aguarde 10 segundos e conecte-o novamente; isto continua quando ele iniciar.";
-"timeline.progress.restart_stuck" = "O dispositivo não voltou a esta rede. Desconecte-o, aguarde 10 segundos e conecte-o novamente; isto continua quando ele iniciar.";
+"timeline.progress.restart_stuck" = "O dispositivo não voltou a esta rede. Tente desconectá-lo da tomada, aguardar 10 segundos e conectá-lo novamente; isto continua quando ele iniciar. Se a rede bloqueia o Bonjour, ele pode, em vez disso, ter voltado com um novo endereço.";
 "timeline.progress.restart_stuck_offline" = "Este Mac está sem conexão de rede e o dispositivo não voltou. Se este Mac se conectava à rede pelo dispositivo (pelo Wi-Fi dele ou por uma de suas portas LAN), desconecte o dispositivo, aguarde 10 segundos e conecte-o novamente; isto continua quando ele iniciar.";
 "timeline.operation.saving_device" = "Salvando dispositivo";
 "toggle.internal_share_use_disk_root" = "Compartilhar a raiz do disco interno";

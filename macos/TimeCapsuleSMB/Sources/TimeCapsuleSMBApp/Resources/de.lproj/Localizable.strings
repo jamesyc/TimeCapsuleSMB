@@ -1543,7 +1543,7 @@
 "timeline.progress.client_away" = "Dieser Mac hat das Netzwerk des Geräts verlassen. Verbinden Sie ihn wieder; das Gerät startet noch neu.";
 "timeline.progress.client_away_named" = "Dieser Mac hat das Netzwerk des Geräts (Wi-Fi „%@“) verlassen. Verbinden Sie ihn wieder; das Gerät startet noch neu.";
 "timeline.progress.acpd_hung" = "Der AirPort-Dienst von Apple wurde beendet, ohne das Gerät neu zu starten. Trennen Sie das Gerät, warten Sie 10 Sekunden und schließen Sie es dann wieder an; danach geht es hier weiter.";
-"timeline.progress.restart_stuck" = "Das Gerät ist in diesem Netzwerk nicht zurückgekehrt. Trennen Sie das Gerät, warten Sie 10 Sekunden und schließen Sie es dann wieder an; danach geht es hier weiter.";
+"timeline.progress.restart_stuck" = "Das Gerät ist in diesem Netzwerk nicht zurückgekehrt. Versuchen Sie, es vom Strom zu trennen, 10 Sekunden zu warten und es dann wieder anzuschließen; danach geht es hier weiter. Wenn das Netzwerk Bonjour blockiert, ist es möglicherweise stattdessen unter einer neuen Adresse zurückgekehrt.";
 "timeline.progress.restart_stuck_offline" = "Dieser Mac hat keine Netzwerkverbindung, und das Gerät ist nicht zurückgekehrt. Wenn dieser Mac über das Gerät mit dem Netzwerk verbunden war (per Wi-Fi des Geräts oder über einen seiner LAN-Anschlüsse), trennen Sie das Gerät, warten Sie 10 Sekunden und schließen Sie es dann wieder an; danach geht es hier weiter.";
 "timeline.operation.saving_device" = "Gerät wird gespeichert";
 "toggle.internal_share_use_disk_root" = "Interne Festplatte vollständig freigeben";

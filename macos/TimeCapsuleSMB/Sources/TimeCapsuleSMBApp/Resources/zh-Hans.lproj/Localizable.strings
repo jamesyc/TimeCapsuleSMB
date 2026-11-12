@@ -1543,7 +1543,7 @@
 "timeline.progress.client_away" = "此 Mac 离开了设备的网络。请重新连接；设备仍在重启。";
 "timeline.progress.client_away_named" = "此 Mac 离开了设备的网络（Wi-Fi“%@”）。请重新连接；设备仍在重启。";
 "timeline.progress.acpd_hung" = "苹果 AirPort 服务已停止，却没有重启设备。请拔掉设备电源，等待 10 秒后重新插上；设备启动后将继续。";
-"timeline.progress.restart_stuck" = "设备没有回到此网络。请拔掉设备电源，等待 10 秒后重新插上；设备启动后将继续。";
+"timeline.progress.restart_stuck" = "设备没有回到此网络。请尝试拔掉设备电源，等待 10 秒后重新插上；设备启动后将继续。如果网络屏蔽了 Bonjour，设备也可能已经以新地址回来了。";
 "timeline.progress.restart_stuck_offline" = "此 Mac 没有网络连接，设备也没有回来。如果此 Mac 是通过设备连接网络的（设备的 Wi-Fi 或它的某个 LAN 端口），请拔掉设备电源，等待 10 秒后重新插上；设备启动后将继续。";
 "timeline.operation.saving_device" = "正在保存设备";
 "toggle.internal_share_use_disk_root" = "共享内置磁盘根目录";

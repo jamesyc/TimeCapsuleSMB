@@ -1337,15 +1337,20 @@ class CliDeployTests(CliTestCase):
             return upload
 
         stuck_smbd = f"  8115 1 8115 D 127 biowait 0:04.00 smbd\n{PS_LISTING_END}"
-        # The disk gets stuck during the sync, after the preflight looked.
-        synced: list[bool] = []
 
-        def sync_times_out(_connection):
-            synced.append(True)
-            raise SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/sync")
+        def disk_stuck_at_sync(failing_sync):
+            # The disk gets stuck during that sync, after the preflight looked:
+            # the first runs right after the services stop, before any copy.
+            synced: list[bool] = []
 
-        def stuck_once_synced(_connection):
-            return stuck_smbd if synced else PS_LISTING_END
+            def sync(_connection):
+                synced.append(True)
+                if len(synced) == failing_sync:
+                    raise SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/sync")
+
+            def listing(_connection):
+                return stuck_smbd if len(synced) >= failing_sync else PS_LISTING_END
+            return {"flush": sync, "ps": listing}
         stuck_diskd = f"  204 1 204 D 572 tstile 0:03.00 diskd\n{PS_LISTING_END}"
         empty_mast = MaStDiscoveryResult((), 10, "MaSt=<plist><array/></plist>")
         cases = (
@@ -1359,8 +1364,12 @@ class CliDeployTests(CliTestCase):
              {"remote": SshError("mkdir: /Volumes/dk2/.samba4: Invalid argument")}),
             ("an empty MaSt behind a stuck diskd", "disk_not_responding", "A disk on the device has stopped responding",
              {"mast": empty_mast, "ps": stuck_diskd}),
-            ("a sync timeout behind a stuck disk", "disk_not_responding", "The installation files could not be written out",
-             {"flush": sync_times_out, "ps": stuck_once_synced}),
+            ("a sync timeout before the install behind a stuck disk", "disk_not_responding",
+             "Writing out the disk before the install timed out. A disk on the device has stopped responding",
+             disk_stuck_at_sync(1)),
+            ("a sync timeout after the copies behind a stuck disk", "disk_not_responding",
+             "The installation files could not be written out to the disk. A disk on the device has stopped responding",
+             disk_stuck_at_sync(2)),
         )
         for name, code, lead, setup in cases:
             with self.subTest(name), ExitStack() as stack:

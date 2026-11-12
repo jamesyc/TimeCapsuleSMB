@@ -1543,7 +1543,7 @@
 "timeline.progress.client_away" = "Šis Mac paliko įrenginio tinklą. Vėl jį prijunkite; įrenginys vis dar paleidžiamas iš naujo.";
 "timeline.progress.client_away_named" = "Šis Mac paliko įrenginio tinklą (Wi-Fi „%@“). Vėl jį prijunkite; įrenginys vis dar paleidžiamas iš naujo.";
 "timeline.progress.acpd_hung" = "Apple AirPort tarnyba sustojo nepaleidusi įrenginio iš naujo. Atjunkite jį, palaukite 10 sekundžių ir vėl prijunkite; veiksmas tęsis, kai įrenginys įsijungs.";
-"timeline.progress.restart_stuck" = "Įrenginys negrįžo į šį tinklą. Atjunkite jį, palaukite 10 sekundžių ir vėl prijunkite; veiksmas tęsis, kai įrenginys įsijungs.";
+"timeline.progress.restart_stuck" = "Įrenginys negrįžo į šį tinklą. Pabandykite atjungti jį nuo maitinimo, palaukti 10 sekundžių ir vėl prijungti; veiksmas tęsis, kai įrenginys įsijungs. Jei tinklas blokuoja Bonjour, jis galbūt grįžo nauju adresu.";
 "timeline.progress.restart_stuck_offline" = "Šis Mac neturi tinklo ryšio, o įrenginys negrįžo. Jei šis Mac jungėsi prie tinklo per įrenginį (jo Wi-Fi arba vieną iš jo LAN prievadų), atjunkite įrenginį, palaukite 10 sekundžių ir vėl prijunkite; veiksmas tęsis, kai įrenginys įsijungs.";
 "timeline.operation.saving_device" = "Išsaugomas įrenginys";
 "toggle.internal_share_use_disk_root" = "Bendrinti vidinio disko šaknį";

@@ -5106,7 +5106,7 @@ class NoDiskErrorTests(unittest.TestCase):
         from timecapsulesmb.transport.errors import SshCommandTimeout
 
         timeout = SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/sync")
-        flushed = _flush_naming_a_stuck_disk(mock.Mock(side_effect=timeout))
+        flushed = _flush_naming_a_stuck_disk(mock.Mock(side_effect=timeout), SYNC_STUCK_DISK_PREFIX)
         connection = SshConnection("root@10.0.0.2", "pw", "")
         stuck = f"  8115 1 8115 D 127 biowait 0:04.00 smbd\n{PS_LISTING_END}"
         with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=stuck), \
@@ -5122,7 +5122,9 @@ class NoDiskErrorTests(unittest.TestCase):
             flushed(connection)
         self.assertIs(raised_timeout.exception, timeout)
         # Another failure is not looked behind.
-        other = _flush_naming_a_stuck_disk(mock.Mock(side_effect=SshError("sync: Read-only file system")))
+        other = _flush_naming_a_stuck_disk(
+            mock.Mock(side_effect=SshError("sync: Read-only file system")), SYNC_STUCK_DISK_PREFIX,
+        )
         with mock.patch("timecapsulesmb.device.acpd.read_processes") as listing, self.assertRaises(SshError):
             other(connection)
         listing.assert_not_called()
