@@ -85,8 +85,11 @@ def test_uninstall_stops_a_running_migration_before_removing_it(monkeypatch, tmp
     monkeypatch.setattr(maintenance_service, 'render_post_uninstall_verification', lambda *a: [])
     measurements = []
     callbacks = OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields)))
+    # The app context's interface: update_fields takes the failing-disk
+    # check's telemetry (an unread kernel log, a warning's cause).
     context = SimpleNamespace(stage=lambda *a: None, log=lambda *a: None, to_operation_callbacks=lambda: callbacks,
-                              reading_at=lambda connection: None, config=None)
+                              reading_at=lambda connection: None, config=None,
+                              update_fields=lambda **fields: None)
 
     if scenario in ('unkillable', 'ps_failure'):
         with pytest.raises(RuntimeError) as failure:

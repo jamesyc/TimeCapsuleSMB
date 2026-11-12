@@ -810,11 +810,10 @@ class CliDeployTests(CliTestCase):
             "MaSt found 1 deployable HFS volume(s).\n\n"
             "Next steps:\n"
             "  1. Wait a minute, then run `tcapsule deploy` again.\n"
-            "  2. If the disk still does not mount, try restarting the device.\n"
-            # Disk Repair finds no mounted volume to work on: the wipe is the way out.
-            "  3. If it is the internal disk and it holds nothing you need, use `tcapsule wipe-internal-disk`. It "
-            "deletes everything on the internal disk and formats it for the device.\n"
-            "  4. Run `tcapsule deploy` again after the wipe.",
+            # The volume MaSt lists did not mount when asked: it may hold the
+            # backups, so no wipe (only an Apple layout MaSt lists nothing of
+            # gets one, at stage read_mast).
+            "  2. If the disk still does not mount, try restarting the device.",
         )
         result.mocks.run_remote_actions.assert_not_called()
         telemetry_error = self.telemetry_payload("deploy_finished")["error"]
