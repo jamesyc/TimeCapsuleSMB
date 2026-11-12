@@ -2158,11 +2158,16 @@ class RestartWaitTranscriptTests(unittest.TestCase):
             lines=[STUCK_LINE, reboot_service.client_away_message(_hotspot(), None)],
         )
 
-    def test_leaving_one_poll_before_the_limit_ends_as_stuck(self) -> None:
-        # One poll away is not yet a leave, so the stuck ending stands.
+    def test_leaving_one_poll_before_the_limit_ends_with_the_conditional_unplug(self) -> None:
+        # One poll away is not yet a leave, but this Mac has started leaving:
+        # the stuck ending, which says it stayed on the device's network,
+        # would be false, so it gets the silent ending that does not say
+        # where it is. Changed on purpose: it used to end as restart_stuck.
         device = stuck_device(mac_network_changes=((STUCK_AFTER + UP_LIMIT + 8.0, HOTSPOT),))
         self.assertTranscript(
-            self.transcript(device), end=self.STUCK_END, took=971, hints=[(371, ("restart_stuck",))], lines=[STUCK_LINE],
+            self.transcript(device),
+            end=("reboot_not_finished", "did_not_come_back_up", f"{TIMEOUT_MESSAGE} {unplug_if_on_network_note(None)}"),
+            took=971, hints=[(371, ("restart_stuck",))], lines=[STUCK_LINE],
         )
 
     def test_offline_stuck_hint_withdrawn_then_shown_again_online(self) -> None:
@@ -2176,20 +2181,24 @@ class RestartWaitTranscriptTests(unittest.TestCase):
             lines=[restart_stuck_offline_hint("Home"), WITHDRAWN_LINE, STUCK_LINE],
         )
 
-    def test_withdrawn_stuck_hint_with_the_place_unknown_still_ends_as_stuck(self) -> None:
-        # The router became unreadable, so the hint is not shown again; the
-        # ending still counts the first hint.
+    def test_withdrawn_stuck_hint_with_the_place_unknown_ends_with_the_conditional_unplug(self) -> None:
+        # The router became unreadable, so the hint is not shown again. The
+        # stuck ending needs the hint standing at the limit: a withdrawn one
+        # rests on a place reading from before the router went. Changed on
+        # purpose: it used to end as restart_stuck from the first hint.
         device = stuck_device(
             mac_router_changes=((STUCK_AFTER + 50.0, None),),
             down_read_error_changes=((STUCK_AFTER + 60.0, "Connection refused"), (STUCK_AFTER + 75.0, "timed out")),
         )
         self.assertTranscript(
-            self.transcript(device), end=self.STUCK_END, took=971,
-            hints=[(371, ("restart_stuck",)), (421, ())], lines=[STUCK_LINE, WITHDRAWN_LINE],
+            self.transcript(device),
+            end=("reboot_not_finished", "did_not_come_back_up", f"{TIMEOUT_MESSAGE} {unplug_if_on_network_note(None)}"),
+            took=971, hints=[(371, ("restart_stuck",)), (421, ())], lines=[STUCK_LINE, WITHDRAWN_LINE],
         )
 
     def test_withdrawn_offline_stuck_hint_with_the_place_unknown_ends_with_the_conditional_unplug(self) -> None:
-        # As above, but the first hint was the offline one.
+        # As above, but the first hint was the offline one: the same ending
+        # now, where before the leftover offline wording alone set it apart.
         device = stuck_device(
             mac_network_changes=((20.0, ()), (STUCK_AFTER + 80.0, ("10.0.0.0/24",))),
             mac_router_changes=((STUCK_AFTER + 79.0, None),),
@@ -2296,7 +2305,7 @@ class RestartWaitMachineTests(unittest.TestCase):
     def test_verdict_order_at_the_limit(self) -> None:
         from types import SimpleNamespace
 
-        Hang, Stuck = reboot_service.Hang, reboot_service.Stuck
+        Hang, Stuck, Client = reboot_service.Hang, reboot_service.Stuck, reboot_service.Client
         quiet = reboot_service.DeviceSilence(held=True, quiet=True)
         blocked = reboot_service.DeviceSilence(held=True, no_route_errors=["a", "b", "c"])
         down = dict(phase=reboot_service.Phase.DOWN, down_since=self.T0)
@@ -2308,8 +2317,13 @@ class RestartWaitMachineTests(unittest.TestCase):
             return SimpleNamespace(code="acp_no_route", message="blocked", proof="ssh")
 
         for name, state, result in (
-            ("away beats a hang", self.state(**down, away_polls=2, hang=Hang.MARKER), "client_left_network"),
-            ("one poll away is not away", self.state(**down, away_polls=1, hang=Hang.MARKER), "acpd_stopped_without_reboot"),
+            ("away beats a hang", self.state(**down, client=Client.AWAY, away_polls=2, hang=Hang.MARKER),
+             "client_left_network"),
+            ("leaving is not away", self.state(**down, client=Client.LEAVING, away_polls=1, hang=Hang.MARKER),
+             "acpd_stopped_without_reboot"),
+            # The ending follows the client part, not the count of polls away.
+            ("polls away without the away state", self.state(**down, client=Client.LEAVING, away_polls=5),
+             "did_not_come_back_up"),
             ("a hang beats the stuck hint", self.state(**down, hang=Hang.REFUSED, stuck=Stuck.SHOWN, stuck_at=self.T0,
                                                          silence=quiet), "acpd_stopped_without_reboot"),
             ("stuck when still silent", self.state(**down, stuck=Stuck.SHOWN, stuck_at=self.T0, silence=quiet), "restart_stuck"),
@@ -2326,3 +2340,40 @@ class RestartWaitMachineTests(unittest.TestCase):
         self.assertEqual(refused.message, reboot_service.ACPD_REFUSED_MESSAGE)
         self.assertEqual(dict(reboot_service.verdict(self.state(**down, silence=blocked), at, self.terms(), block).fields),
                          {"local_network_block_proof": "ssh"})
+
+    def test_the_stuck_ending_needs_the_hint_standing_this_mac_home_and_silence(self) -> None:
+        # Each part as it is at the limit decides; hints shown earlier do not.
+        Stuck, Client = reboot_service.Stuck, reboot_service.Client
+        quiet = reboot_service.DeviceSilence(held=False, quiet=True)
+        down = dict(phase=reboot_service.Phase.DOWN, down_since=self.T0, stuck_at=self.T0)
+        at = self.T0 + STUCK_AFTER + UP_LIMIT
+        conditional = f"timed out {unplug_if_on_network_note(None)}"
+        for name, changes, ending in (
+            ("shown, home and silent", dict(stuck=Stuck.SHOWN, silence=quiet), ("restart_stuck", "stuck")),
+            ("shown but this Mac started leaving", dict(stuck=Stuck.SHOWN, silence=quiet, client=Client.LEAVING,
+                                                         away_polls=1), ("did_not_come_back_up", conditional)),
+            ("shown but no longer silent", dict(stuck=Stuck.SHOWN), ("did_not_come_back_up", "timed out")),
+            ("shown offline", dict(stuck=Stuck.SHOWN, stuck_offline=True, silence=quiet),
+             ("did_not_come_back_up", conditional)),
+            ("withdrawn, silent again", dict(stuck=Stuck.WITHDRAWN, silence=quiet), ("did_not_come_back_up", conditional)),
+            ("never shown", dict(stuck=Stuck.NONE, stuck_at=None, silence=quiet), ("did_not_come_back_up", conditional)),
+        ):
+            with self.subTest(name):
+                got = reboot_service.verdict(self.state(**{**down, **changes}), at, self.terms())
+                self.assertEqual((got.result, got.message), ending)
+
+    def test_withdrawing_the_stuck_hint_drops_its_offline_wording(self) -> None:
+        Stuck = reboot_service.Stuck
+        state = self.state(phase=reboot_service.Phase.DOWN, down_since=self.T0, stuck=Stuck.SHOWN, stuck_at=self.T0,
+                           stuck_offline=True)
+        state = reboot_service.step(state, reboot_service.StuckCheck(None), self.T0 + 400)
+        self.assertEqual((state.stuck, state.stuck_offline), (Stuck.WITHDRAWN, False))
+        # Shown again, it takes the wording of that showing.
+        quiet = reboot_service.DeviceSilence(held=False, quiet=True)
+        from dataclasses import replace
+
+        state = replace(state, silence=quiet)
+        shown = reboot_service.step(
+            state, reboot_service.StuckCheck(self.place("offline"), probed=True, ssh_error="timed out"), self.T0 + 450,
+        )
+        self.assertEqual((shown.stuck, shown.stuck_offline, shown.stuck_at), (Stuck.SHOWN, True, self.T0))

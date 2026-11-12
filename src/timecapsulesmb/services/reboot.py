@@ -695,8 +695,13 @@ def _request(host: str, password: str, callbacks: OperationCallbacks, *, raise_e
 #   stuck   NONE -(silent, down RESTART_STUCK_AFTER_DOWN_SECONDS, place same
 #           or offline, HOME, no hang, no rejected password, then the SSH
 #           port silent too)-> SHOWN -(no longer silent)-> WITHDRAWN -(as from
-#           NONE)-> SHOWN. stuck_offline is the latest showing's wording (this
-#           Mac had no network), and follows the place while SHOWN.
+#           NONE)-> SHOWN. stuck_offline is the showing hint's wording (this
+#           Mac had no network): it follows the place while SHOWN and clears
+#           on withdrawal.
+#
+# verdict() reads the parts as they are at the limit: AWAY ends as this Mac
+# away, a hang as the hang, and the stuck ending needs the stuck hint SHOWN
+# (not offline), the device still silent and this Mac HOME.
 #
 # Beside them: the silence record, polls away, router readings in a row,
 # since when ACP has refused, when the first hang and the first stuck hint
@@ -942,7 +947,8 @@ def _judge_stuck(state: WaitState, check: StuckCheck, now: float) -> WaitState:
     if state.stuck is Stuck.SHOWN and not state.silence.quiet:
         # Something answers at the address again, such as ACPd refusing
         # while the device starts up: an unplug now would interrupt it.
-        return replace(state, stuck=Stuck.WITHDRAWN)
+        # Its wording goes with it, so no ending reads a hint that is gone.
+        return replace(state, stuck=Stuck.WITHDRAWN, stuck_offline=False)
     if (
         state.stuck is Stuck.SHOWN and place is not None and place.verdict in ("same", "offline")
         and (place.verdict == "offline") != state.stuck_offline
@@ -1004,7 +1010,7 @@ def verdict(
     # The user gets the whole limit to unplug the device and for it to start up.
     if now - state.limit_from < words.up_timeout_seconds:
         return None
-    if state.away_polls >= CLIENT_AWAY_POLLS:
+    if state.client is Client.AWAY:
         # Nothing showed whether the device came back: this Mac was
         # not on its network to see it.
         return WaitEnding("client_left_network", ErrorCode.CLIENT_LEFT_NETWORK, client_left_message(state.joined))
@@ -1016,8 +1022,13 @@ def verdict(
             message = message.replace(ACPD_STOPPED_MESSAGE, ACPD_REFUSED_MESSAGE, 1)
         return WaitEnding("acpd_stopped_without_reboot", ErrorCode.ACPD_BROKEN, message)
     silence = state.silence
-    if state.stuck_at is not None and not state.stuck_offline and silence.quiet:
-        # Still silent since the unplug was asked for.
+    if (
+        state.stuck is Stuck.SHOWN and not state.stuck_offline and state.client is Client.HOME and silence.quiet
+    ):
+        # The hint stands, the device is still silent and this Mac is on its
+        # network, as the ending says. A Mac that has started leaving, or a
+        # hint withdrawn, gets the ending below, which does not say where
+        # this Mac stayed.
         return WaitEnding("restart_stuck", ErrorCode.RESTART_STUCK, words.stuck_message)
     if silence.maybe_blocked:
         # The app's reads all got no route at the end: macOS may be
