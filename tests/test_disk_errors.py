@@ -284,6 +284,61 @@ class UnreadKernelLogTests(unittest.TestCase):
                 self.assertEqual(fields, {})
 
 
+class UnreadManagerTitleTests(unittest.TestCase):
+    """A manager title that could not be read leaves no verdict to warn
+    from; telemetry records it, as for the kernel log."""
+
+    CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+
+    @staticmethod
+    def unreadable(_connection):
+        raise SshNetworkError("Connection reset")
+
+    def evidence(self, errors, title, *, update_fields=True, holds_payload=True):
+        fields: dict[str, object] = {}
+        title = title if callable(title) else mock.Mock(return_value=title)
+        with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
+            with mock.patch("timecapsulesmb.device.disk_errors.manager_payload_problems", title):
+                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", return_value=None):
+                    found = read_disk_failing_evidence_conn(
+                        self.CONNECTION, holds_payload=holds_payload,
+                        update_fields=(lambda **f: fields.update(f)) if update_fields else None,
+                    )
+        return found, fields
+
+    def test_an_unread_title_is_recorded_and_warns_nothing(self) -> None:
+        found, fields = self.evidence((), self.unreadable)
+        self.assertIsNone(found)
+        self.assertEqual(fields, {"disk_failing_manager_title": "unread"})
+
+    def test_both_unread_are_recorded(self) -> None:
+        found, fields = self.evidence(None, self.unreadable)
+        self.assertIsNone(found)
+        self.assertEqual(fields, {"disk_failing_kernel_log": "unread", "disk_failing_manager_title": "unread"})
+
+    def test_a_title_that_was_read_records_nothing(self) -> None:
+        for problems, expected in (((), None), ((probe.DISK_PAYLOAD_UNREADABLE,), UNREADABLE_EVIDENCE)):
+            with self.subTest(problems=problems):
+                found, fields = self.evidence((), problems)
+                self.assertEqual(found, expected)
+                self.assertEqual(fields, {})
+
+    def test_a_title_left_unread_records_nothing(self) -> None:
+        # Kernel lines decide first, and a disk that cannot hold the files
+        # skips the title: it is never asked for.
+        for name, errors, holds_payload in (("kernel lines", (FINAL,), True), ("not the payload's disk", (), False)):
+            with self.subTest(name):
+                title = mock.Mock(side_effect=AssertionError("the title must not be read"))
+                _found, fields = self.evidence(errors, title, holds_payload=holds_payload)
+                self.assertEqual(fields, {})
+                title.assert_not_called()
+
+    def test_without_update_fields_an_unread_title_still_warns_nothing(self) -> None:
+        found, fields = self.evidence((), self.unreadable, update_fields=False)
+        self.assertIsNone(found)
+        self.assertEqual(fields, {})
+
+
 class RepairTargetTests(unittest.TestCase):
     """Disk Repair warns only about the disk it repairs: a failing USB stick
     is no reason to warn before repairing the internal volume, nor the

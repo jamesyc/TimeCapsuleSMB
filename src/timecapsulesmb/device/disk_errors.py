@@ -339,7 +339,9 @@ def read_disk_failing_evidence_conn(
     `update_fields` records `disk_failing_kernel_log="unread"` for telemetry
     when the kernel log could not be read: the warning then rests on the
     manager's verdict alone, or is not shown, and how often that happens
-    before an operation is not known yet."""
+    before an operation is not known yet. Likewise
+    `disk_failing_manager_title="unread"` when the manager's title, which
+    the verdict comes from, could not be read."""
     errors = read_disk_errors_conn(connection)
     if errors is None and update_fields is not None:
         update_fields(disk_failing_kernel_log="unread")
@@ -359,6 +361,8 @@ def read_disk_failing_evidence_conn(
     try:
         problems = manager_payload_problems(connection)
     except TransportError:
+        if update_fields is not None:
+            update_fields(disk_failing_manager_title="unread")
         return None
     if not any(problem in DISK_UNREADABLE_PROBLEMS for problem in problems or ()):
         return None
