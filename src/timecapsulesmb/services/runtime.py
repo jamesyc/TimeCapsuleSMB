@@ -21,7 +21,7 @@ from timecapsulesmb.checks.network import (
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
 from timecapsulesmb.core.error_codes import ErrorCode, coded_error_in
 from timecapsulesmb.core.install import running_in_app
-from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
+from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host, parse_endpoint
 from timecapsulesmb.core.paths import AppPaths, resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError, DeviceRestartingError
@@ -86,11 +86,17 @@ class DeviceAccessError(DeviceError):
 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not work."
 SSH_PASSWORD_NOT_APPLIED_MESSAGE = (
     "SSH on the device rejects the AirPort admin password that the device's AirPort service accepts: the device "
-    "has not applied its current settings."
+    "may not have applied its current settings."
 )
 SSH_PASSWORD_REJECTED_MESSAGE = "SSH on the device rejected the saved password."
 # Key-only SSH: there is no password to ask the AirPort service about.
 SSH_LOGIN_REJECTED_MESSAGE = "SSH on the device rejected this computer's login."
+# An SSH target naming another user: the AirPort service ignores the user, so
+# its answer says nothing of this login (ssh_password_error).
+SSH_USER_NOT_ROOT_MESSAGE = (
+    "SSH rejected the saved password for user {user}. TimeCapsuleSMB logs in to the device as root: "
+    "change the address to root@{host}."
+)
 
 
 ACP_UNREACHABLE_MESSAGE = (
@@ -635,17 +641,36 @@ def closed_port_error(
     return DeviceAccessError(closed.message, code=closed.code, detail=detail)
 
 
+def ssh_user_not_root_error(connection: SshConnection, ssh_error: str | None) -> DeviceAccessError | None:
+    """The error for SSH rejecting a target that names a user other than
+    root, else None. The AirPort service ignores the SSH user, so what it says
+    of the password says nothing of such a login. A target without a user is
+    root: commands build their targets with canonical_ssh_target."""
+    endpoint = parse_endpoint(connection.host)
+    if endpoint.user in ("", "root"):
+        return None
+    return DeviceAccessError(
+        SSH_USER_NOT_ROOT_MESSAGE.format(user=endpoint.user, host=endpoint.host),
+        code=ErrorCode.AUTH_FAILED,
+        detail=ssh_error,
+    )
+
+
 def ssh_password_error(
     connection: SshConnection, ssh_error: str | None, *, reading: device_probe.AirportAcpReading | None = None,
 ) -> DeviceAccessError:
     """The error for SSH rejecting the saved password, by what the device's
-    AirPort service says of the same password: accepted means the device has
-    not applied its current settings (a restart applies them), rejected means
-    the password is wrong, and no answer says only that SSH rejected it.
+    AirPort service says of the same password: accepted means the device may
+    not have applied its current settings (a restart applies them), rejected
+    means the password is wrong, and no answer says only that SSH rejected it.
     `reading` is this command's earlier read of the password at this address,
-    which saves asking again; key-only SSH has no password to ask about."""
+    which saves asking again; key-only SSH has no password to ask about. A
+    target naming a user other than root is not asked about either
+    (ssh_user_not_root_error)."""
     if not connection.password:
         return DeviceAccessError(SSH_LOGIN_REJECTED_MESSAGE, code=ErrorCode.AUTH_FAILED, detail=ssh_error)
+    if (not_root := ssh_user_not_root_error(connection, ssh_error)) is not None:
+        return not_root
     if reading is None:
         reading = read_admin_password(connection)
     if reading.password_matches is True:

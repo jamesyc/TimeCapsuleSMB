@@ -565,9 +565,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             if no_input_enabled(args):
                 return False
             if password_not_applied:
-                # The password is right; the device has not applied it yet.
+                # ACP takes the password; the device may not have applied it yet.
                 print("\nSSH rejected the password, but the AirPort service accepts it: "
-                      "the device has not applied it yet, and a restart applies it.")
+                      "the device may not have applied it yet, and a restart may apply it.")
             elif probed_state.probe_result.ssh_authenticated:
                 # SSH checks only 8 characters; the device's syPW comparison did not match.
                 print("\nSSH accepted the password, but it is not the AirPort admin password.")

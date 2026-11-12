@@ -2941,8 +2941,8 @@ class CliConfigureTests(CliTestCase):
 
     def test_enter_at_save_anyway_keeps_a_password_the_device_has_not_applied(self) -> None:
         # SSH rejects the password, the AirPort service accepts it: the
-        # password is right and a restart applies it, so the prompt says so
-        # and Enter saves it.
+        # password is likely right and a restart may apply it, so the prompt
+        # says so and Enter saves it.
         with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(True)):
             result = self.run_configure_cli(
                 prompt_side_effect=self.configure_prompt_defaults(password="newpw"),
@@ -2952,9 +2952,29 @@ class CliConfigureTests(CliTestCase):
 
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_PASSWORD"], "newpw")
-        self.assertIn("the device has not applied it yet, and a restart applies it", result.text)
+        self.assertIn("the device may not have applied it yet, and a restart may apply it", result.text)
         self.assertNotIn("did not work", result.text)
         self.assertIn("Save this information still? [Y/n]", "".join(str(call.args[0]) for call in result.mocks.input.call_args_list))
+
+    def test_save_anyway_after_the_enable_ssh_restart_defaults_to_no(self) -> None:
+        # Configure itself just restarted the device to turn SSH on, so SSH
+        # still rejecting a password the AirPort service accepts is not one a
+        # restart would apply: the prompt does not say so, and Enter would
+        # not save it.
+        self.force_configure_acp_reprobe_auth_failed()
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(True)):
+            result = self.run_configure_cli(
+                prompt_side_effect=self.configure_prompt_defaults(password="newpw"),
+                probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+                input_side_effect=["y", "y"],
+            )
+
+        self.assertEqual(result.rc, 0)
+        prompts = [str(call.args[0]) for call in result.mocks.input.call_args_list]
+        self.assertIn("Save this information still? [y/N]", "".join(prompts))
+        self.assertNotIn("[Y/n]", prompts[-1])
+        self.assertNotIn("may not have applied", result.text)
+        self.assertIn("The provided AirPort SSH target and password did not work", result.text)
 
     def test_configure_hard_fails_when_acp_enable_fails_non_auth(self) -> None:
         self._configure_acp_probe_mock.side_effect = ACPConnectionError("Could not connect to ACP on 10.0.0.2:5009")

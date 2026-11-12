@@ -475,10 +475,10 @@ class ProbeFailureErrorTests(unittest.TestCase):
                 self.assertEqual(acp_probe.call_args.args[0], expected)
 
     def test_a_rejected_ssh_password_is_judged_by_what_acp_says_of_it(self) -> None:
-        # The same password the AirPort service accepts: the device has not
-        # applied its settings, and re-entering it would not help. Rejected by
-        # both: the password is wrong. No ACP answer: only SSH rejected it.
-        # ssh's own text stays as the facts.
+        # The same password the AirPort service accepts: the device may not
+        # have applied its settings, and re-entering it would not help.
+        # Rejected by both: the password is wrong. No ACP answer: only SSH
+        # rejected it. ssh's own text stays as the facts.
         cases = (
             (True, "ssh_password_not_applied", service_runtime.SSH_PASSWORD_NOT_APPLIED_MESSAGE),
             (False, "auth_failed", service_runtime.AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE),
@@ -493,6 +493,37 @@ class ProbeFailureErrorTests(unittest.TestCase):
                     (self.failed_probe(SshAccessStatus.AUTH_REJECTED, ssh_text), "root@10.0.0.2"), acp_probe,
                 )
                 self.assertEqual((error.code, error.message, error.detail), (code, message, ssh_text))
+                if matches is True:
+                    # A likely cause, not an observed one.
+                    self.assertIn("may not have applied its current settings", error.message)
+
+    def test_a_user_other_than_root_is_named_and_acp_is_not_asked(self) -> None:
+        # The AirPort service ignores the SSH user, so what it says of the
+        # password says nothing of an admin@ login, and a restart would not
+        # help: the error names the user and the root address instead, with
+        # no ACP read and whatever the command read before. A target without
+        # a user is root, as canonical_ssh_target writes it.
+        ssh_text = "admin@10.0.0.2: Permission denied (password)."
+        for host, user, address in (("admin@10.0.0.2", "admin", "root@10.0.0.2"),
+                                    ("Admin@[fe80::1%en0]", "Admin", "root@fe80::1%en0")):
+            for reading in (None, acp_reading(True)):
+                with self.subTest(host=host, reading=reading), \
+                        mock.patch("timecapsulesmb.device.probe.read_airport_acp") as read:
+                    error = service_runtime.ssh_password_error(SshConnection(host, "pw", ""), ssh_text, reading=reading)
+                    read.assert_not_called()
+                    self.assertEqual(
+                        (error.code, error.message, error.detail),
+                        ("auth_failed",
+                         f"SSH rejected the saved password for user {user}. TimeCapsuleSMB logs in to the device as "
+                         f"root: change the address to {address}.",
+                         ssh_text),
+                    )
+        for host in ("root@10.0.0.2", "10.0.0.2"):
+            with self.subTest(host=host), \
+                    mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(True)) as read:
+                error = service_runtime.ssh_password_error(SshConnection(host, "pw", ""), ssh_text)
+                read.assert_called_once()
+                self.assertEqual(error.code, "ssh_password_not_applied")
 
     def test_the_commands_own_reading_is_used_and_key_only_ssh_reads_nothing(self) -> None:
         # The command read the password at this address already: no second

@@ -226,11 +226,12 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     # SSH rejects the password the device's AirPort service accepts
     # (services.runtime.ssh_password_error): re-entering it would not help.
     # The device writes the SSH password at boot from the AirPort password,
-    # which ACP accepts, so an ordinary restart applies it.
+    # which ACP accepts, so an ordinary restart applies it. That is the likely
+    # cause, not an observed one: the card says "may".
     ErrorCode.SSH_PASSWORD_NOT_APPLIED: RecoveryInfo(
-        "The device has not applied its password",
-        "SSH on the device rejects the AirPort admin password that its AirPort service accepts. The device has not "
-        "applied its current settings.",
+        "The device may not have applied its password",
+        "SSH on the device rejects the AirPort admin password that its AirPort service accepts. The device may not "
+        "have applied its current settings.",
         (_RESTART_OR_UNPLUG_STEP, _START_UP_THEN_RETRY_STEP),
         retryable=True,
     ),

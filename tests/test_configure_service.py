@@ -47,7 +47,7 @@ from timecapsulesmb.services.configure import (
     run_configure_flow,
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.runtime import SSH_PASSWORD_NOT_APPLIED_MESSAGE
+from timecapsulesmb.services.runtime import SSH_PASSWORD_NOT_APPLIED_MESSAGE, SSH_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.services.locate import LocateResult
 from tests.reboot_support import DEVICE_AIRPORT_MAC, acp_password_answer, acp_reading
@@ -1872,11 +1872,13 @@ class ConfigureServiceTests(unittest.TestCase):
                 self.assertIn(line, written)
 
     def test_a_password_ssh_rejects_is_judged_by_what_acp_says_of_it(self) -> None:
-        # ACP accepting it: the device has not applied it, and re-entering it
-        # would not help. ACP rejecting it: the password is wrong. One read,
-        # and none when the identity read at this address already answered.
+        # ACP accepting it: the device may not have applied it, and
+        # re-entering it would not help. ACP rejecting it: the password is
+        # wrong. No ACP answer: only SSH rejected it. One read, and none when
+        # the identity read at this address already answered.
         cases = ((True, "ssh_password_not_applied", SSH_PASSWORD_NOT_APPLIED_MESSAGE),
-                 (False, "auth_failed", AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE))
+                 (False, "auth_failed", AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE),
+                 (None, "auth_failed", SSH_PASSWORD_REJECTED_MESSAGE))
         for matches, code, message in cases:
             with self.subTest(matches=matches), tempfile.TemporaryDirectory() as tmp:
                 compare = acp_password_answer(matches)
@@ -1887,6 +1889,64 @@ class ConfigureServiceTests(unittest.TestCase):
                 self.assertEqual((raised.exception.code, str(raised.exception)), (code, message))
                 self.assertEqual(compare.call_count, 1)
                 self.assertFalse((Path(tmp) / ".env").exists())
+
+    def run_after_enable_ssh_restart(self, acp: mock.Mock, **overrides: object):
+        """configure against SSH that was off: the flow turns it on and
+        restarts the device, and SSH then rejects the password. Returns the
+        error and each save_without_authentication call's flag."""
+        asked: list[bool] = []
+
+        def save(_state: ProbedDeviceState, not_applied: bool) -> bool:
+            asked.append(not_applied)
+            return False
+
+        probe = mock.Mock(return_value=self.closed_probe("[Errno 61] Connection refused"))
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp", acp), \
+                mock.patch.object(configure_service, "enable_ssh_and_reprobe",
+                                  return_value=(self.make_connection(), self.make_auth_failed_probe_state())) as enable, \
+                self.assertRaises(ConfigureFlowError) as raised:
+            run_configure_flow(self.configure_request(Path(tmp) / ".env", probe, **overrides),
+                               hooks=ConfigureFlowHooks(save_without_authentication=save))
+        enable.assert_called_once()
+        return raised.exception, asked
+
+    def test_after_its_own_restart_a_password_acp_accepts_is_not_called_unapplied(self) -> None:
+        # The flow restarted the device to turn SSH on, which applies its
+        # settings: SSH still rejecting a password ACP accepts is a plain SSH
+        # rejection, not a request for another restart, and the save-anyway
+        # question is not told the password only waits for a restart.
+        error, asked = self.run_after_enable_ssh_restart(acp_password_answer(True))
+        self.assertEqual((error.code, str(error), error.debug),
+                         ("auth_failed", SSH_PASSWORD_REJECTED_MESSAGE, "SSH authentication failed."))
+        self.assertEqual(asked, [False])
+
+    def test_after_its_own_restart_the_password_is_read_again(self) -> None:
+        # The identity read before the restart predates it: ACP is asked
+        # again at the address SSH rejected the password.
+        acp = acp_password_answer(False)
+        with mock.patch.object(configure_service, "confirm_device_address",
+                               return_value=("root@10.0.0.2", acp_reading(True))):
+            error, asked = self.run_after_enable_ssh_restart(acp, expected_airport_mac=DEVICE_AIRPORT_MAC)
+        acp.assert_called_once()
+        self.assertEqual((error.code, str(error)), ("auth_failed", AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE))
+        self.assertEqual(asked, [False])
+
+    def test_a_user_other_than_root_is_named_without_asking_acp(self) -> None:
+        # ACP ignores the SSH user, so its answer says nothing of an admin@
+        # login: the error names the user and the root address.
+        compare = acp_password_answer(True)
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare), \
+                self.assertRaises(ConfigureFlowError) as raised:
+            run_configure_flow(self.configure_request(
+                Path(tmp) / ".env", mock.Mock(return_value=self.make_auth_failed_probe_state()),
+                host="admin@10.0.0.2"))
+        compare.assert_not_called()
+        self.assertEqual(raised.exception.code, "auth_failed")
+        self.assertIn("for user admin", str(raised.exception))
+        self.assertIn("change the address to root@10.0.0.2.", str(raised.exception))
+        self.assertFalse((Path(tmp) / ".env").exists())
 
     def test_run_configure_flow_normalizes_ssh_authentication_failure(self) -> None:
         probe_state = self.make_auth_failed_probe_state()

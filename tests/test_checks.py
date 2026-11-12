@@ -6592,10 +6592,10 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(report["status"], "fail")
 
     def test_run_doctor_checks_ssh_rejecting_the_airport_password_says_it_is_not_applied(self) -> None:
-        # SSH rejects a password the AirPort service accepts: the device has
-        # not applied it yet, as every command says. Rejected by both, or no
-        # password to ask about, keeps SSH's own verdict; this run's own read
-        # at the address is the one asked.
+        # SSH rejects a password the AirPort service accepts: the device may
+        # not have applied it yet, as every command says. Rejected by both, or
+        # no password to ask about, keeps SSH's own verdict; this run's own
+        # read at the address is the one asked.
         rejected = CheckResult("FAIL", "SSH rejected the password", {"code": "ssh_auth_rejected"})
         cases = (
             ("accepted", acp_password_answer(True), None, None, "ssh_password_not_applied", 1),
@@ -6616,8 +6616,27 @@ class CheckTests(unittest.TestCase):
                 self.assertEqual((ssh.status, ssh.details["code"]), ("FAIL", code))
                 self.assertEqual(compare.call_count, reads)
                 if code == "ssh_password_not_applied":
-                    self.assertIn("restart the device (SSH rejected the password)", ssh.message)
+                    self.assertIn("may not have applied its current password, try restarting the device "
+                                  "(SSH rejected the password)", ssh.message)
                 self.assertEqual(doctor_report(run.results)["sections"]["computer"]["fail_codes"], [code])
+
+    def test_run_doctor_checks_ssh_rejecting_a_non_root_user_names_it_without_asking_acp(self) -> None:
+        # The AirPort service ignores the SSH user: its answer says nothing of
+        # an admin@ login, so it is not asked, and the FAIL names the user and
+        # the root address instead of a restart.
+        rejected = CheckResult("FAIL", "SSH rejected the password", {"code": "ssh_auth_rejected"})
+        compare = acp_password_answer(True)
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
+            run = self.run_doctor_with_mocks(
+                ssh_login=rejected, connection=SshConnection("admin@10.0.0.2", "pw", "-o foo"),
+                smb_listing=self.smb_listing_result(), smb_file_ops=[], skip_bonjour=True,
+            )
+        compare.assert_not_called()
+        [ssh] = [result for result in run.results if result.details.get("code") == "ssh_auth_rejected"]
+        self.assertEqual(ssh.status, "FAIL")
+        self.assertIn("for user admin", ssh.message)
+        self.assertIn("change the address to root@10.0.0.2 (SSH rejected the password)", ssh.message)
+        self.assertNotIn("restart", ssh.message)
 
     def test_run_doctor_checks_skip_ssh_reports_no_device_section(self) -> None:
         # Skipping SSH is the user's choice, not a failure to report.

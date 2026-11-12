@@ -163,10 +163,16 @@ class OperationContext:
         self.config, self.device_reading = follow_saved_device(self.config, airport_mac, callbacks)
 
     def reading_at(self, connection: SshConnection | None) -> AirportAcpReading | None:
-        """The read follow_saved_device took, when it was of this connection's address."""
+        """The read follow_saved_device took, when it was of this connection's address.
+
+        None once this operation asked the device to restart
+        (reboot_was_attempted): the restart can apply settings the read
+        predates, so an SSH rejection after it is judged by a new read."""
         from timecapsulesmb.core.net import endpoint_host
 
         if self.device_reading is None or connection is None:
+            return None
+        if self.finish_fields.get("reboot_was_attempted") is True:
             return None
         host, reading = self.device_reading
         return reading if endpoint_host(host) == endpoint_host(connection.host) else None

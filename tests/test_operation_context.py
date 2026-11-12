@@ -53,6 +53,29 @@ class FollowSavedDeviceTests(unittest.TestCase):
         self.assertIsNone(context.reading_at(SshConnection("root@10.0.0.2", "pw", "")))
         self.assertIsNone(context.reading_at(None))
 
+    def test_the_read_is_not_reused_once_the_command_asked_for_a_restart(self) -> None:
+        # A restart can apply settings the read predates: an SSH rejection
+        # after it is judged by a new read. The restart request reaches each
+        # entrypoint's context through its operation callbacks
+        # (services.reboot); a command that only records that it will not
+        # restart keeps the read.
+        entrypoints = {
+            "app": lambda: (context := AppOperationContext("deploy", EventSink(mock.Mock())),
+                            context.diagnostics, context),
+            "cli": lambda: (context := CommandContext(mock.Mock(), "deploy", "deploy_started", "deploy_finished"),
+                            context.operation_context, context),
+        }
+        connection = SshConnection("root@10.0.0.9", "pw", "")
+        for name, make in entrypoints.items():
+            with self.subTest(context=name):
+                _, shared, context = make()
+                shared.device_reading = ("root@10.0.0.9", READING)
+                callbacks = context.to_operation_callbacks()
+                callbacks.update(reboot_was_attempted=False)
+                self.assertIs(context.reading_at(connection), READING)
+                callbacks.update(reboot_was_attempted=True)
+                self.assertIsNone(context.reading_at(connection))
+
     def test_without_a_saved_mac_nothing_is_looked_for(self) -> None:
         context, follow = self.follow({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}, None)
         follow.assert_not_called()

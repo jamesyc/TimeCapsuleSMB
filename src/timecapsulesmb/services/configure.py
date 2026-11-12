@@ -45,9 +45,11 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
     PROBE_STATUS_ERROR_CODES,
+    SSH_PASSWORD_REJECTED_MESSAGE,
     DeviceAccessError,
     confirm_device_address,
     ssh_password_error,
+    ssh_user_not_root_error,
 )
 from timecapsulesmb.transport.local import connect_error_kind, connect_unanswered, normalize_hardware_address, tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection
@@ -154,7 +156,7 @@ class ConfigureFlowHooks:
     # port only did not answer, so SSH may be on already.
     confirm_enable_ssh: Callable[[str, bool], None] | None = None
     # Whether to save a password the device refused anyway; told whether the
-    # AirPort service accepts it (ssh_password_not_applied), which a restart fixes.
+    # AirPort service accepts it (ssh_password_not_applied), which a restart may fix.
     save_without_authentication: Callable[[ProbedDeviceState, bool], bool] | None = None
 
 
@@ -356,6 +358,8 @@ def run_configure_flow(
     # not answer may be a slow device or link: one more connect decides, and a
     # port that answers it gets probed again.
     ssh_port_unanswered = False
+    # Set once this flow restarted the device to turn SSH on (below).
+    restarted_for_ssh = False
     if not probe.ssh_port_reachable and connect_unanswered(probe.ssh_port_error):
         port_error = tcp_connect_error(endpoint_host(host), 22)
         if port_error is None:
@@ -399,6 +403,7 @@ def run_configure_flow(
             raise ConfigureFlowError(str(exc), code=ErrorCode.DEVICE_IDENTITY_MISMATCH) from exc
         except RebootFlowError as exc:
             raise ConfigureFlowError(str(exc), code=exc.code) from exc
+        restarted_for_ssh = True
         # The device answered at a new address: that is the one to save.
         values["TC_HOST"] = connection.host
         if hooks.after_probe is not None:
@@ -414,8 +419,9 @@ def run_configure_flow(
 
     def acp_password_reading() -> AirportAcpReading:
         # The identity read above already told whether ACP takes the password,
-        # when it reached the address SSH did.
-        if (confirmed is not None and confirmed[1].password_matches is not None
+        # when it reached the address SSH did and the device has not restarted
+        # since.
+        if (not restarted_for_ssh and confirmed is not None and confirmed[1].password_matches is not None
                 and endpoint_host(confirmed[0]) == endpoint_host(connection.host)):
             return confirmed[1]
         return read_admin_password(connection)
@@ -428,25 +434,32 @@ def run_configure_flow(
             password_error = SSH_ONLY_PASSWORD_DEBUG
     if password_rejected:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
-        not_applied = None
+        # SSH accepted a password ACP rejects (SSH_ONLY_PASSWORD_DEBUG): the
+        # password is wrong.
+        refusal = DeviceAccessError(AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, code=ErrorCode.AUTH_FAILED,
+                                    detail=password_error)
         if probe.ssh_status == SshAccessStatus.AUTH_REJECTED:
-            # SSH rejected it: a password ACP accepts is one the device has
-            # not applied yet, which re-entering it would not fix
-            # (ssh_password_error). Saving it anyway is right then.
-            password_reading = acp_password_reading()
-            callbacks.debug(**password_check_fields(password_reading))
-            rejected = ssh_password_error(connection, probe.error, reading=password_reading)
-            if rejected.code == ErrorCode.SSH_PASSWORD_NOT_APPLIED:
-                not_applied = rejected
+            # SSH rejected it: what ACP says of it tells why, as every command
+            # says it (ssh_password_error), except for a user other than root,
+            # whose login ACP says nothing of. A password ACP accepts is one
+            # the device may not have applied yet, which re-entering it would
+            # not fix, so saving it anyway is right then.
+            not_root = ssh_user_not_root_error(connection, probe.error)
+            if not_root is not None:
+                refusal = not_root
+            else:
+                password_reading = acp_password_reading()
+                callbacks.debug(**password_check_fields(password_reading))
+                refusal = ssh_password_error(connection, probe.error, reading=password_reading)
+            if refusal.code == ErrorCode.SSH_PASSWORD_NOT_APPLIED and restarted_for_ssh:
+                # This flow just restarted the device, which applies its
+                # settings: asking for another restart would not help.
+                refusal = DeviceAccessError(SSH_PASSWORD_REJECTED_MESSAGE, code=ErrorCode.AUTH_FAILED,
+                                            detail=probe.error)
+        not_applied = refusal.code == ErrorCode.SSH_PASSWORD_NOT_APPLIED
         save = hooks.save_without_authentication
-        if save is None or not save(probed_state, not_applied is not None):
-            if not_applied is not None:
-                raise ConfigureFlowError(not_applied.message, code=not_applied.code, debug=probe.error)
-            raise ConfigureFlowError(
-                AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
-                code=ErrorCode.AUTH_FAILED,
-                debug=password_error,
-            )
+        if save is None or not save(probed_state, not_applied):
+            raise ConfigureFlowError(refusal.message, code=refusal.code, debug=refusal.detail)
     elif probe.ssh_status == SshAccessStatus.OPEN_AUTHENTICATED:
         callbacks.debug(ssh_final_reachable=True)
         callbacks.update(ssh_final_reachable=True)

@@ -728,8 +728,8 @@
 "backend.recovery.auth_failed.message" = "设备拒绝了提供的密码或 SSH 凭据。";
 "backend.recovery.auth_failed.action.1" = "重新输入 AirPort 管理员密码。";
 "backend.recovery.auth_failed.action.2" = "确认设备已启用 SSH。";
-"backend.recovery.ssh_password_not_applied.title" = "设备尚未应用其密码";
-"backend.recovery.ssh_password_not_applied.message" = "设备上的 SSH 拒绝了其 AirPort 服务接受的 AirPort 管理员密码。设备尚未应用其当前设置。";
+"backend.recovery.ssh_password_not_applied.title" = "设备可能尚未应用其密码";
+"backend.recovery.ssh_password_not_applied.message" = "设备上的 SSH 拒绝了其 AirPort 服务接受的 AirPort 管理员密码。设备可能尚未应用其当前设置。";
 "backend.recovery.ssh_password_not_applied.action.1" = "请尝试在 AirPort 实用工具中重启设备，或拔掉电源 10 秒钟后再插回。";
 "backend.recovery.ssh_password_not_applied.action.2" = "等待 2 分钟让设备完成启动，然后重试。";
 "backend.recovery.configure.auth_failed.title" = "AirPort 密码被拒绝";

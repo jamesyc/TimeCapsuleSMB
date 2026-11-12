@@ -728,8 +728,8 @@
 "backend.recovery.auth_failed.message" = "Il dispositivo ha rifiutato la password o le credenziali SSH fornite.";
 "backend.recovery.auth_failed.action.1" = "Reinserisci la password amministratore AirPort.";
 "backend.recovery.auth_failed.action.2" = "Verifica che SSH sia abilitato sul dispositivo.";
-"backend.recovery.ssh_password_not_applied.title" = "Il dispositivo non ha applicato la sua password";
-"backend.recovery.ssh_password_not_applied.message" = "SSH sul dispositivo rifiuta la password amministratore AirPort che il suo servizio AirPort accetta. Il dispositivo non ha applicato le impostazioni attuali.";
+"backend.recovery.ssh_password_not_applied.title" = "Il dispositivo potrebbe non aver applicato la sua password";
+"backend.recovery.ssh_password_not_applied.message" = "SSH sul dispositivo rifiuta la password amministratore AirPort che il suo servizio AirPort accetta. Il dispositivo potrebbe non aver applicato le impostazioni attuali.";
 "backend.recovery.ssh_password_not_applied.action.1" = "Prova a riavviare il dispositivo in Utility AirPort, oppure scollegalo dall’alimentazione per 10 secondi e ricollegalo.";
 "backend.recovery.ssh_password_not_applied.action.2" = "Attendi 2 minuti che il dispositivo si avvii, poi riprova.";
 "backend.recovery.configure.auth_failed.title" = "Password AirPort rifiutata";

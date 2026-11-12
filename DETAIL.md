@@ -953,7 +953,7 @@ Run it after setup, after a deploy, and after a reboot.
 - uploads `smbd`, `rsync` and `rsyncd.conf` to the payload, and the `service` image, `boot.sh` and `dfree.sh` to flash
 - checks the uploaded sizes and sets file and directory permissions, then runs `sync`
 - names a write the device refuses by the device's own answer. A full HFS volume, or a folder `mkdir` could not create there, gives `deploy_disk_not_writable`. An input/output error gives `disk_failing` when the kernel logged disk errors this boot, and `deploy_disk_not_writable` otherwise. A full flash gives `insufficient_flash_space`. Any other error, such as one on `/mnt/Memory`, is shown as the device printed it
-- uploads no password files; the device writes them to RAM at boot from the AirPort password (`syPW`). So when SSH rejects a password the AirPort service accepts, the device has not applied its current password yet. Deploy, Activate, flash, configure, uninstall, Wipe Internal Disk, Disk Repair, `set-ssh` and Checkup all say so (`ssh_password_not_applied`), and a restart applies it
+- uploads no password files; the device writes them to RAM at boot from the AirPort password (`syPW`). So when SSH rejects a password the AirPort service accepts, the device may not have applied its current password yet. Deploy, Activate, flash, configure, uninstall, Wipe Internal Disk, Disk Repair, `set-ssh` and Checkup all say so (`ssh_password_not_applied`), and a restart applies it
 - writes the new `/mnt/Flash/tcapsulesmb.conf` and `rc.local` last, then runs `sync` again
 - reboots
 - after the reboot, checks that:

@@ -8315,7 +8315,7 @@ MaSt = (
         from timecapsulesmb.transport.errors import SshAuthenticationError
 
         cases = (
-            (True, "ssh_password_not_applied", "has not applied"),
+            (True, "ssh_password_not_applied", "may not have applied"),
             (False, "auth_failed", "AirPort admin password"),
         )
         for matches, code, wording in cases:

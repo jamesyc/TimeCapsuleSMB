@@ -96,6 +96,7 @@ from timecapsulesmb.core.net import (
     ipv6_scope_index,
     is_link_local_ipv4,
     is_link_local_ipv6,
+    parse_endpoint,
     resolve_host_ips,
     same_scoped_ip,
 )
@@ -2261,8 +2262,9 @@ def _doctor_check_ssh_login(
 ) -> RemoteAccess:
     """SSH login. A password SSH rejects but the AirPort service accepts
     (`reading`, this run's read at this address, else a new one) is one the
-    device has not applied yet, as every command says it
-    (services.runtime.ssh_password_error)."""
+    device may not have applied yet, as every command says it
+    (services.runtime.ssh_password_error). The AirPort service ignores the
+    SSH user, so for a target naming a user other than root it is not asked."""
     if options.skip_ssh:
         return RemoteAccess(
             ssh_checked=False,
@@ -2273,11 +2275,19 @@ def _doctor_check_ssh_login(
 
     ssh_result = check_ssh_login(target.connection, router_mac=target.router_mac)
     if ssh_result.details.get("code") == "ssh_auth_rejected" and target.connection.password:
-        if (reading or read_admin_password(target.connection)).password_matches is True:
+        endpoint = parse_endpoint(target.connection.host)
+        if endpoint.user not in ("", "root"):
             ssh_result = CheckResult(
                 "FAIL",
-                "SSH on the device rejected the saved password although it is the AirPort admin password; "
-                f"the device has not applied its current password, restart the device ({ssh_result.message})",
+                f"SSH on the device rejected the saved password for user {endpoint.user}; TimeCapsuleSMB logs in to "
+                f"the device as root, change the address to root@{endpoint.host} ({ssh_result.message})",
+                ssh_result.details,
+            )
+        elif (reading or read_admin_password(target.connection)).password_matches is True:
+            ssh_result = CheckResult(
+                "FAIL",
+                "SSH on the device rejected the saved password, which the AirPort service accepts; "
+                f"the device may not have applied its current password, try restarting the device ({ssh_result.message})",
                 {**ssh_result.details, "code": ErrorCode.SSH_PASSWORD_NOT_APPLIED},
             )
     sink.add(ssh_result)
