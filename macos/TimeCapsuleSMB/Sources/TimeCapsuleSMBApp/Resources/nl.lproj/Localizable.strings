@@ -943,6 +943,14 @@
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "Haal de schijf uit de slaapstand of koppel deze opnieuw.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.2" = "Controleer de beschikbare vrije ruimte.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.3" = "Voer ‘Samba installeren / bijwerken’ opnieuw uit.";
+"backend.recovery.deploy.deploy_disk_io_error.title" = "Invoer-/uitvoerfout op de schijf";
+"backend.recovery.deploy.deploy_disk_io_error.message" = "Bij het schrijven van de installatiebestanden naar de schijf trad een invoer-/uitvoerfout op. Mogelijk is het volume beschadigd of is de schijf defect. Samba is voor de installatie gestopt en is nu niet actief.";
+"backend.recovery.deploy.deploy_disk_io_error.action.1" = "Voer ‘Samba installeren / bijwerken’ opnieuw uit.";
+"backend.recovery.deploy.deploy_disk_io_error.action.2" = "Mislukt het op dezelfde manier, voer dan ‘Schijfreparatie’ uit op de schijf en voer daarna ‘Samba installeren / bijwerken’ opnieuw uit.";
+"backend.recovery.deploy.deploy_disk_refused_folder.title" = "De schijf heeft de installatiemap geweigerd";
+"backend.recovery.deploy.deploy_disk_refused_folder.message" = "Het volume op de schijf heeft de installatiemap van TimeCapsuleSMB niet aangemaakt of liet er geen bestanden in schrijven. Mogelijk is het volume beschadigd of is het tijdens de installatie ontkoppeld. Samba is voor de installatie gestopt en is nu niet actief.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.1" = "Voer ‘Samba installeren / bijwerken’ opnieuw uit.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.2" = "Mislukt het op dezelfde manier, voer dan ‘Schijfreparatie’ uit op de schijf en voer daarna ‘Samba installeren / bijwerken’ opnieuw uit.";
 "backend.recovery.deploy.deploy_disk_not_mounted.title" = "HFS-schijf niet gekoppeld";
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "De schijf heeft een HFS-volume, maar het apparaat heeft het niet gekoppeld, ook niet toen daarom werd gevraagd.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Wacht een minuut en voer ‘Samba installeren / bijwerken’ daarna opnieuw uit.";

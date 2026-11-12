@@ -943,6 +943,14 @@
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "Saque el disco del reposo o vuelva a montarlo.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.2" = "Compruebe el espacio libre disponible.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.3" = "Vuelva a ejecutar «Instalar / actualizar Samba».";
+"backend.recovery.deploy.deploy_disk_io_error.title" = "Error de entrada/salida en el disco";
+"backend.recovery.deploy.deploy_disk_io_error.message" = "Al escribir los archivos de instalación en el disco se produjo un error de entrada/salida. Puede que el volumen esté dañado o que el disco esté fallando. Samba se detuvo para la instalación y ahora no está en ejecución.";
+"backend.recovery.deploy.deploy_disk_io_error.action.1" = "Vuelva a ejecutar «Instalar / actualizar Samba».";
+"backend.recovery.deploy.deploy_disk_io_error.action.2" = "Si vuelve a fallar del mismo modo, ejecute «Reparación de disco» en el disco y después vuelva a ejecutar «Instalar / actualizar Samba».";
+"backend.recovery.deploy.deploy_disk_refused_folder.title" = "El disco rechazó la carpeta de instalación";
+"backend.recovery.deploy.deploy_disk_refused_folder.message" = "El volumen del disco no creó la carpeta de instalación de TimeCapsuleSMB o no permitió escribir archivos en ella. Puede que el volumen esté dañado o que se haya desmontado durante la instalación. Samba se detuvo para la instalación y ahora no está en ejecución.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.1" = "Vuelva a ejecutar «Instalar / actualizar Samba».";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.2" = "Si vuelve a fallar del mismo modo, ejecute «Reparación de disco» en el disco y después vuelva a ejecutar «Instalar / actualizar Samba».";
 "backend.recovery.deploy.deploy_disk_not_mounted.title" = "Disco HFS no montado";
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "El disco tiene un volumen HFS, pero el dispositivo no lo ha montado, ni siquiera cuando se le pidió.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Espere un minuto y vuelva a ejecutar «Instalar / actualizar Samba».";

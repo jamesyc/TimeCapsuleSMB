@@ -7047,6 +7047,39 @@ MaSt = (
         self.assertTrue(error["message"].startswith("The disk has no free space left"))
         self.assertIn("Check available free space.", error["recovery"]["actions"])
 
+    def test_deploy_whose_write_the_disk_failed_or_refused_offers_disk_repair(self) -> None:
+        # An I/O error with no kernel disk errors, and a volume mounted
+        # read-only: the volume is mounted, so the card offers Disk Repair.
+        volume = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
+        cases = (
+            ("dd: /Volumes/dk2/.samba4/smbd: Input/output error", "deploy_disk_io_error",
+             "The disk reported an input/output error", "Input/output error on the disk"),
+            ("dd: /Volumes/dk2/.samba4/smbd: Read-only file system", "deploy_disk_refused_folder",
+             "The disk's volume is mounted read-only", "The disk refused the installation folder"),
+        )
+        for text, code, lead, title in cases:
+            with self.subTest(code=code):
+                def failing_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
+                    if plan.uploads == [plan.migration_upload]:
+                        return
+                    raise SshError(text)
+
+                with mock.patch("timecapsulesmb.services.deploy.read_disk_errors_conn", return_value=()):
+                    rc, collector = self.run_confirmed_deploy_with_mast(
+                        MaStDiscoveryResult((volume,), 1, ""),
+                        payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
+                        run_remote_actions_side_effect=lambda *args, **kwargs: None,
+                        upload_side_effect=failing_upload,
+                    )
+
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], code)
+                self.assertTrue(error["message"].startswith(lead))
+                self.assertEqual(error["recovery"]["title"], title)
+                self.assertEqual(error["recovery"]["localization_key"], f"deploy.{code}")
+                self.assertEqual(error["recovery"]["action_ids"], ["disk_repair"])
+
     def test_deploy_reports_payload_upload_timeout_code(self) -> None:
         volume = MaStVolume(
             "wd0",

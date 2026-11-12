@@ -1909,17 +1909,27 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertEqual({key: upload[key] for key in upload if key == "bytes_on_device"}, expected_fields)
 
     def deploy_whose_write_fails(self, error: BaseException, *, step: str, disk_errors=None) -> BaseException:
-        """The error a deploy raises when `step` (upload, pre_upload or
-        replace_software) fails with `error`, given this boot's kernel disk
-        errors (read_disk_errors_conn's answer)."""
+        """The error a deploy raises when `step` fails with `error`, given
+        this boot's kernel disk errors (read_disk_errors_conn's answer). The
+        steps: pre_upload, replace_software, upload (the payload and flash
+        files), post_upload (their permissions), config (tcapsulesmb.conf)
+        and boot (rc.local)."""
         prepared_plan = self._prepared_deploy_plan()
+        config_upload, boot_upload = prepared_plan.plan.config_upload, prepared_plan.plan.boot_upload
 
         def upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
-            if step == "upload" and plan.uploads != [plan.migration_upload]:
+            if plan.uploads == [config_upload]:
+                if step == "config":
+                    raise error
+            elif plan.uploads == [boot_upload]:
+                if step == "boot":
+                    raise error
+            elif step == "upload" and plan.uploads != [plan.migration_upload]:
                 raise error
 
         pre_upload = prepared_plan.plan.pre_upload_actions
         replace_software_count = len(prepared_plan.plan.replace_software_actions)
+        post_upload = prepared_plan.plan.post_upload_actions
 
         def remote(_connection, actions, **_kwargs):
             # The software step's removals are filtered first, so it is known
@@ -1927,6 +1937,8 @@ class DeployModuleTests(unittest.TestCase):
             if step == "pre_upload" and actions == pre_upload:
                 raise error
             if step == "replace_software" and actions != pre_upload and len(actions) == replace_software_count:
+                raise error
+            if step == "post_upload" and actions == post_upload:
                 raise error
 
         with mock.patch("timecapsulesmb.services.deploy.read_disk_errors_conn", return_value=disk_errors), \
@@ -1940,29 +1952,46 @@ class DeployModuleTests(unittest.TestCase):
                 upload_payload_func=upload,
                 migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                # The payload checks out, so the config and rc.local come next.
+                verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
             )
         return raised.exception
 
     def test_a_write_the_disk_refused_names_the_disk_whatever_step_wrote_it(self) -> None:
         # The disk's own answer, wherever the install wrote: a full disk, an
         # I/O error (failing when the kernel logged disk errors too), or a
-        # folder HFS would not create.
+        # volume that refused the files (a folder HFS would not create, or a
+        # read-only mount).
         from timecapsulesmb.services.deploy import (
-            DISK_FULL_MESSAGE, DISK_IO_ERROR_MESSAGE, DISK_REFUSED_FOLDER_MESSAGE,
+            DISK_FULL_MESSAGE, DISK_IO_ERROR_MESSAGE, DISK_READ_ONLY_MESSAGE, DISK_REFUSED_FOLDER_MESSAGE,
         )
 
         full = "dd: /Volumes/dk2/.samba4/smbd: No space left on device\n0+63 records in"
         io = "dd: /Volumes/dk2/.samba4/smbd: Input/output error"
+        read_only = "mkdir: /Volumes/dk2/.samba4: Read-only file system"
         cases = (
             ("upload", full, None, "deploy_disk_not_writable", DISK_FULL_MESSAGE),
-            ("upload", io, (), "deploy_disk_not_writable", DISK_IO_ERROR_MESSAGE),
+            ("upload", io, (), "deploy_disk_io_error", DISK_IO_ERROR_MESSAGE),
+            # The kernel's messages could not be read: nothing says failing.
+            ("upload", io, None, "deploy_disk_io_error", DISK_IO_ERROR_MESSAGE),
             ("upload", io, ("wd0c: error reading fsbn 123",), "disk_failing", "probably failing"),
+            ("post_upload", "chmod: /Volumes/dk2/.samba4/smbd: Input/output error", (),
+             "deploy_disk_io_error", DISK_IO_ERROR_MESSAGE),
             ("pre_upload", "mkdir: /Volumes/dk2/.samba4: Invalid argument", None,
-             "deploy_disk_not_writable", DISK_REFUSED_FOLDER_MESSAGE),
+             "deploy_disk_refused_folder", DISK_REFUSED_FOLDER_MESSAGE),
             ("replace_software", "mkdir: /Volumes/dk2/.samba4/private: Bad file descriptor", None,
-             "deploy_disk_not_writable", DISK_REFUSED_FOLDER_MESSAGE),
+             "deploy_disk_refused_folder", DISK_REFUSED_FOLDER_MESSAGE),
+            # Any tool's write to a read-only volume, not only mkdir's.
+            ("pre_upload", read_only, None, "deploy_disk_refused_folder", DISK_READ_ONLY_MESSAGE),
+            ("upload", "dd: /Volumes/dk2/.samba4/smbd: Read-only file system", None,
+             "deploy_disk_refused_folder", DISK_READ_ONLY_MESSAGE),
+            ("post_upload", "chmod: /Volumes/dk2/.samba4/smbd: Read-only file system", None,
+             "deploy_disk_refused_folder", DISK_READ_ONLY_MESSAGE),
             # The disk's line among others in the same output.
             ("pre_upload", f"cp: preparing\n{full}", None, "deploy_disk_not_writable", DISK_FULL_MESSAGE),
+            # A full disk is the cause to act on first, whatever else failed.
+            ("upload", f"{io}\n{full}", (), "deploy_disk_not_writable", DISK_FULL_MESSAGE),
+            ("upload", f"{read_only}\n{io}", (), "deploy_disk_io_error", DISK_IO_ERROR_MESSAGE),
         )
         for step, text, disk_errors, code, words in cases:
             with self.subTest(step=step, text=text, disk_errors=disk_errors):
@@ -1977,9 +2006,14 @@ class DeployModuleTests(unittest.TestCase):
         # that check's code and advice, not the HFS disk's.
         from timecapsulesmb.services.deploy import FLASH_FULL_MESSAGE
 
-        for step in ("upload", "pre_upload", "replace_software"):
+        steps = (
+            ("upload", "service"), ("pre_upload", "service"), ("replace_software", "service"),
+            # The last two writes, after the payload.
+            ("config", "tcapsulesmb.conf"), ("boot", "rc.local"),
+        )
+        for step, name in steps:
             with self.subTest(step=step):
-                error = SshError("dd: /mnt/Flash/service: No space left on device\n0+12 records in")
+                error = SshError(f"dd: /mnt/Flash/{name}: No space left on device\n0+12 records in")
                 raised = self.deploy_whose_write_fails(error, step=step)
                 self.assertEqual((raised.code, raised.message), (ErrorCode.INSUFFICIENT_FLASH_SPACE, FLASH_FULL_MESSAGE))
                 self.assertIs(raised.__cause__, error)
@@ -1995,8 +2029,10 @@ class DeployModuleTests(unittest.TestCase):
             "mkdir: /mnt/Memory/samba4: Invalid argument",
             "write failed: No space left on device",
             "rm: /Volumes/dk2/.samba4/private: Bad file descriptor",
+            # The flash read-only is not a disk's refusal.
+            "dd: /mnt/Flash/rc.local: Read-only file system",
         )
-        for step in ("upload", "pre_upload", "replace_software"):
+        for step in ("upload", "pre_upload", "replace_software", "post_upload", "config", "boot"):
             for text in texts:
                 with self.subTest(step=step, text=text):
                     error = SshError(text)

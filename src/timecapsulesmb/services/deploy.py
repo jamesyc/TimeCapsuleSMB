@@ -747,28 +747,40 @@ def _upload_timeout_fields(exc: BaseException) -> dict[str, object]:
 
 
 # What the disk said when a write of the install failed, for the user to act
-# on: a full disk, an I/O error the kernel may also have logged, or a folder
-# HFS would not create (a damaged directory, or a volume gone underneath).
+# on: a full disk, an I/O error the kernel may also have logged, or a volume
+# that would not take the files (a folder HFS would not create, or a volume
+# mounted read-only).
 DISK_FULL_MESSAGE = "The disk has no free space left for the installation files."
 DISK_IO_ERROR_MESSAGE = "The disk reported an input/output error while the installation files were written. It may be failing."
 DISK_REFUSED_FOLDER_MESSAGE = "The disk would not create the installation folder. Its volume may be damaged or no longer mounted."
+DISK_READ_ONLY_MESSAGE = "The disk's volume is mounted read-only, so the installation files could not be written. It may be damaged."
 # The capacity check before the upload passed, and the write still found the
 # flash full: the same advice as that check's (insufficient_flash_space).
 FLASH_FULL_MESSAGE = "Not enough free space on /mnt/Flash for the installation files. Installation is incomplete."
 # A tool's error line about a path on an HFS disk or the flash; the same steps
 # write /mnt/Memory too, whose errors are neither's.
 _DEVICE_WRITE_ERROR_LINE = re.compile(
-    r"^(\S+): (/Volumes/|/mnt/Flash/)\S.*: (No space left on device|Input/output error|Invalid argument|Bad file descriptor)$",
+    r"^(\S+): (/Volumes/|/mnt/Flash/)\S.*: "
+    r"(No space left on device|Input/output error|Read-only file system|Invalid argument|Bad file descriptor)$",
     re.MULTILINE,
 )
 
 
 def _device_write_error(exc: BaseException, connection: SshConnection) -> DeviceError | None:
     """The device's own answer behind a failed write of the install, or None
-    for any other failure. The flash full: insufficient_flash_space. An HFS
-    disk: deploy_disk_not_writable, or disk_failing when an I/O error comes
-    with this boot's kernel disk errors; a folder HFS refused counts only from
-    mkdir. Only an error line that names a path on one of them counts."""
+    for any other failure. Only an error line that names a path on the flash
+    or an HFS disk counts.
+
+    - the flash full: insufficient_flash_space
+    - an HFS disk full: deploy_disk_not_writable, whose card says to check
+      free space
+    - an I/O error: disk_failing with this boot's kernel disk errors, else
+      deploy_disk_io_error
+    - a read-only volume, or a folder mkdir could not create:
+      deploy_disk_refused_folder. Both are a mounted volume that refused the
+      files, which Disk Repair may fix, so they share its card; each keeps
+      its own message.
+    """
     text = str(exc)
     lines = [match.groups() for match in _DEVICE_WRITE_ERROR_LINE.finditer(text)]
     if any(root == "/mnt/Flash/" and error == "No space left on device" for _tool, root, error in lines):
@@ -781,10 +793,24 @@ def _device_write_error(exc: BaseException, connection: SshConnection) -> Device
         kernel_errors = read_disk_errors_conn(connection)
         if kernel_errors:
             return DiskFailingError(kernel_errors)
-        return DeployDeviceError(DISK_IO_ERROR_MESSAGE, code=ErrorCode.DEPLOY_DISK_NOT_WRITABLE, detail=text)
+        return DeployDeviceError(DISK_IO_ERROR_MESSAGE, code=ErrorCode.DEPLOY_DISK_IO_ERROR, detail=text)
+    if "Read-only file system" in errors_seen:
+        return DeployDeviceError(DISK_READ_ONLY_MESSAGE, code=ErrorCode.DEPLOY_DISK_REFUSED_FOLDER, detail=text)
     if any(tool == "mkdir" and error in ("Invalid argument", "Bad file descriptor") for tool, error in found):
-        return DeployDeviceError(DISK_REFUSED_FOLDER_MESSAGE, code=ErrorCode.DEPLOY_DISK_NOT_WRITABLE, detail=text)
+        return DeployDeviceError(DISK_REFUSED_FOLDER_MESSAGE, code=ErrorCode.DEPLOY_DISK_REFUSED_FOLDER, detail=text)
     return None
+
+
+@contextmanager
+def _naming_device_write_errors(connection: SshConnection) -> Iterator[None]:
+    """Raise the device's own answer (_device_write_error) for a failed write
+    of the install inside the block; any other failure passes unchanged."""
+    try:
+        yield
+    except Exception as exc:
+        if (write_error := _device_write_error(exc, connection)) is not None:
+            raise write_error from exc
+        raise
 
 
 # A sync that outlived its timeout behind a process stuck on the disk: Samba
@@ -1464,13 +1490,9 @@ def upload_and_verify_deployment_payload(
         )
         callbacks.stage("pre_upload_actions")
         boot_assets.enter_context(_report_interrupted_install(connection))
-        try:
-            with stuck_stop_as(MANAGER_STOP_TIMEOUT_MESSAGE, error=DeployDeviceError):
-                run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
-        except Exception as exc:
-            if (write_error := _device_write_error(exc, connection)) is not None:
-                raise write_error from exc
-            raise
+        with _naming_device_write_errors(connection), \
+                stuck_stop_as(MANAGER_STOP_TIMEOUT_MESSAGE, error=DeployDeviceError):
+            run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
         # rc.local is gone before any metadata conversion or removal of the
         # historical runtime. The synchronous Flash mount already wrote the
         # removal; the sync also writes out the new payload directories.
@@ -1577,12 +1599,8 @@ def upload_and_verify_deployment_payload(
             ],
         )
         config_uploads = [] if plan.config_upload.destination in kept else [plan.config_upload]
-        try:
+        with _naming_device_write_errors(connection):
             run_remote_actions_func(connection, plan.replace_software_actions)
-        except Exception as exc:
-            if (write_error := _device_write_error(exc, connection)) is not None:
-                raise write_error from exc
-            raise
         # Apply the same explicit ownership list to other detected payloads,
         # Samba's logs included. Their metadata, receipts, other logs and
         # quarantines stay intact.
@@ -1674,7 +1692,8 @@ def upload_and_verify_deployment_payload(
         callbacks.stage("post_upload_actions")
         if on_before_post_upload_actions is not None:
             on_before_post_upload_actions()
-        run_remote_actions_func(connection, plan.post_upload_actions)
+        with _naming_device_write_errors(connection):
+            run_remote_actions_func(connection, plan.post_upload_actions)
         if on_before_verify is not None:
             on_before_verify()
         _verify_deployed_payload(
@@ -1696,24 +1715,28 @@ def upload_and_verify_deployment_payload(
         if inventory.candidates:
             run_xattr_migration_phase("cleanup")
 
+        # The capacity check counted these files, but it estimates from df
+        # with a small margin: a write here can still find the flash full.
         callbacks.stage("install_runtime_config")
-        if config_uploads:
+        with _naming_device_write_errors(connection):
+            if config_uploads:
+                upload_payload_func(
+                    replace(plan, uploads=config_uploads),
+                    **upload_kwargs,
+                )
+            # A kept config also gets its mode, like the kept software files.
+            run_remote_actions_func(connection, [
+                InstallPermissionsAction((RemotePermission(plan.config_upload.destination, "600"),)),
+            ])
+        callbacks.stage("enable_boot")
+        with _naming_device_write_errors(connection):
             upload_payload_func(
-                replace(plan, uploads=config_uploads),
+                replace(plan, uploads=[plan.boot_upload]),
                 **upload_kwargs,
             )
-        # A kept config also gets its mode, like the kept software files.
-        run_remote_actions_func(connection, [
-            InstallPermissionsAction((RemotePermission(plan.config_upload.destination, "600"),)),
-        ])
-        callbacks.stage("enable_boot")
-        upload_payload_func(
-            replace(plan, uploads=[plan.boot_upload]),
-            **upload_kwargs,
-        )
-        run_remote_actions_func(connection, [
-            InstallPermissionsAction((RemotePermission(plan.boot_upload.destination, "755"),)),
-        ])
+            run_remote_actions_func(connection, [
+                InstallPermissionsAction((RemotePermission(plan.boot_upload.destination, "755"),)),
+            ])
         # Last write before the reboot. NetBSD 4's ACP restart can leave an
         # HFS volume unmounted uncleanly, so what was written must be on disk.
         callbacks.stage("flush_boot_hook")

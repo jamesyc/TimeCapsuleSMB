@@ -57,6 +57,39 @@ class AppRecoveryTests(unittest.TestCase):
         # A backup's own metadata can be among what Uninstall deletes.
         self.assertNotIn("Time Machine", recovery["actions"][1])
 
+    def test_a_write_the_disk_failed_or_refused_offers_disk_repair_after_a_second_try(self) -> None:
+        # An I/O error without kernel disk errors, and a volume that refused
+        # the folder or is read-only: the volume is mounted, so Disk Repair
+        # can check it. Running the install again comes first, since it is
+        # cheaper and mounts a volume Apple unmounted underneath.
+        for code in (ErrorCode.DEPLOY_DISK_IO_ERROR, ErrorCode.DEPLOY_DISK_REFUSED_FOLDER):
+            with self.subTest(code=code):
+                card = recovery_for("deploy", code, stage="upload_payload")
+                self.assertEqual(card["localization_key"], f"deploy.{code.value}")
+                self.assertEqual(card["action_ids"], ["disk_repair"])
+                self.assertTrue(card["retryable"])
+                self.assertEqual(card["suggested_operation"], "deploy")
+                self.assertEqual(card["actions"], [
+                    "Run “Install / Update Samba” again.",
+                    "If it fails the same way, run “Disk Repair” on the disk, then run “Install / Update Samba” again.",
+                ])
+                # The causes are possible, never certain, and nothing proves
+                # the disk needs replacing.
+                self.assertIn("may be damaged", card["message"])
+                self.assertNotIn("replace", " ".join([card["message"], *card["actions"]]).lower())
+                self.assertIn("is not running now", card["message"])
+                self.assertEqual(cli_steps("deploy", code), (
+                    "Run `tcapsule deploy` again.",
+                    "If it fails the same way, run `tcapsule fsck` on the disk, then run `tcapsule deploy` again.",
+                ))
+        # Each cause has its own text, and neither is the full disk's card.
+        cards = [recovery_for("deploy", code) for code in (
+            ErrorCode.DEPLOY_DISK_IO_ERROR, ErrorCode.DEPLOY_DISK_REFUSED_FOLDER, ErrorCode.DEPLOY_DISK_NOT_WRITABLE,
+        )]
+        self.assertEqual(len({card["title"] for card in cards}), 3)
+        self.assertIn("may be failing", cards[0]["message"])
+        self.assertNotIn("disk_repair", cards[2].get("action_ids", []))
+
     def test_an_unreadable_folder_uninstall_would_not_clear_offers_disk_repair_only(self) -> None:
         recovery = recovery_for("deploy", "xattr_migration_unreadable_folder_repair_only", stage="migrate_xattrs_copy")
         full = recovery_for("deploy", "xattr_migration_unreadable_folder", stage="migrate_xattrs_copy")
@@ -745,8 +778,12 @@ class FieldSituationCardTests(unittest.TestCase):
          'deploy.deploy_disk_not_mounted.read_mast', ['wipe_disk'], True),
         ('an HFS volume that did not mount, or was unmounted', 'deploy', 'deploy_disk_not_mounted', None,
          'deploy.deploy_disk_not_mounted', [], True),
-        ('a full, read-only or refusing volume', 'deploy', 'deploy_disk_not_writable', None,
+        ('no volume passes the test write, or the chosen one fills up', 'deploy', 'deploy_disk_not_writable', None,
          'deploy.deploy_disk_not_writable', [], True),
+        ('an input/output error while the install writes, with no kernel disk errors', 'deploy',
+         'deploy_disk_io_error', None, 'deploy.deploy_disk_io_error', ['disk_repair'], True),
+        ('a folder the volume would not create, or a read-only volume', 'deploy', 'deploy_disk_refused_folder', None,
+         'deploy.deploy_disk_refused_folder', ['disk_repair'], True),
         ('kernel disk errors', 'deploy', 'disk_failing', None,
          'disk_failing', [], False),
         ('the test write does not finish', 'deploy', 'disk_write_test_unresponsive', None,

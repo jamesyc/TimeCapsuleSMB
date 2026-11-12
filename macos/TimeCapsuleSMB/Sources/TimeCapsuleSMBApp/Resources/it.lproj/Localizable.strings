@@ -943,6 +943,14 @@
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "Risveglia o rimonta il disco.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.2" = "Controlla lo spazio libero disponibile.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.3" = "Esegui di nuovo “Installa/aggiorna Samba”.";
+"backend.recovery.deploy.deploy_disk_io_error.title" = "Errore di input/output sul disco";
+"backend.recovery.deploy.deploy_disk_io_error.message" = "La scrittura dei file di installazione sul disco non è riuscita per un errore di input/output. Il volume potrebbe essere danneggiato, o il disco potrebbe essere guasto. Samba è stato arrestato per l’installazione e ora non è in esecuzione.";
+"backend.recovery.deploy.deploy_disk_io_error.action.1" = "Esegui di nuovo “Installa/aggiorna Samba”.";
+"backend.recovery.deploy.deploy_disk_io_error.action.2" = "Se non riesce allo stesso modo, esegui “Riparazione disco” sul disco, poi esegui di nuovo “Installa/aggiorna Samba”.";
+"backend.recovery.deploy.deploy_disk_refused_folder.title" = "Il disco ha rifiutato la cartella di installazione";
+"backend.recovery.deploy.deploy_disk_refused_folder.message" = "Il volume del disco non ha creato la cartella di installazione di TimeCapsuleSMB, o non ha permesso di scriverci file. Il volume potrebbe essere danneggiato, o potrebbe essere stato smontato durante l’installazione. Samba è stato arrestato per l’installazione e ora non è in esecuzione.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.1" = "Esegui di nuovo “Installa/aggiorna Samba”.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.2" = "Se non riesce allo stesso modo, esegui “Riparazione disco” sul disco, poi esegui di nuovo “Installa/aggiorna Samba”.";
 "backend.recovery.deploy.deploy_disk_not_mounted.title" = "Disco HFS non montato";
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "Il disco contiene un volume HFS, ma il dispositivo non lo ha montato, nemmeno quando gli è stato chiesto.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Attendi un minuto, poi esegui di nuovo “Installa/aggiorna Samba”.";

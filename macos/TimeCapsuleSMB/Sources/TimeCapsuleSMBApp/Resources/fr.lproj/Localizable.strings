@@ -943,6 +943,14 @@
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "Sortez le disque de veille ou remontez-le.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.2" = "Vérifiez l’espace libre disponible.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.3" = "Relancez « Installer / mettre à jour Samba ».";
+"backend.recovery.deploy.deploy_disk_io_error.title" = "Erreur d’entrée/sortie sur le disque";
+"backend.recovery.deploy.deploy_disk_io_error.message" = "L’écriture des fichiers d’installation sur le disque a échoué sur une erreur d’entrée/sortie. Le volume est peut-être endommagé, ou le disque est peut-être défaillant. Samba a été arrêté pour l’installation et n’est actuellement pas en cours d’exécution.";
+"backend.recovery.deploy.deploy_disk_io_error.action.1" = "Relancez « Installer / mettre à jour Samba ».";
+"backend.recovery.deploy.deploy_disk_io_error.action.2" = "Si l’échec se reproduit de la même façon, lancez « Réparation de disque » sur le disque, puis relancez « Installer / mettre à jour Samba ».";
+"backend.recovery.deploy.deploy_disk_refused_folder.title" = "Le disque a refusé le dossier d’installation";
+"backend.recovery.deploy.deploy_disk_refused_folder.message" = "Le volume du disque n’a pas créé le dossier d’installation de TimeCapsuleSMB, ou n’a pas permis d’y écrire des fichiers. Le volume est peut-être endommagé, ou il a peut-être été démonté pendant l’installation. Samba a été arrêté pour l’installation et n’est actuellement pas en cours d’exécution.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.1" = "Relancez « Installer / mettre à jour Samba ».";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.2" = "Si l’échec se reproduit de la même façon, lancez « Réparation de disque » sur le disque, puis relancez « Installer / mettre à jour Samba ».";
 "backend.recovery.deploy.deploy_disk_not_mounted.title" = "Disque HFS non monté";
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "Le disque contient un volume HFS, mais l’appareil ne l’a pas monté, même lorsqu’on le lui a demandé.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Patientez une minute, puis relancez « Installer / mettre à jour Samba ».";

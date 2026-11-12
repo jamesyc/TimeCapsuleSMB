@@ -1020,6 +1020,14 @@
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "Wake or remount the disk.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.2" = "Check available free space.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.3" = "Run “Install / Update Samba” again.";
+"backend.recovery.deploy.deploy_disk_io_error.title" = "Input/output error on the disk";
+"backend.recovery.deploy.deploy_disk_io_error.message" = "Writing the installation files to the disk failed with an input/output error. The volume may be damaged, or the disk may be failing. Samba was stopped for the install and is not running now.";
+"backend.recovery.deploy.deploy_disk_io_error.action.1" = "Run “Install / Update Samba” again.";
+"backend.recovery.deploy.deploy_disk_io_error.action.2" = "If it fails the same way, run “Disk Repair” on the disk, then run “Install / Update Samba” again.";
+"backend.recovery.deploy.deploy_disk_refused_folder.title" = "The disk refused the installation folder";
+"backend.recovery.deploy.deploy_disk_refused_folder.message" = "The disk's volume would not create the TimeCapsuleSMB installation folder, or would not let files be written to it. The volume may be damaged, or it may have been unmounted during the install. Samba was stopped for the install and is not running now.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.1" = "Run “Install / Update Samba” again.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.2" = "If it fails the same way, run “Disk Repair” on the disk, then run “Install / Update Samba” again.";
 "backend.recovery.deploy.deploy_disk_not_mounted.title" = "HFS disk not mounted";
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "The disk has an HFS volume, but the device has not mounted it, and did not when asked.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Wait a minute, then run “Install / Update Samba” again.";

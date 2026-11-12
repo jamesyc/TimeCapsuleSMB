@@ -943,6 +943,14 @@
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "唤醒或重新挂载磁盘。";
 "backend.recovery.deploy.deploy_disk_not_writable.action.2" = "检查可用空间。";
 "backend.recovery.deploy.deploy_disk_not_writable.action.3" = "重新运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.deploy_disk_io_error.title" = "磁盘出现输入/输出错误";
+"backend.recovery.deploy.deploy_disk_io_error.message" = "向磁盘写入安装文件时出现输入/输出错误。卷可能已损坏，或者磁盘可能出现故障。Samba 已为安装而停止，目前未运行。";
+"backend.recovery.deploy.deploy_disk_io_error.action.1" = "重新运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.deploy_disk_io_error.action.2" = "如果以同样的方式失败，请对该磁盘运行“磁盘修复”，然后重新运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.deploy_disk_refused_folder.title" = "磁盘拒绝了安装文件夹";
+"backend.recovery.deploy.deploy_disk_refused_folder.message" = "磁盘上的卷没有创建 TimeCapsuleSMB 安装文件夹，或者不允许向其中写入文件。卷可能已损坏，或者可能在安装期间被取消挂载。Samba 已为安装而停止，目前未运行。";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.1" = "重新运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.2" = "如果以同样的方式失败，请对该磁盘运行“磁盘修复”，然后重新运行“安装 / 更新 Samba”。";
 "backend.recovery.deploy.deploy_disk_not_mounted.title" = "HFS 磁盘未挂载";
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "磁盘上有 HFS 卷，但设备尚未挂载它，请求挂载时也没有挂载。";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "等待一分钟，然后重新运行“安装 / 更新 Samba”。";

@@ -943,6 +943,14 @@
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "Выведите диск из режима ожидания или перемонтируйте его.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.2" = "Проверьте свободное место.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.3" = "Снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.deploy_disk_io_error.title" = "Ошибка ввода-вывода на диске";
+"backend.recovery.deploy.deploy_disk_io_error.message" = "При записи файлов установки на диск произошла ошибка ввода-вывода. Возможно, том поврежден или диск неисправен. Samba остановлен на время установки и сейчас не работает.";
+"backend.recovery.deploy.deploy_disk_io_error.action.1" = "Снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.deploy_disk_io_error.action.2" = "Если та же ошибка повторится, запустите «Исправление диска» для этого диска, затем снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.deploy_disk_refused_folder.title" = "Диск отклонил папку установки";
+"backend.recovery.deploy.deploy_disk_refused_folder.message" = "Том диска не создал папку установки TimeCapsuleSMB или не позволил записать в нее файлы. Возможно, том поврежден или был размонтирован во время установки. Samba остановлен на время установки и сейчас не работает.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.1" = "Снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.2" = "Если та же ошибка повторится, запустите «Исправление диска» для этого диска, затем снова запустите «Установить/обновить Samba».";
 "backend.recovery.deploy.deploy_disk_not_mounted.title" = "Диск HFS не смонтирован";
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "На диске есть том HFS, но устройство его не смонтировало, даже когда его об этом попросили.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Подождите минуту, затем снова запустите «Установить/обновить Samba».";

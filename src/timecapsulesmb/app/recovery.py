@@ -1024,6 +1024,12 @@ _UNREADABLE_FOLDER_MESSAGE = (
     "Samba was stopped for the install and is not running now."
 )
 _UNREADABLE_FOLDER_REPAIR = "Run “Disk Repair” on the disk, then run “Install / Update Samba” again."
+# A write the disk's volume refused or failed (deploy_disk_io_error,
+# deploy_disk_refused_folder).
+_DISK_WRITE_REFUSED_STEPS = (
+    "Run “Install / Update Samba” again.",
+    "If it fails the same way, run “Disk Repair” on the disk, then run “Install / Update Samba” again.",
+)
 
 _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     # An install whose restart was never requested: NetBSD 4 without the boot
@@ -1352,6 +1358,8 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         suggested_operation="deploy",
         action_ids=("wipe_disk",),
     ),
+    # No volume passed the test write, or the one chosen filled up during
+    # the install (services.deploy._device_write_error).
     ("deploy", ErrorCode.DEPLOY_DISK_NOT_WRITABLE): RecoveryInfo(
         "No writable volume for the installation files",
         "The device found HFS volumes, but none accepted the TimeCapsuleSMB installation folder.",
@@ -1362,6 +1370,32 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ),
         retryable=True,
         suggested_operation="deploy",
+    ),
+    # A mounted volume answered a write of the install with an error of its
+    # own (services.deploy._device_write_error); kernel disk errors beside an
+    # I/O error give disk_failing instead. Running the install again costs
+    # minutes and a repair can take hours, so it comes first: Apple may have
+    # unmounted the volume underneath, which the next install mounts again.
+    ("deploy", ErrorCode.DEPLOY_DISK_IO_ERROR): RecoveryInfo(
+        "Input/output error on the disk",
+        "Writing the installation files to the disk failed with an input/output error. The volume may be damaged, "
+        "or the disk may be failing. Samba was stopped for the install and is not running now.",
+        _DISK_WRITE_REFUSED_STEPS,
+        retryable=True,
+        suggested_operation="deploy",
+        action_ids=("disk_repair",),
+    ),
+    # mkdir refused the install folder (EINVAL, EBADF), or the volume is
+    # mounted read-only: one card, since Disk Repair is the way out of both.
+    ("deploy", ErrorCode.DEPLOY_DISK_REFUSED_FOLDER): RecoveryInfo(
+        "The disk refused the installation folder",
+        "The disk's volume would not create the TimeCapsuleSMB installation folder, or would not let files be "
+        "written to it. The volume may be damaged, or it may have been unmounted during the install. Samba was "
+        "stopped for the install and is not running now.",
+        _DISK_WRITE_REFUSED_STEPS,
+        retryable=True,
+        suggested_operation="deploy",
+        action_ids=("disk_repair",),
     ),
     # The disk has Apple's HFS layout, but the volume did not mount, or diskd
     # unmounted it during the install (deploy.executor): Apple can unmount a

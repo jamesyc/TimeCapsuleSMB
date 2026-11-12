@@ -1355,6 +1355,8 @@ class CliDeployTests(CliTestCase):
              {"upload": upload_failing("dd: /Volumes/dk2/.samba4/smbd: No space left on device")}),
             ("a full flash", "insufficient_flash_space", "Not enough free space on /mnt/Flash",
              {"upload": upload_failing("dd: /mnt/Flash/service: No space left on device")}),
+            ("a folder the disk would not create", "deploy_disk_refused_folder", "The disk would not create",
+             {"remote": SshError("mkdir: /Volumes/dk2/.samba4: Invalid argument")}),
             ("an empty MaSt behind a stuck diskd", "disk_not_responding", "A disk on the device has stopped responding",
              {"mast": empty_mast, "ps": stuck_diskd}),
             ("a sync timeout behind a stuck disk", "disk_not_responding", "The installation files could not be written out",

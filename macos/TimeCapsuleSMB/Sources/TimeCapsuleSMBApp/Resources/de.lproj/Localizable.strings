@@ -943,6 +943,14 @@
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "Wecken Sie den Datenträger auf oder binden Sie ihn erneut ein.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.2" = "Prüfen Sie den verfügbaren freien Speicherplatz.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.3" = "Führen Sie „Samba installieren / aktualisieren“ erneut aus.";
+"backend.recovery.deploy.deploy_disk_io_error.title" = "Ein-/Ausgabefehler auf der Festplatte";
+"backend.recovery.deploy.deploy_disk_io_error.message" = "Beim Schreiben der Installationsdateien auf die Festplatte trat ein Ein-/Ausgabefehler auf. Möglicherweise ist der Datenträger beschädigt oder die Festplatte fällt aus. Samba wurde für die Installation beendet und läuft gerade nicht.";
+"backend.recovery.deploy.deploy_disk_io_error.action.1" = "Führen Sie „Samba installieren / aktualisieren“ erneut aus.";
+"backend.recovery.deploy.deploy_disk_io_error.action.2" = "Wenn es auf dieselbe Weise fehlschlägt, führen Sie die „Festplattenreparatur“ für die Festplatte und danach erneut „Samba installieren / aktualisieren“ aus.";
+"backend.recovery.deploy.deploy_disk_refused_folder.title" = "Der Datenträger hat den Installationsordner abgelehnt";
+"backend.recovery.deploy.deploy_disk_refused_folder.message" = "Der Datenträger auf der Festplatte hat den Installationsordner von TimeCapsuleSMB nicht angelegt oder ließ keine Dateien darin schreiben. Möglicherweise ist der Datenträger beschädigt, oder er wurde während der Installation ausgehängt. Samba wurde für die Installation beendet und läuft gerade nicht.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.1" = "Führen Sie „Samba installieren / aktualisieren“ erneut aus.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.2" = "Wenn es auf dieselbe Weise fehlschlägt, führen Sie die „Festplattenreparatur“ für die Festplatte und danach erneut „Samba installieren / aktualisieren“ aus.";
 "backend.recovery.deploy.deploy_disk_not_mounted.title" = "HFS-Datenträger nicht eingebunden";
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "Die Festplatte hat einen HFS-Datenträger, aber das Gerät hat ihn nicht eingebunden, auch nicht auf Anforderung.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Warten Sie eine Minute und führen Sie dann „Samba installieren / aktualisieren“ erneut aus.";

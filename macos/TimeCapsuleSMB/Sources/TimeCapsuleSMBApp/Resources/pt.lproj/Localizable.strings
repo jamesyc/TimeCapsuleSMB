@@ -943,6 +943,14 @@
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "Retire o disco do modo de espera ou monte-o novamente.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.2" = "Confira o espaço livre disponível.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.3" = "Execute “Instalar/atualizar Samba” novamente.";
+"backend.recovery.deploy.deploy_disk_io_error.title" = "Erro de entrada/saída no disco";
+"backend.recovery.deploy.deploy_disk_io_error.message" = "A gravação dos arquivos de instalação no disco falhou com um erro de entrada/saída. Talvez o volume esteja danificado ou o disco esteja falhando. O Samba foi interrompido para a instalação e agora não está em execução.";
+"backend.recovery.deploy.deploy_disk_io_error.action.1" = "Execute “Instalar/atualizar Samba” novamente.";
+"backend.recovery.deploy.deploy_disk_io_error.action.2" = "Se falhar da mesma forma, execute “Reparo de disco” no disco e depois execute “Instalar/atualizar Samba” novamente.";
+"backend.recovery.deploy.deploy_disk_refused_folder.title" = "O disco recusou a pasta de instalação";
+"backend.recovery.deploy.deploy_disk_refused_folder.message" = "O volume do disco não criou a pasta de instalação do TimeCapsuleSMB ou não permitiu gravar arquivos nela. Talvez o volume esteja danificado ou tenha sido desmontado durante a instalação. O Samba foi interrompido para a instalação e agora não está em execução.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.1" = "Execute “Instalar/atualizar Samba” novamente.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.2" = "Se falhar da mesma forma, execute “Reparo de disco” no disco e depois execute “Instalar/atualizar Samba” novamente.";
 "backend.recovery.deploy.deploy_disk_not_mounted.title" = "Disco HFS não montado";
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "O disco tem um volume HFS, mas o dispositivo não o montou, nem quando foi solicitado.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Aguarde um minuto e execute “Instalar/atualizar Samba” novamente.";

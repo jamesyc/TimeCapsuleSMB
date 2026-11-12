@@ -943,6 +943,14 @@
 "backend.recovery.deploy.deploy_disk_not_writable.action.1" = "Pažadinkite arba iš naujo prijunkite diską.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.2" = "Patikrinkite laisvą vietą.";
 "backend.recovery.deploy.deploy_disk_not_writable.action.3" = "Bandykite diegti dar kartą.";
+"backend.recovery.deploy.deploy_disk_io_error.title" = "Disko įvesties ir išvesties klaida";
+"backend.recovery.deploy.deploy_disk_io_error.message" = "Rašant diegimo failus į diską įvyko įvesties ir išvesties klaida. Tomas gali būti pažeistas arba diskas gali gesti. Samba buvo sustabdyta diegimui ir dabar neveikia.";
+"backend.recovery.deploy.deploy_disk_io_error.action.1" = "Dar kartą paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.recovery.deploy.deploy_disk_io_error.action.2" = "Jei vėl nepavyksta taip pat, paleiskite operaciją „Disko taisymas“ šiam diskui, tada vėl paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.recovery.deploy.deploy_disk_refused_folder.title" = "Diskas atmetė diegimo aplanką";
+"backend.recovery.deploy.deploy_disk_refused_folder.message" = "Disko tomas nesukūrė TimeCapsuleSMB diegimo aplanko arba neleido į jį rašyti failų. Tomas gali būti pažeistas arba diegimo metu galėjo būti atjungtas. Samba buvo sustabdyta diegimui ir dabar neveikia.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.1" = "Dar kartą paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.recovery.deploy.deploy_disk_refused_folder.action.2" = "Jei vėl nepavyksta taip pat, paleiskite operaciją „Disko taisymas“ šiam diskui, tada vėl paleiskite „Įdiegti / atnaujinti Samba“.";
 "backend.recovery.deploy.deploy_disk_not_mounted.title" = "HFS diskas neprijungtas";
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "Diske yra HFS tomas, bet įrenginys jo neprijungė, net kai buvo paprašytas.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Palaukite minutę, tada bandykite diegti dar kartą.";

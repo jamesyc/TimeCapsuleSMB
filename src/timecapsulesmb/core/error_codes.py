@@ -155,6 +155,12 @@ class ErrorCode(str, Enum):
     DISK_VOLUMES_IN_MEMORY = "disk_volumes_in_memory"
     USB_DISK_VOLUMES_IN_MEMORY = "usb_disk_volumes_in_memory"
     DEPLOY_DISK_NOT_WRITABLE = "deploy_disk_not_writable"
+    # A write of the install got an input/output error from an HFS disk, with
+    # no kernel disk errors found this boot (services.deploy).
+    DEPLOY_DISK_IO_ERROR = "deploy_disk_io_error"
+    # A mounted HFS volume refused the install: mkdir could not create its
+    # folder, or the volume is read-only (services.deploy).
+    DEPLOY_DISK_REFUSED_FOLDER = "deploy_disk_refused_folder"
     DEPLOY_DISK_NOT_CONFIRMED = "deploy_disk_not_confirmed"
     DEPLOY_DISK_NOT_MOUNTED = "deploy_disk_not_mounted"
     FLASH_CAPACITY_PROBE_FAILED = "flash_capacity_probe_failed"
