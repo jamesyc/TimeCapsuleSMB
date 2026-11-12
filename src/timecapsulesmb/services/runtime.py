@@ -52,7 +52,7 @@ from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, devi
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
 from timecapsulesmb.transport.local import connect_answered, connect_unanswered, tcp_connect_error, tcp_open
-from timecapsulesmb.transport.errors import bare_timeout
+from timecapsulesmb.transport.errors import SshAuthenticationError, bare_timeout
 from timecapsulesmb.transport.ssh import SshConnection
 
 PasswordProvider = Callable[[str], str]
@@ -84,6 +84,13 @@ class DeviceAccessError(DeviceError):
 
 
 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not work."
+SSH_PASSWORD_NOT_APPLIED_MESSAGE = (
+    "SSH on the device rejects the AirPort admin password that the device's AirPort service accepts: the device "
+    "has not applied its current settings."
+)
+SSH_PASSWORD_REJECTED_MESSAGE = "SSH on the device rejected the saved password."
+# Key-only SSH: there is no password to ask the AirPort service about.
+SSH_LOGIN_REJECTED_MESSAGE = "SSH on the device rejected this computer's login."
 
 
 ACP_UNREACHABLE_MESSAGE = (
@@ -586,8 +593,41 @@ def closed_port_error(
     return DeviceAccessError(closed.message, code=closed.code, detail=detail)
 
 
+def ssh_password_error(
+    connection: SshConnection, ssh_error: str | None, *, reading: device_probe.AirportAcpReading | None = None,
+) -> DeviceAccessError:
+    """The error for SSH rejecting the saved password, by what the device's
+    AirPort service says of the same password: accepted means the device has
+    not applied its current settings (a restart applies them), rejected means
+    the password is wrong, and no answer says only that SSH rejected it.
+    `reading` is this command's earlier read of the password at this address,
+    which saves asking again; key-only SSH has no password to ask about."""
+    if not connection.password:
+        return DeviceAccessError(SSH_LOGIN_REJECTED_MESSAGE, code=ErrorCode.AUTH_FAILED, detail=ssh_error)
+    if reading is None:
+        reading = read_admin_password(connection)
+    if reading.password_matches is True:
+        return DeviceAccessError(SSH_PASSWORD_NOT_APPLIED_MESSAGE, code=ErrorCode.SSH_PASSWORD_NOT_APPLIED, detail=ssh_error)
+    message = AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE if reading.password_matches is False else SSH_PASSWORD_REJECTED_MESSAGE
+    return DeviceAccessError(message, code=ErrorCode.AUTH_FAILED, detail=ssh_error)
+
+
+def ssh_login_rejection(
+    exc: BaseException, connection: SshConnection | None, reading: device_probe.AirportAcpReading | None,
+) -> DeviceAccessError | None:
+    """ssh_password_error for an SSH login rejected outside a probe (any
+    command's first SSH call), so every command says the same of it; None
+    for any other error, or before the command knew its connection."""
+    if not isinstance(exc, SshAuthenticationError) or connection is None:
+        return None
+    error = ssh_password_error(connection, str(exc), reading=reading)
+    error.__cause__ = exc
+    return error
+
+
 def probe_failure_error(
     probe_result: ProbeResult, connection: SshConnection, *, router_mac: str | None = None,
+    reading: device_probe.AirportAcpReading | None = None,
 ) -> DeviceAccessError:
     """The error for a probe that did not log in. A closed SSH port says why
     (checks.network.closed_ssh_port_error), after two causes that look the
@@ -600,6 +640,8 @@ def probe_failure_error(
     other failures cost nothing more."""
     if probe_result.ssh_status == SshAccessStatus.CLOSED:
         return closed_port_error(connection, router_mac=router_mac)
+    if probe_result.ssh_status == SshAccessStatus.AUTH_REJECTED:
+        return ssh_password_error(connection, probe_result.error, reading=reading)
     if probe_result.timeout is not None:
         # The device did not answer in time; nothing closed the connection.
         # The timeout stays the cause, so the error gets its guidance.
@@ -739,8 +781,9 @@ def resolve_validated_managed_target(
 
 def require_connection_compatibility(
     connection: SshConnection, *, router_mac: str | None = None,
+    reading: device_probe.AirportAcpReading | None = None,
 ) -> DeviceCompatibility:
     state = probe_managed_connection_state(connection)
     if state.compatibility is None:
-        raise probe_failure_error(state.probe_result, connection, router_mac=router_mac)
+        raise probe_failure_error(state.probe_result, connection, router_mac=router_mac, reading=reading)
     return state.compatibility

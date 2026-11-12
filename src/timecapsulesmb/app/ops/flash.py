@@ -101,7 +101,9 @@ def _resolve_flash_target(config: AppConfig, context: AppOperationContext, *, re
     target = resolve_request_target(config, context, profile="flash", include_probe=False)
     context.stage("check_compatibility")
     try:
-        compatibility = require_connection_compatibility(target.connection, router_mac=target.router_mac)
+        compatibility = require_connection_compatibility(
+            target.connection, router_mac=target.router_mac, reading=context.reading_at(target.connection),
+        )
     except DeviceError as exc:
         # A probe that did not log in keeps its own code (SSH off, device
         # unreachable, password rejected); it says nothing about the model.

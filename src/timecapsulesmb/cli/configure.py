@@ -561,17 +561,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                     code=ErrorCode.SSH_UNREACHABLE,
                 )
 
-        def save_without_authentication(probed_state: ProbedDeviceState) -> bool:
+        def save_without_authentication(probed_state: ProbedDeviceState, password_not_applied: bool) -> bool:
             if no_input_enabled(args):
                 return False
-            if probed_state.probe_result.ssh_authenticated:
+            if password_not_applied:
+                # The password is right; the device has not applied it yet.
+                print("\nSSH rejected the password, but the AirPort service accepts it: "
+                      "the device has not applied it yet, and a restart applies it.")
+            elif probed_state.probe_result.ssh_authenticated:
                 # SSH checks only 8 characters; the device's syPW comparison did not match.
                 print("\nSSH accepted the password, but it is not the AirPort admin password.")
             else:
                 print("\nThe provided AirPort SSH target and password did not work.")
             if probed_state.probe_result.ssh_port_reachable:
                 command_context.update_fields(ssh_final_reachable=True)
-            if confirm("Save this information still?", default_no=True):
+            if confirm("Save this information still?", default_no=not password_not_applied):
                 command_context.add_debug_fields(configure_saved_without_ssh_authentication=True)
                 return True
             print("Please enter the SSH target and password again.\n")

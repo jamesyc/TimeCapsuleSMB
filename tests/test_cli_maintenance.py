@@ -1374,6 +1374,37 @@ class CliMaintenanceTests(CliTestCase):
         self.assertTrue(message.startswith(UNINSTALL_STOP_TIMEOUT_MESSAGE))
         self.assertIn(cli_steps("uninstall", "manager_stop_timeout")[-1], message)
 
+    def test_uninstall_whose_ssh_login_is_rejected_says_why_by_the_acp_answer(self) -> None:
+        # The uninstall's first SSH command is its login: SSH's refusal gets
+        # the verdict a probe's would, with that verdict's next steps.
+        from timecapsulesmb.app.recovery import cli_steps
+        from timecapsulesmb.services.runtime import SSH_PASSWORD_NOT_APPLIED_MESSAGE
+        from timecapsulesmb.transport.errors import SshAuthenticationError
+
+        cases = (
+            (True, "ssh_password_not_applied", SSH_PASSWORD_NOT_APPLIED_MESSAGE),
+            (False, "auth_failed", "AirPort admin password"),
+        )
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
+        for matches, code, wording in cases:
+            with self.subTest(acp_accepts=matches), ExitStack() as stack:
+                stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config",
+                                               return_value=self.make_app_config(values)))
+                self._patch_mast_volume_flow(stack, "uninstall")
+                acp = stack.enter_context(mock.patch("timecapsulesmb.device.probe.read_airport_acp",
+                                                     acp_password_answer(matches)))
+                stack.enter_context(mock.patch(
+                    "timecapsulesmb.deploy.executor.run_ssh",
+                    side_effect=SshAuthenticationError("Permission denied (publickey,password)."),
+                ))
+                with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                    uninstall.main(["--yes", "--no-reboot"])
+
+                message = str(raised.exception.code)
+                self.assertIn(wording, message.splitlines()[0])
+                self.assertIn(cli_steps("uninstall", code)[0], message)
+                self.assertEqual(acp.call_count, 1)
+
     def test_fsck_failed_status_still_reboots_and_waits_then_fails(self) -> None:
         rc, text, device = self._run_fsck_with_remote_output(
             "--- fsck_hfs /dev/dk2 ---\n** The volume could not be repaired.\n"
@@ -1484,7 +1515,12 @@ class CliMaintenanceTests(CliTestCase):
             with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
                 fsck.main(["--yes"])
 
-        self.assertEqual(str(raised.exception), "SSH authentication failed." + AUTH_FAILED_CLI_STEPS)
+        # The device's AirPort service takes the password SSH rejected: the
+        # device has not applied its settings, with ssh's text as the facts.
+        from timecapsulesmb.services.runtime import SSH_PASSWORD_NOT_APPLIED_MESSAGE
+
+        self.assertTrue(str(raised.exception).startswith(f"{SSH_PASSWORD_NOT_APPLIED_MESSAGE}\nSSH authentication failed."))
+        self.assertIn("Try restarting the device in AirPort Utility", str(raised.exception))
         run_ssh.assert_not_called()
         self.assertNotIn("request", self.device.calls)
         self.assertEqual(self.telemetry_payload("fsck_finished")["result"], "failure")

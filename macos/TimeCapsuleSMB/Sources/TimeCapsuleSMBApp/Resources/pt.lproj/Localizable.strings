@@ -707,6 +707,10 @@
 "backend.recovery.auth_failed.message" = "O dispositivo rejeitou a senha ou as credenciais SSH fornecidas.";
 "backend.recovery.auth_failed.action.1" = "Digite novamente a senha de administrador do AirPort.";
 "backend.recovery.auth_failed.action.2" = "Verifique se SSH está ativado no dispositivo.";
+"backend.recovery.ssh_password_not_applied.title" = "O dispositivo não aplicou sua senha";
+"backend.recovery.ssh_password_not_applied.message" = "O SSH do dispositivo rejeita a senha de administrador do AirPort que o serviço AirPort aceita. O dispositivo não aplicou seus ajustes atuais.";
+"backend.recovery.ssh_password_not_applied.action.1" = "Tente reiniciar o dispositivo no Utilitário AirPort, ou desconecte-o da tomada por 10 segundos e conecte-o de novo.";
+"backend.recovery.ssh_password_not_applied.action.2" = "Aguarde 2 minutos até o dispositivo iniciar e tente novamente.";
 "backend.recovery.configure.auth_failed.title" = "Senha do AirPort rejeitada";
 "backend.recovery.configure.auth_failed.message" = "A autenticação ACP ou SSH falhou ao configurar o dispositivo.";
 "backend.recovery.configure.auth_failed.action.1" = "Digite novamente a senha de administrador do AirPort.";

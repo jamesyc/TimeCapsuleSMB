@@ -103,7 +103,9 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
 
     target = resolve_request_target(config, context, profile="activate", include_probe=True)
     try:
-        compatibility = require_supported_payload(target, allow_unsupported=False)
+        compatibility = require_supported_payload(
+            target, allow_unsupported=False, reading=context.reading_at(target.connection),
+        )
     except DeviceError as exc:
         # The error's own code: an AirPort Express gets the unsupported-device
         # guidance, and a device whose SSH is off or unreachable gets its own.
@@ -314,6 +316,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         if probe_state.compatibility is None:
             raise device_operation_error(context, probe_failure_error(
                 probe_state.probe_result, connection, router_mac=saved_router_mac(context.config),
+                reading=context.reading_at(connection),
             ))
         netbsd4_autostart = installed_netbsd4_autostart(connection, probe_state, context.to_operation_callbacks())
     try:
@@ -424,6 +427,7 @@ def wipe_disk_operation(params: dict[str, object], context: AppOperationContext)
             if probe_state.compatibility is None:
                 raise device_operation_error(context, probe_failure_error(
                     probe_state.probe_result, connection, router_mac=saved_router_mac(context.config),
+                    reading=context.reading_at(connection),
                 ))
             netbsd4_autostart = installed_netbsd4_autostart(connection, probe_state, callbacks)
         outcome = run_wipe(connection, plan, netbsd4_autostart=netbsd4_autostart, callbacks=callbacks)

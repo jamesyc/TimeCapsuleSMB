@@ -204,6 +204,8 @@ class CommandContext:
             if not self.error_lines:
                 self.set_error("Cancelled by user")
         elif isinstance(exc, (TransportError, ConfigError, DeviceError)):
+            # A rejected login says why, as a probe's does (services.runtime).
+            exc = service_runtime.ssh_login_rejection(exc, self.connection, self.reading_at(self.connection)) or exc
             message = str(exc)
             display_message = message
             telemetry_message = message_with_exception_cause(message, exc)
@@ -470,6 +472,7 @@ class CommandContext:
             # rejected) rather than leave it to look like an unsupported device.
             raise service_runtime.probe_failure_error(
                 self.probe_state.probe_result, self.connection, router_mac=saved_router_mac(self.config),
+                reading=self.reading_at(self.connection),
             )
         self.compatibility = self.probe_state.compatibility
         self.operation_context.apply_probe_state(self.probe_state)

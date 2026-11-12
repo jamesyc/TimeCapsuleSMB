@@ -47,6 +47,7 @@ from timecapsulesmb.services.runtime import (
     PROBE_STATUS_ERROR_CODES,
     DeviceAccessError,
     confirm_device_address,
+    ssh_password_error,
 )
 from timecapsulesmb.transport.local import connect_error_kind, connect_unanswered, normalize_hardware_address, tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection
@@ -152,7 +153,9 @@ class ConfigureFlowHooks:
     # there: the place to ask before a device reboots. The flag says SSH's
     # port only did not answer, so SSH may be on already.
     confirm_enable_ssh: Callable[[str, bool], None] | None = None
-    save_without_authentication: Callable[[ProbedDeviceState], bool] | None = None
+    # Whether to save a password the device refused anyway; told whether the
+    # AirPort service accepts it (ssh_password_not_applied), which a restart fixes.
+    save_without_authentication: Callable[[ProbedDeviceState, bool], bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -408,22 +411,37 @@ def run_configure_flow(
     # reboot goes through ACP, which wants all of it, so both must accept it.
     password_rejected = probe.ssh_status == SshAccessStatus.AUTH_REJECTED
     password_error = probe.error
-    if probe.ssh_status == SshAccessStatus.OPEN_AUTHENTICATED:
+
+    def acp_password_reading() -> AirportAcpReading:
         # The identity read above already told whether ACP takes the password,
         # when it reached the address SSH did.
         if (confirmed is not None and confirmed[1].password_matches is not None
                 and endpoint_host(confirmed[0]) == endpoint_host(connection.host)):
-            password_reading = confirmed[1]
-        else:
-            password_reading = read_admin_password(connection)
+            return confirmed[1]
+        return read_admin_password(connection)
+
+    if probe.ssh_status == SshAccessStatus.OPEN_AUTHENTICATED:
+        password_reading = acp_password_reading()
         callbacks.debug(**password_check_fields(password_reading))
         if password_reading.password_matches is False:
             password_rejected = True
             password_error = SSH_ONLY_PASSWORD_DEBUG
-
     if password_rejected:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
-        if hooks.save_without_authentication is None or not hooks.save_without_authentication(probed_state):
+        not_applied = None
+        if probe.ssh_status == SshAccessStatus.AUTH_REJECTED:
+            # SSH rejected it: a password ACP accepts is one the device has
+            # not applied yet, which re-entering it would not fix
+            # (ssh_password_error). Saving it anyway is right then.
+            password_reading = acp_password_reading()
+            callbacks.debug(**password_check_fields(password_reading))
+            rejected = ssh_password_error(connection, probe.error, reading=password_reading)
+            if rejected.code == ErrorCode.SSH_PASSWORD_NOT_APPLIED:
+                not_applied = rejected
+        save = hooks.save_without_authentication
+        if save is None or not save(probed_state, not_applied is not None):
+            if not_applied is not None:
+                raise ConfigureFlowError(not_applied.message, code=not_applied.code, debug=probe.error)
             raise ConfigureFlowError(
                 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
                 code=ErrorCode.AUTH_FAILED,

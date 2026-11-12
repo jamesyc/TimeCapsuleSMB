@@ -107,7 +107,7 @@ def run_doctor_checks(
         if config_decision.stop:
             return sink.results, sink.fatal()
         target = _build_doctor_target(inputs)
-        remote = _doctor_check_ssh_login(target, options, sink)
+        remote = _doctor_check_ssh_login(target, options, sink, inputs.device_reading)
         password_match = _doctor_check_admin_password(inputs, target, remote, sink)
     # The device, measured on the device over SSH: its verdict does not depend
     # on the network between this computer and the device.

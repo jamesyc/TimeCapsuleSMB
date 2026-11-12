@@ -2245,7 +2245,13 @@ def _build_doctor_target(inputs: DoctorInputs) -> DoctorTarget:
     )
 
 
-def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: DoctorSink) -> RemoteAccess:
+def _doctor_check_ssh_login(
+    target: DoctorTarget, options: DoctorOptions, sink: DoctorSink, reading: AirportAcpReading | None = None,
+) -> RemoteAccess:
+    """SSH login. A password SSH rejects but the AirPort service accepts
+    (`reading`, this run's read at this address, else a new one) is one the
+    device has not applied yet, as every command says it
+    (services.runtime.ssh_password_error)."""
     if options.skip_ssh:
         return RemoteAccess(
             ssh_checked=False,
@@ -2255,6 +2261,14 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
         )
 
     ssh_result = check_ssh_login(target.connection, router_mac=target.router_mac)
+    if ssh_result.details.get("code") == "ssh_auth_rejected" and target.connection.password:
+        if (reading or read_admin_password(target.connection)).password_matches is True:
+            ssh_result = CheckResult(
+                "FAIL",
+                "SSH on the device rejected the saved password although it is the AirPort admin password; "
+                f"the device has not applied its current password, restart the device ({ssh_result.message})",
+                {**ssh_result.details, "code": ErrorCode.SSH_PASSWORD_NOT_APPLIED},
+            )
     sink.add(ssh_result)
     if ssh_result.details.get("code") == acpd.APPLE_ACPD_BROKEN_CODE and sink.debug_fields is not None:
         # The ACPd step needs SSH and does not run; doctor_finished reports

@@ -910,7 +910,7 @@ def prepare_deploy_preflight(
         raise DeployArtifactValidationError("; ".join(failures))
 
     callbacks.stage("check_compatibility")
-    compatibility = require_supported_payload(target, allow_unsupported=options.allow_unsupported)
+    compatibility = require_supported_payload(target, allow_unsupported=options.allow_unsupported, reading=device_reading)
     if not options.dry_run:
         # Deploy ends in an ACP reboot: refuse a password ACP would reject, or
         # an ACPd that would not restart the device, before the confirmation,
@@ -945,19 +945,23 @@ def prepare_deploy_preflight(
     )
 
 
-def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: bool) -> DeviceCompatibility:
+def require_supported_payload(
+    target: ManagedTargetState, *, allow_unsupported: bool, reading: AirportAcpReading | None = None,
+) -> DeviceCompatibility:
     """The device's compatibility, once SSH logged in and found a payload for it.
 
     A probe that did not log in raises its own access code (SSH off, device
     unreachable, password rejected, ...). `unsupported_device` is only for a
     device we logged in to and identified, such as an AirPort Express.
+    `reading` is the command's ACP read at this address, which a rejected SSH
+    password is judged by without reading again (runtime.ssh_password_error).
     """
     probe_state = target.probe_state
     if probe_state is None:
         raise DeviceError("Failed to determine remote device OS compatibility.")
     compatibility = probe_state.compatibility
     if compatibility is None:
-        raise probe_failure_error(probe_state.probe_result, target.connection, router_mac=target.router_mac)
+        raise probe_failure_error(probe_state.probe_result, target.connection, router_mac=target.router_mac, reading=reading)
     if not compatibility.supported and not allow_unsupported:
         raise DeployDeviceError(render_compatibility_message(compatibility), code=ErrorCode.UNSUPPORTED_DEVICE)
     if not compatibility.payload_family:

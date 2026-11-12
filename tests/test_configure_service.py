@@ -47,6 +47,7 @@ from timecapsulesmb.services.configure import (
     run_configure_flow,
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.runtime import SSH_PASSWORD_NOT_APPLIED_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.services.locate import LocateResult
 from tests.reboot_support import DEVICE_AIRPORT_MAC, acp_password_answer, acp_reading
@@ -1415,7 +1416,7 @@ class ConfigureServiceTests(unittest.TestCase):
                     probe=mock.Mock(return_value=probe_state),
                     write_env=lambda _path, values: written.update(values),
                 ),
-                hooks=ConfigureFlowHooks(save_without_authentication=lambda _state: True),
+                hooks=ConfigureFlowHooks(save_without_authentication=lambda _state, _not_applied: True),
             )
 
         self.assertIs(result.probe_state, probe_state)
@@ -1496,7 +1497,7 @@ class ConfigureServiceTests(unittest.TestCase):
                         Path(tmp) / ".env", mock.Mock(return_value=probe_state),
                         password="pw-secretzz", write_env=lambda _path, values: written.update(values),
                     ),
-                    hooks=ConfigureFlowHooks(save_without_authentication=lambda state: seen.append(state) or True),
+                    hooks=ConfigureFlowHooks(save_without_authentication=lambda state, _not_applied: seen.append(state) or True),
                 )
         self.assertEqual(seen, [probe_state])
         self.assertEqual(written["TC_PASSWORD"], "pw-secretzz")
@@ -1870,21 +1871,30 @@ class ConfigureServiceTests(unittest.TestCase):
                 self.assertNotIsInstance(result, ConfigureFlowError)
                 self.assertIn(line, written)
 
-    def test_password_ssh_rejects_is_not_compared_with_the_device(self) -> None:
-        compare = acp_password_answer(True)
-        with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
-                with self.assertRaises(ConfigureFlowError):
+    def test_a_password_ssh_rejects_is_judged_by_what_acp_says_of_it(self) -> None:
+        # ACP accepting it: the device has not applied it, and re-entering it
+        # would not help. ACP rejecting it: the password is wrong. One read,
+        # and none when the identity read at this address already answered.
+        cases = ((True, "ssh_password_not_applied", SSH_PASSWORD_NOT_APPLIED_MESSAGE),
+                 (False, "auth_failed", AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE))
+        for matches, code, message in cases:
+            with self.subTest(matches=matches), tempfile.TemporaryDirectory() as tmp:
+                compare = acp_password_answer(matches)
+                with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare), \
+                        self.assertRaises(ConfigureFlowError) as raised:
                     run_configure_flow(self.configure_request(
                         Path(tmp) / ".env", mock.Mock(return_value=self.make_auth_failed_probe_state())))
-        compare.assert_not_called()
+                self.assertEqual((raised.exception.code, str(raised.exception)), (code, message))
+                self.assertEqual(compare.call_count, 1)
+                self.assertFalse((Path(tmp) / ".env").exists())
 
     def test_run_configure_flow_normalizes_ssh_authentication_failure(self) -> None:
         probe_state = self.make_auth_failed_probe_state()
 
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
-            with self.assertRaises(ConfigureFlowError) as raised:
+            with mock.patch("timecapsulesmb.device.probe.read_airport_acp", acp_password_answer(False)), \
+                    self.assertRaises(ConfigureFlowError) as raised:
                 run_configure_flow(
                     ConfigureFlowRequest(
                         existing={},

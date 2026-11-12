@@ -707,6 +707,10 @@
 "backend.recovery.auth_failed.message" = "L’appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
 "backend.recovery.auth_failed.action.1" = "Saisissez à nouveau le mot de passe administrateur AirPort.";
 "backend.recovery.auth_failed.action.2" = "Vérifiez que SSH est activé sur l’appareil.";
+"backend.recovery.ssh_password_not_applied.title" = "L’appareil n’a pas appliqué son mot de passe";
+"backend.recovery.ssh_password_not_applied.message" = "SSH sur l’appareil refuse le mot de passe administrateur AirPort que son service AirPort accepte. L’appareil n’a pas appliqué ses réglages actuels.";
+"backend.recovery.ssh_password_not_applied.action.1" = "Essayez de redémarrer l’appareil dans Utilitaire AirPort, ou débranchez-le pendant 10 secondes puis rebranchez-le.";
+"backend.recovery.ssh_password_not_applied.action.2" = "Attendez 2 minutes que l’appareil démarre, puis réessayez.";
 "backend.recovery.configure.auth_failed.title" = "Mot de passe AirPort rejeté";
 "backend.recovery.configure.auth_failed.message" = "L’authentification ACP ou SSH a échoué pendant la configuration de l’appareil.";
 "backend.recovery.configure.auth_failed.action.1" = "Saisissez à nouveau le mot de passe administrateur AirPort.";

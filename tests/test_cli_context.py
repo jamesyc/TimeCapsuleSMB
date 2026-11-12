@@ -383,6 +383,28 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertIsNone(context.compatibility)
 
 
+class RequireCompatibilityPasswordTests(unittest.TestCase):
+    """A terminal command whose SSH login was refused: what the AirPort
+    service says of the same password, from the read the command took."""
+
+    def test_a_password_acp_took_is_one_the_device_has_not_applied(self) -> None:
+        from tests.reboot_support import acp_reading
+
+        context = CommandContext(mock.Mock(), "deploy", "deploy_started", "deploy_finished")
+        context.connection = SshConnection("root@10.0.0.2", "pw", "")
+        context.probe_state = ProbedDeviceState(
+            probe_result=ProbeResult(SshAccessStatus.AUTH_REJECTED, "Permission denied", "", "", "", "unknown"),
+            compatibility=None,
+        )
+        with mock.patch.object(CommandContext, "reading_at", return_value=acp_reading(True)), \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp") as read, \
+                self.assertRaises(DeviceError) as raised:
+            context.require_compatibility()
+
+        read.assert_not_called()
+        self.assertEqual(raised.exception.code, "ssh_password_not_applied")
+
+
 class JsonModeStdoutTests(unittest.TestCase):
     def make_context(self, *, json_output: bool) -> CommandContext:
         return CommandContext(mock.Mock(), "test", "test_started", "test_finished", args=SimpleNamespace(json=json_output))

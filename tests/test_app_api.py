@@ -105,7 +105,7 @@ from timecapsulesmb.transport.errors import (
     TransportError,
     ssh_timeout_slow_device_message,
 )
-from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
+from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, SSH_PASSWORD_NOT_APPLIED_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.device.acpd import RestartVerdict
 
@@ -4850,7 +4850,9 @@ class AppApiTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
-            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probe_state):
+            # The AirPort service rejects it too: the password is wrong.
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probe_state), \
+                    mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(False)):
                 rc = service.run_api_request(
                     {
                         "operation": "configure",
@@ -4905,6 +4907,29 @@ class AppApiTests(unittest.TestCase):
                 self.assertNotIn("run_checkup", error["recovery"]["action_ids"])
                 self.assertFalse(any("Checkup" in step for step in error["recovery"]["actions"]))
                 self.assertFalse((Path(tmp) / ".env").exists())
+
+    def test_configure_tells_a_password_the_device_has_not_applied(self) -> None:
+        # SSH rejects the password the AirPort service accepts: Add Device
+        # says to restart the device, not to re-enter a password that works.
+        probe_state = failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR)
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probe_state), \
+                    mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(True)):
+                rc = service.run_api_request(
+                    {"operation": "configure",
+                     "params": {"config": str(config_path), "host": "root@10.0.0.2", "password": "pw"}},
+                    collector.sink,
+                )
+            self.assertFalse(config_path.exists())
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "ssh_password_not_applied")
+        self.assertEqual(error["message"], SSH_PASSWORD_NOT_APPLIED_MESSAGE)
+        self.assertIn("AirPort Utility", error["recovery"]["actions"][0])
+        self.assertNotIn("replace_password", error["recovery"]["action_ids"])
 
     def test_configure_reports_ssh_algorithm_failure_without_password_rejection(self) -> None:
         collector = CollectingSink()
@@ -5850,10 +5875,12 @@ class AppApiTests(unittest.TestCase):
         )
         remote_actions.assert_not_called()
 
-    def run_deploy_with_password_answer(self, matches: bool | None, params: dict[str, object]) -> tuple[CollectingSink, int, mock.Mock, mock.Mock]:
+    def run_deploy_with_password_answer(
+        self, matches: bool | None, params: dict[str, object], probe_state: ProbedDeviceState | None = None,
+    ) -> tuple[CollectingSink, int, mock.Mock, mock.Mock]:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probe_state or probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -5870,6 +5897,21 @@ class AppApiTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
                                     rc = service.run_api_request({"operation": "deploy", "params": params}, collector.sink)
         return collector, rc, compare, remote_actions
+
+    def test_deploy_judges_a_rejected_ssh_password_by_the_read_it_already_took(self) -> None:
+        # The saved device was read at operation start; that read says ACP
+        # takes the password SSH rejected, with no second read.
+        probe_state = failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR)
+        with mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=LocateResult("not_moved")):
+            collector, rc, compare, remote_actions = self.run_deploy_with_password_answer(
+                True, {"dry_run": False, "airport_mac": DEVICE_AIRPORT_MAC}, probe_state=probe_state,
+            )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "ssh_password_not_applied")
+        self.assertEqual(compare.call_count, 1)
+        remote_actions.assert_not_called()
 
     def test_deploy_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
         # Deploy ends in an ACP reboot. A password SSH accepted on its first 8
@@ -7398,25 +7440,34 @@ MaSt = (
         self.assert_not_unsupported_model_guidance(error)
 
     def test_deploy_reports_each_ssh_login_failure_with_its_own_code(self) -> None:
+        # A rejected SSH password is said in plain words, by what the AirPort
+        # service says of it, with ssh's text as the facts; the others keep
+        # ssh's text.
         cases = (
-            (SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR, "auth_failed"),
-            (SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED, "no matching key exchange method found", "ssh_compatibility_failed"),
-            (SshAccessStatus.TRANSPORT_FAILED, KEX_CLOSED_ERROR, "ssh_transport_failed"),
-            (SshAccessStatus.CLIENT_FAILED, "Upgrade OpenSSH", "ssh_client_failed"),
-            (SshAccessStatus.LOCAL_NETWORK_FILTERED, LOCAL_NETWORK_FILTERED_MESSAGE, "local_network_filtered"),
-            (SshAccessStatus.DEVICE_PROBE_FAILED, "Failed to determine remote device OS compatibility.", "device_probe_failed"),
+            (SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR, False, "auth_failed",
+             f"{AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE}\n{AUTH_REJECTED_ERROR}"),
+            (SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR, True, "ssh_password_not_applied",
+             f"{SSH_PASSWORD_NOT_APPLIED_MESSAGE}\n{AUTH_REJECTED_ERROR}"),
+            (SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED, "no matching key exchange method found", True,
+             "ssh_compatibility_failed", None),
+            (SshAccessStatus.TRANSPORT_FAILED, KEX_CLOSED_ERROR, True, "ssh_transport_failed", None),
+            (SshAccessStatus.CLIENT_FAILED, "Upgrade OpenSSH", True, "ssh_client_failed", None),
+            (SshAccessStatus.LOCAL_NETWORK_FILTERED, LOCAL_NETWORK_FILTERED_MESSAGE, True, "local_network_filtered", None),
+            (SshAccessStatus.DEVICE_PROBE_FAILED, "Failed to determine remote device OS compatibility.", True,
+             "device_probe_failed", None),
         )
-        for status, message, code in cases:
-            with self.subTest(code=code):
+        for status, message, acp_matches, code, shown in cases:
+            with self.subTest(code=code), \
+                    mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(acp_matches)):
                 self._telemetry_client.emit.reset_mock()
                 rc, collector, acp_probe = self.run_deploy_dry_run_against(failed_probe_state(status, message))
 
                 self.assertEqual(rc, 1)
-                # Only a closed SSH port needs the ACP check to say why.
+                # Only a closed SSH port needs the ACP port check to say why.
                 acp_probe.assert_not_called()
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], code)
-                self.assertEqual(error["message"], message)
+                self.assertEqual(error["message"], shown or message)
                 self.assert_not_unsupported_model_guidance(error)
 
     def test_deploy_still_rejects_an_airport_express_it_logged_in_to(self) -> None:
@@ -7481,16 +7532,24 @@ MaSt = (
         self.assert_not_unsupported_model_guidance(error)
 
     def test_activate_reports_rejected_password_so_the_app_can_ask_for_it(self) -> None:
-        rc, collector = self.run_activate_against_probe(failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR))
+        # SSH and the AirPort service both reject the saved password.
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(False)):
+            rc, collector = self.run_activate_against_probe(failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR))
 
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "auth_failed")
         self.assertIn("replace_password", error["recovery"]["action_ids"])
 
-    def run_flash_backup_against_probe(self, probe_state: ProbedDeviceState, *, acp_error: str | None = None):
+    def run_flash_backup_against_probe(
+        self, probe_state: ProbedDeviceState, *, acp_error: str | None = None, airport_mac: str | None = None,
+    ):
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2"}, file_values={"TC_HOST": "root@10.0.0.2"})
+        params: dict[str, object] = {"action": "backup", "credentials": {"password": "pw"}}
+        if airport_mac:
+            # A saved device: following it reads the password at its address.
+            params["airport_mac"] = airport_mac
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.services.runtime.probe_connection_state", return_value=probe_state):
                 # A closed port is rechecked first; it stays closed here.
@@ -7499,7 +7558,7 @@ MaSt = (
                     with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=acp_error):
                         with mock.patch("timecapsulesmb.app.ops.flash.backup_flash") as backup_mock:
                             rc = service.run_api_request(
-                                {"operation": "flash", "params": {"action": "backup", "credentials": {"password": "pw"}}},
+                                {"operation": "flash", "params": params},
                                 collector.sink,
                             )
         backup_mock.assert_not_called()
@@ -7511,15 +7570,31 @@ MaSt = (
             (failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet."), "timed out", "device_unreachable"),
             (failed_probe_state(SshAccessStatus.TRANSPORT_FAILED, KEX_CLOSED_ERROR), None, "ssh_transport_failed"),
             (failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR), None, "auth_failed"),
+            (failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR), None, "ssh_password_not_applied"),
         )
         for probe_state, acp_error, code in cases:
-            with self.subTest(code=code, acp_error=acp_error):
+            # The AirPort service rejects the password too, or accepts it: the
+            # device has not applied its settings.
+            matches = code == "ssh_password_not_applied"
+            with self.subTest(code=code, acp_error=acp_error), \
+                    mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(matches)):
                 rc, collector = self.run_flash_backup_against_probe(probe_state, acp_error=acp_error)
 
                 self.assertEqual(rc, 1)
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], code)
                 self.assert_not_unsupported_model_guidance(error)
+
+    def test_flash_password_verdict_reuses_the_read_that_followed_the_saved_device(self) -> None:
+        # Following the saved device read the password at this address; the
+        # verdict on SSH's refusal asks nothing again.
+        probe_state = failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR)
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(True)) as read:
+            rc, collector = self.run_flash_backup_against_probe(probe_state, airport_mac=DEVICE_AIRPORT_MAC)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "ssh_password_not_applied")
+        self.assertEqual(read.call_count, 1)
 
     def test_flash_still_rejects_an_airport_express_it_logged_in_to(self) -> None:
         rc, collector = self.run_flash_backup_against_probe(airport_express_probed_state())
@@ -8074,6 +8149,50 @@ MaSt = (
         self.assertIn("“Uninstall” again", error["recovery"]["actions"][-1])
         self.assertNotIn("traceback", error["debug"])
 
+    def test_uninstall_whose_ssh_login_is_rejected_says_why_by_the_acp_answer(self) -> None:
+        # A command that runs no probe first still says why SSH refused its
+        # login: the AirPort service's answer for the same password decides,
+        # and the read the command already took is the one asked.
+        from timecapsulesmb.transport.errors import SshAuthenticationError
+
+        cases = (
+            (True, "ssh_password_not_applied", "has not applied"),
+            (False, "auth_failed", "AirPort admin password"),
+        )
+        for matches, code, wording in cases:
+            with self.subTest(acp_accepts=matches):
+                collector = CollectingSink()
+                config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+                connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+                # The saved device: following it reads the password once.
+                params: dict[str, object] = {"no_reboot": True, "airport_mac": DEVICE_AIRPORT_MAC}
+                params["confirmation_id"] = self.confirmation_id_for(
+                    "uninstall", params,
+                    {"host": "root@10.0.0.2", "requires_reboot": False, "no_reboot": True, "no_wait": False},
+                )
+                acp = acp_password_answer(matches)
+
+                with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                        mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection), \
+                        mock.patch("timecapsulesmb.device.probe.read_airport_acp", acp), \
+                        mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=LocateResult("not_found")), \
+                        mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]), \
+                        mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn",
+                                   return_value=[SimpleNamespace(volume_root="/Volumes/dk2")]), \
+                        mock.patch("timecapsulesmb.deploy.executor.run_ssh",
+                                   side_effect=SshAuthenticationError("Permission denied (publickey,password).")):
+                    rc = service.run_api_request({"operation": "uninstall", "params": params}, collector.sink)
+
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], code)
+                # SSH's own text stays as the detail under the verdict.
+                verdict, ssh_text = error["message"].split("\n", 1)
+                self.assertIn(wording, verdict)
+                self.assertEqual(ssh_text, "Permission denied (publickey,password).")
+                self.assertEqual(error["recovery"]["localization_key"], code)
+                self.assertEqual(acp.call_count, 1)
+
     def test_fsck_checks_the_password_then_asks_before_touching_the_disk(self) -> None:
         # The repair reboots through ACP, so the password is compared with the
         # device's before the confirmation; the disk waits for the answer.
@@ -8483,13 +8602,14 @@ MaSt = (
         # Without the probe fsck cannot know whether file sharing must be
         # started after the reboot; it fails before the repair, not after.
         runtime = FakeInstalledRuntime()
-        rc, collector, reboot = self._run_confirmed_fsck(
-            "tcapsule-fsck: fsck_hfs exit status 0\n",
-            ssh_returncode=0,
-            probe_state=failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR),
-            runtime=runtime,
-            fsck_runs=False,
-        )
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(False)):
+            rc, collector, reboot = self._run_confirmed_fsck(
+                "tcapsule-fsck: fsck_hfs exit status 0\n",
+                ssh_returncode=0,
+                probe_state=failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR),
+                runtime=runtime,
+                fsck_runs=False,
+            )
 
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")

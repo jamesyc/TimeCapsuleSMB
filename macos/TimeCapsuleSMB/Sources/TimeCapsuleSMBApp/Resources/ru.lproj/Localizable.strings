@@ -707,6 +707,10 @@
 "backend.recovery.auth_failed.message" = "Устройство отклонило указанный пароль или учетные данные SSH.";
 "backend.recovery.auth_failed.action.1" = "Введите пароль администратора AirPort еще раз.";
 "backend.recovery.auth_failed.action.2" = "Убедитесь, что SSH включен на устройстве.";
+"backend.recovery.ssh_password_not_applied.title" = "Устройство не применило свой пароль";
+"backend.recovery.ssh_password_not_applied.message" = "SSH на устройстве отклоняет пароль администратора AirPort, который принимает его служба AirPort. Устройство не применило текущие настройки.";
+"backend.recovery.ssh_password_not_applied.action.1" = "Попробуйте перезагрузить устройство в Утилите AirPort или отключите его от питания на 10 секунд и снова подключите.";
+"backend.recovery.ssh_password_not_applied.action.2" = "Подождите 2 минуты, пока устройство запустится, затем повторите попытку.";
 "backend.recovery.configure.auth_failed.title" = "Пароль AirPort отклонен";
 "backend.recovery.configure.auth_failed.message" = "Аутентификация ACP или SSH не удалась во время настройки устройства.";
 "backend.recovery.configure.auth_failed.action.1" = "Введите пароль администратора AirPort еще раз.";

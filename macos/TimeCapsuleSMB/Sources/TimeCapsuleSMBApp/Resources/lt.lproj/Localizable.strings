@@ -707,6 +707,10 @@
 "backend.recovery.auth_failed.message" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
 "backend.recovery.auth_failed.action.1" = "Pakartotinai įveskite AirPort administratoriaus slaptažodį.";
 "backend.recovery.auth_failed.action.2" = "Patikrinkite, ar SSH įjungta įrenginyje.";
+"backend.recovery.ssh_password_not_applied.title" = "Įrenginys nepritaikė savo slaptažodžio";
+"backend.recovery.ssh_password_not_applied.message" = "Įrenginio SSH atmeta AirPort administratoriaus slaptažodį, kurį priima jo AirPort tarnyba. Įrenginys nepritaikė dabartinių nustatymų.";
+"backend.recovery.ssh_password_not_applied.action.1" = "Pabandykite paleisti įrenginį iš naujo per AirPort Utility arba atjunkite jį nuo maitinimo 10 sekundžių ir vėl prijunkite.";
+"backend.recovery.ssh_password_not_applied.action.2" = "Palaukite 2 minutes, kol įrenginys pasileis, tada bandykite dar kartą.";
 "backend.recovery.configure.auth_failed.title" = "AirPort slaptažodis atmestas";
 "backend.recovery.configure.auth_failed.message" = "ACP arba SSH autentifikacija nepavyko konfigūruojant įrenginį.";
 "backend.recovery.configure.auth_failed.action.1" = "Pakartotinai įveskite AirPort administratoriaus slaptažodį.";

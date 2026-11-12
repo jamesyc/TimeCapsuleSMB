@@ -707,6 +707,10 @@
 "backend.recovery.auth_failed.message" = "Das Gerät hat das angegebene Passwort oder die SSH-Anmeldedaten abgelehnt.";
 "backend.recovery.auth_failed.action.1" = "Geben Sie das AirPort-Admin-Passwort erneut ein.";
 "backend.recovery.auth_failed.action.2" = "Prüfen Sie, ob SSH auf dem Gerät aktiviert ist.";
+"backend.recovery.ssh_password_not_applied.title" = "Das Gerät hat sein Passwort nicht übernommen";
+"backend.recovery.ssh_password_not_applied.message" = "SSH auf dem Gerät lehnt das AirPort-Admin-Passwort ab, das sein AirPort-Dienst akzeptiert. Das Gerät hat seine aktuellen Einstellungen nicht übernommen.";
+"backend.recovery.ssh_password_not_applied.action.1" = "Versuchen Sie, das Gerät im AirPort-Dienstprogramm neu zu starten, oder trennen Sie es 10 Sekunden lang vom Strom und schließen Sie es wieder an.";
+"backend.recovery.ssh_password_not_applied.action.2" = "Warten Sie 2 Minuten, bis das Gerät gestartet ist, und versuchen Sie es dann erneut.";
 "backend.recovery.configure.auth_failed.title" = "AirPort-Passwort abgelehnt";
 "backend.recovery.configure.auth_failed.message" = "Die ACP- oder SSH-Authentifizierung ist beim Konfigurieren des Geräts fehlgeschlagen.";
 "backend.recovery.configure.auth_failed.action.1" = "Geben Sie das AirPort-Admin-Passwort erneut ein.";

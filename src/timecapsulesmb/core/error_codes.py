@@ -38,6 +38,11 @@ class ErrorCode(str, Enum):
 
     # Reaching the device.
     AUTH_FAILED = "auth_failed"
+    # SSH rejects the saved password while the device's AirPort service
+    # accepts it (services.runtime.probe_failure_error): the device has not
+    # applied its current settings, as after settings it lost or never
+    # finished saving. A restart applies them.
+    SSH_PASSWORD_NOT_APPLIED = "ssh_password_not_applied"
     DEVICE_UNREACHABLE = "device_unreachable"
     # Nothing answers at the device's address while this computer is on the
     # network it last reached the device on (checks.network.silent_device):

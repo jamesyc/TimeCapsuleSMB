@@ -18,7 +18,7 @@ from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.app import AppOperationError, OperationResult, config_path
-from timecapsulesmb.services.runtime import load_optional_env_config, wifi_link_error
+from timecapsulesmb.services.runtime import load_optional_env_config, ssh_login_rejection, wifi_link_error
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.telemetry.operation import (
     OperationTelemetrySession,
@@ -140,19 +140,22 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         )
         return 1
     except TransportError as exc:
-        code, recovery = _failure_card(exc, context, operation, transport_error_code(exc))
+        # A rejected login says why, as a probe's does (services.runtime).
+        rejected = ssh_login_rejection(exc, context.connection, context.reading_at(context.connection))
+        failure = rejected or exc
+        code, recovery = _failure_card(failure, context, operation, rejected.code if rejected else transport_error_code(exc))
         sink.error(
             operation,
-            str(exc),
+            str(failure),
             code=code,
-            debug=context.failure_debug(exc),
+            debug=context.failure_debug(failure),
             recovery=recovery,
         )
         _finish_api_telemetry(
             telemetry_session,
             context,
             result="failure",
-            error=context.diagnostic_error(str(exc)) or str(exc),
+            error=context.diagnostic_error(str(failure)) or str(failure),
             error_code=code,
         )
         return 1

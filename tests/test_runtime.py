@@ -474,9 +474,68 @@ class ProbeFailureErrorTests(unittest.TestCase):
                 self.probe_failure_with((self.failed_probe(SshAccessStatus.CLOSED), host), acp_probe)
                 self.assertEqual(acp_probe.call_args.args[0], expected)
 
+    def test_a_rejected_ssh_password_is_judged_by_what_acp_says_of_it(self) -> None:
+        # The same password the AirPort service accepts: the device has not
+        # applied its settings, and re-entering it would not help. Rejected by
+        # both: the password is wrong. No ACP answer: only SSH rejected it.
+        # ssh's own text stays as the facts.
+        cases = (
+            (True, "ssh_password_not_applied", service_runtime.SSH_PASSWORD_NOT_APPLIED_MESSAGE),
+            (False, "auth_failed", service_runtime.AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE),
+            (None, "auth_failed", service_runtime.SSH_PASSWORD_REJECTED_MESSAGE),
+        )
+        ssh_text = "root@10.0.0.2: Permission denied (publickey,password,keyboard-interactive)."
+        for matches, code, message in cases:
+            with self.subTest(matches=matches), \
+                    mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(matches)):
+                acp_probe = mock.Mock(side_effect=AssertionError("only a closed port checks ACP's port"))
+                error = self.probe_failure_with(
+                    (self.failed_probe(SshAccessStatus.AUTH_REJECTED, ssh_text), "root@10.0.0.2"), acp_probe,
+                )
+                self.assertEqual((error.code, error.message, error.detail), (code, message, ssh_text))
+
+    def test_the_commands_own_reading_is_used_and_key_only_ssh_reads_nothing(self) -> None:
+        # The command read the password at this address already: no second
+        # read, which on a device whose ACP is down waits out its timeout.
+        # Key-only SSH has no password to ask the AirPort service about.
+        ssh_text = "root@10.0.0.2: Permission denied (publickey)."
+        probe = self.failed_probe(SshAccessStatus.AUTH_REJECTED, ssh_text)
+        for reading, code in ((acp_reading(True), "ssh_password_not_applied"), (acp_reading(False), "auth_failed")):
+            with self.subTest(matches=reading.password_matches), \
+                    mock.patch("timecapsulesmb.device.probe.read_airport_acp") as read:
+                error = service_runtime.probe_failure_error(probe, SshConnection("root@10.0.0.2", "pw", ""), reading=reading)
+                read.assert_not_called()
+                self.assertEqual(error.code, code)
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp") as read:
+            error = service_runtime.probe_failure_error(probe, SshConnection("root@10.0.0.2", "", ""))
+        read.assert_not_called()
+        self.assertEqual((error.code, error.message, error.detail),
+                         ("auth_failed", service_runtime.SSH_LOGIN_REJECTED_MESSAGE, ssh_text))
+
+    def test_a_login_rejected_outside_a_probe_gets_the_same_verdict(self) -> None:
+        # Any command's first SSH call is its login: an SshAuthenticationError
+        # there is classified like a probe's, chained to SSH's error. Other
+        # errors, and an error before the command knew its connection, are
+        # left as they are.
+        from timecapsulesmb.transport.errors import SshAuthenticationError, SshError
+
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        rejected = SshAuthenticationError("Permission denied (publickey,password).")
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp") as read:
+            error = service_runtime.ssh_login_rejection(rejected, connection, acp_reading(True))
+            read.assert_not_called()
+        self.assertEqual((error.code, error.detail), ("ssh_password_not_applied", str(rejected)))
+        self.assertIs(error.__cause__, rejected)
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(False)) as read:
+            self.assertEqual(service_runtime.ssh_login_rejection(rejected, connection, None).code, "auth_failed")
+        read.assert_called_once()
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp") as read:
+            self.assertIsNone(service_runtime.ssh_login_rejection(SshError("process smbd did not stop"), connection, None))
+            self.assertIsNone(service_runtime.ssh_login_rejection(rejected, None, None))
+        read.assert_not_called()
+
     def test_login_failures_keep_the_probe_message_and_get_their_own_code(self) -> None:
         cases = (
-            (SshAccessStatus.AUTH_REJECTED, "auth_failed"),
             (SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED, "ssh_compatibility_failed"),
             (SshAccessStatus.TRANSPORT_FAILED, "ssh_transport_failed"),
             (SshAccessStatus.CLIENT_FAILED, "ssh_client_failed"),
@@ -502,7 +561,8 @@ class ProbeFailureErrorTests(unittest.TestCase):
             {
                 "ssh_disabled",
                 "device_unreachable",
-                "auth_failed",
+                # The test's AirPort service accepts the password SSH rejected.
+                "ssh_password_not_applied",
                 "ssh_compatibility_failed",
                 "ssh_transport_failed",
                 "ssh_client_failed",
@@ -668,7 +728,8 @@ class RequireSupportedPayloadTests(unittest.TestCase):
             probe_result=ProbeResult(SshAccessStatus.AUTH_REJECTED, "denied", "", "", "", "unknown"), compatibility=None,
         )
 
-        with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(False)), \
+                self.assertRaises(service_runtime.DeviceAccessError) as raised:
             require_supported_payload(self.target(state), allow_unsupported=False)
 
         self.assertEqual(raised.exception.code, "auth_failed")

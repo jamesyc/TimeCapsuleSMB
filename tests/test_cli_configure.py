@@ -722,9 +722,26 @@ class CliConfigureTests(CliTestCase):
         self.assertNotIn("TC_PASSWORD", payload)
         self.assertNotIn(password, result.text)
 
+    def test_configure_names_a_password_the_device_has_not_applied(self) -> None:
+        # SSH rejects the password the AirPort service accepts: restart the
+        # device, not re-enter a password that works.
+        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": "pw-right"}), \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(True)):
+            result = self.run_configure_cli(
+                ["--no-input", "--json", "--host", "root@10.0.0.2", "--password-env", "TCAPSULE_TEST_PASSWORD"],
+                probe_state=self.make_probe_state(self.make_probe_result_auth_failed()),
+            )
+
+        payload = json.loads(result.text)
+        self.assertEqual(result.rc, 1)
+        self.assertEqual(payload["code"], "ssh_password_not_applied")
+        self.assertTrue(payload["error"].startswith("SSH on the device rejects the AirPort admin password"))
+
     def test_configure_no_input_json_failure_does_not_print_password(self) -> None:
         password = "super-secret-configure-password"
-        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": password}):
+        # The AirPort service rejects it too: the password is wrong.
+        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": password}), \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(False)):
             result = self.run_configure_cli(
                 [
                     "--no-input",
@@ -2712,18 +2729,21 @@ class CliConfigureTests(CliTestCase):
                 return default
             return next(prompt_values)
 
-        result = self.run_configure_cli(
-            prompt_side_effect=fake_prompt,
-            confirm=False,
-            extra_patches={
-                "timecapsulesmb.cli.configure.probe_connection_state": mock.Mock(
-                    side_effect=[
-                        self.make_probe_state(self.make_probe_result_auth_failed()),
-                        self.make_probe_state(self.make_probe_result_netbsd6()),
-                    ]
-                )
-            },
-        )
+        # The AirPort service rejects the bad password too: it is wrong.
+        compare = mock.Mock(side_effect=lambda _host, password, **_kwargs: acp_reading(password == "goodpw"))
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
+            result = self.run_configure_cli(
+                prompt_side_effect=fake_prompt,
+                confirm=False,
+                extra_patches={
+                    "timecapsulesmb.cli.configure.probe_connection_state": mock.Mock(
+                        side_effect=[
+                            self.make_probe_state(self.make_probe_result_auth_failed()),
+                            self.make_probe_state(self.make_probe_result_netbsd6()),
+                        ]
+                    )
+                },
+            )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.3")
         self.assertEqual(result.values["TC_PASSWORD"], "goodpw")
@@ -2908,15 +2928,33 @@ class CliConfigureTests(CliTestCase):
         self.assertIn("Save this information still? [y/N]", "".join(str(call.args[0]) for call in result.mocks.input.call_args_list))
 
     def test_configure_save_anyway_prompt_says_ssh_rejected_the_password(self) -> None:
-        result = self.run_configure_cli(
-            prompt_side_effect=self.configure_prompt_defaults(password="badpw"),
-            probe_state=self.make_probe_state(self.make_probe_result_auth_failed()),
-            confirm=True,
-        )
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(False)):
+            result = self.run_configure_cli(
+                prompt_side_effect=self.configure_prompt_defaults(password="badpw"),
+                probe_state=self.make_probe_state(self.make_probe_result_auth_failed()),
+                confirm=True,
+            )
 
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_PASSWORD"], "badpw")
         self.assertIn("The provided AirPort SSH target and password did not work", result.text)
+
+    def test_enter_at_save_anyway_keeps_a_password_the_device_has_not_applied(self) -> None:
+        # SSH rejects the password, the AirPort service accepts it: the
+        # password is right and a restart applies it, so the prompt says so
+        # and Enter saves it.
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(True)):
+            result = self.run_configure_cli(
+                prompt_side_effect=self.configure_prompt_defaults(password="newpw"),
+                probe_state=self.make_probe_state(self.make_probe_result_auth_failed()),
+                input_side_effect=[""],
+            )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_PASSWORD"], "newpw")
+        self.assertIn("the device has not applied it yet, and a restart applies it", result.text)
+        self.assertNotIn("did not work", result.text)
+        self.assertIn("Save this information still? [Y/n]", "".join(str(call.args[0]) for call in result.mocks.input.call_args_list))
 
     def test_configure_hard_fails_when_acp_enable_fails_non_auth(self) -> None:
         self._configure_acp_probe_mock.side_effect = ACPConnectionError("Could not connect to ACP on 10.0.0.2:5009")

@@ -115,6 +115,7 @@ _NETBSD4_ACTIVATE_STEP = "On NetBSD 4 devices, run “Activate” if the checkup
 # services.reboot.reboot_device: two ACP reads just before the request did
 # not answer, so nothing was requested. SSH answered moments before, so a
 # slow link and a busy or deaf ACPd are both possible.
+_RESTART_OR_UNPLUG_STEP = "Try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in."
 _REBOOT_NOT_REQUESTED = RecoveryInfo(
     "The restart was not requested",
     "The device did not answer AirPort ACP just before the restart, so TimeCapsuleSMB did not ask it to restart. "
@@ -122,7 +123,7 @@ _REBOOT_NOT_REQUESTED = RecoveryInfo(
     "Apple's firmware). The work before the restart is finished; file sharing may stay off until the device "
     "restarts.",
     (
-        "Try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in.",
+        _RESTART_OR_UNPLUG_STEP,
         "Then run “Checkup”.",
     ),
     retryable=True,
@@ -221,6 +222,17 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
         action_ids=("replace_password",),
+    ),
+    # SSH rejects the password the device's AirPort service accepts
+    # (services.runtime.ssh_password_error): re-entering it would not help.
+    # The device writes the SSH password at boot from the AirPort password,
+    # which ACP accepts, so an ordinary restart applies it.
+    ErrorCode.SSH_PASSWORD_NOT_APPLIED: RecoveryInfo(
+        "The device has not applied its password",
+        "SSH on the device rejects the AirPort admin password that its AirPort service accepts. The device has not "
+        "applied its current settings.",
+        (_RESTART_OR_UNPLUG_STEP, _START_UP_THEN_RETRY_STEP),
+        retryable=True,
     ),
     # Shared by causes that are not an unsupported model, such as flash or Activate
     # on NetBSD 6, so it must not tell the user to forget a working device.
@@ -1189,7 +1201,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         "TimeCapsuleSMB logged in over SSH but could not read the device's system information.",
         (
             "Try again.",
-            "Try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in.",
+            _RESTART_OR_UNPLUG_STEP,
             _START_UP_THEN_RETRY_STEP,
         ),
         retryable=True,
