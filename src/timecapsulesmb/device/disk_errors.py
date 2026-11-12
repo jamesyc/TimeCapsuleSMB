@@ -191,6 +191,7 @@ _PREFLIGHT_WORDS = {
 
 
 DiskFailingDisk = Literal["internal", "usb", "unknown"]
+DiskFailingCause = Literal["disk_failing", "disk_unreadable"]
 
 
 @dataclass(frozen=True)
@@ -209,7 +210,7 @@ class DiskFailingEvidence:
     is one Wipe Internal Disk accepts (storage.wipe_refusal), so the warning
     may suggest it."""
 
-    cause: Literal["disk_failing", "disk_unreadable"]
+    cause: DiskFailingCause
     text: str
     disk: DiskFailingDisk = "unknown"
     wipeable: bool = False

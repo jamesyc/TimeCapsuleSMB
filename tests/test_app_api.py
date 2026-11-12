@@ -8053,6 +8053,87 @@ MaSt = (
         )
         prepare.assert_called_once()
 
+    def test_a_yes_to_the_warning_stands_when_the_evidence_is_gone_when_confirmed(self) -> None:
+        # Warned when asked; the confirmed request finds nothing (a kernel log
+        # it could not read, the manager's title quiet). Asking again would
+        # show the plain question, whose default is to go on, without the
+        # disk: the user already agreed to the stronger warning, of either
+        # cause.
+        for name, errors, verdicts, presentation_id in (
+            ("kernel lines", self.DISK_ERRORS, (), "uninstall.disk_failing"),
+            ("unreadable files", (), (RSYNC_UNREADABLE,), "uninstall.disk_unreadable"),
+        ):
+            with self.subTest(name):
+                first, _rc, _prepare, _uninstall = self.run_uninstall_with_disk_errors(
+                    errors, {"no_reboot": True}, verdicts=verdicts,
+                )
+                warned_id = self.assert_confirmation(first, presentation_id)["confirmation_id"]
+                for gone in (None, ()):
+                    _second, _rc, prepare, _uninstall = self.run_uninstall_with_disk_errors(
+                        gone, {"no_reboot": True, "confirmation_id": warned_id},
+                    )
+                    prepare.assert_called_once()
+
+    def test_a_yes_to_the_plain_question_does_not_confirm_a_warning(self) -> None:
+        # The reverse: no evidence when asked, errors when confirmed. The
+        # user never saw the warning, so it is asked.
+        first, _rc, _prepare, _uninstall = self.run_uninstall_with_disk_errors((), {"no_reboot": True})
+        plain_id = self.assert_confirmation(first, "uninstall.no_reboot")["confirmation_id"]
+        second, rc, prepare, _uninstall = self.run_uninstall_with_disk_errors(
+            self.DISK_ERRORS, {"no_reboot": True, "confirmation_id": plain_id},
+        )
+        self.assertEqual(rc, 1)
+        self.assert_confirmation(second, "uninstall.disk_failing", {"disk_failing": True})
+        prepare.assert_not_called()
+
+    def test_a_warning_yes_confirms_only_its_own_operation_and_parameters(self) -> None:
+        # Evidence gone on the second request, but the yes was to another
+        # uninstall (with a reboot wait left out) or to a disk repair: the
+        # plain question is asked.
+        first, _rc, _prepare, _uninstall = self.run_uninstall_with_disk_errors(
+            self.DISK_ERRORS, {"no_reboot": True, "no_wait": True},
+        )
+        other_params_id = self.assert_confirmation(first, "uninstall.disk_failing")["confirmation_id"]
+        repair = self.run_fsck_with_disk_errors(self.DISK_ERRORS, None, {"no_reboot": True})[0]
+        other_operation_id = self.assert_confirmation(repair, "fsck.disk_failing")["confirmation_id"]
+        for name, supplied in (("other parameters", other_params_id), ("other operation", other_operation_id)):
+            with self.subTest(name):
+                second, rc, prepare, _uninstall = self.run_uninstall_with_disk_errors(
+                    None, {"no_reboot": True, "confirmation_id": supplied},
+                )
+                self.assertEqual(rc, 1)
+                self.assert_confirmation(second, "uninstall.no_reboot")
+                prepare.assert_not_called()
+
+    def run_fsck_with_disk_errors(self, errors, disks, params: dict[str, object]):
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        repair = CollectingSink()
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
+                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
+                    with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", return_value=disks):
+                        with mock.patch("timecapsulesmb.app.ops.maintenance.run_fsck") as run_fsck:
+                            rc = service.run_api_request({"operation": "fsck", "params": params}, repair.sink)
+        return repair, rc, run_fsck
+
+    def test_disk_repair_keeps_the_yes_when_mast_answers_only_when_confirmed(self) -> None:
+        # MaSt unread when asked, so every kernel line counted; read when
+        # confirmed, it puts the only line on another disk. The repair goes on.
+        disks = (
+            MaStDiskSnapshot("sd0", "", 1907729, True, (MaStPartitionSnapshot("dk2", "Data", "hfs"),)),
+            MaStDiskSnapshot("sd1", "", 1907729, False, (MaStPartitionSnapshot("dk5", "USB", "hfs"),)),
+        )
+        params = {"no_reboot": True, "volume": "/dev/dk2"}
+        usb_line = ("sd1a: error writing fsbn 8",)
+        first, _rc, _run_fsck = self.run_fsck_with_disk_errors(usb_line, None, params)
+        warned_id = self.assert_confirmation(first, "fsck.disk_failing")["confirmation_id"]
+        with mock.patch("timecapsulesmb.app.ops.maintenance.storage_service.mount_mast_volumes_with_diagnostics",
+                        side_effect=RuntimeError("past the confirmation")) as mount:
+            second, _rc, _run_fsck = self.run_fsck_with_disk_errors(usb_line, disks, {**params, "confirmation_id": warned_id})
+        mount.assert_called_once()
+        self.assertNotIn("confirmation_required", [event.get("code") for event in second.events_of_type("error")])
+
     def test_deploy_and_disk_repair_on_a_failing_disk_ask_with_its_warning(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())

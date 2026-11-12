@@ -76,7 +76,7 @@ def test_uninstall_stops_a_running_migration_before_removing_it(monkeypatch, tmp
     monkeypatch.setattr(executor, 'run_ssh', ssh)
     monkeypatch.setattr(maintenance, 'load_request_config', lambda *a: {})
     monkeypatch.setattr(maintenance, 'resolve_request_connection', lambda *a, **kw: SimpleNamespace(host='fixture', password='pw'))
-    monkeypatch.setattr(maintenance, 'require_confirmation', lambda *a: None)
+    monkeypatch.setattr(maintenance, 'require_disk_failing_confirmation', lambda *a: None)
     monkeypatch.setattr(maintenance_service.storage_service, 'mount_mast_volumes_with_diagnostics',
                         lambda *a, **kw: [SimpleNamespace(volume_root='/Volumes/dk2')])
     reboot = []

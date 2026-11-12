@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Mapping
+from typing import Mapping, get_args
 
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.disk_errors import (
+    DiskFailingCause,
     DiskFailingEvidence,
     disk_failing_fields,
     disk_failing_variant,
@@ -155,7 +156,10 @@ def disk_failing_context(evidence: DiskFailingEvidence | None) -> dict[str, str]
     user's yes to one cause's warning does not confirm the other's. Not the
     wording: a disk MaSt named on one request and not the next would ask
     again for nothing."""
-    return {"disk_failing": evidence.cause} if evidence else {}
+    return {_DISK_FAILING_CONTEXT_KEY: evidence.cause} if evidence else {}
+
+
+_DISK_FAILING_CONTEXT_KEY = "disk_failing"
 
 
 def disk_failing_telemetry_fields(operation: str, evidence: DiskFailingEvidence) -> dict[str, object]:
@@ -182,3 +186,28 @@ def require_confirmation(
     if supplied_confirmation_id(params) == confirmation.confirmation_id:
         return
     raise AppConfirmationRequired(confirmation)
+
+
+def require_disk_failing_confirmation(
+    params: Mapping[str, object],
+    confirmation: ConfirmationRequest,
+) -> None:
+    """require_confirmation for an operation the failing-disk warning applies
+    to (disk_failing_context in its context). When this request found no
+    evidence, a yes to the same operation and parameters with the warning,
+    of either cause, confirms it too: the user agreed to a stronger warning.
+    The evidence can be gone on the confirmed request (a kernel log that
+    could not be read, or MaSt answering only then and the volume filter
+    leaving no line), and asking again would show the plain question, whose
+    default is to go on, without the disk in it. A yes to the plain question
+    still does not confirm a warning, nor a yes to one cause's warning the
+    other's, while the request has evidence of its own."""
+    supplied = supplied_confirmation_id(params)
+    if supplied and _DISK_FAILING_CONTEXT_KEY not in confirmation.context:
+        warned = {
+            _confirmation_id(confirmation.operation, params, {**confirmation.context, _DISK_FAILING_CONTEXT_KEY: cause})
+            for cause in get_args(DiskFailingCause)
+        }
+        if supplied in warned:
+            return
+    require_confirmation(params, confirmation)

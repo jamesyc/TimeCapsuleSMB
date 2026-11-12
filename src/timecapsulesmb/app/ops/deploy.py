@@ -9,7 +9,7 @@ from timecapsulesmb.app.confirmations import (
     disk_failing_confirmation_fields,
     disk_failing_context,
     disk_failing_telemetry_fields,
-    require_confirmation,
+    require_disk_failing_confirmation,
 )
 from timecapsulesmb.core.config import (
     DEFAULTS,
@@ -274,7 +274,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             "rsync_enabled": rsync_enabled,
             **({"disk_failing": True} if disk_failing else {}),
         }
-        require_confirmation(
+        require_disk_failing_confirmation(
             params,
             build_confirmation(
                 operation=operation,
