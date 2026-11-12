@@ -34,7 +34,6 @@ import re
 import shlex
 import time
 
-from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.disk_errors import (
     DISK_NOT_RESPONDING_MESSAGE,
@@ -53,7 +52,7 @@ from timecapsulesmb.device.storage import (
     StorageDeviceError,
     diskd_rpc_conn,
     parse_mast_inventory,
-    parse_mast_plist,
+    payload_on_disk,
     raise_if_acpd_silent,
     read_mast_volumes_with_output_conn,
     wipe_refusal,
@@ -78,9 +77,7 @@ from timecapsulesmb.device.wipe import (
     gpt_tables_command,
     gpt_verdict_description,
     parse_drvctl_geometry,
-    parse_payload_home_probe,
     raw_disk_path,
-    payload_home_probe_command,
     readback_command,
     read_gpt_verdict_conn,
     readback_is_blank,
@@ -418,24 +415,6 @@ def _read_text(connection: SshConnection, command: str, *, timeout: int) -> str 
     return proc.stdout or ""
 
 
-def _payload_on_disk(connection: SshConnection, raw_mast: str, disk: MaStDiskSnapshot) -> bool:
-    """Whether Install comes next: the wiped disk holds (or may hold) the
-    Samba files, or no mounted volume elsewhere holds them. Reads only the
-    volumes already mounted; nothing is mounted or claimed."""
-    volumes = parse_mast_plist(raw_mast)
-    if not volumes:
-        return True
-    output = _read_text(connection, payload_home_probe_command(
-        tuple(volume.volume_root for volume in volumes), MANAGED_PAYLOAD_DIR_NAME,
-    ), timeout=60)
-    states = parse_payload_home_probe(output or "")
-    here = [states.get(volume.volume_root) for volume in volumes if volume.disk_device == disk.device]
-    elsewhere = [states.get(volume.volume_root) for volume in volumes if volume.disk_device != disk.device]
-    if any(state != "no" for state in here):
-        return True
-    return "yes" not in elsewhere
-
-
 def prepare_wipe(connection: SshConnection, *, callbacks: OperationCallbacks) -> WipePlan:
     """Everything before the confirmation, for the internal disk. Reads only."""
     callbacks.stage("read_disks")
@@ -481,7 +460,8 @@ def prepare_wipe(connection: SshConnection, *, callbacks: OperationCallbacks) ->
     callbacks.update(wipe_gpt_verdict=verdict.kind, wipe_gpt_formats=list(verdict.formats))
 
     callbacks.stage("find_payload_home")
-    offer_install = _payload_on_disk(connection, read.raw_output, disk)
+    # Install comes next when the wiped disk holds, or may hold, the files.
+    offer_install = payload_on_disk(connection, disks, disk.device)
     volume_name = erase_volume_name(tuple(partition.name for partition in disk.partitions
                                           if partition.format == "hfs" and partition.name))
     return WipePlan(disk, geometry, offsets, raw_partition, volume_name, verdict, offer_install)

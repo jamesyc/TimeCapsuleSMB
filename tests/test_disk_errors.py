@@ -293,15 +293,30 @@ class RepairTargetTests(unittest.TestCase):
     INTERNAL = "sd0c: error reading fsbn 64 of 64-71 (sd0 bn 64; cn 0 tn 1 sn 1)"
     USB = "sd1a: error writing fsbn 8 of 8-15 (sd1 bn 8; cn 0 tn 0 sn 8)"
     DISKS = (
-        mast_disk("sd0", partitions=(MaStPartitionSnapshot("dk2", "Data", "hfs"),)),
-        mast_disk("sd1", builtin=False, partitions=(MaStPartitionSnapshot("dk5", "USB", "hfs"),)),
+        mast_disk("sd0", partitions=(MaStPartitionSnapshot("dk2", "Data", "hfs", uuid="5c418e94-6028-5b5b-92be-ec4e27902b91"),)),
+        mast_disk("sd1", builtin=False,
+                  partitions=(MaStPartitionSnapshot("dk5", "USB", "hfs", uuid="0e6a7b2d-6a46-5e3f-9f8e-1c2d3b4a5f60"),)),
     )
+    # The payload probe's answer (storage.payload_on_disk): the files on the
+    # internal disk's volume.
+    ON_INTERNAL = "/Volumes/dk2 yes\n/Volumes/dk5 no\n"
 
-    def evidence(self, errors, volume, *, disks=DISKS, problems=()):
+    def evidence(self, errors, volume, *, disks=DISKS, problems=(), payload: str | BaseException = ON_INTERNAL):
+        self.probes: list[str] = []
+
+        def run_ssh(_connection, command, **_kwargs):
+            self.assertIn("mounts=$(/sbin/mount)", command)
+            self.probes.append(command)
+            if isinstance(payload, BaseException):
+                raise payload
+            return mock.Mock(stdout=payload, returncode=0)
+
+        self.mast = mock.Mock(return_value=disks)
         with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
             with mock.patch("timecapsulesmb.device.disk_errors.manager_payload_problems", return_value=problems):
-                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", return_value=disks):
-                    return read_disk_failing_evidence_conn(self.CONNECTION, volume=volume)
+                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", self.mast):
+                    with mock.patch("timecapsulesmb.device.storage.run_ssh", run_ssh):
+                        return read_disk_failing_evidence_conn(self.CONNECTION, volume=volume)
 
     def test_another_disks_errors_do_not_warn(self) -> None:
         for volume, errors in (("/dev/dk2", (self.USB,)), ("dk5", (self.INTERNAL,)),
@@ -319,9 +334,48 @@ class RepairTargetTests(unittest.TestCase):
                 self.assertIn(f"({quoted})", found.text)
 
     def test_another_disks_errors_leave_the_managers_verdict_to_decide(self) -> None:
-        # No line of this disk: the manager's unreadable verdict still warns.
+        # No line of this disk, which holds the files: the manager's
+        # unreadable verdict still warns. MaSt is read once for both.
         found = self.evidence((self.USB,), "dk2", problems=(probe.DISK_PAYLOAD_UNREADABLE,))
         self.assertEqual(found, UNREADABLE_EVIDENCE)
+        self.mast.assert_called_once_with(self.CONNECTION)
+
+    def test_the_managers_verdict_counts_only_for_the_disk_that_may_hold_the_files(self) -> None:
+        # The verdict is about the disk holding the TimeCapsuleSMB files: no
+        # reason to warn before repairing another one.
+        unreadable = (probe.DISK_PAYLOAD_UNREADABLE,)
+        cases = (
+            ("USB volume, files on the internal disk", (), "dk5", self.ON_INTERNAL, None),
+            ("USB volume, internal disk's lines left out", (self.INTERNAL,), "dk5", self.ON_INTERNAL, None),
+            ("the files' volume", (), "/dev/dk2", self.ON_INTERNAL, UNREADABLE_EVIDENCE),
+            ("USB volume holding the files", (), "dk5", "/Volumes/dk2 no\n/Volumes/dk5 yes\n", UNREADABLE_EVIDENCE),
+            # Nothing says they are elsewhere: the internal volume is not
+            # mounted, or the probe did not answer.
+            ("internal volume unmounted", (), "dk5", "/Volumes/dk2 unmounted\n/Volumes/dk5 no\n",
+             UNREADABLE_EVIDENCE),
+            ("probe unanswered", (), "dk5", SshNetworkError("reset"), UNREADABLE_EVIDENCE),
+        )
+        for name, errors, volume, payload, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(self.evidence(errors, volume, problems=unreadable, payload=payload), expected)
+                self.mast.assert_called_once_with(self.CONNECTION)
+                self.assertEqual(len(self.probes), 1)
+
+    def test_an_unknown_disk_keeps_the_managers_verdict(self) -> None:
+        # MaSt unread, or a volume it does not list: which disk the repair is
+        # about is unknown, so the verdict warns, as before, without a probe.
+        for disks, volume in ((None, "dk5"), (self.DISKS, "dk9")):
+            with self.subTest(disks=disks is not None, volume=volume):
+                found = self.evidence((), volume, disks=disks, problems=(probe.DISK_PAYLOAD_UNREADABLE,))
+                self.assertEqual(found, UNREADABLE_EVIDENCE)
+                self.assertEqual(self.probes, [])
+
+    def test_no_verdict_reads_nothing_more(self) -> None:
+        # Without kernel lines or an unreadable verdict, neither MaSt nor the
+        # mounts are read.
+        self.assertIsNone(self.evidence((), "dk5"))
+        self.mast.assert_not_called()
+        self.assertEqual(self.probes, [])
 
     def test_without_mast_every_line_counts_as_before(self) -> None:
         # MaSt unread, or a volume it does not list: which disk holds the

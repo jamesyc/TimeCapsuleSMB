@@ -329,7 +329,11 @@ def read_disk_failing_evidence_conn(
     lines). With `volume` (Disk Repair's), only the lines of the disk that
     holds it: another disk's errors are no reason to warn about repairing
     this one. A volume MaSt does not list, or a MaSt that did not answer,
-    leaves every line in, as before the volume was known.
+    leaves every line in, as before the volume was known. The manager's
+    verdict is about the disk holding the TimeCapsuleSMB files, so with
+    `volume` it counts only when that disk holds, or may hold, them
+    (storage.payload_on_disk); a MaSt that did not answer, or does not list
+    the volume, keeps it.
 
     `update_fields` records `disk_failing_kernel_log="unread"` for telemetry
     when the kernel log could not be read: the warning then rests on the
@@ -342,8 +346,10 @@ def read_disk_failing_evidence_conn(
         errors = internal_disk_errors(errors, internal_device)
         if errors:
             return DiskFailingEvidence("disk_failing", _kernel_text(errors[-1]), disk="internal", wipeable=True)
+    disks: tuple[MaStDiskSnapshot, ...] | None = None
+    mast_read = False
     if errors:
-        disks = read_disk_inventory_conn(connection)
+        disks, mast_read = read_disk_inventory_conn(connection), True
         errors = disk_errors_of_volume(errors, disks, volume)
         if errors:
             return kernel_evidence(errors, disks=disks)
@@ -353,7 +359,26 @@ def read_disk_failing_evidence_conn(
         problems = manager_payload_problems(connection)
     except TransportError:
         return None
-    return UNREADABLE_EVIDENCE if any(problem in DISK_UNREADABLE_PROBLEMS for problem in problems or ()) else None
+    if not any(problem in DISK_UNREADABLE_PROBLEMS for problem in problems or ()):
+        return None
+    if volume:
+        if not mast_read:
+            disks = read_disk_inventory_conn(connection)
+        if not _payload_may_be_on_volume_disk(connection, disks, volume):
+            return None
+    return UNREADABLE_EVIDENCE
+
+
+def _payload_may_be_on_volume_disk(
+    connection: SshConnection, disks: tuple[MaStDiskSnapshot, ...] | None, volume: str,
+) -> bool:
+    """Whether the disk holding `volume` holds, or may hold, the
+    TimeCapsuleSMB files (storage.payload_on_disk). Yes when that disk is
+    unknown: MaSt unread (`disks` None), or a volume it does not list."""
+    # storage imports this module.
+    from timecapsulesmb.device.storage import payload_on_disk
+    target = disk_of_volume(disks, volume) if disks is not None else None
+    return target is None or payload_on_disk(connection, disks, target.device)
 
 
 DiskFailingVariant = Literal["wipe", "usb", "plain"]

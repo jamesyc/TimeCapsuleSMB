@@ -1460,6 +1460,8 @@ class PrepareWipeTests(unittest.TestCase):
             mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=ps_listing(jobs)),
             mock.patch("timecapsulesmb.device.acpd.pause"),
             mock.patch.object(wipe_disk, "run_ssh", side_effect=run_ssh),
+            # Where the Samba files are (storage.payload_on_disk).
+            mock.patch("timecapsulesmb.device.storage.run_ssh", side_effect=run_ssh),
             mock.patch.object(wipe_disk, "read_gpt_verdict_conn", return_value=wipe.GptVerdict("apple_hfs", ("apple_hfs",))),
             mock.patch.object(wipe_disk, "disks_with_apple_labels",
                               return_value=wipe_disk.OtherDisks(tuple(item.device for item in others), labelled or {}))
@@ -1502,6 +1504,16 @@ class PrepareWipeTests(unittest.TestCase):
         self.assertTrue(self.prepare(disk(), payload="/Volumes/dk2 unmounted\n").offer_install)
         # Nothing holds it at all: Install too.
         self.assertTrue(self.prepare(disk(), payload="/Volumes/dk2 no\n").offer_install)
+        usb = disk(device="sd1", builtin=False, uuid=USB_UUID,
+                   partitions=(MaStPartitionSnapshot("dk5", "USB", "hfs", uuid=NEW_VOLUME_UUID),))
+        # A USB volume holds them: no Install, unless this disk may too.
+        self.assertFalse(self.prepare(disk(), payload="/Volumes/dk2 no\n/Volumes/dk5 yes\n", others=(usb,)).offer_install)
+        self.assertTrue(self.prepare(disk(), payload="/Volumes/dk2 unmounted\n/Volumes/dk5 yes\n",
+                                     others=(usb,)).offer_install)
+        # Both volumes were looked at in one read.
+        [probe] = [command for command in self.commands if "mounts=$(/sbin/mount)" in command]
+        self.assertIn("/Volumes/dk2", probe)
+        self.assertIn("/Volumes/dk5", probe)
 
     def test_refused_disks(self) -> None:
         cases = {

@@ -10,11 +10,13 @@ import time
 import uuid
 from typing import Literal
 
+from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device.disk_errors import DISK_NOT_RESPONDING_MESSAGE, disk_stall_facts
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.processes import disk_io_stalls
+from timecapsulesmb.device.wipe import parse_payload_home_probe, payload_home_probe_command
 from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
@@ -157,6 +159,40 @@ def wipe_refusal(disk: MaStDiskSnapshot) -> WipeRefusal | None:
     if disk.soft_disconnected:
         return "soft_disconnected"
     return None
+
+
+PAYLOAD_HOME_PROBE_TIMEOUT_SECONDS = 60
+
+
+def payload_on_disk(connection: SshConnection, disks: tuple[MaStDiskSnapshot, ...], disk_device: str) -> bool:
+    """Whether the disk `disk_device` holds, or may hold, the TimeCapsuleSMB
+    files: a volume of it has them, is not mounted, or was not read, or no
+    mounted volume elsewhere has them. `disks`: MaSt's, whose HFS volumes
+    (those parse_mast_plist lists) are looked at. Reads only the volumes
+    already mounted; nothing is mounted or claimed. Wipe Internal Disk
+    offers Install afterwards when this is so, and the failing-disk warning
+    applies the manager's verdict, which is about the disk holding the
+    files, only to such a disk."""
+    roots = {
+        f"/Volumes/{partition.device}": disk.device
+        for disk in disks for partition in disk.partitions
+        if partition.device.startswith("dk") and partition.format == "hfs" and partition.uuid
+    }
+    if not roots:
+        return True
+    command = payload_home_probe_command(tuple(roots), MANAGED_PAYLOAD_DIR_NAME)
+    try:
+        proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(command)}", check=False,
+                       timeout=PAYLOAD_HOME_PROBE_TIMEOUT_SECONDS)
+        output = proc.stdout or ""
+    except TransportError:
+        output = ""
+    states = parse_payload_home_probe(output)
+    here = [states.get(root) for root, device in roots.items() if device == disk_device]
+    elsewhere = [states.get(root) for root, device in roots.items() if device != disk_device]
+    if any(state != "no" for state in here):
+        return True
+    return "yes" not in elsewhere
 
 
 @dataclass(frozen=True)
