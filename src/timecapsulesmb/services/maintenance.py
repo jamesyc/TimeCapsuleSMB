@@ -14,7 +14,8 @@ from timecapsulesmb.deploy.planner import UninstallPlan, build_runtime_start_act
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.disk_errors import PROCESS_LIST_UNREADABLE_MESSAGE, DiskFailingError, DiskNotRespondingError
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, DiskPayloadError, RsyncNotRunningError
-from timecapsulesmb.device.processes import DISK_CHECK_UCOMM, render_process_present
+from timecapsulesmb.device import acpd
+from timecapsulesmb.device.processes import DISK_CHECK_UCOMM, disk_io_stalls, render_process_present
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume, VolumeClaims
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import (
@@ -25,6 +26,7 @@ from timecapsulesmb.services.activation import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError, followed, reboot_device
+from timecapsulesmb.services.runtime import disk_stall_error
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
@@ -38,7 +40,7 @@ UNINSTALL_FILES_REMAIN_MESSAGE = "Managed TimeCapsuleSMB files are still present
 FSCK_STATUS_PREFIX = "tcapsule-fsck: fsck_hfs exit status "
 FSCK_DID_NOT_RUN_MESSAGE = (
     "fsck did not run: file sharing could not be stopped, or the connection "
-    "ended before fsck_hfs finished."
+    "ended before fsck_hfs finished. File sharing may be off until the device restarts."
 )
 FSCK_NOT_UNMOUNTED_LINE = "tcapsule-fsck: volume not unmounted"
 FSCK_NOT_UNMOUNTED_MESSAGE = (
@@ -504,6 +506,13 @@ def run_fsck(
         callbacks.stage("check_in_memory_volumes")
         storage_service.require_no_in_memory_volumes(connection, callbacks)
     callbacks.stage("run_fsck")
+    # The script stops file sharing first, and a process stuck on the disk
+    # does not stop: refuse before anything is stopped. This look comes after
+    # any confirmation, and a repair without a restart has no other.
+    stalls = disk_io_stalls(acpd.read_processes(connection))
+    if stalls:
+        callbacks.debug(disk_io_stalls=[stall.describe() for stall in stalls])
+        raise disk_stall_error(stalls)
     script = build_remote_fsck_script(target.device, target.mountpoint)
     log = FsckOutputLog(callbacks, now=now)
     status = None

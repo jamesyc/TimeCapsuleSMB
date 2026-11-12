@@ -749,7 +749,7 @@ Run `doctor` after a deploy or a reboot. Its SMB checks create, change and remov
 
 ### `fsck`
 
-`tcapsule fsck` runs `fsck_hfs` on the device against one HFS volume. It mounts and wakes Apple's volumes, picks a volume or asks for one, stops TimeCapsuleSMB and Apple's file sharing (and gives up if anything will not stop), unmounts the disk, runs `fsck_hfs`, and reboots. Unless `--no-reboot` is given, it refuses to start while a volume exists only in memory, because the reboot would take it (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)).
+`tcapsule fsck` runs `fsck_hfs` on the device against one HFS volume. It mounts and wakes Apple's volumes, picks a volume or asks for one, stops TimeCapsuleSMB and Apple's file sharing (and gives up if anything will not stop), unmounts the disk, runs `fsck_hfs`, and reboots. Unless `--no-reboot` is given, it refuses to start while a volume exists only in memory, because the reboot would take it (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)). With or without `--no-reboot`, it refuses with `disk_not_responding` before stopping anything when a process has waited minutes on the disk, because that process would not stop and file sharing would be left half off.
 
 - A repair can take an hour or more on a large disk, and then checks the volume again. Progress shows each `fsck_hfs` step as it starts.
 - If the SSH session drops, `fsck_hfs` keeps running on the device and file sharing stays off until it ends; the command reports `fsck_session_dropped`. A second repair is refused while one is running.

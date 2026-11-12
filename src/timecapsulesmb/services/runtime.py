@@ -360,6 +360,17 @@ def ssh_port_error(host: str) -> str | None:
     return tcp_connect_error(host, SSH_PORT, SSH_PORT_LOOK_TIMEOUT_SECONDS)
 
 
+def disk_stall_error(stalls: Iterable[StuckProcess]) -> DeviceAccessError:
+    """The refusal of work that would wait on a disk that stopped responding
+    (processes.disk_io_stalls), before anything changed."""
+    stalls = tuple(stalls)
+    return DeviceAccessError(
+        f"{DISK_NOT_RESPONDING_MESSAGE} Nothing was changed.",
+        code=disk_stall_code(stalls),
+        detail=disk_stall_facts(stalls),
+    )
+
+
 def require_acpd_ready(
     connection: SshConnection,
     callbacks: OperationCallbacks,
@@ -417,11 +428,7 @@ def require_acpd_ready(
     except DeviceRestartingError as exc:
         raise DeviceAccessError(f"{exc.message} Nothing was changed.", code=exc.code) from None
     if stalls:
-        raise DeviceAccessError(
-            f"{DISK_NOT_RESPONDING_MESSAGE} Nothing was changed.",
-            code=disk_stall_code(stalls),
-            detail=disk_stall_facts(stalls),
-        )
+        raise disk_stall_error(stalls)
     if problems:
         details = {key: value for problem in problems for key, value in problem.details.items()}
         callbacks.debug(acpd_problems=[problem.code for problem in problems], **details)

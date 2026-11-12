@@ -8422,6 +8422,26 @@ MaSt = (
                 self.assertEqual(error["code"], "remote_error")
                 self.assertIn("fsck did not run", error["message"])
 
+    def test_fsck_without_reboot_refuses_a_stuck_disk_before_stopping_file_sharing(self) -> None:
+        # Its only preflight is in run_fsck: smbd stuck on the disk would not
+        # stop, and the script would leave file sharing half off (5996b0f8).
+        from timecapsulesmb.device.processes import PS_LISTING_END
+
+        listing = f"  8115 1 8115 D 127 biowait 0:04.00 smbd\n{PS_LISTING_END}"
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing):
+            rc, collector, reboot = self._run_confirmed_fsck(
+                "tcapsule-fsck: fsck_hfs exit status 0\n", ssh_returncode=0, fsck_runs=False, no_reboot=True,
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertNotIn("request", reboot.calls)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "disk_not_responding")
+        self.assertIn("Nothing was changed.", error["message"])
+        # A refusal the operation expects, not a crash.
+        self.assertNotIn("traceback", error["debug"])
+        self.assertEqual(error["debug"]["disk_io_stalls"], ["smbd (pid 8115) waiting on biowait for 127+ s"])
+
     def test_fsck_while_an_earlier_repair_still_runs_says_so_and_offers_disk_repair_later(self) -> None:
         # Also when the script could not tell: its wait-and-retry way out fits
         # both, and the message says which.

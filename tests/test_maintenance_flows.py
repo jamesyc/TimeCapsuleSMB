@@ -144,6 +144,44 @@ class RunFsckTests(FsckHarness, unittest.TestCase):
         self.guard.assert_not_called()
         self.assertNotIn("check_in_memory_volumes", recorder.stages)
 
+    def stalled(self, *rows: str) -> mock._patch:
+        from timecapsulesmb.device.processes import PS_LISTING_END
+
+        return mock.patch("timecapsulesmb.device.acpd.read_processes", return_value="\n".join((*rows, PS_LISTING_END)))
+
+    def test_a_process_stuck_on_the_disk_refuses_before_file_sharing_is_stopped(self) -> None:
+        # The script's first step stops file sharing, and an smbd stuck on the
+        # disk would not stop, leaving sharing half off (5996b0f8). A repair
+        # without a restart has no other check.
+        for reboot in (False, True):
+            with self.subTest(reboot=reboot), self.stalled("  8115 1 8115 D 127 biowait 0:04.00 smbd"):
+                with self.assertRaises(DeviceError) as raised:
+                    self.run_fsck("tcapsule-fsck: fsck_hfs exit status 0\n", reboot=reboot)
+                self.assertEqual(raised.exception.code, ErrorCode.DISK_NOT_RESPONDING)
+                self.assertIn("Nothing was changed.", str(raised.exception))
+                self.assertNotIn("run_ssh", self.last_device.calls)
+                self.assertNotIn("request", self.last_device.calls)
+
+    def test_a_stuck_disk_check_keeps_its_own_code(self) -> None:
+        from timecapsulesmb.device.disk_errors import disk_stall_code
+        from timecapsulesmb.device.processes import disk_io_stalls
+
+        row = "  4211 4200 4200 D 127 biowait 1:12.04 fsck_hfs"
+        with self.stalled(row), self.assertRaises(DeviceError) as raised:
+            self.run_fsck("tcapsule-fsck: fsck_hfs exit status 0\n", reboot=False)
+        self.assertEqual(raised.exception.code, disk_stall_code(disk_io_stalls(row)))
+        self.assertNotEqual(raised.exception.code, ErrorCode.DISK_NOT_RESPONDING)
+
+    def test_a_busy_disk_or_an_unread_process_list_goes_on_to_the_script(self) -> None:
+        # A process waiting briefly on the disk is not stuck; a list that did
+        # not come back is refused by the script's own check.
+        for name, listing in (("brief wait", self.stalled("  8115 1 8115 D 3 biowait 0:04.00 smbd")),
+                              ("unread", mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=""))):
+            with self.subTest(name), listing:
+                outcome, _recorder, _run_ssh, _device = self.run_fsck(
+                    "tcapsule-fsck: fsck_hfs exit status 0\n", reboot=False)
+                self.assertEqual(outcome.status, 0)
+
     def test_clean_fsck_then_requests_the_reboot_and_waits(self) -> None:
         outcome, recorder, run_ssh, device = self.run_fsck(
             "--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n")

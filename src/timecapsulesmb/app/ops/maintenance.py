@@ -320,6 +320,8 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         )
     except RebootFlowError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc
+    except DeviceError as exc:
+        raise device_operation_error(context, exc) from exc
     if outcome.status is None:
         raise AppOperationError(outcome.failure or FSCK_DID_NOT_RUN_MESSAGE, code=outcome.failure_code or ErrorCode.REMOTE_ERROR)
     if outcome.runtime_restart_error is not None:
