@@ -1186,15 +1186,21 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
+    # Apple's disk service lists no volume of the disk, so Disk Repair, which
+    # repairs mounted volumes, has nothing to work on: wiping it is the way out.
     ("deploy", ErrorCode.DEPLOY_DISK_NOT_MOUNTED): RecoveryInfo(
         "HFS disk not mounted",
         "The disk has an HFS volume, but the device has not mounted it, and did not when asked.",
         (
             "Wait a minute, then run “Install / Update Samba” again.",
             "If the disk still does not mount, try restarting the device.",
+            "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything "
+            "on the internal disk and formats it for the device.",
+            "Run “Install / Update Samba” again after the wipe.",
         ),
         retryable=True,
         suggested_operation="deploy",
+        action_ids=("wipe_disk",),
     ),
     # Deploy offers this only when uninstall deletes every legacy database
     # (services.deploy), so the second step cannot fail the same way.

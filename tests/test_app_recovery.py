@@ -301,6 +301,15 @@ class AppRecoveryTests(unittest.TestCase):
         self.assertFalse(any("Checkup" in step for step in configure["actions"]))
         self.assertIn("try again", configure["actions"][-1])
 
+    def test_a_disk_apple_will_not_mount_offers_the_wipe(self) -> None:
+        # Apple's disk service lists no volume of it, so Disk Repair, which
+        # repairs mounted volumes, finds nothing: the wipe is the way out.
+        recovery = recovery_for("deploy", "deploy_disk_not_mounted")
+        self.assertEqual(recovery["action_ids"], ["wipe_disk"])
+        self.assertIn("“Wipe Internal Disk”", recovery["actions"][2])
+        self.assertIn("holds nothing you need", recovery["actions"][2])
+        self.assertEqual(recovery["actions"][3], "Run “Install / Update Samba” again after the wipe.")
+
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
         recovery = recovery_for("deploy", "reboot_not_finished", stage="wait_for_reboot_up")
 

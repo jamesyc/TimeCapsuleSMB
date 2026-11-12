@@ -874,6 +874,8 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "磁盘上有 HFS 卷，但设备尚未挂载它，请求挂载时也没有挂载。";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "等待一分钟，然后重新运行“安装 / 更新 Samba”。";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.2" = "如果磁盘仍未挂载，请尝试重启设备。";
+"backend.recovery.deploy.deploy_disk_not_mounted.action.3" = "如果它是内部磁盘且上面没有你需要的内容，请使用“重新格式化内部磁盘”。它会删除内部磁盘上的所有内容，并为设备格式化该磁盘。";
+"backend.recovery.deploy.deploy_disk_not_mounted.action.4" = "重新格式化完成后，再次运行“安装 / 更新 Samba”。";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "磁盘未保持挂载";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "HFS 卷已挂载，但设备拒绝为 TimeCapsuleSMB 保持其挂载状态，因此它可能会在安装 / 更新过程中被卸载。";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "等待一分钟，然后重新运行“安装 / 更新 Samba”。";

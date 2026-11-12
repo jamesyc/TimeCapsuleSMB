@@ -874,6 +874,8 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "De schijf heeft een HFS-volume, maar het apparaat heeft het niet gekoppeld, ook niet toen daarom werd gevraagd.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Wacht een minuut en voer ‘Samba installeren / bijwerken’ daarna opnieuw uit.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.2" = "Als de schijf nog steeds niet wordt gekoppeld, probeer het apparaat dan te herstarten.";
+"backend.recovery.deploy.deploy_disk_not_mounted.action.3" = "Als het de interne schijf is en er niets op staat dat u nodig hebt, gebruik dan ‘Interne schijf opnieuw formatteren’. Daarmee wordt alles op de interne schijf gewist en wordt hij geformatteerd voor het apparaat.";
+"backend.recovery.deploy.deploy_disk_not_mounted.action.4" = "Voer na het formatteren ‘Samba installeren / bijwerken’ opnieuw uit.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Schijf blijft niet gekoppeld";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Er is een HFS-volume gekoppeld, maar het apparaat wilde het niet gekoppeld houden voor TimeCapsuleSMB, waardoor het tijdens het installeren ontkoppeld zou kunnen worden.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Wacht een minuut en voer ‘Samba installeren / bijwerken’ daarna opnieuw uit.";
