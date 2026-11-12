@@ -779,6 +779,11 @@
 "backend.recovery.configure.client_left_network.message" = "При включении SSH устройство перезагружается. Во время перезагрузки этот Mac перешел в другую сеть и не вернулся, поэтому TimeCapsuleSMB не смог увидеть, вернулось ли устройство.";
 "backend.recovery.configure.client_left_network.action.1" = "Снова подключите этот Mac к сети устройства по Wi-Fi или через один из его портов LAN.";
 "backend.recovery.configure.client_left_network.action.2" = "Затем повторите попытку. Если SSH включился, добавление устройства не перезагрузит его снова.";
+"backend.recovery.configure.device_probe_failed.title" = "Не удалось проверить устройство";
+"backend.recovery.configure.device_probe_failed.message" = "TimeCapsuleSMB вошел по SSH, но не смог прочитать системные сведения устройства.";
+"backend.recovery.configure.device_probe_failed.action.1" = "Повторите попытку.";
+"backend.recovery.configure.device_probe_failed.action.2" = "Попробуйте перезагрузить устройство в Утилите AirPort или отключите его от питания на 10 секунд и снова подключите.";
+"backend.recovery.configure.device_probe_failed.action.3" = "Подождите 2 минуты, пока устройство запустится, затем повторите попытку.";
 "backend.recovery.configure.restart_stuck.title" = "Устройство не вернулось в сеть";
 "backend.recovery.configure.restart_stuck.message" = "При включении SSH устройство перезагружается. Оно пропало из сети и не вернулось, хотя этот Mac оставался в этой сети: возможно, оно зависло посреди перезагрузки.";
 "backend.recovery.configure.restart_stuck.action.1" = "Отключите устройство, подождите 10 секунд, затем снова подключите его.";

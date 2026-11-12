@@ -289,8 +289,9 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             ErrorCode.ACPD_BROKEN,
         ):
             raise AppOperationError(str(exc), code=exc.code) from exc
+        # An SSH login that failed in a way of its own, as deploy reports it.
         if exc.code in (ErrorCode.DEVICE_IDENTITY_MISMATCH, ErrorCode.LOCAL_NETWORK_FILTERED, ErrorCode.SSH_CLIENT_FAILED,
-                        ErrorCode.ACPD_QUIT):
+                        ErrorCode.ACPD_QUIT, ErrorCode.SSH_TRANSPORT_FAILED, ErrorCode.DEVICE_PROBE_FAILED):
             raise AppOperationError(str(exc), code=exc.code) from exc
         if exc.code == ErrorCode.UNSUPPORTED_DEVICE:
             raise AppOperationError(str(exc), code=ErrorCode.UNSUPPORTED_DEVICE) from exc

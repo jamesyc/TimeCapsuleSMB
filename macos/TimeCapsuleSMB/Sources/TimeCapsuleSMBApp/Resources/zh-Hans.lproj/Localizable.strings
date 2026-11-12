@@ -779,6 +779,11 @@
 "backend.recovery.configure.client_left_network.message" = "启用 SSH 会重启设备。设备重启期间，此 Mac 切换到了另一个网络且没有回来，因此 TimeCapsuleSMB 无法看到设备是否已恢复。";
 "backend.recovery.configure.client_left_network.action.1" = "通过 Wi-Fi 或设备的某个 LAN 端口将此 Mac 重新连接到设备的网络。";
 "backend.recovery.configure.client_left_network.action.2" = "然后请重试。如果 SSH 已启用，添加设备时不会再次重启它。";
+"backend.recovery.configure.device_probe_failed.title" = "设备检查失败";
+"backend.recovery.configure.device_probe_failed.message" = "TimeCapsuleSMB 已通过 SSH 登录，但无法读取设备的系统信息。";
+"backend.recovery.configure.device_probe_failed.action.1" = "请重试。";
+"backend.recovery.configure.device_probe_failed.action.2" = "请尝试在 AirPort 实用工具中重启设备，或拔掉电源 10 秒钟后再插回。";
+"backend.recovery.configure.device_probe_failed.action.3" = "等待 2 分钟让设备完成启动，然后重试。";
 "backend.recovery.configure.restart_stuck.title" = "设备尚未恢复";
 "backend.recovery.configure.restart_stuck.message" = "启用 SSH 会重启设备。设备离开了网络，一直没有回来，而此 Mac 一直在该网络中：设备可能在重启过程中卡住了。";
 "backend.recovery.configure.restart_stuck.action.1" = "拔掉设备电源，等待 10 秒，然后重新插上。";

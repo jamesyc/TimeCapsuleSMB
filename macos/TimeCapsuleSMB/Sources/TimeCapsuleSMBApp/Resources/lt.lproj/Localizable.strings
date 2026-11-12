@@ -779,6 +779,11 @@
 "backend.recovery.configure.client_left_network.message" = "Įjungus SSH įrenginys paleidžiamas iš naujo. Kol jis buvo paleidžiamas iš naujo, šis Mac persijungė į kitą tinklą ir negrįžo, todėl TimeCapsuleSMB negalėjo matyti, ar įrenginys grįžo.";
 "backend.recovery.configure.client_left_network.action.1" = "Vėl prijunkite šį Mac prie įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų.";
 "backend.recovery.configure.client_left_network.action.2" = "Tada bandykite dar kartą. Jei SSH įsijungė, pridedant įrenginį jis daugiau nebus paleidžiamas iš naujo.";
+"backend.recovery.configure.device_probe_failed.title" = "Įrenginio patikra nepavyko";
+"backend.recovery.configure.device_probe_failed.message" = "TimeCapsuleSMB prisijungė per SSH, bet negalėjo nuskaityti įrenginio sistemos informacijos.";
+"backend.recovery.configure.device_probe_failed.action.1" = "Bandykite dar kartą.";
+"backend.recovery.configure.device_probe_failed.action.2" = "Pabandykite paleisti įrenginį iš naujo per AirPort Utility arba atjunkite jį nuo maitinimo 10 sekundžių ir vėl prijunkite.";
+"backend.recovery.configure.device_probe_failed.action.3" = "Palaukite 2 minutes, kol įrenginys pasileis, tada bandykite dar kartą.";
 "backend.recovery.configure.restart_stuck.title" = "Įrenginys negrįžo į tinklą";
 "backend.recovery.configure.restart_stuck.message" = "Įjungus SSH įrenginys paleidžiamas iš naujo. Jis dingo iš tinklo ir negrįžo, nors šis Mac liko tame tinkle: galbūt jis užstrigo paleidimo iš naujo viduryje.";
 "backend.recovery.configure.restart_stuck.action.1" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";

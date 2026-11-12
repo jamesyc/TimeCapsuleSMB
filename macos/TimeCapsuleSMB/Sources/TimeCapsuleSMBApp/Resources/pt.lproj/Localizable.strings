@@ -779,6 +779,11 @@
 "backend.recovery.configure.client_left_network.message" = "Ativar o SSH reinicia o dispositivo. Enquanto ele reiniciava, este Mac passou para outra rede e não voltou, então o TimeCapsuleSMB não pôde ver o dispositivo voltar.";
 "backend.recovery.configure.client_left_network.action.1" = "Conecte este Mac novamente à rede do dispositivo por Wi-Fi ou por uma de suas portas LAN.";
 "backend.recovery.configure.client_left_network.action.2" = "Depois tente novamente. Se o SSH foi ativado, adicionar o dispositivo não o reinicia de novo.";
+"backend.recovery.configure.device_probe_failed.title" = "Falha na verificação do dispositivo";
+"backend.recovery.configure.device_probe_failed.message" = "O TimeCapsuleSMB entrou por SSH, mas não conseguiu ler as informações do sistema do dispositivo.";
+"backend.recovery.configure.device_probe_failed.action.1" = "Tente novamente.";
+"backend.recovery.configure.device_probe_failed.action.2" = "Tente reiniciar o dispositivo no Utilitário AirPort, ou desconecte-o da tomada por 10 segundos e conecte-o de novo.";
+"backend.recovery.configure.device_probe_failed.action.3" = "Aguarde 2 minutos até o dispositivo iniciar e tente novamente.";
 "backend.recovery.configure.restart_stuck.title" = "O dispositivo não voltou";
 "backend.recovery.configure.restart_stuck.message" = "Ativar o SSH reinicia o dispositivo. Ele saiu da rede e não voltou, enquanto este Mac continuou nessa rede: talvez tenha travado no meio da reinicialização.";
 "backend.recovery.configure.restart_stuck.action.1" = "Desconecte o dispositivo, aguarde 10 segundos e conecte-o novamente.";

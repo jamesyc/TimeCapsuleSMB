@@ -1157,6 +1157,18 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
     ),
+    # Add Device logged in but could not read the device: it has no saved
+    # device for a Checkup, so try again, then restart the device.
+    ("configure", ErrorCode.DEVICE_PROBE_FAILED): RecoveryInfo(
+        "Device check failed",
+        "TimeCapsuleSMB logged in over SSH but could not read the device's system information.",
+        (
+            "Try again.",
+            "Try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in.",
+            _START_UP_THEN_RETRY_STEP,
+        ),
+        retryable=True,
+    ),
     ("configure", ErrorCode.RESTART_STUCK): RecoveryInfo(
         _RESTART_STUCK_TITLE,
         "Turning on SSH restarts the device. It went off the network and has not come back, while this Mac stayed "

@@ -4875,6 +4875,37 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["recovery"]["action_ids"], ["replace_password"])
         self.assertNotIn("badpw", json.dumps(collector.events))
 
+    def test_configure_reports_each_ssh_login_failure_with_its_own_code(self) -> None:
+        # The same failures deploy names: a connection the device dropped
+        # before login, or a device that logged in but could not be read.
+        # Each card says what to do; remote_error's says only to try again.
+        # Add Device has no saved device for a Checkup, so no card offers one.
+        cases = (
+            (SshAccessStatus.TRANSPORT_FAILED, KEX_CLOSED_ERROR, "ssh_transport_failed", "ssh_transport_failed"),
+            (SshAccessStatus.TRANSPORT_FAILED, "Connection closed by 10.0.0.2 port 22", "ssh_transport_failed",
+             "ssh_transport_failed"),
+            (SshAccessStatus.DEVICE_PROBE_FAILED, "Failed to determine remote device OS compatibility.",
+             "device_probe_failed", "configure.device_probe_failed"),
+            (SshAccessStatus.CLIENT_FAILED, "Upgrade OpenSSH", "ssh_client_failed", "ssh_client_failed"),
+        )
+        for status, message, code, key in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state",
+                                return_value=failed_probe_state(status, message)):
+                    rc = service.run_api_request(
+                        {"operation": "configure",
+                         "params": {"config": str(Path(tmp) / ".env"), "host": "root@10.0.0.2", "password": "pw"}},
+                        collector.sink,
+                    )
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], code)
+                self.assertEqual(error["recovery"]["localization_key"], key)
+                self.assertNotIn("run_checkup", error["recovery"]["action_ids"])
+                self.assertFalse(any("Checkup" in step for step in error["recovery"]["actions"]))
+                self.assertFalse((Path(tmp) / ".env").exists())
+
     def test_configure_reports_ssh_algorithm_failure_without_password_rejection(self) -> None:
         collector = CollectingSink()
         ssh_error = (

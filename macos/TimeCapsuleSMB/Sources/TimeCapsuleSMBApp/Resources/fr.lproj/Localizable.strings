@@ -779,6 +779,11 @@
 "backend.recovery.configure.client_left_network.message" = "L’activation de SSH redémarre l’appareil. Pendant ce redémarrage, ce Mac est passé sur un autre réseau et n’est pas revenu : TimeCapsuleSMB n’a donc pas pu voir l’appareil revenir.";
 "backend.recovery.configure.client_left_network.action.1" = "Reconnectez ce Mac au réseau de l’appareil en Wi-Fi ou par l’un de ses ports LAN.";
 "backend.recovery.configure.client_left_network.action.2" = "Puis réessayez. Si SSH a été activé, l’ajout de l’appareil ne le redémarre pas une nouvelle fois.";
+"backend.recovery.configure.device_probe_failed.title" = "Échec de la vérification de l’appareil";
+"backend.recovery.configure.device_probe_failed.message" = "TimeCapsuleSMB s’est connecté par SSH, mais n’a pas pu lire les informations système de l’appareil.";
+"backend.recovery.configure.device_probe_failed.action.1" = "Réessayez.";
+"backend.recovery.configure.device_probe_failed.action.2" = "Essayez de redémarrer l’appareil dans Utilitaire AirPort, ou débranchez-le pendant 10 secondes puis rebranchez-le.";
+"backend.recovery.configure.device_probe_failed.action.3" = "Attendez 2 minutes que l’appareil démarre, puis réessayez.";
 "backend.recovery.configure.restart_stuck.title" = "L’appareil n’est pas revenu";
 "backend.recovery.configure.restart_stuck.message" = "L’activation de SSH redémarre l’appareil. Il a quitté le réseau et n’est pas revenu, alors que ce Mac est resté sur ce réseau : il s’est peut-être bloqué en plein redémarrage.";
 "backend.recovery.configure.restart_stuck.action.1" = "Débranchez l’appareil, attendez 10 secondes, puis rebranchez-le.";

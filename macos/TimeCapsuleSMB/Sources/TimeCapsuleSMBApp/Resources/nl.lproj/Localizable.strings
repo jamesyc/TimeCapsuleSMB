@@ -779,6 +779,11 @@
 "backend.recovery.configure.client_left_network.message" = "Door SSH in te schakelen start het apparaat opnieuw op. Tijdens de herstart is deze Mac naar een ander netwerk overgestapt en niet teruggekomen. Daardoor kon TimeCapsuleSMB niet zien of het apparaat terug is.";
 "backend.recovery.configure.client_left_network.action.1" = "Verbind deze Mac opnieuw via Wi-Fi of een van de LAN-poorten van het apparaat met het netwerk van het apparaat.";
 "backend.recovery.configure.client_left_network.action.2" = "Probeer het daarna opnieuw. Als SSH is ingeschakeld, start het toevoegen van het apparaat het niet nog eens opnieuw op.";
+"backend.recovery.configure.device_probe_failed.title" = "Apparaatcontrole mislukt";
+"backend.recovery.configure.device_probe_failed.message" = "TimeCapsuleSMB is via SSH ingelogd, maar kon de systeeminformatie van het apparaat niet lezen.";
+"backend.recovery.configure.device_probe_failed.action.1" = "Probeer het opnieuw.";
+"backend.recovery.configure.device_probe_failed.action.2" = "Probeer het apparaat te herstarten in het AirPort-configuratieprogramma, of haal de stekker er 10 seconden uit en steek hem er weer in.";
+"backend.recovery.configure.device_probe_failed.action.3" = "Wacht 2 minuten tot het apparaat is opgestart en probeer het opnieuw.";
 "backend.recovery.configure.restart_stuck.title" = "Het apparaat is niet teruggekomen";
 "backend.recovery.configure.restart_stuck.message" = "Door SSH in te schakelen start het apparaat opnieuw op. Het verdween van het netwerk en is niet teruggekomen, terwijl deze Mac in dat netwerk bleef: mogelijk is het halverwege de herstart blijven hangen.";
 "backend.recovery.configure.restart_stuck.action.1" = "Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";

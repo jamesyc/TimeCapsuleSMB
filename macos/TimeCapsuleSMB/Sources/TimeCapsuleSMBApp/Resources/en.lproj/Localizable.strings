@@ -823,6 +823,11 @@
 "backend.recovery.configure.client_left_network.message" = "Turning on SSH restarts the device. While it restarted, this Mac moved to another network and did not come back, so TimeCapsuleSMB could not see the device come back.";
 "backend.recovery.configure.client_left_network.action.1" = "Connect this Mac to the device's network again, by Wi-Fi or one of its LAN ports.";
 "backend.recovery.configure.client_left_network.action.2" = "Then try again. If SSH turned on, adding the device does not restart it again.";
+"backend.recovery.configure.device_probe_failed.title" = "Device check failed";
+"backend.recovery.configure.device_probe_failed.message" = "TimeCapsuleSMB logged in over SSH but could not read the device's system information.";
+"backend.recovery.configure.device_probe_failed.action.1" = "Try again.";
+"backend.recovery.configure.device_probe_failed.action.2" = "Try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in.";
+"backend.recovery.configure.device_probe_failed.action.3" = "Wait 2 minutes for the device to start up, then try again.";
 "backend.recovery.configure.restart_stuck.title" = "The device has not come back";
 "backend.recovery.configure.restart_stuck.message" = "Turning on SSH restarts the device. It went off the network and has not come back, while this Mac stayed on that network: it may have stopped partway through the restart.";
 "backend.recovery.configure.restart_stuck.action.1" = "Unplug the device, wait 10 seconds and plug it back in.";
