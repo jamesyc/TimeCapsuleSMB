@@ -1502,7 +1502,7 @@ def upload_and_verify_deployment_payload(
         callbacks.stage("pre_upload_actions")
         boot_assets.enter_context(_report_interrupted_install(connection))
         with _naming_device_write_errors(connection), \
-                stuck_stop_as(MANAGER_STOP_TIMEOUT_MESSAGE, error=DeployDeviceError):
+                stuck_stop_as(MANAGER_STOP_TIMEOUT_MESSAGE, callbacks=callbacks, error=DeployDeviceError):
             run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
         # rc.local is gone before any metadata conversion or removal of the
         # historical runtime. The synchronous Flash mount already wrote the

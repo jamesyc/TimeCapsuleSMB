@@ -34,6 +34,36 @@ def ps_row(pid: int, ucomm: str, command: str = "", *, ppid: int = 1, pgid: int 
     return " ".join(str(field) for field in fields) + (f" {command}" if command else "")
 
 
+def stop_stuck_line(pid: int, ucomm: str, *, stat: str = "D", sl: int = 127, wchan: str = "biowait",
+                    label: str | None = None) -> str:
+    """The line a failed stop prints for a process it left
+    (timecapsulesmb.device.processes.STOP_STUCK_FUNCTION); by default one
+    asleep on the disk past the stuck threshold. The service stop adds the
+    label it named the process by."""
+    from timecapsulesmb.device.processes import STOP_STUCK_PREFIX
+
+    line = f"{STOP_STUCK_PREFIX} pid={pid} comm={ucomm} stat={stat} sl={sl} wchan={wchan}"
+    return line if label is None else f"{line} label={label}"
+
+
+def stuck_stop_output(name: str = "smbd", pid: int = 40, **row: object) -> str:
+    """What the pkill stop of `name` prints when it leaves that process
+    (tests.test_appliance_process_shutdown checks it against the script)."""
+    return f"process {name} did not stop\n{stop_stuck_line(pid, name, **row)}\n"  # type: ignore[arg-type]
+
+
+def run_stop(directory: Path, processes: list[dict[str, object]], script: str) -> tuple[int, str]:
+    """Run a stop script against these processes with its waits skipped:
+    its exit status, and stdout and stderr together, as SSH returns them."""
+    import subprocess
+
+    fake = FakePs(directory, processes)
+    result = subprocess.run(
+        ["/bin/sh", "-c", fake.install(script).replace("sleep 1", ":")], capture_output=True, text=True,
+    )
+    return result.returncode, result.stdout + result.stderr
+
+
 def process(row: str, **extra: object) -> dict[str, object]:
     """A process from a "pid stat ucomm [command...]" row."""
     pid, stat, ucomm, *command = row.split(None, 3)

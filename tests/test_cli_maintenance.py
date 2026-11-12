@@ -32,6 +32,7 @@ from timecapsulesmb.deploy.commands import (
 from timecapsulesmb.deploy.verify import VerificationResult
 
 from tests.cli_support import AUTH_FAILED_CLI_STEPS, CliTestCase, FakeCommandContext
+from tests.device_ps import stuck_stop_output
 from tests.reboot_support import FakeInstalledRuntime, acp_password_answer
 
 
@@ -1372,7 +1373,7 @@ class CliMaintenanceTests(CliTestCase):
 
         from timecapsulesmb.app.recovery import cli_steps
 
-        rc, text, device = self._run_fsck_with_remote_output("process smbd did not stop\n", 1, ["--yes"])
+        rc, text, device = self._run_fsck_with_remote_output(stuck_stop_output(), 1, ["--yes"])
 
         self.assertEqual(rc, 1)
         self.assertIn(FSCK_STOP_TIMEOUT_MESSAGE, text)
@@ -1414,7 +1415,7 @@ class CliMaintenanceTests(CliTestCase):
 
         def run_ssh(_connection, command, **_kwargs):
             if "pkill" in command and "mdns-advertiser" in command:
-                raise SshError("process mdns-advertiser did not stop")
+                raise SshError(stuck_stop_output("mdns-advertiser").strip())
 
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
         with ExitStack() as stack:

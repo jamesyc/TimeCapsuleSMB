@@ -275,7 +275,7 @@ def run_activation_actions_and_verify(
     callbacks.stage(activation_stage)
     callbacks.message(activation_message)
     # The start stops the running services first.
-    with stuck_stop_as(f"{failure_message} {ACTIVATION_STOP_TIMEOUT_SENTENCE}"):
+    with stuck_stop_as(f"{failure_message} {ACTIVATION_STOP_TIMEOUT_SENTENCE}", callbacks=callbacks):
         run_remote_actions_func(connection, activation_actions)
     verify_runtime_func(
         connection,

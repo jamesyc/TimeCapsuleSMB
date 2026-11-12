@@ -336,13 +336,19 @@ def stuck_processes(ps_output: str) -> list[StuckProcess]:
             for stuck in _manager_title_stuck(process.argv)[0]:
                 by_pid[stuck.pid] = stuck
             continue
-        if not process.stat.startswith("D") or "K" in process.stat:
-            continue
-        if process.sl >= STUCK_SLEEP_SECONDS and process.pid not in by_pid:
-            by_pid[process.pid] = StuckProcess(
-                process.pid, process.ucomm, process.wchan, process.sl, capped=process.sl >= PS_SLEEP_SECONDS_CAP
-            )
+        stuck = _stuck_row(process)
+        if stuck is not None and process.pid not in by_pid:
+            by_pid[process.pid] = stuck
     return list(by_pid.values())
+
+
+def _stuck_row(process: Process) -> StuckProcess | None:
+    """The row as a stuck process when it has slept uninterruptibly for
+    STUCK_SLEEP_SECONDS, and is no kernel thread (state K, which always
+    sleeps this way)."""
+    if not process.stat.startswith("D") or "K" in process.stat or process.sl < STUCK_SLEEP_SECONDS:
+        return None
+    return StuckProcess(process.pid, process.ucomm, process.wchan, process.sl, capped=process.sl >= PS_SLEEP_SECONDS_CAP)
 
 
 # Wait channels of a process waiting for the disk itself: a buffer's I/O to
@@ -362,7 +368,11 @@ def disk_io_stalls(ps_output: str) -> list[StuckProcess]:
     Any of them means the disk has stopped answering. Apple's ACPd waits on
     diskd, which waits on the disk, so ACPd then stops answering MaSt and the
     network too: the disk is the cause, not ACPd."""
-    return [p for p in stuck_processes(ps_output) if p.wchan in DISK_IO_WCHANS or p.name in DISK_PROGRAMS]
+    return [p for p in stuck_processes(ps_output) if _waits_for_disk(p)]
+
+
+def _waits_for_disk(stuck: StuckProcess) -> bool:
+    return stuck.wchan in DISK_IO_WCHANS or stuck.name in DISK_PROGRAMS
 
 
 # Apple's disk checkers: fsck_hfs, and fsck_msdos or fsck_exfat for a USB disk
@@ -527,12 +537,53 @@ def read_lock_waits(output: str) -> tuple[list[dict[str, object]], str]:
     return calls, "\n".join(lines)
 
 
+# Each stop script ends a failed stop with one of these lines on stderr for
+# every process it left and every child of one (a manager waits for its
+# children), with ps's state, seconds asleep and wait channel from the table
+# alone, which never waits: stop_failure reads them. Zombies have exited.
+# The service stop adds the label it named the process by (STOP_LABEL_*).
+# ps failing here only loses the lines; the stop fails either way.
+STOP_STUCK_PREFIX = "tc-stop: stuck"
+# The service stop's labels for the supervisor and for a process whose
+# command line it could not read.
+STOP_LABEL_MANAGER = "manager"
+STOP_LABEL_UNREADABLE = "unreadable"
+STOP_STUCK_FUNCTION = r'''
+report_stop_stuck() {
+    # $1: the PIDs the stop left, blank-separated; $2: a ucomm whose every
+    # process it left; $3: "PID:LABEL" words for the processes it named.
+    stop_left=" $1 "
+    stop_comm=${2:-}
+    stop_labels=${3:-}
+    stop_ps=$(__STUCK_PS__ 2>/dev/null) || return 1
+    while read -r stop_pid stop_ppid _stop_pgid stop_stat stop_sl stop_wchan _stop_time stop_ucomm _stop_rest; do
+        case "$stop_stat" in Z*|"") continue ;; esac
+        case "$stop_left" in
+            *" $stop_pid "*|*" $stop_ppid "*) ;;
+            *) [ -n "$stop_comm" ] && [ "$stop_ucomm" = "$stop_comm" ] || continue ;;
+        esac
+        stop_label=
+        for stop_pair in $stop_labels; do
+            case "$stop_pair" in "$stop_pid":*) stop_label=" label=${stop_pair#*:}" ;; esac
+        done
+        echo "__PREFIX__ pid=$stop_pid comm=$stop_ucomm stat=$stop_stat sl=$stop_sl wchan=$stop_wchan$stop_label" >&2
+    done <<EOF_STOP_STUCK
+$stop_ps
+EOF_STOP_STUCK
+    return 0
+}
+'''.replace("__STUCK_PS__", STUCK_PROCESS_PS_COMMAND).replace("__PREFIX__", STOP_STUCK_PREFIX)
+
+
 def render_stop_service_runtime(*, attempts: int = 5, supervisor_seconds: int = SUPERVISOR_STOP_SECONDS) -> str:
     # Stop every launcher before its workers, including launchers forked during
     # shutdown. Apple's daemons and unrelated `service` processes are not ours.
     # Supervisors get supervisor_seconds of one-second passes; workers and the
     # SIGKILL escalation of launcher shells keep the shorter attempts budget.
-    return (PS_ROWS_FUNCTION + r'''
+    # Service processes only ever get SIGTERM, so a worker left at the end
+    # may still be exiting; stop_failure tells that from one stuck on the
+    # disk, and from the manager left after its budget (StopFailure.stuck).
+    return (PS_ROWS_FUNCTION + STOP_STUCK_FUNCTION + r'''
 set -f
 managed_processes() {
     managed_ps=$(ps_rows sh service) || return 1
@@ -606,17 +657,21 @@ for scope in supervisor worker; do
         [ -n "$processes" ] || break
         if [ "$attempt" -gt "$limit" ]; then
             pids=
+            labels=
             while read -r pid kind label; do
                 if [ "$kind" = unknown ]; then
                     echo "process $label did not show its command line (pid $pid); retry after its active work finishes" >&2
+                    labels="$labels $pid:__UNREADABLE_LABEL__"
                 else
                     echo "process $label did not stop; retry after its active work finishes" >&2
+                    labels="$labels $pid:$label"
                 fi
                 pids="$pids $pid"
             done <<EOF_BUSY
 $processes
 EOF_BUSY
             report_stuck "$pids"
+            report_stop_stuck "$pids" "" "$labels"
             exit 1
         fi
         # Signal the whole snapshot before waiting. Rescan each pass: a boot
@@ -640,7 +695,9 @@ EOF_STOP
 done
 ''').replace("__ATTEMPTS__", str(attempts)).replace(
         "__SUPERVISOR_SECONDS__", str(supervisor_seconds)
-    ).replace("__STUCK_PS__", STUCK_PROCESS_PS_COMMAND).replace("__UNREADABLE__", UNREADABLE_COMMAND).strip()
+    ).replace("__STUCK_PS__", STUCK_PROCESS_PS_COMMAND).replace("__UNREADABLE__", UNREADABLE_COMMAND).replace(
+        "__UNREADABLE_LABEL__", STOP_LABEL_UNREADABLE
+    ).strip()
 
 
 # Metadata and diagnostic jobs that outlive the SSH session that started them:
@@ -709,21 +766,24 @@ done
 def render_stop_idle_jobs(*, attempts: int = 5) -> str:
     # Uninstall removes everything these jobs work on, so it stops them instead
     # of waiting: SIGTERM on each pass, SIGKILL once the attempts are spent.
-    return (IDLE_JOBS_FUNCTION + r'''
+    return (IDLE_JOBS_FUNCTION + STOP_STUCK_FUNCTION + r'''
 attempt=0
 while :; do
     busy=$(idle_jobs) || exit 1
     [ -n "$busy" ] || exit 0
     if [ "$attempt" -gt __ATTEMPTS__ ]; then
+        pids=
         while read -r pid comm unreadable; do
             if [ -n "$unreadable" ]; then
                 echo "process $comm did not show its command line (pid $pid)" >&2
             else
                 echo "job $comm (pid $pid) did not stop" >&2
             fi
+            pids="$pids $pid"
         done <<EOF_BUSY
 $busy
 EOF_BUSY
+        report_stop_stuck "$pids"
         exit 1
     fi
     signal=TERM
@@ -775,20 +835,80 @@ def render_wait_for_process_absent(present_command: str, *, attempts: int) -> st
     )
 
 
-# The stop scripts' lines for a process that would not stop, asleep in the
-# kernel, maybe on the disk: one still there after SIGKILL (pkill's and the
-# service stop's "process X did not stop", the idle-job stop's "job X (pid N)
-# did not stop"), or a service process waited for in vain without reading its
-# command line, which only ours can be. An unreadable sh may be another
-# program's shell, so its line is not one.
-_PROCESS_STOP_FAILED = re.compile(
-    r"process \S+ did not stop|process service did not show its command line|job \S+ \(pid \d+\) did not stop"
+# A whole line, so that the SSH error of a stop that timed out, which quotes
+# the command (this text included) on one line, never reads as one.
+_STOP_STUCK_LINE = re.compile(
+    re.escape(STOP_STUCK_PREFIX) + r" pid=(\d+) comm=(\S+) stat=(\S+) sl=(\d+) wchan=(\S+)(?: label=(\S+))?"
 )
 
 
-def process_stop_failed(text: str) -> bool:
-    """Whether a stop command's output says a process would not stop."""
-    return _PROCESS_STOP_FAILED.search(text) is not None
+@dataclass(frozen=True)
+class LeftProcess(Process):
+    """A process a failed stop left, with the label the stop named it by:
+    the service stop's STOP_LABEL_MANAGER, "service" for a worker, a boot
+    script's name, STOP_LABEL_UNREADABLE; None for a child or another stop's."""
+
+    label: str | None = None
+
+
+def stop_stuck_processes(output: str) -> list[LeftProcess]:
+    """The processes a failed stop left (STOP_STUCK_FUNCTION's lines), from
+    its output or the SSH error that carries it. Other text is ignored."""
+    rows = []
+    for line in output.splitlines():
+        match = _STOP_STUCK_LINE.fullmatch(line.rstrip())
+        if match is None:
+            continue
+        pid, comm, stat, sl, wchan, label = match.groups()
+        rows.append(LeftProcess(int(pid), 0, 0, stat, int(sl), wchan, "", comm, label=label))
+    return rows
+
+
+@dataclass(frozen=True)
+class StopFailure:
+    """What a failed stop left running, and which of it waits for the disk."""
+
+    left: tuple[LeftProcess, ...]
+    disk_waits: tuple[StuckProcess, ...]
+
+    @property
+    def supervisor_left(self) -> bool:
+        """The service stop left the manager after its SUPERVISOR_STOP_SECONDS,
+        twice its children's grace, or a service process it never read
+        (asleep in the kernel on two looks), which may be the manager."""
+        return any(
+            p.label == STOP_LABEL_MANAGER or (p.label == STOP_LABEL_UNREADABLE and p.ucomm == "service")
+            for p in self.left
+        )
+
+    @property
+    def stuck(self) -> bool:
+        """A process waits for the disk as disk_io_stalls counts one, or the
+        manager did not stop (supervisor_left): manager_stop_timeout, whose
+        card says to unplug. Otherwise what is left was still exiting (the
+        service stop sends service processes only SIGTERM) or asleep for
+        another reason, and a later try may find it gone."""
+        return bool(self.disk_waits) or self.supervisor_left
+
+    def debug_fields(self) -> dict[str, object]:
+        """Telemetry: each process left, under stop_stuck or stop_busy."""
+        rows = []
+        for p in self.left:
+            row: dict[str, object] = {"comm": p.ucomm, "stat": p.stat, "sl": p.sl, "wchan": p.wchan}
+            if p.label is not None:
+                row["label"] = p.label
+            rows.append(row)
+        return {"stop_stuck" if self.stuck else "stop_busy": rows}
+
+
+def stop_failure(output: str) -> StopFailure | None:
+    """The failure a stop's output reports; None without any
+    STOP_STUCK_FUNCTION line, as for a stop that failed another way."""
+    left = tuple(stop_stuck_processes(output))
+    if not left:
+        return None
+    stuck = (_stuck_row(process) for process in left)
+    return StopFailure(left, tuple(s for s in stuck if s is not None and _waits_for_disk(s)))
 
 
 def render_pkill_wait_pkill9_by_ucomm(name: str, *, attempts: int = 5) -> str:
@@ -799,13 +919,16 @@ def render_pkill_wait_pkill9_by_ucomm(name: str, *, attempts: int = 5) -> str:
     wait_command = render_wait_for_process_absent(present_command, attempts=attempts)
     process_present = f"/bin/sh -c {shlex.quote(present_command)} >/dev/null 2>&1"
     failure_message = shlex.quote(f"process {name} did not stop")
+    report_script = STOP_STUCK_FUNCTION + 'report_stop_stuck "" "$1"'
+    report = f"/bin/sh -c {shlex.quote(report_script)} sh {shlex.quote(name)}"
+    # The exit status is the failure; the report only describes it.
     return (
         f"/usr/bin/pkill {pattern} >/dev/null 2>&1 || true; "
         f"{wait_command}; "
         f"if {process_present}; then "
         f"/usr/bin/pkill -9 {pattern} >/dev/null 2>&1 || true; {wait_command}; "
         "fi; "
-        f"if {process_present}; then echo {failure_message} >&2; exit 1; fi"
+        f"if {process_present}; then echo {failure_message} >&2; {report}; exit 1; fi"
     )
 
 

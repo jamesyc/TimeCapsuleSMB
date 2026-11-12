@@ -43,6 +43,7 @@ from timecapsulesmb.app.stage_policy import stage_policy
 from timecapsulesmb.app import contracts, helper, service
 from timecapsulesmb.flash_workflow import SecondaryBankInvalidError, SecondaryBankReadMismatchError
 from tests.flash_fixtures import inspect_full_banks, plan_full_restore
+from tests.device_ps import stuck_stop_output
 from tests.reboot_support import DEVICE_AIRPORT_MAC
 from timecapsulesmb.services.configure import ConfigureFlowError
 from timecapsulesmb.services.version_check import VersionCheckResult
@@ -7007,14 +7008,14 @@ MaSt = (
             True,
             "hfs",
         )
-        # Any process the stop could not stop: the manager, Samba, an old
-        # release's helper. Each is asleep in the kernel.
-        for name in ("manager", "smbd", "mdns-advertiser"):
+        # Any process the stop left asleep on the disk: the manager, Samba,
+        # an old release's helper.
+        for name in ("service", "smbd", "mdns-advertiser"):
             with self.subTest(name=name):
                 rc, collector = self.run_confirmed_deploy_with_mast(
                     MaStDiscoveryResult((volume,), 1, ""),
                     payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
-                    run_remote_actions_side_effect=SshError(f"process {name} did not stop"),
+                    run_remote_actions_side_effect=SshError(stuck_stop_output(name).strip()),
                 )
 
                 self.assertEqual(rc, 1)
@@ -8358,7 +8359,7 @@ MaSt = (
 
         def run_ssh(_connection, command, **_kwargs):
             if "pkill" in command and "mdns-advertiser" in command:
-                raise SshError("process mdns-advertiser did not stop")
+                raise SshError(stuck_stop_output("mdns-advertiser").strip())
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
                 mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection), \
@@ -8903,10 +8904,12 @@ MaSt = (
 
     def test_fsck_that_never_ran_fails_without_waiting_for_a_reboot(self) -> None:
         # The script stopped before fsck, so no status line arrives and no
-        # reboot is requested, even when asked for. A process that would not
-        # stop is named, as deploy names it; anything else says fsck did not run.
+        # reboot is requested, even when asked for. A process the stop left
+        # asleep on the disk is named, as deploy names it; anything else, one
+        # still exiting included, says fsck did not run.
         cases = (
-            ("process smbd did not stop\n", "manager_stop_timeout", "fsck.manager_stop_timeout"),
+            (stuck_stop_output(), "manager_stop_timeout", "fsck.manager_stop_timeout"),
+            (stuck_stop_output("service", 33, stat="S", sl=4, wchan="wait"), "remote_error", None),
             ("stopping file sharing failed\n", "remote_error", None),
         )
         for flags in ({}, {"no_wait": True}):

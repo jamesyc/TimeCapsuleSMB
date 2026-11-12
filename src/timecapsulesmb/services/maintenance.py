@@ -15,7 +15,7 @@ from timecapsulesmb.deploy.verify import render_post_uninstall_verification, ver
 from timecapsulesmb.device.disk_errors import PROCESS_LIST_UNREADABLE_MESSAGE, DiskFailingError, DiskNotRespondingError
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, DiskPayloadError, RsyncNotRunningError
 from timecapsulesmb.device import acpd
-from timecapsulesmb.device.processes import DISK_CHECK_UCOMM, process_stop_failed, render_process_present
+from timecapsulesmb.device.processes import DISK_CHECK_UCOMM, render_process_present, stop_failure
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume, VolumeClaims
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import (
@@ -42,8 +42,8 @@ FSCK_DID_NOT_RUN_MESSAGE = (
     "fsck did not run: file sharing could not be stopped, or the connection "
     "ended before fsck_hfs finished. File sharing may be off until the device restarts."
 )
-# The preamble's stop could not stop a process: asleep in the kernel, maybe
-# on the disk, as deploy and uninstall report it (manager_stop_timeout).
+# The preamble's stop left a process waiting for the disk, or the manager
+# (processes.StopFailure.stuck), as deploy and uninstall report it.
 FSCK_STOP_TIMEOUT_MESSAGE = (
     "fsck did not run: a service on the device is stuck and did not stop. It may be waiting on the disk. "
     "File sharing may be off until the device restarts."
@@ -366,7 +366,9 @@ def fsck_failure_code(status: int | None, output: str = "", *, started: bool = F
         return ErrorCode.FSCK_SESSION_DROPPED
     if any(line.strip() == FSCK_NOT_UNMOUNTED_LINE for line in output.splitlines()):
         return ErrorCode.FSCK_VOLUME_NOT_UNMOUNTED
-    if process_stop_failed(output):
+    # A stop that left other processes still exiting says only that fsck did not run.
+    failure = stop_failure(output)
+    if failure is not None and failure.stuck:
         return ErrorCode.MANAGER_STOP_TIMEOUT
     return None
 
@@ -484,8 +486,8 @@ def reboot_and_restart_sharing(
         runtime_restarted = not exc.samba_off
     except DeviceError as exc:
         error = str(exc)
-        # A service that would not stop for the start needs an unplug, which
-        # Activate alone would not give.
+        # A service the start's stop left stuck (processes.StopFailure.stuck)
+        # needs an unplug, which Activate alone would not give.
         code = exc.code if exc.code == ErrorCode.MANAGER_STOP_TIMEOUT else None
     except TransportError as exc:
         error = f"{RUNTIME_RESTART_FAILURE_MESSAGE} {exc}"
@@ -547,6 +549,9 @@ def run_fsck(
     finally:
         log.finish(status)
     callbacks.update(returncode=status if status is not None else returncode)
+    stop = stop_failure(output) if status is None else None
+    if stop is not None:
+        callbacks.debug(**stop.debug_fields())
     if status and log.tail:
         callbacks.debug(fsck_output_tail=list(log.tail))
     # Without a status line fsck never ran (or its result was lost), so the

@@ -454,9 +454,10 @@ class FakeInstalledRuntime:
         self.hosts.append(connection.host)
         self.calls.append("run " + ", ".join(getattr(action, "path", repr(action)) for action in actions))
         if self.stuck_stop:
+            from tests.device_ps import stuck_stop_output
             from timecapsulesmb.transport.errors import SshError
 
-            raise SshError("process smbd did not stop; retry after its active work finishes")
+            raise SshError(stuck_stop_output().strip())
 
     def _verify(self, connection, *, callbacks, stage, timeout_seconds, heading, failure_message):
         from timecapsulesmb.device.errors import DeviceError, RsyncNotRunningError

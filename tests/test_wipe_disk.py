@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.device_ps import ps_row
+from tests.device_ps import ps_row, stuck_stop_output
 from timecapsulesmb.app.confirmations import build_confirmation
 from timecapsulesmb.app.ops import OPERATION_PARAMS
 from timecapsulesmb.app.recovery import recovery_for
@@ -1321,22 +1321,36 @@ class RunWipeTests(unittest.TestCase):
         self.assertNotIn("rpc eraseDisk method:i:0", device.calls)
 
     def test_a_process_that_would_not_stop_wrote_nothing_and_needs_an_unplug(self) -> None:
+        # The stop left smbd asleep on the disk for minutes.
         device = FakeDevice()
-        device.wipe_output = "process smbd did not stop\n"
+        device.wipe_output = stuck_stop_output()
+        debug: dict[str, object] = {}
         with self.assertRaises(wipe_disk.WipeDiskError) as raised:
-            device.run()
+            device.run(callbacks=OperationCallbacks(add_debug_fields=debug.update))
         self.assertEqual((raised.exception.code, raised.exception.reason), (ErrorCode.MANAGER_STOP_TIMEOUT, "stop_failed"))
+        self.assertEqual(debug, {"stop_stuck": [{"comm": "smbd", "stat": "D", "sl": 127, "wchan": "biowait"}]})
         self.assertNotIn("rpc eraseDisk method:i:0", device.calls)
         card = recovery_for("wipe-disk", ErrorCode.MANAGER_STOP_TIMEOUT)
         self.assertIn("Unplug", card["actions"][0])
         self.assertIn("Nothing on the disk was changed", card["message"])
 
     def test_any_other_failed_stop_wrote_nothing_and_needs_a_restart(self) -> None:
-        device = FakeDevice()
-        device.wipe_output = "managed stop failed\n"
-        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
-            device.run()
-        self.assertEqual((raised.exception.code, raised.exception.reason), (ErrorCode.WIPE_DISK_RESTART_NEEDED, "stop_failed"))
+        # A stop that failed without saying what it left, or left a service
+        # still exiting after SIGTERM, or one that names a process with no row.
+        for output, debug_keys in (
+            ("managed stop failed\n", []),
+            (stuck_stop_output("service", 33, stat="S", sl=4, wchan="wait"), ["stop_busy"]),
+            ("process smbd did not stop\n", []),
+        ):
+            with self.subTest(output=output):
+                device = FakeDevice()
+                device.wipe_output = output
+                debug: dict[str, object] = {}
+                with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+                    device.run(callbacks=OperationCallbacks(add_debug_fields=debug.update))
+                self.assertEqual((raised.exception.code, raised.exception.reason),
+                                 (ErrorCode.WIPE_DISK_RESTART_NEEDED, "stop_failed"))
+                self.assertEqual(list(debug), debug_keys)
 
     def test_an_erase_of_a_disk_diskd_lost_reboots_then_reports_it(self) -> None:
         device = FakeDevice()

@@ -87,7 +87,7 @@ from timecapsulesmb.deploy.verify import (
     verify_post_uninstall,
 )
 from timecapsulesmb.core.config import AppConfig
-from tests.device_ps import FakePs, process
+from tests.device_ps import FakePs, process, stop_stuck_line, stuck_stop_output
 from timecapsulesmb.device.processes import (
     PS_CAPTURE_COMMAND,
     PS_LISTING_END,
@@ -1606,15 +1606,19 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertEqual(stages[-1], "verify_payload_upload")
 
     def test_an_activation_whose_stop_fails_names_the_stuck_service(self) -> None:
-        # Activate stops the running services before it starts them: any that
-        # survives SIGKILL is asleep in the kernel. Another failure stays its own.
+        # Activate stops the running services before it starts them: one left
+        # asleep on the disk is a stuck service. One still exiting, and any
+        # other failure, stays its own error.
         from timecapsulesmb.services.activation import ACTIVATION_STOP_TIMEOUT_SENTENCE, run_activation_actions_and_verify
+
+        debug: dict[str, object] = {}
 
         def run(error):
             verify = mock.Mock()
+            debug.clear()
             try:
                 run_activation_actions_and_verify(
-                    SshConnection("host", "pw", ""), [], callbacks=OperationCallbacks(),
+                    SshConnection("host", "pw", ""), [], callbacks=OperationCallbacks(add_debug_fields=debug.update),
                     activation_message="Activating.", activation_stage="run_activation",
                     verification_stage="verify_runtime_activation", verification_timeout_seconds=1,
                     verification_heading="Waiting.", failure_message="NetBSD 4 activation failed.",
@@ -1625,15 +1629,20 @@ class DeployModuleTests(unittest.TestCase):
                 return exc
             self.fail("no error")
 
-        for name in ("smbd", "manager", "mdns-advertiser"):
+        for name in ("smbd", "service", "mdns-advertiser"):
             with self.subTest(name=name):
-                error = SshError(f"process {name} did not stop")
+                error = SshError(stuck_stop_output(name).strip())
                 raised = run(error)
                 self.assertEqual(raised.code, ErrorCode.MANAGER_STOP_TIMEOUT)
                 self.assertEqual(str(raised), f"NetBSD 4 activation failed. {ACTIVATION_STOP_TIMEOUT_SENTENCE}")
                 self.assertIs(raised.__cause__, error)
+                self.assertEqual(list(debug), ["stop_stuck"])
+        busy = SshError(stuck_stop_output("service", 33, stat="S", sl=2, wchan="wait").strip())
+        self.assertIs(run(busy), busy)
+        self.assertEqual(list(debug), ["stop_busy"])
         other = SshError("/bin/sh: Can't open /mnt/Flash/rc.local")
         self.assertIs(run(other), other)
+        self.assertEqual(debug, {})
 
     def test_afp_stop_failure_aborts_before_migration(self) -> None:
         prepared_plan = self._prepared_deploy_plan()
@@ -1642,9 +1651,9 @@ class DeployModuleTests(unittest.TestCase):
 
         def fail_afp_stop(_connection, actions, **_kwargs):
             if StopProcessAction("afpserver") in actions:
-                raise SshError("process afpserver did not stop")
+                raise SshError(stuck_stop_output("afpserver").strip())
 
-        # Like any process that would not stop: asleep in the kernel.
+        # Like any process the stop leaves asleep on the disk.
         with self.assertRaises(DeployDeviceError) as raised:
             upload_and_verify_deployment_payload(
                 AppConfig.from_values({}),
@@ -1838,26 +1847,67 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(events, ["probe", "probe", "inventory", "actions"])
         self.assertEqual(stages[:2], ["wait_for_previous_migration", "inventory_legacy_metadata"])
 
-    def test_upload_and_verify_deployment_payload_codes_manager_stop_timeout(self) -> None:
+    def _stop_failing_deploy(self, error: SshError) -> tuple[BaseException, dict[str, object]]:
         prepared_plan = self._prepared_deploy_plan()
-        connection = SshConnection("host", "pw", "-o foo")
-
-        with self.assertRaises(DeployDeviceError) as raised:
+        upload = mock.Mock()
+        debug: dict[str, object] = {}
+        try:
             upload_and_verify_deployment_payload(
                 AppConfig.from_values({}),
-                connection,
+                SshConnection("host", "pw", "-o foo"),
                 prepared_plan,
                 DeployRuntimeConfig(),
-                callbacks=OperationCallbacks(),
-                run_remote_actions_func=mock.Mock(side_effect=SshError("process manager did not stop")),
-                upload_payload_func=mock.Mock(),
+                callbacks=OperationCallbacks(add_debug_fields=debug.update),
+                run_remote_actions_func=mock.Mock(side_effect=error),
+                upload_payload_func=upload,
                 migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
             )
+        except Exception as exc:  # noqa: BLE001 - the error is what the test reads
+            upload.assert_not_called()
+            return exc, debug
+        self.fail("no error")
 
-        self.assertEqual(raised.exception.code, "manager_stop_timeout")
-        self.assertIn("A service on the device is stuck", str(raised.exception))
-        self.assertIsInstance(raised.exception.__cause__, SshError)
+    def test_upload_and_verify_deployment_payload_codes_manager_stop_timeout(self) -> None:
+        # The manager waits for its smbd, asleep on the disk for minutes.
+        output = "\n".join([
+            "process manager did not stop; retry after its active work finishes",
+            stop_stuck_line(30, "service", stat="S", sl=0, wchan="wait", label="manager"),
+            stop_stuck_line(41, "smbd"),
+        ])
+        raised, debug = self._stop_failing_deploy(SshError(output))
+
+        self.assertIsInstance(raised, DeployDeviceError)
+        self.assertEqual(raised.code, "manager_stop_timeout")
+        self.assertIn("A service on the device is stuck", str(raised))
+        self.assertIsInstance(raised.__cause__, SshError)
+        self.assertEqual([row["comm"] for row in debug["stop_stuck"]], ["service", "smbd"])
+
+    def test_a_deploy_whose_stop_left_the_manager_after_its_budget_is_a_stuck_service(self) -> None:
+        # Its child sleeps only seconds on the disk, but a manager still there
+        # after twice its children's grace has one that did not die.
+        output = "\n".join([
+            "process manager did not stop; retry after its active work finishes",
+            stop_stuck_line(30, "service", stat="S", sl=0, wchan="wait", label="manager"),
+            stop_stuck_line(41, "smbd", stat="D", sl=8, wchan="biowait"),
+        ])
+        raised, debug = self._stop_failing_deploy(SshError(output))
+
+        self.assertEqual(raised.code, "manager_stop_timeout")
+        self.assertEqual([row["comm"] for row in debug["stop_stuck"]], ["service", "smbd"])
+
+    def test_a_deploy_whose_stop_left_a_worker_still_exiting_keeps_the_stops_own_error(self) -> None:
+        # SIGTERM alone, and nothing asleep on the disk: the stop's text says
+        # to retry once the work finishes; no unplug.
+        output = "\n".join([
+            "process service did not stop; retry after its active work finishes",
+            stop_stuck_line(33, "service", stat="S", sl=2, wchan="wait", label="service"),
+        ])
+        error = SshError(output)
+        raised, debug = self._stop_failing_deploy(error)
+
+        self.assertIs(raised, error)
+        self.assertEqual([row["label"] for row in debug["stop_busy"]], ["service"])
 
     def test_upload_and_verify_deployment_payload_codes_payload_upload_timeout(self) -> None:
         # An upload's own timeout says how much reached the device, and the
@@ -3551,7 +3601,7 @@ describe_managed_smbd_status "" ""
                 prepared_plan,
                 no_wait=False,
                 callbacks=callbacks,
-                run_remote_actions_func=mock.Mock(side_effect=SshError("process smbd did not stop")),
+                run_remote_actions_func=mock.Mock(side_effect=SshError(stuck_stop_output().strip())),
                 verify_runtime_func=verify_runtime,
             )
 
@@ -5001,14 +5051,29 @@ describe_managed_smbd_status "" ""
                 self.assertEqual([signal for signal in fake.signals if signal[1] == "9"], signals)
                 self.assertEqual(fake.command_reads(), [])
                 if not stopped:
-                    self.assertEqual(result.stderr, "process mdns did not stop\n")
+                    # The other names and the zombie are not what it left.
+                    self.assertEqual(result.stderr, stuck_stop_output("mdns", 9, stat="S", sl=0, wchan="-"))
 
     def test_render_stop_process_action_kills_and_fails_if_still_running(self) -> None:
-        command = render_remote_action(StopProcessAction("smbd"))
-        self.assertIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true;", command)
-        self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
-        self.assertIn("/usr/bin/pkill -9 '^smbd$' >/dev/null 2>&1 || true;", command)
-        self.assertIn("echo 'process smbd did not stop' >&2; exit 1", command)
+        # Five one-second waits after each signal; ps failing while it checks
+        # reads as still running, so the stop fails rather than pass unchecked.
+        for list_fails, stopped in ((False, True), (True, False)):
+            with self.subTest(list_fails=list_fails), tempfile.TemporaryDirectory() as tmp:
+                fake = FakePs(Path(tmp), [process("9 S smbd smbd -F")], list_fails=list_fails)
+                sleeps = Path(tmp) / "sleeps"
+                command = fake.install(render_remote_action(StopProcessAction("smbd")))
+                command = command.replace("sleep 1", f"echo >> {shlex.quote(str(sleeps))}")
+                result = subprocess.run(["/bin/sh", "-c", command], check=False, text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, stopped, result.stderr)
+                if stopped:
+                    self.assertEqual(fake.signals, [["-TERM", "9"]])
+                    self.assertFalse(sleeps.exists())
+                else:
+                    # Gone after TERM, but the stop cannot tell.
+                    self.assertEqual(fake.signals, [["-TERM", "9"]])
+                    self.assertEqual(len(sleeps.read_text().splitlines()), 10)
+                    # No listing to report from: the human line alone.
+                    self.assertEqual(result.stderr, "process smbd did not stop\n")
 
 class NoDiskErrorTests(unittest.TestCase):
     """An empty MaSt means different things on a Time Capsule and an Extreme."""

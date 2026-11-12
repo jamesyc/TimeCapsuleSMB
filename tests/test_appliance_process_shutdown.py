@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.device_ps import FakePs, process, ps_row
+from tests.device_ps import FakePs, process, ps_row, run_stop, stop_stuck_line, stuck_stop_output
 from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.deploy.commands import StopProcessAction, render_remote_action
 from timecapsulesmb.device.migration_jobs import running_migrations
-from timecapsulesmb.device.processes import render_stop_service_runtime, render_wait_for_idle_jobs
+from timecapsulesmb.device.processes import render_stop_idle_jobs, render_stop_service_runtime, render_wait_for_idle_jobs
 
 # The fake tools below answer ps as the device does (tests/device_ps.py) from
 # rows of "pid stat ucomm command".
@@ -17,8 +18,12 @@ FAKE_PS = f'''
 import sys
 sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
 from tests.device_ps import answer, process
-def ps(rows):
-    out, status, _vanished = answer([process(row) for row in rows], sys.argv[2:])
+def ps(rows, details=None):
+    # details: more columns (sl, wchan) of some PIDs' rows.
+    procs = [process(row) for row in rows]
+    for proc in procs:
+        proc.update((details or {{}}).get(proc['pid'], {{}}))
+    out, status, _vanished = answer(procs, sys.argv[2:])
     sys.stdout.write(out)
     return status
 def listing():
@@ -250,13 +255,14 @@ def test_role_observation_ignores_one_shot_diagnostics_and_zombies():
     ('33 S service service: role=discovery nbns=ready', 'service'),
     ('34 S sh /bin/sh /mnt/Flash/boot.sh', 'boot'),
 ])
-def test_stuck_process_is_named_so_deploy_can_classify_a_stuck_manager(tmp_path, stuck_row, expected_label):
-    # Every command that stops the runtime maps "process X did not stop" to
-    # manager_stop_timeout: whatever would not stop is asleep in the kernel.
-    # That text must come from the stop script they actually run.
+def test_a_process_the_stop_left_is_named_and_reported_by_its_label(tmp_path, stuck_row, expected_label):
+    # The stop names what it left for the user, and prints its row and label
+    # for stop_failure, which the commands that stop the runtime read. The
+    # manager still there after its budget is a stuck service; anything else
+    # asleep but not on the disk was still exiting.
     import shlex
     import sys
-    from timecapsulesmb.device.processes import process_stop_failed
+    from timecapsulesmb.device.processes import stop_failure
 
     tool = tmp_path / 'tool.py'
     tool.write_text(FAKE_PS + f'''
@@ -269,8 +275,17 @@ if sys.argv[1] == 'ps':
     result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
 
     assert result.returncode == 1
-    assert f'process {expected_label} did not stop' in result.stderr
-    assert process_stop_failed(result.stderr) is True
+    assert f'process {expected_label} did not stop; retry after its active work finishes' in result.stderr
+    pid, _state, comm = stuck_row.split()[:3]
+    line = stop_stuck_line(int(pid), comm, stat='S', sl=0, wchan='-', label=expected_label)
+    assert line in result.stderr.splitlines()
+    failure = stop_failure(result.stderr)
+    assert [(p.pid, p.label) for p in failure.left] == [(int(pid), expected_label)]
+    assert failure.disk_waits == ()
+    stuck = expected_label == 'manager'
+    assert failure.stuck is stuck
+    row = {'comm': comm, 'stat': 'S', 'sl': 0, 'wchan': '-', 'label': expected_label}
+    assert failure.debug_fields() == {'stop_stuck' if stuck else 'stop_busy': [row]}
 
 
 def _run_manager_stop(tmp_path, *, manager_scans, supervisor_seconds=None, extra_rows=()):
@@ -304,10 +319,13 @@ state.write_text(json.dumps(d))
     kwargs = {} if supervisor_seconds is None else {'supervisor_seconds': supervisor_seconds}
     script = render_stop_service_runtime(attempts=0, **kwargs)
     fake = lambda name: shlex.join([sys.executable, str(tool), name])
-    # Only report_stuck's listing: ps_rows lists the same columns.
+    # Only the listings of what the stop left: ps_rows lists the same columns.
     stuck_listing = STUCK_PROCESS_PS_COMMAND + ' 2>/dev/null | while'
     assert stuck_listing in script
     script = script.replace(stuck_listing, fake('stuck-ps') + ' 2>/dev/null | while')
+    stop_listing = 'stop_ps=$(' + STUCK_PROCESS_PS_COMMAND
+    assert stop_listing in script
+    script = script.replace(stop_listing, 'stop_ps=$(' + fake('stuck-ps'))
     script = script.replace('/bin/ps', fake('ps'))
     script = script.replace('/bin/kill', fake('kill'))
     script = script.replace('sleep 1', fake('sleep'))
@@ -350,13 +368,16 @@ def test_supervisor_budget_outlasts_the_child_grace_the_manager_is_built_with(tm
 def test_supervisor_stop_gives_up_after_its_budget_and_reports_what_is_stuck(tmp_path):
     # A manager that never exits still fails, after a bounded wait, and the
     # error shows what it and its children are blocked on. Unrelated
-    # processes stay out of the report.
+    # processes stay out of the report. A child asleep on the disk for
+    # minutes is why the manager waits: a stuck stop.
+    from timecapsulesmb.device.processes import StuckProcess, stop_failure
+
     result, state = _run_manager_stop(
         tmp_path,
         manager_scans=None,
         supervisor_seconds=3,
-        extra_rows=['41 30 41 D 127 biowai 0:00.00 smbd', '42 41 41 S 0 select 0:00.00 smbd',
-                    '50 1 50 D 127 biowai 0:00.00 other'],
+        extra_rows=['41 30 41 D 127 biowait 0:00.00 smbd', '42 41 41 S 0 select 0:00.00 smbd',
+                    '50 1 50 D 127 biowait 0:00.00 other', '43 30 43 Z 0 - 0:00.00 smbd'],
     )
 
     assert result.returncode == 1
@@ -364,8 +385,61 @@ def test_supervisor_stop_gives_up_after_its_budget_and_reports_what_is_stuck(tmp
     lines = result.stderr.splitlines()
     assert 'process manager did not stop; retry after its active work finishes' in lines
     assert 'still running: pid=30 ppid=1 stat=S wchan=select comm=service' in lines
-    assert 'still running: pid=41 ppid=30 stat=D wchan=biowai comm=smbd' in lines
+    assert 'still running: pid=41 ppid=30 stat=D wchan=biowait comm=smbd' in lines
+    assert [line for line in lines if line.startswith('tc-stop:')] == [
+        stop_stuck_line(30, 'service', stat='S', sl=0, wchan='select', label='manager'),
+        stop_stuck_line(41, 'smbd'),
+    ]
     assert not any('pid=42' in line or 'pid=50' in line for line in lines)
+    failure = stop_failure(result.stderr)
+    assert failure.stuck is True
+    assert failure.disk_waits == (StuckProcess(41, 'smbd', 'biowait', 127, capped=True),)
+    assert failure.debug_fields() == {'stop_stuck': [
+        {'comm': 'service', 'stat': 'S', 'sl': 0, 'wchan': 'select', 'label': 'manager'},
+        {'comm': 'smbd', 'stat': 'D', 'sl': 127, 'wchan': 'biowait'},
+    ]}
+
+
+@pytest.mark.parametrize(('child', 'disk_wait'), [
+    # Still writing: asleep on the disk, but not for minutes.
+    ('41 30 41 D 30 biowait 0:00.00 smbd', False),
+    ('41 30 41 S 0 select 0:00.00 smbd', False),
+    ('41 30 41 D 120 genput 0:00.00 smbd', True),
+])
+def test_a_manager_left_after_its_budget_is_stuck_whatever_its_child_waits_on(tmp_path, child, disk_wait):
+    # Twice its children's grace, then SIGKILL and reap: a manager still
+    # there has a child that did not die. The child's row says whether the
+    # disk is why; manager_stop_timeout's card says it may be.
+    from timecapsulesmb.device.processes import stop_failure
+
+    result, _state = _run_manager_stop(tmp_path, manager_scans=None, supervisor_seconds=1, extra_rows=[child])
+
+    assert result.returncode == 1
+    failure = stop_failure(result.stderr)
+    assert [(p.pid, p.label) for p in failure.left] == [(30, 'manager'), (41, None)]
+    assert failure.supervisor_left is True
+    assert failure.stuck is True
+    assert bool(failure.disk_waits) is disk_wait
+
+
+def test_a_worker_still_exiting_after_sigterm_is_a_busy_stop(tmp_path):
+    # Service processes get SIGTERM alone (one may be waiting for a debug
+    # child), so a worker still there when the attempts run out was exiting.
+    from timecapsulesmb.device.processes import stop_failure
+
+    result, fake = _stop_with_fake_ps(tmp_path, [
+        process('20 S service /mnt/Flash/service run'),
+        process('33 S service service: role=telemetry --daemon', survives=('TERM',), wchan='wait', sl=4),
+    ])
+
+    assert result.returncode == 1
+    assert 'process service did not stop; retry after its active work finishes' in result.stderr.splitlines()
+    assert {signal for signal, pid in fake.signals if pid == '33'} == {'-TERM'}
+    failure = stop_failure(result.stderr)
+    assert failure.stuck is False
+    assert failure.debug_fields() == {
+        'stop_busy': [{'comm': 'service', 'stat': 'S', 'sl': 4, 'wchan': 'wait', 'label': 'service'}],
+    }
 
 
 FSCK_OTHER_MOUNTS = [
@@ -376,10 +450,11 @@ FSCK_OTHER_MOUNTS = [
 
 def _run_fsck_script(tmp_path, *, stubborn=None, fsck_rc=0,
                      mounts=None, umount_unmounts=True, mount_fails=False,
-                     extra_rows=None, ps_fails=False, script=None, drvctl=''):
+                     extra_rows=None, ps_fails=False, script=None, drvctl='', details=None):
     """Run the real fsck script (or `script`, such as Wipe Internal Disk's)
     against fake ps/kill/umount/mount/fsck/drvctl/dd tools. A dd call is
-    logged with the pids still running when it wrote.
+    logged with the pids still running when it wrote. `details` gives some
+    PIDs' rows more columns (sl, wchan).
 
     Returns (result, logged tool calls, pids still running, mounts left).
     """
@@ -416,7 +491,7 @@ def drop(pid):
 if cmd == 'ps' and {ps_fails!r}:
     sys.exit(1)
 if cmd == 'ps':
-    status = ps(rows.values())
+    status = ps(rows.values(), {details or {}!r})
 elif cmd == 'kill':
     drop(sys.argv[-1])
 elif cmd == 'pkill':
@@ -507,6 +582,68 @@ def test_fsck_repairs_only_after_every_managed_process_stopped(tmp_path, stubbor
         # No status line (so the host will not reboot), and nothing touched the disk.
         assert fsck_exit_status(result.stdout) is None
         assert calls == []
+
+
+# smbd asleep on the disk for minutes outlives SIGKILL. The manager left
+# after its budget is a stuck service too; a worker, which gets SIGTERM
+# alone, may still be exiting.
+STUCK_SMBD = {'40': {'stat': 'D', 'sl': 127, 'wchan': 'biowait'}}
+
+
+@pytest.mark.parametrize(('stubborn', 'details', 'code'), [
+    ('40', STUCK_SMBD, ErrorCode.MANAGER_STOP_TIMEOUT),
+    ('30', None, ErrorCode.MANAGER_STOP_TIMEOUT),
+    ('31', None, None),
+])
+def test_fsck_names_a_stop_stuck_on_the_disk_and_not_one_still_exiting(tmp_path, stubborn, details, code):
+    from timecapsulesmb.services.maintenance import (
+        FSCK_DID_NOT_RUN_MESSAGE,
+        FSCK_STOP_TIMEOUT_MESSAGE,
+        fsck_exit_status,
+        fsck_failure_code,
+        fsck_failure_message,
+    )
+
+    result, calls, remaining, _ = _run_fsck_script(tmp_path, stubborn=stubborn, details=details)
+    # The host's terminal session joins the two streams.
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert calls == [] and stubborn in remaining
+    status = fsck_exit_status(output)
+    assert status is None
+    assert fsck_failure_code(status, output) == code
+    assert fsck_failure_message(status, output) == (FSCK_STOP_TIMEOUT_MESSAGE if code else FSCK_DID_NOT_RUN_MESSAGE)
+
+
+@pytest.mark.parametrize(('stubborn', 'details', 'code'), [
+    ('40', STUCK_SMBD, ErrorCode.MANAGER_STOP_TIMEOUT),
+    ('30', None, ErrorCode.MANAGER_STOP_TIMEOUT),
+    ('31', None, ErrorCode.WIPE_DISK_RESTART_NEEDED),
+])
+def test_wipe_names_a_stop_stuck_on_the_disk_and_not_one_still_exiting(tmp_path, stubborn, details, code):
+    # The real script's output, read by the wipe flow as the device returns it.
+    from tests.test_wipe_disk import TWO_TB, FakeDevice, drvctl_output
+    from timecapsulesmb.device import wipe
+    from timecapsulesmb.services import wipe_disk
+    from timecapsulesmb.services.callbacks import OperationCallbacks
+    from timecapsulesmb.services.maintenance import render_disk_maintenance_preamble
+
+    offsets = wipe.wipe_offsets(TWO_TB)
+    script = '\n'.join([*render_disk_maintenance_preamble(), wipe.render_wipe_script('sd0', 2, TWO_TB, offsets)])
+    result, calls, _remaining, _ = _run_fsck_script(
+        tmp_path, stubborn=stubborn, details=details, script=script, drvctl=drvctl_output('0x200', '0xe8e088b0'))
+    assert calls == []
+    device = FakeDevice()
+    device.wipe_output = result.stdout + result.stderr
+    debug: dict[str, object] = {}
+
+    with pytest.raises(wipe_disk.WipeDiskError) as raised:
+        device.run(callbacks=OperationCallbacks(add_debug_fields=debug.update))
+
+    assert (raised.value.code, raised.value.reason) == (code, 'stop_failed')
+    assert list(debug) == (['stop_stuck'] if code == ErrorCode.MANAGER_STOP_TIMEOUT else ['stop_busy'])
+    assert 'wipe' in device.calls and 'rpc eraseDisk method:i:0' not in device.calls
 
 
 @pytest.mark.parametrize('stubborn', [None, '30', '41'])
@@ -606,13 +743,14 @@ def _stop_with_fake_ps(tmp_path, processes, *, shell='/bin/sh', on_loop_sleep=la
 def test_stop_waits_for_an_unreadable_shell_or_service_but_never_signals_it(tmp_path, shell):
     # A process whose command line could not be read may be ours or someone
     # else's: the stop waits for it, then fails naming it, and leaves it alone.
-    from timecapsulesmb.device.processes import process_stop_failed
+    # One asleep on the disk for minutes makes the stop a stuck one.
+    from timecapsulesmb.device.processes import stop_failure
 
     result, fake = _stop_with_fake_ps(tmp_path, [
         process('20 S service /mnt/Flash/service run'),
-        process('40 D sh /bin/sh /mnt/Flash/boot.sh', stat_later='D'),
-        process('41 S service service: role=discovery', argv='unreadable'),
-        process('42 D smbd /mnt/Memory/samba4/sbin/smbd -F'),
+        process('40 D sh /bin/sh /mnt/Flash/boot.sh', stat_later='D', sl=3, wchan='biowait'),
+        process('41 D service service: role=discovery', stat_later='D', sl=127, wchan='biowait'),
+        process('42 D smbd /mnt/Memory/samba4/sbin/smbd -F', sl=127, wchan='biowait'),
     ], shell=shell)
 
     assert result.returncode == 1
@@ -621,13 +759,17 @@ def test_stop_waits_for_an_unreadable_shell_or_service_but_never_signals_it(tmp_
     assert 'process service did not show its command line (pid 41); retry after its active work finishes' in lines
     assert [pid for _signal, pid in fake.signals] == ['20']
     assert '40' not in fake.command_reads()
-    # A service asleep in the kernel throughout may be the manager: the
-    # stuck-service advice.
-    assert process_stop_failed(result.stderr)
+    # smbd is no child of either: not reported. A service never read may be
+    # the manager; a shell never read may be anyone's.
+    failure = stop_failure(result.stderr)
+    assert [(p.pid, p.label) for p in failure.left] == [(40, 'unreadable'), (41, 'unreadable')]
+    assert [p.pid for p in failure.disk_waits] == [41]
+    assert failure.supervisor_left is True
 
 
-def test_an_unreadable_shell_alone_is_not_a_stuck_manager(tmp_path):
-    from timecapsulesmb.device.processes import process_stop_failed
+def test_an_unreadable_shell_briefly_asleep_is_a_busy_stop(tmp_path):
+    # It may be another program's shell, and its sleep is short.
+    from timecapsulesmb.device.processes import stop_failure
 
     result, _ = _stop_with_fake_ps(tmp_path, [process('40 D sh /bin/sh /mnt/Flash/boot.sh', stat_later='D')])
 
@@ -635,7 +777,20 @@ def test_an_unreadable_shell_alone_is_not_a_stuck_manager(tmp_path):
     assert result.stderr.splitlines()[0] == (
         'process sh did not show its command line (pid 40); retry after its active work finishes'
     )
-    assert not process_stop_failed(result.stderr)
+    failure = stop_failure(result.stderr)
+    assert [p.label for p in failure.left] == ['unreadable']
+    assert failure.stuck is False
+
+
+def test_an_unreadable_service_left_may_be_the_manager(tmp_path):
+    # Asleep in the kernel on both looks, but not for minutes on the disk.
+    from timecapsulesmb.device.processes import stop_failure
+
+    result, _ = _stop_with_fake_ps(tmp_path, [process('41 D service service: role=manager', stat_later='D')])
+
+    assert result.returncode == 1
+    failure = stop_failure(result.stderr)
+    assert (failure.disk_waits, failure.stuck) == ((), True)
 
 
 @pytest.mark.parametrize('shell', SHELLS)
@@ -695,7 +850,7 @@ def test_idle_jobs_never_expand_a_shells_arguments(tmp_path, shell):
 
 @pytest.mark.parametrize('shell', SHELLS)
 def test_stop_idle_jobs_never_signals_an_unreadable_process(tmp_path, shell):
-    from timecapsulesmb.device.processes import process_stop_failed, render_stop_idle_jobs
+    from timecapsulesmb.device.processes import render_stop_idle_jobs, stop_failure
 
     fake = FakePs(tmp_path, [
         process('17 S sh /bin/sh /mnt/Flash/migrate.sh', argv='unreadable'),
@@ -705,29 +860,121 @@ def test_stop_idle_jobs_never_signals_an_unreadable_process(tmp_path, shell):
     result = subprocess.run([shell, '-c', script], capture_output=True, text=True)
 
     assert result.returncode == 1
-    assert result.stderr.splitlines() == ['process sh did not show its command line (pid 17)']
+    assert result.stderr.splitlines() == [
+        'process sh did not show its command line (pid 17)',
+        stop_stuck_line(17, 'sh', stat='S', sl=0, wchan='-'),
+    ]
     assert fake.signals == [['-TERM', '18']]
     assert fake.pids == {'17'}
-    # It may be another program's shell, so it is no stuck service.
-    assert not process_stop_failed(result.stderr)
+    # Not asleep on the disk: no stuck service.
+    assert stop_failure(result.stderr).stuck is False
 
 
 @pytest.mark.parametrize('shell', SHELLS)
-def test_stop_idle_jobs_names_a_job_that_outlived_sigkill_as_stuck(tmp_path, shell):
+@pytest.mark.parametrize(('sl', 'stuck'), [(127, True), (119, False)])
+def test_stop_idle_jobs_names_a_job_that_outlived_sigkill(tmp_path, shell, sl, stuck):
     # Uninstall stops a migrator instead of waiting; one still there after
-    # SIGKILL is asleep in the kernel, as a service that will not stop is.
-    from timecapsulesmb.device.processes import process_stop_failed, render_stop_idle_jobs
+    # SIGKILL and asleep on the disk for minutes is stuck there.
+    from timecapsulesmb.device.processes import render_stop_idle_jobs, stop_failure
 
     fake = FakePs(tmp_path, [
-        process('18 D tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate multi copy', survives=('TERM', 'KILL')),
+        process('18 D tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate multi copy', survives=('TERM', 'KILL'),
+                sl=sl, wchan='biowait'),
     ])
     script = fake.install(render_stop_idle_jobs(attempts=1)).replace('sleep 1', ':')
     result = subprocess.run([shell, '-c', script], capture_output=True, text=True)
 
     assert result.returncode == 1
-    assert result.stderr.splitlines() == ['job tc-xattr-hfs-mi (pid 18) did not stop']
+    assert result.stderr.splitlines() == [
+        'job tc-xattr-hfs-mi (pid 18) did not stop',
+        stop_stuck_line(18, 'tc-xattr-hfs-mi', sl=sl),
+    ]
     assert fake.signals == [['-TERM', '18'], ['-KILL', '18']]
-    assert process_stop_failed(result.stderr)
+    assert stop_failure(result.stderr).stuck is stuck
+
+
+def _raised_by_stuck_stop_as(output):
+    from timecapsulesmb.deploy.executor import stuck_stop_as
+    from timecapsulesmb.services.callbacks import OperationCallbacks
+    from timecapsulesmb.transport.errors import SshError
+
+    debug: dict[str, object] = {}
+    error = SshError(output.strip())
+    with pytest.raises(Exception) as raised:
+        with stuck_stop_as('stuck', callbacks=OperationCallbacks(add_debug_fields=debug.update)):
+            raise error
+    return raised.value, error, debug
+
+
+STOP_SCRIPTS = {
+    'pkill': lambda: render_remote_action(StopProcessAction('smbd')),
+    'service': lambda: render_stop_service_runtime(attempts=0, supervisor_seconds=0),
+    'idle_jobs': lambda: render_stop_idle_jobs(attempts=0),
+}
+
+
+@pytest.mark.parametrize(('script', 'rows', 'stuck'), [
+    ('pkill', [process('40 D smbd smbd -F', survives=('TERM', 'KILL'), sl=127, wchan='biowait')], True),
+    ('pkill', [process('40 D smbd smbd -F', survives=('TERM', 'KILL'), sl=5, wchan='biowait')], False),
+    # The manager waits for its smbd, asleep on the disk.
+    ('service', [process('30 S service service: role=manager', survives=('TERM',), wchan='wait'),
+                 process('41 D smbd smbd -F', ppid='30', sl=127, wchan='biolock')], True),
+    ('service', [process('33 S service service: role=discovery nbns=ready', survives=('TERM',))], False),
+    ('idle_jobs', [process('18 D tc-xattr-hfs-mi tc-xattr-hfs-migrate', survives=('TERM', 'KILL'),
+                           sl=127, wchan='genput')], True),
+    ('idle_jobs', [process('18 S telemetry telemetry', survives=('TERM', 'KILL'))], False),
+])
+def test_every_stop_left_stuck_on_the_disk_is_a_stuck_service_and_any_other_keeps_its_error(
+        tmp_path, script, rows, stuck):
+    # deploy, Activate and uninstall run these through run_ssh, whose error
+    # carries the script's output.
+    from timecapsulesmb.core.error_codes import ErrorCode
+    from timecapsulesmb.device.errors import DeviceError
+
+    returncode, output = run_stop(tmp_path, rows, STOP_SCRIPTS[script]())
+    assert returncode == 1
+
+    raised, error, debug = _raised_by_stuck_stop_as(output)
+
+    if stuck:
+        assert isinstance(raised, DeviceError) and raised.code == ErrorCode.MANAGER_STOP_TIMEOUT
+        assert raised.__cause__ is error
+        assert list(debug) == ['stop_stuck']
+    else:
+        assert raised is error
+        assert list(debug) == ['stop_busy']
+        assert 'did not stop' in str(raised)
+
+
+def test_the_pkill_stops_output_is_what_caller_tests_fake(tmp_path):
+    rows = [process('40 D smbd smbd -F', survives=('TERM', 'KILL'), sl=127, wchan='biowait')]
+
+    assert run_stop(tmp_path, rows, STOP_SCRIPTS['pkill']()) == (1, stuck_stop_output('smbd', 40))
+
+
+def test_a_timed_out_stop_whose_error_quotes_the_script_is_not_a_stop_failure():
+    # The timeout's message carries the command on one line, the echo of the
+    # failure and of each stop line included; without a line of its own from
+    # the device, it is no stop that failed, and is raised as it is.
+    from timecapsulesmb.deploy.executor import stuck_stop_as
+    from timecapsulesmb.device.processes import stop_failure
+    from timecapsulesmb.services.callbacks import OperationCallbacks
+    from timecapsulesmb.transport.errors import SshCommandTimeout
+
+    for render in STOP_SCRIPTS.values():
+        command = render()
+        message = 'Timed out waiting for ssh command to finish: ' + ' '.join(command.split())
+        assert 'tc-stop: stuck pid=' in message
+        assert stop_failure(message) is None
+    pkill = STOP_SCRIPTS['pkill']()
+    assert "echo 'process smbd did not stop'" in pkill
+    raised, error, debug = _raised_by_stuck_stop_as(f"process smbd did not stop\n{pkill}")
+    assert raised is error and debug == {}
+    timeout = SshCommandTimeout('Timed out waiting for ssh command to finish: ' + ' '.join(pkill.split()))
+    with pytest.raises(SshCommandTimeout) as caught:
+        with stuck_stop_as('stuck', callbacks=OperationCallbacks()):
+            raise timeout
+    assert caught.value is timeout
 
 
 def test_fsck_touches_nothing_while_an_earlier_fsck_hfs_still_runs(tmp_path):

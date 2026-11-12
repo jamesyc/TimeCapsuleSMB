@@ -51,6 +51,7 @@ from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.reboot import REBOOT_NO_DOWN_MESSAGE, REBOOT_UP_TIMEOUT_MESSAGE, REBOOT_UP_TIMEOUT_SECONDS, RebootFlowError
 from timecapsulesmb.transport.errors import SshNetworkError, TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
+from tests.device_ps import stop_stuck_line, stuck_stop_output
 from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime
 from tests.test_summaries import LANGUAGES, catalog, placeholder_types
 
@@ -377,25 +378,30 @@ class RunFsckTests(FsckHarness, unittest.TestCase):
         self.assertEqual(device.calls, ["run_ssh"])
 
     def test_a_process_that_would_not_stop_is_named_and_nothing_restarts(self) -> None:
-        # The preamble's stop: as deploy and uninstall report it.
+        # The preamble's stop: one it left asleep on the disk is a stuck
+        # service, as deploy and uninstall report it; one still exiting, or
+        # a stop that failed without saying what it left, says fsck did not run.
         from timecapsulesmb.services.maintenance import FSCK_STOP_TIMEOUT_MESSAGE
 
-        # A service waited for without reading its command line is ours and
-        # asleep throughout; an unreadable sh may be anyone's shell.
-        unreadable = "did not show its command line (pid 41); retry after its active work finishes"
+        unreadable = "process service did not show its command line (pid 41); retry after its active work finishes"
         cases = (
-            ("process smbd did not stop", ErrorCode.MANAGER_STOP_TIMEOUT, FSCK_STOP_TIMEOUT_MESSAGE),
-            (f"process service {unreadable}", ErrorCode.MANAGER_STOP_TIMEOUT, FSCK_STOP_TIMEOUT_MESSAGE),
-            (f"process sh {unreadable}", None, FSCK_DID_NOT_RUN_MESSAGE),
+            (stuck_stop_output(), ErrorCode.MANAGER_STOP_TIMEOUT, FSCK_STOP_TIMEOUT_MESSAGE, "stop_stuck"),
+            (f"{unreadable}\n{stop_stuck_line(41, 'service', wchan='biolock')}\n",
+             ErrorCode.MANAGER_STOP_TIMEOUT, FSCK_STOP_TIMEOUT_MESSAGE, "stop_stuck"),
+            (f"{unreadable}\n{stop_stuck_line(41, 'service', sl=3)}\n", None, FSCK_DID_NOT_RUN_MESSAGE, "stop_busy"),
+            (stuck_stop_output("service", 33, stat="S", sl=4, wchan="wait"), None, FSCK_DID_NOT_RUN_MESSAGE, "stop_busy"),
+            ("process smbd did not stop\n", None, FSCK_DID_NOT_RUN_MESSAGE, None),
         )
-        for line, code, message in cases:
-            with self.subTest(line=line):
-                outcome, _recorder, _run_ssh, device = self.run_fsck(f"{line}\n", returncode=1)
+        for stdout, code, message, telemetry in cases:
+            with self.subTest(stdout=stdout):
+                outcome, recorder, _run_ssh, device = self.run_fsck(stdout, returncode=1)
 
                 self.assertIsNone(outcome.status)
                 self.assertEqual((outcome.failure, outcome.failure_code), (message, code))
                 self.assertEqual((outcome.reboot_requested, outcome.waited), (False, False))
                 self.assertEqual(device.calls, ["run_ssh"])
+                self.assertEqual([key for key in recorder.debug if key.startswith("stop_")],
+                                 [telemetry] if telemetry else [])
 
     def test_volume_still_mounted_explains_why_fsck_did_not_run(self) -> None:
         outcome, _recorder, _run_ssh, device = self.run_fsck(f"{FSCK_NOT_UNMOUNTED_LINE}\n", returncode=1)
@@ -1004,37 +1010,42 @@ class UninstallTests(unittest.TestCase):
                 self.assertLess(removal, sync)
                 self.assertEqual(events[sync + 1:], [("uninstall_sync", "ok"), ("reboot",)])
 
-    def test_any_process_that_will_not_stop_is_a_stuck_service_and_nothing_is_removed(self) -> None:
-        # A process still there after SIGKILL is asleep in the kernel, maybe on
-        # the disk: an old release's helper as much as the manager.
+    def test_a_process_any_stop_leaves_on_the_disk_is_a_stuck_service_and_nothing_is_removed(self) -> None:
+        # The manager, an old release's helper or a migrator: one left asleep
+        # on the disk for minutes needs an unplug. One still exiting keeps the
+        # stop's own error, which says to retry. Nothing is removed either way.
         from timecapsulesmb.core.error_codes import ErrorCode
         from timecapsulesmb.deploy.executor import UNINSTALL_STOP_TIMEOUT_MESSAGE
         from timecapsulesmb.transport.errors import SshError
 
-        # Each stop's own line: pkill's, the service stop's for a service it
-        # could not read, and the migrator stop's after SIGKILL.
-        cases = [(f"process {name} did not stop", ("pkill", name)) for name in ("manager", "smbd", "mdns-advertiser")]
-        cases += [
-            ("process service did not show its command line (pid 41); retry after its active work finishes",
-             ("did not show its command line (pid $pid); retry",)),
-            ("job tc-xattr-hfs-mi (pid 18) did not stop", ("job $comm",)),
-        ]
-        for line, markers in cases:
-            with self.subTest(line=line):
-                plan, _recorder, _mount = self.prepare()
-                commands: list[str] = []
+        # Each stop by its own command: pkill's, the service stop's and the
+        # migrator stop's.
+        stops = [(("pkill", name), name) for name in ("smbd", "mdns-advertiser")]
+        stops += [(("did not show its command line (pid $pid); retry",), "service"), (("job $comm",), "tc-xattr-hfs-mi")]
+        for markers, comm in stops:
+            for stuck in (True, False):
+                with self.subTest(comm=comm, stuck=stuck):
+                    plan, _recorder, _mount = self.prepare()
+                    recorder = RecordingCallbacks()
+                    commands: list[str] = []
+                    row = {} if stuck else {"stat": "S", "sl": 1, "wchan": "wait"}
+                    error = SshError(f"{comm} did not stop\n{stop_stuck_line(41, comm, **row)}")
 
-                def run_ssh(_connection, command, **_kwargs):
-                    commands.append(command)
-                    if all(marker in command for marker in markers):
-                        raise SshError(line)
+                    def run_ssh(_connection, command, **_kwargs):
+                        commands.append(command)
+                        if all(marker in command for marker in markers):
+                            raise error
 
-                with mock.patch("timecapsulesmb.deploy.executor.run_ssh", side_effect=run_ssh), \
-                        self.assertRaises(DeviceError) as raised:
-                    remote_uninstall_payload(CONNECTION, plan, callbacks=RecordingCallbacks().callbacks)
-                self.assertEqual(raised.exception.code, ErrorCode.MANAGER_STOP_TIMEOUT)
-                self.assertEqual(str(raised.exception), UNINSTALL_STOP_TIMEOUT_MESSAGE)
-                self.assertFalse(any("/Volumes/dk2/.samba4" in command and "rm" in command for command in commands))
+                    with mock.patch("timecapsulesmb.deploy.executor.run_ssh", side_effect=run_ssh), \
+                            self.assertRaises(SshError if not stuck else DeviceError) as raised:
+                        remote_uninstall_payload(CONNECTION, plan, callbacks=recorder.callbacks)
+                    if stuck:
+                        self.assertEqual(raised.exception.code, ErrorCode.MANAGER_STOP_TIMEOUT)
+                        self.assertEqual(str(raised.exception), UNINSTALL_STOP_TIMEOUT_MESSAGE)
+                    else:
+                        self.assertIs(raised.exception, error)
+                    self.assertEqual(list(recorder.debug), ["stop_stuck" if stuck else "stop_busy"])
+                    self.assertFalse(any("/Volumes/dk2/.samba4" in command and "rm" in command for command in commands))
 
     def test_another_failure_of_the_removal_keeps_its_own_error(self) -> None:
         from timecapsulesmb.transport.errors import SshError

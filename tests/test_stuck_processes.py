@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from tests.device_ps import ps_row
+from tests.device_ps import ps_row, stop_stuck_line
 from timecapsulesmb.device.processes import (
     StuckProcess,
     disk_jobs_running,
     disk_io_stalls,
     manager_unnamed_stuck_count,
+    stop_failure,
     stuck_processes,
 )
 
@@ -185,6 +186,118 @@ class DiskIoStallTests(unittest.TestCase):
         ):
             with self.subTest(listing=listing):
                 self.assertEqual(disk_io_stalls(listing), [])
+
+
+class StopFailureTests(unittest.TestCase):
+    """What a failed stop left (its tc-stop lines), stuck on the disk by
+    disk_io_stalls' rule or still exiting. The scripts that print the lines
+    run in tests/test_appliance_process_shutdown.py."""
+
+    def test_a_process_left_on_a_disk_wait_for_minutes_makes_the_stop_stuck(self) -> None:
+        for wchan in ("biowait", "biolock", "genput"):
+            with self.subTest(wchan=wchan):
+                failure = stop_failure(stop_stuck_line(41, "smbd", sl=120, wchan=wchan))
+                self.assertTrue(failure.stuck)
+                self.assertEqual(failure.disk_waits, (StuckProcess(41, "smbd", wchan, 120),))
+
+    def test_a_disk_program_left_asleep_for_minutes_on_any_wait_is_stuck(self) -> None:
+        # diskd's TERM deadlock with ACPd leaves it asleep on the network.
+        self.assertTrue(stop_failure(stop_stuck_line(55, "diskd", wchan="netio")).stuck)
+
+    def test_any_other_process_left_is_a_busy_stop(self) -> None:
+        for line in (
+            # Asleep on the disk, but not for minutes: still writing.
+            stop_stuck_line(41, "smbd", sl=119),
+            # Stuck for minutes, but not on the disk.
+            stop_stuck_line(41, "smbd", wchan="tstile"),
+            # A kernel thread always sleeps this way.
+            stop_stuck_line(5, "amc6821c_thread", stat="DK"),
+            # Still exiting after SIGTERM.
+            stop_stuck_line(33, "service", stat="S", sl=4, wchan="wait"),
+            stop_stuck_line(30, "service", stat="R", sl=0, wchan="-"),
+        ):
+            with self.subTest(line=line):
+                failure = stop_failure(line)
+                self.assertFalse(failure.stuck)
+                self.assertEqual(failure.disk_waits, ())
+
+    def test_one_disk_wait_among_busy_processes_makes_the_stop_stuck(self) -> None:
+        output = "\n".join([
+            "process manager did not stop; retry after its active work finishes",
+            stop_stuck_line(30, "service", stat="S", sl=0, wchan="wait"),
+            stop_stuck_line(41, "smbd", sl=127, wchan="biowait"),
+        ])
+        failure = stop_failure(output)
+        self.assertEqual([p.pid for p in failure.left], [30, 41])
+        self.assertTrue(failure.stuck)
+        self.assertEqual(failure.debug_fields(), {"stop_stuck": [
+            {"comm": "service", "stat": "S", "sl": 0, "wchan": "wait"},
+            {"comm": "smbd", "stat": "D", "sl": 127, "wchan": "biowait"},
+        ]})
+
+    def test_a_busy_stop_goes_to_telemetry_as_stop_busy(self) -> None:
+        failure = stop_failure(stop_stuck_line(33, "service", stat="S", sl=4, wchan="wait"))
+        self.assertEqual(failure.debug_fields(), {"stop_busy": [{"comm": "service", "stat": "S", "sl": 4, "wchan": "wait"}]})
+
+    def test_the_manager_left_makes_the_stop_stuck_without_a_disk_wait(self) -> None:
+        # The service stop's supervisor, after its budget; or a service it
+        # never read, which may be the manager.
+        for line in (
+            stop_stuck_line(30, "service", stat="S", sl=0, wchan="wait", label="manager"),
+            stop_stuck_line(32, "sh", stat="S", sl=0, wchan="wait", label="manager"),
+            stop_stuck_line(41, "service", sl=3, label="unreadable"),
+        ):
+            with self.subTest(line=line):
+                failure = stop_failure(line)
+                self.assertEqual(failure.disk_waits, ())
+                self.assertTrue(failure.supervisor_left)
+                self.assertTrue(failure.stuck)
+
+    def test_workers_boot_scripts_and_unread_shells_left_are_busy(self) -> None:
+        for line in (
+            stop_stuck_line(33, "service", stat="S", sl=4, wchan="wait", label="service"),
+            stop_stuck_line(34, "sh", stat="S", sl=0, wchan="wait", label="boot"),
+            stop_stuck_line(40, "sh", sl=3, label="unreadable"),
+        ):
+            with self.subTest(line=line):
+                failure = stop_failure(line)
+                self.assertFalse(failure.supervisor_left)
+                self.assertFalse(failure.stuck)
+
+    def test_the_label_goes_to_telemetry_when_the_stop_gave_one(self) -> None:
+        output = "\n".join([
+            stop_stuck_line(30, "service", stat="S", sl=0, wchan="wait", label="manager"),
+            stop_stuck_line(41, "smbd", stat="S", sl=0, wchan="select"),
+        ])
+        self.assertEqual(stop_failure(output).debug_fields(), {"stop_stuck": [
+            {"comm": "service", "stat": "S", "sl": 0, "wchan": "wait", "label": "manager"},
+            {"comm": "smbd", "stat": "S", "sl": 0, "wchan": "select"},
+        ]})
+
+    def test_lines_from_a_terminal_keep_their_carriage_returns(self) -> None:
+        # Disk Repair runs its script on a terminal: CR LF line ends.
+        output = f"process smbd did not stop\r\n{stop_stuck_line(40, 'smbd')}\r\n"
+        self.assertTrue(stop_failure(output).stuck)
+
+    def test_only_a_whole_line_counts(self) -> None:
+        # A timed-out command's summary quotes the script on one line; the
+        # human lines name processes but carry no row; a malformed line is
+        # no row either.
+        line = stop_stuck_line(40, "smbd")
+        for output in (
+            "",
+            "process smbd did not stop",
+            "job tc-xattr-hfs-mi (pid 18) did not stop",
+            f"Timed out waiting for ssh command to finish: /bin/sh -c '{line}'",
+            f"  echo \"{line}\" >&2",
+            'tc-stop: stuck pid=$stop_pid comm=$stop_ucomm stat=$stop_stat sl=$stop_sl wchan=$stop_wchan',
+            "tc-stop: stuck pid=40 comm=smbd stat=D sl=127",
+            f"{line} extra",
+            f"{line} label=",
+            f"{line} label=manager extra",
+        ):
+            with self.subTest(output=output):
+                self.assertIsNone(stop_failure(output))
 
 
 class DiskJobsRunningTests(unittest.TestCase):

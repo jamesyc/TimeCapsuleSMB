@@ -46,6 +46,7 @@ from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 
 from tests.cli_support import CliTestCase
+from tests.device_ps import stuck_stop_output
 from tests.reboot_support import FakeAcpDevice, acp_password_answer
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.device.acpd import RestartVerdict
@@ -1355,7 +1356,7 @@ class CliDeployTests(CliTestCase):
         empty_mast = MaStDiscoveryResult((), 10, "MaSt=<plist><array/></plist>")
         cases = (
             ("a process that will not stop", "manager_stop_timeout", "A service on the device is stuck",
-             {"remote": SshError("process smbd did not stop")}),
+             {"remote": SshError(stuck_stop_output().strip())}),
             ("a full disk", "deploy_disk_not_writable", "The disk has no free space left",
              {"upload": upload_failing("dd: /Volumes/dk2/.samba4/smbd: No space left on device")}),
             ("a full flash", "insufficient_flash_space", "Not enough free space on /mnt/Flash",

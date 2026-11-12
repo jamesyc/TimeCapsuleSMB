@@ -1045,8 +1045,9 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         action_ids=("disk_repair",),
     ),
-    # The stop script waited for a process asleep in the kernel: maybe on the
-    # disk, maybe not (F19 looked the same).
+    # The stop left a process asleep on a disk wait, or the manager after
+    # its budget (processes.StopFailure.stuck): maybe the disk, maybe not
+    # (F19 looked the same).
     ("deploy", ErrorCode.MANAGER_STOP_TIMEOUT): RecoveryInfo(
         "A service on the device is stuck",
         "It did not stop for the install. It may be waiting on the disk.",
