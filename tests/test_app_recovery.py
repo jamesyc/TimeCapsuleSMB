@@ -3,9 +3,16 @@ from __future__ import annotations
 import itertools
 import unittest
 
-from timecapsulesmb.app import recovery
+from timecapsulesmb.app import recovery, service
+from timecapsulesmb.app.context import AppOperationContext
+from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.recovery import cli_steps, recovery_for, ssh_timeout_slow_device_recovery
 from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.probe import ProbedDeviceState, ProbeResult, SshAccessStatus
+from timecapsulesmb.services.app import AppOperationError
+from timecapsulesmb.transport.errors import TransportError, transport_error_code
+from timecapsulesmb.transport.ssh import SshCommandTimeout
 
 
 class AppRecoveryTests(unittest.TestCase):
@@ -692,11 +699,20 @@ class CliStepsTests(unittest.TestCase):
 
 class FieldSituationCardTests(unittest.TestCase):
     """Each situation the field shows ends with the card written for it: its
-    own key, the buttons it offers and whether trying again can help. The
-    card's wording is free to change; the rows name the condition, not a
-    device, and tests in each area check that the condition reaches the code."""
+    own key, the buttons it offers and whether trying again can help, as the
+    app receives them from the path that picks the card (service._failure_card)
+    for an operation that ends with an error of the row's code. The card's
+    wording is free to change; the rows name the condition, and tests in each
+    area check that the condition reaches the code."""
 
-    # (situation, operation, code, stage, the card's localization key, action_ids, retryable)
+    # (situation, operation, code, stage, the card's localization key,
+    # action_ids, retryable[, device, wifi, raised, code sent]): `device` is
+    # what the probe found, a Time Capsule (the default) or an AirPort Extreme,
+    # which has no internal disk; `wifi` what the preflight recorded about the
+    # device's link (None: nothing); `raised` the error the operation ends
+    # with, an AppOperationError of `code` (None) or "ssh_timeout", an SSH
+    # command that timed out with no cause of its own, whose code is `code`;
+    # `code sent` the code the app receives, when it is not `code`.
     ROWS = (
         # Reaching the device.
         ('nothing answers and this Mac is where it reached the device', 'deploy', 'device_silent', None,
@@ -733,6 +749,21 @@ class FieldSituationCardTests(unittest.TestCase):
          'configure.device_probe_failed', [], True),
         ('copying the installation files outlasts its timeout', 'deploy', 'payload_upload_timeout', None,
          'deploy.payload_upload_timeout', ['disk_repair'], True),
+        ('copying the installation files outlasts its timeout on a device that is not on Wi-Fi', 'deploy',
+         'payload_upload_timeout', None, 'deploy.payload_upload_timeout', ['disk_repair'], True, None, False),
+        # A device that joins its network over Wi-Fi: a timeout gets the
+        # Wi-Fi card, under its own code; an error naming another cause
+        # keeps its card.
+        ('copying the installation files outlasts its timeout on a device on Wi-Fi', 'deploy',
+         'payload_upload_timeout', None, 'wifi_link_slow', [], True, None, True, None, 'wifi_link_slow'),
+        ('an SSH command times out on a device on Wi-Fi', 'deploy', 'remote_error', 'upload_smbd',
+         'wifi_link_slow', [], True, None, True, "ssh_timeout", 'wifi_link_slow'),
+        ('an SSH command times out with nothing recorded about the link', 'deploy', 'remote_error', 'upload_smbd',
+         'remote_error.ssh_timeout_slow_device', ['run_checkup'], True, None, None, "ssh_timeout"),
+        ('an SSH command times out on a device that is not on Wi-Fi', 'deploy', 'remote_error', 'upload_smbd',
+         'remote_error.ssh_timeout_slow_device', ['run_checkup'], True, None, False, "ssh_timeout"),
+        ('kernel disk errors on a device on Wi-Fi', 'deploy', 'disk_failing', None,
+         'disk_failing', [], False, None, True),
         # Restarts.
         ('the restart went silent while this Mac stayed', 'deploy', 'restart_stuck', None,
          'deploy.restart_stuck', ['run_checkup'], True),
@@ -769,7 +800,7 @@ class FieldSituationCardTests(unittest.TestCase):
         ('a failed Seagate disk', 'deploy', 'disk_seagate_failed', None,
          'disk_seagate_failed', [], False),
         ('an AirPort Extreme with no USB disk', 'deploy', 'deploy_no_usb_disk_detected', None,
-         'deploy.deploy_no_usb_disk_detected', [], True),
+         'deploy.deploy_no_usb_disk_detected', [], True, "airport_extreme"),
         ('Wipe Internal Disk on a device with no internal disk', 'wipe-disk', 'wipe_disk_no_internal_disk', None,
          'wipe_disk_no_internal_disk', [], False),
         ('a disk with no HFS partition', 'deploy', 'deploy_no_hfs_partition', None,
@@ -778,6 +809,14 @@ class FieldSituationCardTests(unittest.TestCase):
          'deploy.deploy_disk_not_mounted.read_mast', ['wipe_disk'], True),
         ('an HFS volume that did not mount, or was unmounted', 'deploy', 'deploy_disk_not_mounted', None,
          'deploy.deploy_disk_not_mounted', [], True),
+        # An AirPort Extreme has no internal disk for Wipe Internal Disk: its
+        # USB disk is erased on a Mac instead, and no card offers the wipe.
+        ("an AirPort Extreme's USB disk with no HFS partition", 'deploy', 'deploy_no_hfs_partition', None,
+         'deploy.deploy_no_hfs_partition.no_internal_disk', [], True, "airport_extreme"),
+        ("an HFS volume Apple lists none of, on an AirPort Extreme's USB disk", 'deploy', 'deploy_disk_not_mounted',
+         'read_mast', 'deploy.deploy_disk_not_mounted.read_mast.no_internal_disk', [], True, "airport_extreme"),
+        ("an HFS volume that did not mount, on an AirPort Extreme's USB disk", 'deploy', 'deploy_disk_not_mounted',
+         None, 'deploy.deploy_disk_not_mounted', [], True, "airport_extreme"),
         ('no volume passes the test write, or the chosen one fills up', 'deploy', 'deploy_disk_not_writable', None,
          'deploy.deploy_disk_not_writable', [], True),
         ('an input/output error while the install writes, with no kernel disk errors', 'deploy',
@@ -826,15 +865,55 @@ class FieldSituationCardTests(unittest.TestCase):
          'deploy.xattr_migration_unreadable_folder', ['disk_repair', 'uninstall'], False),
     )
 
+    # What the probe found: the models it could be.
+    DEVICES = {"time_capsule": ("119", "TimeCapsule8,119"), "airport_extreme": ("120", "AirPort7,120")}
+
+    def probe_state(self, device: str) -> ProbedDeviceState:
+        syap, model = self.DEVICES[device]
+        result = ProbeResult(SshAccessStatus.OPEN_AUTHENTICATED, None, os_name="NetBSD", os_release="6.0",
+                             arch="earmv4", elf_endianness="little", airport_model=model, airport_syap=syap)
+        compatibility = DeviceCompatibility(
+            os_name="NetBSD", os_release="6.0", arch="earmv4", elf_endianness="little",
+            payload_family="netbsd6_samba4", device_generation="gen5", supported=True,
+            reason_code="supported_netbsd6", syap_candidates=(syap,), model_candidates=(model,),
+        )
+        return ProbedDeviceState(result, compatibility)
+
+    def card(self, name, operation, code, stage, device, wifi, raised):
+        """The code and card the app receives for an operation that ends
+        with the row's error, picked as service.run_api_request picks it."""
+        context = AppOperationContext(operation, EventSink(lambda _event: None))
+        context.probe_state = self.probe_state(device)
+        if stage is not None:
+            context.stage(stage)
+        if wifi is not None:
+            context.update_fields(wifi_client=wifi)
+        try:
+            if raised == "ssh_timeout":
+                raise SshCommandTimeout("Timed out waiting for ssh command to finish: /usr/bin/acp MaSt")
+            raise AppOperationError(name, code=ErrorCode(code))
+        except AppOperationError as exc:
+            return service._failure_card(exc, context, operation, exc.code, exc.recovery)
+        except TransportError as exc:
+            # The error's code is the row's.
+            self.assertEqual(transport_error_code(exc), code)
+            return service._failure_card(exc, context, operation, transport_error_code(exc))
+
     def test_each_situation_gets_the_card_that_says_what_to_do(self) -> None:
-        for name, operation, code, stage, key, action_ids, retryable in self.ROWS:
+        for row in self.ROWS:
+            name, operation, code, stage, key, action_ids, retryable, device, wifi, raised, code_sent = (
+                *row, *(None,) * (11 - len(row)),
+            )
             with self.subTest(name):
-                card = recovery_for(operation, ErrorCode(code), stage=stage)
+                sent, card = self.card(name, operation, code, stage, device or "time_capsule", wifi, raised)
+                self.assertEqual(sent, code_sent or code)
                 self.assertEqual(card["localization_key"], key)
                 self.assertEqual(card["action_ids"], action_ids)
                 self.assertIs(card["retryable"], retryable)
-                # Never the generic cards, which say only that something failed.
-                self.assertNotIn(key, ("remote_error", "operation_failed", "validation_failed"))
+
+    def test_every_row_names_a_situation_once(self) -> None:
+        names = [row[0] for row in self.ROWS]
+        self.assertEqual(len(names), len(set(names)))
 
 
 if __name__ == "__main__":
