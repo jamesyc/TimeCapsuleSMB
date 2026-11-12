@@ -169,7 +169,11 @@ final class BackendClientTests: XCTestCase {
         // From the kernel's errors or from files the disk could not read:
         // each its own text, both with Cancel the default.
         for (presentationID, prefersCancel) in [("deploy.disk_failing", true), ("uninstall.disk_failing", true),
-                                                ("fsck.disk_failing", true), ("deploy.disk_unreadable", true),
+                                                ("fsck.disk_failing", true), ("deploy.disk_failing_wipe", true),
+                                                ("uninstall.disk_failing_wipe", true), ("fsck.disk_failing_wipe", true),
+                                                ("deploy.disk_failing_usb", true), ("uninstall.disk_failing_usb", true),
+                                                ("fsck.disk_failing_usb", true),
+                                                ("deploy.disk_unreadable", true),
                                                 ("uninstall.disk_unreadable", true), ("fsck.disk_unreadable", true),
                                                 ("wipe-disk.disk_failing", true), ("wipe-disk.disk_unreadable", true),
                                                 ("uninstall.no_reboot", false)] {
@@ -190,6 +194,11 @@ final class BackendClientTests: XCTestCase {
         }
         XCTAssertNotEqual(L10n.string("confirm.deploy.disk_unreadable.message"),
                           L10n.string("confirm.deploy.disk_failing.message"))
+        // The bad-sector sentence names Wipe Internal Disk by its label.
+        XCTAssertTrue(L10n.string("confirm.deploy.disk_failing_wipe.message")
+            .contains(L10n.string("maintenance.action.wipe_disk")))
+        XCTAssertFalse(L10n.string("confirm.deploy.disk_failing.message")
+            .contains(L10n.string("maintenance.action.wipe_disk")))
     }
 
     func testWipeDiskConfirmationNamesTheDiskAndMakesCancelTheDefault() throws {

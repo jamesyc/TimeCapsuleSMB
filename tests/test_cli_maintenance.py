@@ -21,7 +21,7 @@ from timecapsulesmb.services import reboot as reboot_service
 from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.probe import ProbeResult, SshAccessStatus
-from timecapsulesmb.device.storage import MaStVolume
+from timecapsulesmb.device.storage import MaStDiskSnapshot, MaStVolume
 from timecapsulesmb.deploy.commands import (
     RunScriptAction,
     render_remote_action,
@@ -933,6 +933,9 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(self.make_valid_env())))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             stack.enter_context(mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors))
+            # MaSt names wd0 as the built-in disk: the errors are its own.
+            stack.enter_context(mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn",
+                                           return_value=(MaStDiskSnapshot("wd0", "", 1907729, True, ()),)))
             stack.enter_context(mock.patch("builtins.input", side_effect=lambda prompt="": prompts.append(prompt) or "n"))
             run_ssh = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
             with redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as warning:
@@ -940,7 +943,10 @@ class CliMaintenanceTests(CliTestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(prompts, ["Run fsck anyway? [y/N]: "])
-        self.assertIn("A disk repair cannot fix a failing disk", warning.getvalue())
+        self.assertIn(f"The internal disk reported errors it could not recover from ({errors[0]}), so it may be failing.",
+                      warning.getvalue())
+        self.assertIn("`tcapsule wipe-internal-disk` sometimes gets the disk working again", warning.getvalue())
+        self.assertIn("A disk repair may not fix this, and works the disk hard.", warning.getvalue())
         self.assertIn("fsck cancelled.", output.getvalue())
         run_ssh.assert_not_called()
 
@@ -953,6 +959,8 @@ class CliMaintenanceTests(CliTestCase):
                     stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
                     self._patch_mast_volume_flow(stack, "uninstall")
                     stack.enter_context(mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors))
+                    stack.enter_context(mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn",
+                                                   return_value=(MaStDiskSnapshot("sd0", "", 1907729, True, ()),)))
                     stack.enter_context(mock.patch("builtins.input", return_value=answer))
                     remove = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
                     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):

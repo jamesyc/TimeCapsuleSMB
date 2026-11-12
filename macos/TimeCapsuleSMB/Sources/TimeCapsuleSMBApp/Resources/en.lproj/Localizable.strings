@@ -140,12 +140,34 @@
 "confirm.deploy.reboot_no_wait.action" = "Install / Update Samba and Request Reboot";
 "confirm.deploy.reboot_no_wait.message" = "Install or update Samba on this %@, request reboot, and return immediately?";
 "confirm.deploy.reboot_no_wait.title" = "Install / Update Samba and Request Reboot?";
+// The failing-disk preflight (confirm.{deploy,uninstall,fsck}.disk_failing, .disk_failing_wipe,
+// .disk_failing_usb and .disk_unreadable, and confirm.wipe-disk.disk_failing and .disk_unreadable;
+// the helper lists them in confirmations.DISK_FAILING_PRESENTATION_IDS), shown before an operation
+// that may not fix the disk. The helper builds the same English (disk_errors.disk_failing_warning),
+// with the kernel's line in brackets. Sentences in this order: which disk and what was seen,
+// “so it may be failing” (never “probably”: the warning asks before acting, the error card for a
+// failed disk keeps it); copy the files off first; the restart, AirPort Utility's first and the
+// unplug only as its alternative; “Checkup” afterwards to see whether the errors come back (a
+// restart clears them, so a quiet Checkup proves little, and the words must not promise a clean
+// disk); AirPort Utility may still show the disk as OK; the bad-sector sentence; what the operation
+// will not do; the question. The subject names the disk only when MaSt did: “The internal disk” in
+// .disk_failing_wipe (kernel errors on an internal disk Wipe Internal Disk accepts), “A USB disk on
+// the device” in .disk_failing_usb, otherwise “The device's disk”. The bad-sector sentence names
+// “Wipe Internal Disk” only in .disk_failing_wipe and says “sometimes”: the wipe does not rewrite
+// the sector, the new volume just stops needing it. A wipe's own warning has its bad-sector
+// sentence instead of a “will not fix” one.
 "confirm.deploy.disk_failing.action" = "Install Anyway";
-"confirm.deploy.disk_failing.message" = "The device's disk reported errors it could not recover from, so it is probably failing. Installing will not fix that, and AirPort Utility may still show the disk as OK. Copy off the files you need first. Install anyway?";
-"confirm.deploy.disk_failing.title" = "The Disk Is Failing";
+"confirm.deploy.disk_failing.message" = "The device's disk reported errors it could not recover from, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. Installing will not fix this. Install anyway?";
+"confirm.deploy.disk_failing.title" = "The Disk May Be Failing";
+"confirm.deploy.disk_failing_wipe.action" = "Install Anyway";
+"confirm.deploy.disk_failing_wipe.message" = "The internal disk reported errors it could not recover from, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. If a bad sector is the cause, “Wipe Internal Disk” sometimes gets the disk working again, but it deletes everything on it. Installing will not fix this. Install anyway?";
+"confirm.deploy.disk_failing_wipe.title" = "The Disk May Be Failing";
+"confirm.deploy.disk_failing_usb.action" = "Install Anyway";
+"confirm.deploy.disk_failing_usb.message" = "A USB disk on the device reported errors it could not recover from, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. Installing will not fix this. Install anyway?";
+"confirm.deploy.disk_failing_usb.title" = "The Disk May Be Failing";
 "confirm.deploy.disk_unreadable.action" = "Install Anyway";
-"confirm.deploy.disk_unreadable.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing. Installing will not fix that, and AirPort Utility may still show the disk as OK. Copy off the files you need first. Install anyway?";
-"confirm.deploy.disk_unreadable.title" = "The Disk Is Failing";
+"confirm.deploy.disk_unreadable.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. Installing will not fix this. Install anyway?";
+"confirm.deploy.disk_unreadable.title" = "The Disk May Be Failing";
 "confirm.fsck.no_reboot.action" = "Run fsck";
 "confirm.fsck.no_reboot.message" = "Run fsck on the selected HFS volume? This can take an hour or more on a large disk. Keep the Time Capsule plugged in until it finishes.";
 "confirm.fsck.no_reboot.title" = "Run Disk Repair?";
@@ -153,11 +175,17 @@
 "confirm.fsck.reboot.message" = "Run fsck on the selected HFS volume and reboot the device? This can take an hour or more on a large disk. Keep the Time Capsule plugged in until it finishes.";
 "confirm.fsck.reboot.title" = "Run Disk Repair And Reboot?";
 "confirm.fsck.disk_failing.action" = "Repair Anyway";
-"confirm.fsck.disk_failing.message" = "The device's disk reported errors it could not recover from, so it is probably failing. A disk repair cannot fix a failing disk, and works it hard. Copy off the files you need first. Repair anyway?";
-"confirm.fsck.disk_failing.title" = "The Disk Is Failing";
+"confirm.fsck.disk_failing.message" = "The device's disk reported errors it could not recover from, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. A disk repair may not fix this, and works the disk hard. Repair anyway?";
+"confirm.fsck.disk_failing.title" = "The Disk May Be Failing";
+"confirm.fsck.disk_failing_wipe.action" = "Repair Anyway";
+"confirm.fsck.disk_failing_wipe.message" = "The internal disk reported errors it could not recover from, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. If a bad sector is the cause, “Wipe Internal Disk” sometimes gets the disk working again, but it deletes everything on it. A disk repair may not fix this, and works the disk hard. Repair anyway?";
+"confirm.fsck.disk_failing_wipe.title" = "The Disk May Be Failing";
+"confirm.fsck.disk_failing_usb.action" = "Repair Anyway";
+"confirm.fsck.disk_failing_usb.message" = "A USB disk on the device reported errors it could not recover from, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. A disk repair may not fix this, and works the disk hard. Repair anyway?";
+"confirm.fsck.disk_failing_usb.title" = "The Disk May Be Failing";
 "confirm.fsck.disk_unreadable.action" = "Repair Anyway";
-"confirm.fsck.disk_unreadable.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing. A disk repair cannot fix a failing disk, and works it hard. Copy off the files you need first. Repair anyway?";
-"confirm.fsck.disk_unreadable.title" = "The Disk Is Failing";
+"confirm.fsck.disk_unreadable.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. A disk repair may not fix this, and works the disk hard. Repair anyway?";
+"confirm.fsck.disk_unreadable.title" = "The Disk May Be Failing";
 "confirm.flash.patch_write.action" = "Write Firmware";
 "confirm.flash.patch_write.message" = "Patch the primary firmware bank boot hook on %@? Manual power cycle is required after a successful write.";
 "confirm.flash.patch_write.title" = "Patch Firmware Boot Hook?";
@@ -174,11 +202,17 @@
 "confirm.uninstall.reboot.message" = "Remove managed TimeCapsuleSMB files from the device and reboot it?";
 "confirm.uninstall.reboot.title" = "Uninstall And Reboot?";
 "confirm.uninstall.disk_failing.action" = "Uninstall Anyway";
-"confirm.uninstall.disk_failing.message" = "The device's disk reported errors it could not recover from, so it is probably failing. Uninstalling will not fix that, and AirPort Utility may still show the disk as OK. Copy off the files you need first. Uninstall anyway?";
-"confirm.uninstall.disk_failing.title" = "The Disk Is Failing";
+"confirm.uninstall.disk_failing.message" = "The device's disk reported errors it could not recover from, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. Uninstalling will not fix this. Uninstall anyway?";
+"confirm.uninstall.disk_failing.title" = "The Disk May Be Failing";
+"confirm.uninstall.disk_failing_wipe.action" = "Uninstall Anyway";
+"confirm.uninstall.disk_failing_wipe.message" = "The internal disk reported errors it could not recover from, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. If a bad sector is the cause, “Wipe Internal Disk” sometimes gets the disk working again, but it deletes everything on it. Uninstalling will not fix this. Uninstall anyway?";
+"confirm.uninstall.disk_failing_wipe.title" = "The Disk May Be Failing";
+"confirm.uninstall.disk_failing_usb.action" = "Uninstall Anyway";
+"confirm.uninstall.disk_failing_usb.message" = "A USB disk on the device reported errors it could not recover from, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. Uninstalling will not fix this. Uninstall anyway?";
+"confirm.uninstall.disk_failing_usb.title" = "The Disk May Be Failing";
 "confirm.uninstall.disk_unreadable.action" = "Uninstall Anyway";
-"confirm.uninstall.disk_unreadable.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing. Uninstalling will not fix that, and AirPort Utility may still show the disk as OK. Copy off the files you need first. Uninstall anyway?";
-"confirm.uninstall.disk_unreadable.title" = "The Disk Is Failing";
+"confirm.uninstall.disk_unreadable.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. Uninstalling will not fix this. Uninstall anyway?";
+"confirm.uninstall.disk_unreadable.title" = "The Disk May Be Failing";
 // Wipe Internal Disk's confirmation names what a disk holds in the user's words: partition formats
 // (maintenance.wipe_disk.format.*) keep APFS, exFAT, FAT32 and NTFS as they are and translate only
 // the joining word.
@@ -190,12 +224,12 @@
 "confirm.wipe-disk.confirm.formats" = "It is formatted as %@.";
 "confirm.wipe-disk.confirm.bogus_map" = "AirPort Utility cannot replace its partition table.";
 "confirm.wipe-disk.confirm.blank" = "It has no partitions.";
-"confirm.wipe-disk.disk_failing.title" = "The Disk Is Failing";
+"confirm.wipe-disk.disk_failing.title" = "The Disk May Be Failing";
 "confirm.wipe-disk.disk_failing.action" = "Wipe Anyway";
-"confirm.wipe-disk.disk_failing.message" = "This disk reported errors it could not recover from, so it is probably failing. Wiping it does not fix that, and the new volume may fail too. Copy off the files you need first. Wipe anyway?";
-"confirm.wipe-disk.disk_unreadable.title" = "The Disk Is Failing";
+"confirm.wipe-disk.disk_failing.message" = "This disk reported errors it could not recover from, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. If a bad sector is the cause, wiping sometimes gets the disk working again, but the new volume may fail too. Wipe anyway?";
+"confirm.wipe-disk.disk_unreadable.title" = "The Disk May Be Failing";
 "confirm.wipe-disk.disk_unreadable.action" = "Wipe Anyway";
-"confirm.wipe-disk.disk_unreadable.message" = "This disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing. Wiping it does not fix that, and the new volume may fail too. Copy off the files you need first. Wipe anyway?";
+"confirm.wipe-disk.disk_unreadable.message" = "This disk could not read the TimeCapsuleSMB files, or only too slowly, so it may be failing. Copy off the files you need first. Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. Run “Checkup” afterwards to see whether the errors come back. AirPort Utility may still show the disk as OK. If a bad sector is the cause, wiping sometimes gets the disk working again, but the new volume may fail too. Wipe anyway?";
 "dashboard.action.install_update_smb" = "Install / Update Samba";
 "dashboard.action.refresh_status" = "Refresh Status";
 "dashboard.action.settings" = "Settings";
@@ -325,7 +359,8 @@
 // payload_unreadable_on_disk and rsync_unreadable_on_disk (Checkup, recovery and
 // confirm.<operation>.disk_unreadable): the disk returned an error or stalled while TimeCapsuleSMB
 // read its own files. Say both, “could not read … or only too slowly”, then the same “probably
-// failing” as disk_failing. It is its own cause, so the failing-disk preflight has its own
+// failing” as disk_failing; the failing-disk preflight says “may be failing” (see the note above
+// confirm.deploy.disk_failing.action). It is its own cause, so the preflight has its own
 // confirmation for it: the same title and button as disk_failing, with this first sentence instead
 // of the kernel's errors.
 "doctor.check.payload_unreadable_on_disk" = "The device's disk could not read the Samba files, or only too slowly, so it is probably failing and file sharing is off. Reinstalling will not fix the disk, and AirPort Utility may still show it as OK. Copy off the files you need, replace the disk, then erase the new disk in AirPort Utility and run “Install / Update Samba”.";

@@ -1056,7 +1056,8 @@ class CliDeployTests(CliTestCase):
         # Asked before the payload volume is chosen; no is the default.
         errors = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
         prompts: list[str] = []
-        with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
+        with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors), \
+                mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", return_value=None):
             result = self.run_deploy_cli(
                 [],
                 artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
@@ -1071,7 +1072,16 @@ class CliDeployTests(CliTestCase):
         result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()
         result.mocks.upload_deployment_payload.assert_not_called()
         self.assertNotIn("request", result.mocks.device.calls)
-        self.assertTrue(self.telemetry_payload("deploy_finished")["disk_failing_warned"])
+        # What the warning was based on: kernel errors, and MaSt did not
+        # answer, so it named no disk and did not suggest Wipe Internal Disk.
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertEqual(
+            {key: finished[key] for key in ("disk_failing_warned", "disk_failing_cause",
+                                            "disk_failing_disk", "disk_failing_wipe_suggested")},
+            {"disk_failing_warned": True, "disk_failing_cause": "disk_failing",
+             "disk_failing_disk": "unknown", "disk_failing_wipe_suggested": False},
+        )
+        self.assertNotIn("wipe-internal-disk", result.text)
 
     def test_deploy_without_input_at_the_reboot_prompt_stops_before_mutation(self) -> None:
         result = self.run_deploy_cli(

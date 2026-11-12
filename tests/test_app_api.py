@@ -6,6 +6,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -33,7 +34,11 @@ from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.events import AppClient, AppEvent, EventSink
 from timecapsulesmb.app.context import AppOperationContext
-from timecapsulesmb.app.confirmations import build_confirmation, disk_failing_confirmation_fields
+from timecapsulesmb.app.confirmations import (
+    DISK_FAILING_PRESENTATION_IDS,
+    build_confirmation,
+    disk_failing_confirmation_fields,
+)
 from timecapsulesmb.app.stage_policy import stage_policy
 from timecapsulesmb.app import contracts, helper, service
 from timecapsulesmb.flash_workflow import SecondaryBankInvalidError, SecondaryBankReadMismatchError
@@ -66,6 +71,7 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.device.storage import (
     MaStDiscoveryResult,
+    MaStDiskSnapshot,
     MaStVolume,
     PayloadCandidateCheck,
     PayloadHome,
@@ -7855,11 +7861,23 @@ MaSt = (
 
     DISK_ERRORS = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
 
-    def run_uninstall_with_disk_errors(self, errors, params: dict[str, object], verdicts=()):
+    @staticmethod
+    def mast_disks(builtin: str | None, *usb: str):
+        """MaSt's inventory for the warning's disk wording; None: MaSt unread."""
+        if builtin is None and not usb:
+            return None
+        disks = [MaStDiskSnapshot(builtin, "", 1907729, True, ())] if builtin else []
+        return (*disks, *(MaStDiskSnapshot(device, "", 1907729, False, ()) for device in usb))
+
+    def run_uninstall_with_disk_errors(self, errors, params: dict[str, object], verdicts=(), builtin=None):
         collector = CollectingSink()
+        # MaSt's disks, which say whose the errors are.
+        inventory = mock.patch(
+            "timecapsulesmb.device.disk_errors.read_disk_inventory_conn", return_value=self.mast_disks(builtin),
+        )
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+        with inventory, mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
                     with mock.patch("timecapsulesmb.device.disk_errors.manager_payload_problems", return_value=verdicts):
@@ -7893,11 +7911,27 @@ MaSt = (
 
         self.assertEqual(rc, 1)
         details = self.assert_confirmation(collector, "uninstall.disk_failing", {"disk_failing": True})
-        self.assertEqual(details["title"], "The Disk Is Failing")
+        self.assertEqual(details["title"], "The Disk May Be Failing")
         self.assertEqual(details["action_title"], "Uninstall Anyway")
         self.assertEqual(details["message"], f"{disk_failing_warning(kernel_evidence(self.DISK_ERRORS), 'uninstall')} Uninstall anyway?")
+        self.assertNotIn("Wipe Internal Disk", details["message"])
         prepare.assert_not_called()
         uninstall.assert_not_called()
+
+    def test_errors_on_the_internal_disk_get_the_confirmation_that_suggests_the_wipe(self) -> None:
+        # MaSt names sd0 as the built-in disk, and the Marvell controller is
+        # the internal disk's: the app shows the translation with the
+        # bad-sector sentence, under its own presentation id.
+        collector, rc, prepare, _uninstall = self.run_uninstall_with_disk_errors(
+            self.DISK_ERRORS, {"no_reboot": True}, builtin="sd0",
+        )
+        self.assertEqual(rc, 1)
+        details = self.assert_confirmation(collector, "uninstall.disk_failing_wipe", {"disk_failing": True})
+        evidence = kernel_evidence(self.DISK_ERRORS, disks=self.mast_disks("sd0"))
+        self.assertEqual(details["message"], f"{disk_failing_warning(evidence, 'uninstall')} Uninstall anyway?")
+        self.assertTrue(details["message"].startswith("The internal disk reported errors"))
+        self.assertIn("“Wipe Internal Disk” sometimes gets the disk working again", details["message"])
+        prepare.assert_not_called()
 
     def test_uninstall_anyway_goes_on_and_a_healthy_disk_keeps_the_usual_question(self) -> None:
         first, _rc, _prepare, _uninstall = self.run_uninstall_with_disk_errors(self.DISK_ERRORS, {"no_reboot": True})
@@ -7910,6 +7944,28 @@ MaSt = (
 
         _collector, _rc, prepare, _uninstall = self.run_uninstall_with_disk_errors(
             self.DISK_ERRORS, {"no_reboot": True, "confirmation_id": warned_id},
+        )
+        prepare.assert_called_once()
+
+    def test_a_yes_to_one_causes_warning_does_not_confirm_the_others(self) -> None:
+        # Kernel errors when asked, unreadable files when confirmed (or the
+        # reverse): the user agreed to other words, so it asks again.
+        first, _rc, _prepare, _uninstall = self.run_uninstall_with_disk_errors(self.DISK_ERRORS, {"no_reboot": True})
+        warned_id = first.events_of_type("error")[0]["details"]["confirmation_id"]
+        second, _rc, prepare, _uninstall = self.run_uninstall_with_disk_errors(
+            (), {"no_reboot": True, "confirmation_id": warned_id}, verdicts=(RSYNC_UNREADABLE,),
+        )
+        self.assert_confirmation(second, "uninstall.disk_unreadable", {"disk_failing": True})
+        prepare.assert_not_called()
+
+    def test_a_disk_mast_names_only_once_does_not_ask_twice(self) -> None:
+        # MaSt unread when asked (the plain words), read when confirmed (the
+        # wipe sentence): same cause, so the yes stands.
+        first, _rc, _prepare, _uninstall = self.run_uninstall_with_disk_errors(self.DISK_ERRORS, {"no_reboot": True})
+        self.assert_confirmation(first, "uninstall.disk_failing", {"disk_failing": True})
+        warned_id = first.events_of_type("error")[0]["details"]["confirmation_id"]
+        _second, _rc, prepare, _uninstall = self.run_uninstall_with_disk_errors(
+            self.DISK_ERRORS, {"no_reboot": True, "confirmation_id": warned_id}, builtin="sd0",
         )
         prepare.assert_called_once()
 
@@ -7930,9 +7986,10 @@ MaSt = (
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=self.DISK_ERRORS):
-                                with mock.patch("timecapsulesmb.services.deploy.run_remote_actions") as remote_actions:
-                                    service.run_api_request({"operation": "deploy", "params": {"dry_run": False}}, deploy.sink)
-        details = self.assert_confirmation(deploy, "deploy.disk_failing", {"disk_failing": True})
+                                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", return_value=self.mast_disks("sd0")):
+                                    with mock.patch("timecapsulesmb.services.deploy.run_remote_actions") as remote_actions:
+                                        service.run_api_request({"operation": "deploy", "params": {"dry_run": False}}, deploy.sink)
+        details = self.assert_confirmation(deploy, "deploy.disk_failing_wipe", {"disk_failing": True})
         self.assertEqual(details["action_title"], "Install Anyway")
         remote_actions.assert_not_called()
 
@@ -7940,22 +7997,63 @@ MaSt = (
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=self.DISK_ERRORS):
-                    with mock.patch("timecapsulesmb.app.ops.maintenance.run_fsck") as run_fsck:
-                        service.run_api_request({"operation": "fsck", "params": {"no_reboot": True}}, repair.sink)
+                    with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", return_value=None):
+                        with mock.patch("timecapsulesmb.app.ops.maintenance.run_fsck") as run_fsck:
+                            service.run_api_request({"operation": "fsck", "params": {"no_reboot": True}}, repair.sink)
+        # MaSt named no built-in disk: no wipe sentence.
         details = self.assert_confirmation(repair, "fsck.disk_failing", {"disk_failing": True})
-        self.assertIn("A disk repair cannot fix a failing disk", details["message"])
+        self.assertIn("A disk repair may not fix this, and works the disk hard. Repair anyway?", details["message"])
         run_fsck.assert_not_called()
+
+    # Each failing-disk confirmation the helper can send: operation, the
+    # evidence and the presentation id the app shows its own translation for.
+    def failing_disk_confirmations(self):
+        internal = kernel_evidence(self.DISK_ERRORS, disks=self.mast_disks("sd0"))
+        usb = kernel_evidence(("sd1a: error writing fsbn 8",), disks=self.mast_disks("sd0", "sd1"))
+        unknown = kernel_evidence(self.DISK_ERRORS)
+        for operation in ("deploy", "uninstall", "fsck"):
+            yield operation, unknown, f"{operation}.disk_failing"
+            yield operation, internal, f"{operation}.disk_failing_wipe"
+            yield operation, usb, f"{operation}.disk_failing_usb"
+            yield operation, UNREADABLE_EVIDENCE, f"{operation}.disk_unreadable"
+        # A wipe's warning always has its bad-sector sentence, under one id.
+        yield "wipe-disk", internal, "wipe-disk.disk_failing"
+        yield "wipe-disk", UNREADABLE_EVIDENCE, "wipe-disk.disk_unreadable"
+
+    def test_the_list_of_failing_disk_confirmations_is_complete(self) -> None:
+        # The catalogs' coverage test and this file's tests go by the
+        # helper's list: it must hold every id the helper sends.
+        self.assertEqual(sorted(presentation_id for *_rest, presentation_id in self.failing_disk_confirmations()),
+                         sorted(DISK_FAILING_PRESENTATION_IDS))
 
     def test_each_cause_of_a_failing_disk_has_its_own_confirmation(self) -> None:
         # The app shows its own words for each presentation id, so kernel
-        # errors and unreadable files must not share one.
-        for operation, kind in (("deploy", "install"), ("uninstall", "uninstall"), ("fsck", "repair")):
-            for evidence, suffix in ((kernel_evidence(self.DISK_ERRORS), "disk_failing"),
-                                     (UNREADABLE_EVIDENCE, "disk_unreadable")):
-                with self.subTest(operation=operation, suffix=suffix):
-                    fields = disk_failing_confirmation_fields(operation, evidence)
-                    self.assertEqual(fields["presentation_id"], f"{operation}.{suffix}")
-                    self.assertTrue(fields["message"].startswith(disk_failing_warning(evidence, kind)))
+        # errors, unreadable files and a warning that suggests the wipe must
+        # not share one.
+        kinds = {"deploy": "install", "uninstall": "uninstall", "fsck": "repair", "wipe-disk": "wipe"}
+        for operation, evidence, presentation_id in self.failing_disk_confirmations():
+            with self.subTest(presentation_id):
+                fields = disk_failing_confirmation_fields(operation, evidence)
+                self.assertEqual(fields["presentation_id"], presentation_id)
+                self.assertEqual(fields["title"], "The Disk May Be Failing")
+                self.assertTrue(fields["message"].startswith(disk_failing_warning(evidence, kinds[operation])))
+
+    def test_the_apps_english_for_each_failing_disk_confirmation_is_the_helpers_text(self) -> None:
+        # The app shows en.lproj's text for the presentation id; the helper's
+        # message adds only the kernel's line in brackets. If they drift, the
+        # app and the CLI tell the user different things.
+        strings = (REPO_ROOT / "macos/TimeCapsuleSMB/Sources/TimeCapsuleSMBApp/Resources/en.lproj/Localizable.strings").read_text()
+        def localized(key: str) -> str:
+            match = re.search(rf'^"{re.escape(key)}" = "((?:[^"\\]|\\.)*)";$', strings, re.M)
+            self.assertIsNotNone(match, key)
+            return match.group(1).replace('\\"', '"')
+        for operation, evidence, presentation_id in self.failing_disk_confirmations():
+            with self.subTest(presentation_id):
+                fields = disk_failing_confirmation_fields(operation, evidence)
+                helper = fields["message"].replace(evidence.text, re.sub(r" \(.*\)$", "", evidence.text), 1)
+                self.assertEqual(localized(f"confirm.{presentation_id}.message"), helper)
+                self.assertEqual(localized(f"confirm.{presentation_id}.title"), fields["title"])
+                self.assertEqual(localized(f"confirm.{presentation_id}.action"), fields["action_title"])
 
     def test_uninstall_requires_reboot_confirmation_before_remote_connection(self) -> None:
         collector = CollectingSink()

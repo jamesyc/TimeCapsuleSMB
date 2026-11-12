@@ -1870,12 +1870,25 @@ class WipeDiskOperationTests(unittest.TestCase):
 
     def test_a_failing_disk_asks_with_its_own_warning(self) -> None:
         from timecapsulesmb.device.disk_errors import kernel_evidence
-        request = self.call({}, evidence=kernel_evidence(("sd0c: error reading fsbn 64",))).confirmation
+        evidence = kernel_evidence(("sd0c: error reading fsbn 64",), disks=(disk(),))
+        request = self.call({}, evidence=evidence).confirmation
+        # One id whether or not the errors name the internal disk: a wipe's
+        # warning always has its bad-sector sentence.
         self.assertEqual((request.presentation_id, request.action_title), ("wipe-disk.disk_failing", "Wipe Anyway"))
+        self.assertEqual(request.title, "The Disk May Be Failing")
         # The warning follows what the wipe deletes, and is about this disk.
         self.assertTrue(request.message.startswith("Wipe Internal Disk deletes everything on this disk"))
-        self.assertIn("This disk reported errors it could not recover from (sd0c: error reading fsbn 64)", request.message)
-        self.assertIn("Wiping it does not fix that", request.message)
+        self.assertIn("This disk reported errors it could not recover from (sd0c: error reading fsbn 64), so it may be failing.",
+                      request.message)
+        self.assertTrue(request.message.endswith(
+            "If a bad sector is the cause, wiping sometimes gets the disk working again, but the new volume may fail too. "
+            "Wipe anyway?"))
+        self.assertNotIn("will not fix", request.message)
+        # Telemetry says what the warning was based on.
+        self.mocks["context"].update_fields.assert_any_call(
+            disk_failing_warned=True, disk_failing_cause="disk_failing", disk_failing_disk="internal",
+            disk_failing_wipe_suggested=False,
+        )
         self.mocks["failing_evidence"].assert_called_with(CONNECTION, self.mocks["prepare"].return_value)
 
     def test_a_wipe_error_keeps_its_code_and_reason(self) -> None:

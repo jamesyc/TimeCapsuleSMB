@@ -29,12 +29,15 @@ struct PendingConfirmation: Identifiable {
         }
 
         let presentation = ConfirmationPresentation(details: details)
-        // A warning that the disk is failing, from the kernel's errors or from
-        // files it could not read, and every Wipe Internal Disk confirmation
-        // (it deletes everything on the disk): Cancel is the default.
+        // A warning that the disk may be failing, from the kernel's errors
+        // (every disk_failing wording: plain, _wipe, _usb) or from files it
+        // could not read, and every Wipe Internal Disk confirmation (it
+        // deletes everything on the disk): Cancel is the default. The id's
+        // last part is matched, so a new disk_failing wording keeps it.
         let presentationID = Self.detailString(details, "presentation_id") ?? ""
-        self.prefersCancel = presentationID.hasSuffix(".disk_failing")
-            || presentationID.hasSuffix(".disk_unreadable")
+        let presentationKind = presentationID.split(separator: ".").last.map(String.init) ?? ""
+        self.prefersCancel = presentationKind.hasPrefix("disk_failing")
+            || presentationKind == "disk_unreadable"
             || presentationID.hasPrefix("wipe-disk.")
         self.title = presentation?.title
             ?? Self.detailString(details, "title")

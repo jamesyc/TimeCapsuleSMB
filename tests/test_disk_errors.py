@@ -20,11 +20,13 @@ from timecapsulesmb.device.disk_errors import (
     DiskFailingError,
     disk_errors_explain,
     disk_errors_in,
+    disk_failing_fields,
     disk_failing_message,
     disk_failing_warning,
     kernel_evidence,
     read_disk_errors_conn,
     read_disk_failing_evidence_conn,
+    read_disk_inventory_conn,
 )
 from timecapsulesmb.device.errors import (
     AcpdQuitError,
@@ -36,6 +38,7 @@ from timecapsulesmb.device.errors import (
 )
 from timecapsulesmb.device import probe
 from timecapsulesmb.device.processes import disk_io_stalls
+from timecapsulesmb.device.storage import MaStDiskSnapshot, MaStPartitionSnapshot
 from timecapsulesmb.device.probe import (
     DISK_PAYLOAD_PROBLEMS,
     ManagedRuntimeProbeResult,
@@ -154,11 +157,13 @@ class DiskFailingEvidenceTests(unittest.TestCase):
 
     CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
 
-    def evidence(self, errors, problems):
+    def evidence(self, errors, problems, *, disks=None):
         title = problems if callable(problems) else mock.Mock(return_value=problems)
+        self.mast = mock.Mock(return_value=disks)
         with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
             with mock.patch("timecapsulesmb.device.disk_errors.manager_payload_problems", title):
-                return read_disk_failing_evidence_conn(self.CONNECTION), title
+                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", self.mast):
+                    return read_disk_failing_evidence_conn(self.CONNECTION), title
 
     def test_kernel_lines_come_first_and_name_the_last_error(self) -> None:
         found, title = self.evidence((NETBSD4_DEVICE_ERROR[1], FINAL), (probe.DISK_PAYLOAD_UNREADABLE,))
@@ -173,6 +178,8 @@ class DiskFailingEvidenceTests(unittest.TestCase):
                              (probe.DISK_PAYLOAD_DAMAGED, probe.RSYNC_UNREADABLE)):
                 with self.subTest(errors=errors, problems=[p.token for p in problems]):
                     self.assertEqual(self.evidence(errors, problems)[0], UNREADABLE_EVIDENCE)
+                    # No kernel lines, so no disk to tell apart: MaSt is not read.
+                    self.mast.assert_not_called()
 
     def test_other_verdicts_and_a_quiet_title_say_nothing(self) -> None:
         # Damaged or missing files are fixed by a reinstall: no disk warning.
@@ -186,14 +193,180 @@ class DiskFailingEvidenceTests(unittest.TestCase):
             raise SshNetworkError("Connection reset")
         self.assertIsNone(self.evidence((), unreadable)[0])
 
-    def test_the_warning_says_what_the_evidence_is(self) -> None:
-        self.assertEqual(
-            disk_failing_warning(UNREADABLE_EVIDENCE, "install"),
-            "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing. Installing will not fix that. "
-            "Copy off the files you need first.",
+    def test_mast_says_whose_errors_they_are_and_whether_wipe_accepts_the_disk(self) -> None:
+        # NetBSD 6's internal disk is wd0 and NetBSD 4's is sd0, where a USB
+        # disk is sd1, or sd0 itself on an AirPort Extreme (no built-in disk).
+        sd1 = "sd1a: error writing fsbn 8 of 8-15 (sd1 bn 8; cn 0 tn 0 sn 8)"
+        sd0 = "sd0c: error reading fsbn 64 of 64-71 (sd0 bn 64; cn 0 tn 1 sn 1)"
+        marvell = NETBSD4_DEVICE_ERROR[1]
+        usb = mast_disk("sd1", builtin=False)
+        cases = (
+            ("NetBSD 6 internal disk", (FINAL,), (mast_disk("wd0"),), "internal", True, FINAL),
+            ("NetBSD 4 internal disk", (sd0,), (mast_disk("sd0"), usb), "internal", True, sd0),
+            ("Marvell controller", (marvell,), (mast_disk("sd0"),), "internal", True, marvell),
+            ("USB disk beside the internal one", (sd1,), (mast_disk("sd0"), usb), "usb", False, sd1),
+            ("AirPort Extreme's USB sd0", (sd0,), (mast_disk("sd0", builtin=False),), "usb", False, sd0),
+            # Both: the warning quotes the internal disk's line, which the
+            # wipe sentence is about, though the USB line came last.
+            ("both disks", (sd0, sd1), (mast_disk("sd0"), usb), "internal", True, sd0),
+            # Wipe Internal Disk refuses these, so the warning must not
+            # suggest it: a failed Seagate, a misreported size, a lost disk.
+            ("failed Seagate", (FINAL,), (mast_disk("wd0", size=3950, partitions=()),), "internal", False, FINAL),
+            ("misreported size", (FINAL,), (mast_disk("wd0", size=4000, partitions=()),), "internal", False, FINAL),
+            ("soft-disconnected", (FINAL,), (mast_disk("wd0", soft_disconnected=True),), "internal", False, FINAL),
+            # The Marvell lines are the internal disk's, but MaSt lists none:
+            # it cannot tell, so it names no disk.
+            ("Marvell, no built-in disk", (marvell,), (usb,), "unknown", False, marvell),
+            # MaSt did not answer.
+            ("MaSt unread", (FINAL,), None, "unknown", False, FINAL),
         )
-        self.assertIn(f"({FINAL}), so it is probably failing. Uninstalling will not fix that.",
-                      disk_failing_warning(kernel_evidence((FINAL,)), "uninstall"))
+        for name, errors, disks, disk, wipeable, quoted in cases:
+            with self.subTest(name):
+                found, _title = self.evidence(errors, (), disks=disks)
+                self.assertEqual((found.disk, found.wipeable), (disk, wipeable))
+                self.assertIn(f"({quoted})", found.text)
+                self.mast.assert_called_once_with(self.CONNECTION)
+
+    def test_a_disk_named_on_the_call_is_not_looked_up_again(self) -> None:
+        # Wipe Internal Disk passes the disk it wipes, which it has already
+        # checked it accepts: its lines only, and every one is that disk's.
+        self.mast = mock.Mock()
+        with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=(FINAL,)):
+            with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", self.mast):
+                found = read_disk_failing_evidence_conn(self.CONNECTION, internal_device="wd0")
+        self.assertEqual((found.disk, found.wipeable), ("internal", True))
+        self.mast.assert_not_called()
+
+
+def mast_disk(device: str, *, builtin: bool = True, size: int = 1907729, partitions=None,
+              soft_disconnected: bool = False) -> MaStDiskSnapshot:
+    if partitions is None:
+        partitions = (MaStPartitionSnapshot("dk2", "Data", "hfs", 1905681, 8977, 1896704),)
+    return MaStDiskSnapshot(device, "", size, builtin, partitions, soft_disconnected=soft_disconnected)
+
+
+class DiskInventoryLookupTests(unittest.TestCase):
+    """MaSt for the warning's wording only, so a read that fails names no disk
+    instead of failing the preflight, and stops there."""
+
+    CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+    DISK = (
+        "<dict><key>deviceName</key><string>sd0</string><key>builtin</key><true/>"
+        "<key>partitions</key><array/></dict>"
+    )
+    MAST = f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><array>{DISK}</array></plist>'
+
+    def lookup(self, run_ssh):
+        acpd = mock.Mock(side_effect=AssertionError("a failed lookup must not check ACPd"))
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", run_ssh):
+            with mock.patch("timecapsulesmb.device.storage.raise_if_acpd_silent", acpd):
+                return read_disk_inventory_conn(self.CONNECTION)
+
+    def test_an_answer_lists_the_disks_with_a_short_wait(self) -> None:
+        from timecapsulesmb.device.disk_errors import DISK_INVENTORY_TIMEOUT_SECONDS
+        from timecapsulesmb.device.storage import MAST_ACP_COMMAND
+        run_ssh = mock.Mock(return_value=mock.Mock(stdout=self.MAST, returncode=0))
+        disks = self.lookup(run_ssh)
+        self.assertEqual([(disk.device, disk.builtin) for disk in disks], [("sd0", True)])
+        run_ssh.assert_called_once_with(self.CONNECTION, MAST_ACP_COMMAND, timeout=DISK_INVENTORY_TIMEOUT_SECONDS)
+        # Short against the 60 s a read that matters waits.
+        self.assertLess(DISK_INVENTORY_TIMEOUT_SECONDS, 60)
+
+    def test_no_answer_names_no_disk_and_reads_nothing_more(self) -> None:
+        # One SSH call each: no syUT read, no process list after it.
+        for name, run_ssh in (
+            ("timeout", mock.Mock(side_effect=SshCommandTimeout("timed out"))),
+            ("connection", mock.Mock(side_effect=SshNetworkError("reset"))),
+            ("failed get", mock.Mock(return_value=mock.Mock(
+                stdout="### get 'MaSt' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>", returncode=0))),
+        ):
+            with self.subTest(name):
+                self.assertIsNone(self.lookup(run_ssh))
+                run_ssh.assert_called_once()
+
+
+class DiskFailingWarningTests(unittest.TestCase):
+    """The preflight's words: which disk and that it may be failing, then the
+    steps in order, and what the operation will not do."""
+
+    INTERNAL = kernel_evidence((FINAL,), disks=(mast_disk("wd0"),))
+    REFUSED = kernel_evidence((FINAL,), disks=(mast_disk("wd0", soft_disconnected=True),))
+    USB = kernel_evidence(("sd1a: error writing fsbn 8",), disks=(mast_disk("sd0"), mast_disk("sd1", builtin=False)))
+    UNKNOWN = kernel_evidence((FINAL,))
+    STEPS = (
+        "Copy off the files you need first. "
+        "Then try restarting the device in AirPort Utility, or unplug it for 10 seconds and plug it back in. "
+        "Run “Checkup” afterwards to see whether the errors come back. "
+        "AirPort Utility may still show the disk as OK."
+    )
+
+    def test_install_on_an_internal_disk_with_errors_names_it_and_suggests_the_wipe(self) -> None:
+        self.assertEqual(
+            disk_failing_warning(self.INTERNAL, "install"),
+            f"The internal disk reported errors it could not recover from ({FINAL}), so it may be failing. "
+            f"{self.STEPS} If a bad sector is the cause, “Wipe Internal Disk” sometimes gets the disk working "
+            "again, but it deletes everything on it. Installing will not fix this.",
+        )
+
+    def test_the_subject_names_the_disk_only_when_mast_did(self) -> None:
+        # An internal disk Wipe refuses gets the plain wording, as the app
+        # shows it under the plain id.
+        for evidence, subject in ((self.INTERNAL, "The internal disk"), (self.USB, "A USB disk on the device"),
+                                  (self.REFUSED, "The device's disk"), (self.UNKNOWN, "The device's disk"),
+                                  (UNREADABLE_EVIDENCE, "The device's disk")):
+            with self.subTest(disk=evidence.disk, cause=evidence.cause, wipeable=evidence.wipeable):
+                self.assertTrue(disk_failing_warning(evidence, "uninstall").startswith(f"{subject} "))
+                self.assertEqual(disk_failing_fields(evidence, "uninstall")["disk_failing_disk"], evidence.disk)
+
+    def test_each_operation_ends_with_what_it_will_not_do(self) -> None:
+        for operation, last in (("install", "Installing will not fix this."),
+                                ("uninstall", "Uninstalling will not fix this."),
+                                ("repair", "A disk repair may not fix this, and works the disk hard.")):
+            for evidence in (self.INTERNAL, self.USB, self.REFUSED, UNREADABLE_EVIDENCE):
+                with self.subTest(operation=operation, disk=evidence.disk, cause=evidence.cause):
+                    warning = disk_failing_warning(evidence, operation)
+                    self.assertTrue(warning.endswith(f" {last}"))
+                    self.assertIn(", so it may be failing. " + self.STEPS, warning)
+                    self.assertNotIn("probably", warning)
+
+    def test_only_errors_on_an_internal_disk_wipe_accepts_suggest_the_wipe(self) -> None:
+        # A USB disk's errors: Wipe Internal Disk formats another disk. An
+        # internal disk it refuses: it would only refuse. Files read too
+        # slowly say too little about a bad sector to suggest deleting
+        # everything.
+        for evidence, suggested in ((self.INTERNAL, True), (self.USB, False), (self.REFUSED, False),
+                                    (self.UNKNOWN, False), (UNREADABLE_EVIDENCE, False)):
+            for operation in ("install", "uninstall", "repair"):
+                with self.subTest(disk=evidence.disk, cause=evidence.cause, operation=operation):
+                    self.assertEqual("Wipe Internal Disk" in disk_failing_warning(evidence, operation), suggested)
+                    self.assertEqual(disk_failing_fields(evidence, operation)["disk_failing_wipe_suggested"], suggested)
+
+    def test_a_wipes_own_warning_ends_with_its_bad_sector_sentence(self) -> None:
+        for evidence, first in ((self.INTERNAL, f"This disk reported errors it could not recover from ({FINAL})"),
+                                (UNREADABLE_EVIDENCE, "This disk could not read the TimeCapsuleSMB files, or only too slowly")):
+            with self.subTest(evidence.cause):
+                self.assertEqual(
+                    disk_failing_warning(evidence, "wipe"),
+                    f"{first}, so it may be failing. {self.STEPS} If a bad sector is the cause, wiping sometimes "
+                    "gets the disk working again, but the new volume may fail too.",
+                )
+                self.assertFalse(disk_failing_fields(evidence, "wipe")["disk_failing_wipe_suggested"])
+
+    def test_the_command_line_names_its_commands(self) -> None:
+        warning = disk_failing_warning(self.INTERNAL, "install", client="cli")
+        self.assertIn("Run `tcapsule doctor` afterwards", warning)
+        self.assertIn("If a bad sector is the cause, `tcapsule wipe-internal-disk` sometimes", warning)
+        self.assertNotIn("“", warning)
+
+    def test_telemetry_says_what_the_warning_was_based_on(self) -> None:
+        self.assertEqual(disk_failing_fields(self.INTERNAL, "install"), {
+            "disk_failing_warned": True, "disk_failing_cause": "disk_failing",
+            "disk_failing_disk": "internal", "disk_failing_wipe_suggested": True,
+        })
+        self.assertEqual(disk_failing_fields(UNREADABLE_EVIDENCE, "uninstall"), {
+            "disk_failing_warned": True, "disk_failing_cause": "disk_unreadable",
+            "disk_failing_disk": "unknown", "disk_failing_wipe_suggested": False,
+        })
 
 
 class PrecedenceTests(unittest.TestCase):
@@ -520,7 +693,7 @@ class RuntimeFailureTests(unittest.TestCase):
 class CommandLinePreflightTests(unittest.TestCase):
     CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
 
-    def preflight(self, errors, *, problems=(), yes=False, answer="", operation="install"):
+    def preflight(self, errors, *, problems=(), yes=False, answer="", operation="install", disks=None):
         fields: dict[str, object] = {}
         stderr = io.StringIO()
         prompts: list[str] = []
@@ -531,9 +704,11 @@ class CommandLinePreflightTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
             with mock.patch("timecapsulesmb.device.disk_errors.manager_payload_problems", return_value=problems):
-                with mock.patch("builtins.input", side_effect=ask), redirect_stderr(stderr):
-                    result = confirm_despite_failing_disk(self.CONNECTION, operation, yes=yes, command="deploy",
-                                                          update_fields=lambda **f: fields.update(f))
+                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn",
+                                return_value=disks):
+                    with mock.patch("builtins.input", side_effect=ask), redirect_stderr(stderr):
+                        result = confirm_despite_failing_disk(self.CONNECTION, operation, yes=yes, command="deploy",
+                                                              update_fields=lambda **f: fields.update(f))
         return result, stderr.getvalue(), prompts, fields
 
     def test_a_healthy_disk_asks_nothing(self) -> None:
@@ -551,15 +726,19 @@ class CommandLinePreflightTests(unittest.TestCase):
                 with self.subTest(evidence=evidence, answer=answer):
                     result, warned, prompts, fields = self.preflight(errors, problems=problems, answer=answer)
                     self.assertIs(result, expected)
-                    self.assertIn(disk_failing_warning(evidence, "install"), warned)
+                    self.assertIn(f"Warning: {disk_failing_warning(evidence, 'install', client='cli')}", warned)
                     self.assertEqual(prompts, ["Install anyway? [y/N]: "])
-                    self.assertEqual(fields, {"disk_failing_warned": True})
+                    self.assertEqual(fields, disk_failing_fields(evidence, "install"))
 
     def test_yes_goes_on_after_printing_the_warning(self) -> None:
-        result, warned, prompts, _fields = self.preflight((FINAL,), yes=True, operation="repair")
+        result, warned, prompts, fields = self.preflight((FINAL,), yes=True, operation="repair",
+                                                         disks=(mast_disk("wd0"),))
 
         self.assertTrue(result)
-        self.assertIn("A disk repair cannot fix a failing disk", warned)
+        self.assertIn("A disk repair may not fix this, and works the disk hard.", warned)
+        # The internal disk's errors: the CLI names its wipe command.
+        self.assertIn("`tcapsule wipe-internal-disk`", warned)
+        self.assertTrue(fields["disk_failing_wipe_suggested"])
         self.assertEqual(prompts, [])
 
 

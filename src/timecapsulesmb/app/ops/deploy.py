@@ -4,7 +4,13 @@ from dataclasses import dataclass, replace
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import deploy_plan_payload, deploy_result_payload
-from timecapsulesmb.app.confirmations import build_confirmation, disk_failing_confirmation_fields, require_confirmation
+from timecapsulesmb.app.confirmations import (
+    build_confirmation,
+    disk_failing_confirmation_fields,
+    disk_failing_context,
+    disk_failing_telemetry_fields,
+    require_confirmation,
+)
 from timecapsulesmb.core.config import (
     DEFAULTS,
     airport_family_display_name_from_identity,
@@ -257,7 +263,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         )
         disk_failing = read_disk_failing_evidence_conn(connection)
         if disk_failing:
-            context.update_fields(disk_failing_warned=True)
+            context.update_fields(**disk_failing_telemetry_fields(operation, disk_failing))
             presentation = replace(presentation, **disk_failing_confirmation_fields(operation, disk_failing))
         presentation_values = {
             "device_name": device_name,
@@ -285,7 +291,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                     "requires_reboot": preflight.requires_reboot,
                     "no_wait": no_wait,
                     "startup_mode": startup_mode,
-                    **({"disk_failing": True} if disk_failing else {}),
+                    **disk_failing_context(disk_failing),
                 },
                 presentation_id=presentation.presentation_id,
                 presentation_values=presentation_values,

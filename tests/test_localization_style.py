@@ -10,6 +10,7 @@ import re
 import unittest
 from pathlib import Path
 
+from timecapsulesmb.app.confirmations import DISK_FAILING_PRESENTATION_IDS
 from tests.test_summaries import LANGUAGES, RESOURCES, STRING_LINE
 
 
@@ -214,6 +215,35 @@ class LocalizationStyleTests(unittest.TestCase):
                 continue
             with self.subTest(key=key):
                 self.assertIsNone(cli_word.search(re.sub(r"`[^`]*`", "", text)), text)
+
+
+class FailingDiskConfirmationTests(unittest.TestCase):
+    """Every failing-disk confirmation the helper can send has its own
+    translation in every language: a missing one would show the helper's
+    English, and one that names Wipe Internal Disk where the helper did not
+    would tell the user something else."""
+
+    def test_every_language_has_each_confirmation_in_its_own_words(self) -> None:
+        english = dict(catalog_texts("en"))
+        for language in LANGUAGES:
+            texts = dict(catalog_texts(language))
+            wipe_label = texts["maintenance.action.wipe_disk"]
+            titles = set()
+            for presentation_id in DISK_FAILING_PRESENTATION_IDS:
+                with self.subTest(language=language, presentation_id=presentation_id):
+                    key = f"confirm.{presentation_id}"
+                    for part in ("title", "message", "action"):
+                        self.assertTrue(texts.get(f"{key}.{part}"), f"{key}.{part}")
+                    message = texts[f"{key}.message"]
+                    if language != "en":
+                        self.assertNotEqual(message, english[f"{key}.message"])
+                    # Only the _wipe wording suggests Wipe Internal Disk, by
+                    # the language's own label.
+                    self.assertEqual(wipe_label in message, presentation_id.endswith("_wipe"))
+                    titles.add(texts[f"{key}.title"])
+            with self.subTest(language=language, check="one title"):
+                self.assertEqual(len(titles), 1)
+
 
 
 if __name__ == "__main__":

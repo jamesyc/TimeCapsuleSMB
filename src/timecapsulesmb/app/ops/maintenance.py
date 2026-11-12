@@ -12,7 +12,13 @@ from timecapsulesmb.app.contracts import (
     uninstall_result_payload,
     wipe_disk_result_payload,
 )
-from timecapsulesmb.app.confirmations import build_confirmation, disk_failing_confirmation_fields, require_confirmation
+from timecapsulesmb.app.confirmations import (
+    build_confirmation,
+    disk_failing_confirmation_fields,
+    disk_failing_context,
+    disk_failing_telemetry_fields,
+    require_confirmation,
+)
 from timecapsulesmb.app.ops.common import (
     load_request_config,
     require_request_acpd_ready,
@@ -153,7 +159,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
             "presentation_id": "uninstall.no_reboot" if no_reboot else "uninstall.reboot",
         }
         if disk_failing:
-            context.update_fields(disk_failing_warned=True)
+            context.update_fields(**disk_failing_telemetry_fields(operation, disk_failing))
             presentation.update(disk_failing_confirmation_fields(operation, disk_failing))
         presentation_values = {
             "requires_reboot": not no_reboot,
@@ -173,7 +179,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
                     "requires_reboot": not no_reboot,
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
-                    **({"disk_failing": True} if disk_failing else {}),
+                    **disk_failing_context(disk_failing),
                 },
                 presentation_values=presentation_values,
                 **presentation,
@@ -247,7 +253,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
             "presentation_id": "fsck.no_reboot" if no_reboot else "fsck.reboot",
         }
         if disk_failing:
-            context.update_fields(disk_failing_warned=True)
+            context.update_fields(**disk_failing_telemetry_fields(operation, disk_failing))
             presentation.update(disk_failing_confirmation_fields(operation, disk_failing))
         require_confirmation(
             params,
@@ -261,7 +267,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
                     "requires_reboot": not no_reboot,
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
-                    **({"disk_failing": True} if disk_failing else {}),
+                    **disk_failing_context(disk_failing),
                 },
                 presentation_values={
                     "volume": volume,
@@ -402,7 +408,7 @@ def wipe_disk_operation(params: dict[str, object], context: AppOperationContext)
             "presentation_id": "wipe-disk.confirm",
         }
         if disk_failing:
-            context.update_fields(disk_failing_warned=True)
+            context.update_fields(**disk_failing_telemetry_fields(operation, disk_failing))
             presentation.update(disk_failing_confirmation_fields(operation, disk_failing))
             # The warning follows what the wipe deletes; it never replaces it.
             presentation["message"] = f"{message} {presentation['message']}"
@@ -413,7 +419,7 @@ def wipe_disk_operation(params: dict[str, object], context: AppOperationContext)
                 params=params,
                 risk="destructive",
                 summary="Wipe and format a disk",
-                context={**plan.confirmation_context(), **({"disk_failing": True} if disk_failing else {})},
+                context={**plan.confirmation_context(), **disk_failing_context(disk_failing)},
                 presentation_values=_wipe_presentation_values(plan),
                 **presentation,
             ),

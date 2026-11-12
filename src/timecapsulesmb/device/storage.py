@@ -8,6 +8,7 @@ import re
 import shlex
 import time
 import uuid
+from typing import Literal
 
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device import acpd
@@ -136,6 +137,26 @@ def seagate_disk_failed(disk: MaStDiskSnapshot) -> bool:
     list no partitions, since the kernel finds its wedges in sector 0, so
     every reader of the disk's partitions agrees with this rule."""
     return disk_size_misreported(disk) and disk.size_mib == SEAGATE_ROM_DISK_SIZE_MIB
+
+
+WipeRefusal = Literal["seagate_failed", "size_misreported", "soft_disconnected"]
+
+
+def wipe_refusal(disk: MaStDiskSnapshot) -> WipeRefusal | None:
+    """Why Wipe Internal Disk refuses this internal disk from MaSt alone, or
+    None: a failed Seagate (seagate_disk_failed), a size far below its real
+    one (Apple's erase would format it at that size), or a disk diskd has
+    lost (its RPCs about it can hang). The wipe raises its error from this
+    (services.wipe_disk.require_wipeable); the failing-disk warning leaves out
+    its wipe sentence for it. Checks that need more than MaSt (other disks'
+    labels, running disk jobs) are the wipe's own."""
+    if seagate_disk_failed(disk):
+        return "seagate_failed"
+    if disk_size_misreported(disk):
+        return "size_misreported"
+    if disk.soft_disconnected:
+        return "soft_disconnected"
+    return None
 
 
 @dataclass(frozen=True)
@@ -540,13 +561,18 @@ def raise_if_acpd_silent(connection: SshConnection, *, after: SshCommandTimeout 
     raise StorageDeviceError(ACPD_DISKS_UNREADABLE_MESSAGE, code=ErrorCode.ACPD_BROKEN)
 
 
-def read_mast_volumes_with_output_conn(connection: SshConnection, *, check_acpd: bool = True) -> MaStReadResult:
+def read_mast_volumes_with_output_conn(
+    connection: SshConnection, *, check_acpd: bool = True, timeout: int = 60, explain_failure: bool = True,
+) -> MaStReadResult:
     """One MaSt read. A failed get is checked against ACPd unless the caller
-    already checked it (`check_acpd`); a read that hangs always is."""
+    already checked it (`check_acpd`); a read that hangs is too, unless the
+    caller only wants the answer if there is one (`explain_failure=False`):
+    then the hang itself is raised, with no ACPd or process reads after it."""
     try:
-        proc = run_ssh(connection, MAST_ACP_COMMAND, timeout=60)
+        proc = run_ssh(connection, MAST_ACP_COMMAND, timeout=timeout)
     except SshCommandTimeout as exc:
-        raise_if_acpd_silent(connection, after=exc)
+        if explain_failure:
+            raise_if_acpd_silent(connection, after=exc)
         raise
     get_failed = MAST_GET_FAILED_TEXT in proc.stdout
     if get_failed and check_acpd:

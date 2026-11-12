@@ -6,7 +6,12 @@ import json
 from typing import Mapping
 
 from timecapsulesmb.core.error_codes import ErrorCode
-from timecapsulesmb.device.disk_errors import DiskFailingEvidence, disk_failing_warning
+from timecapsulesmb.device.disk_errors import (
+    DiskFailingEvidence,
+    disk_failing_fields,
+    disk_failing_variant,
+    disk_failing_warning,
+)
 from timecapsulesmb.services.app import AppOperationError, jsonable
 
 
@@ -103,7 +108,7 @@ def build_confirmation(
     )
 
 
-# The preflight before an operation that cannot fix a failing disk: its
+# The preflight before an operation that may not fix a failing disk: its
 # confirmation says so instead, and the app makes Cancel its default.
 _DISK_FAILING_KINDS = {"deploy": ("install", "Install Anyway", "Install anyway?"),
                        "uninstall": ("uninstall", "Uninstall Anyway", "Uninstall anyway?"),
@@ -111,17 +116,51 @@ _DISK_FAILING_KINDS = {"deploy": ("install", "Install Anyway", "Install anyway?"
                        "wipe-disk": ("wipe", "Wipe Anyway", "Wipe anyway?")}
 
 
+_VARIANT_SUFFIXES = {"wipe": "_wipe", "usb": "_usb", "plain": ""}
+
+
+def disk_failing_presentation_id(operation: str, evidence: DiskFailingEvidence) -> str:
+    """The app confirmation for this warning: one per cause and wording
+    (disk_errors.disk_failing_variant), as the app shows a fixed translation
+    for each presentation id."""
+    kind = _DISK_FAILING_KINDS[operation][0]
+    return f"{operation}.{evidence.cause}{_VARIANT_SUFFIXES[disk_failing_variant(evidence, kind)]}"
+
+
+# Every failing-disk confirmation the helper can send. Each needs a title,
+# message and action in every app language, and the app makes Cancel their
+# default (PendingConfirmation.prefersCancel).
+DISK_FAILING_PRESENTATION_IDS = (
+    *(f"{operation}.{suffix}" for operation in ("deploy", "uninstall", "fsck")
+      for suffix in ("disk_failing", "disk_failing_wipe", "disk_failing_usb", "disk_unreadable")),
+    "wipe-disk.disk_failing",
+    "wipe-disk.disk_unreadable",
+)
+
+
 def disk_failing_confirmation_fields(operation: str, evidence: DiskFailingEvidence) -> dict[str, str]:
     """build_confirmation's title, message, action_title and presentation_id
-    for what says the disk is failing (device.disk_errors.read_disk_failing_evidence_conn)."""
+    for what says the disk may be failing (device.disk_errors.read_disk_failing_evidence_conn)."""
     kind, action_title, question = _DISK_FAILING_KINDS[operation]
     return {
-        "title": "The Disk Is Failing",
+        "title": "The Disk May Be Failing",
         "message": f"{disk_failing_warning(evidence, kind)} {question}",
         "action_title": action_title,
-        # Each cause of the warning has its own confirmation in the app.
-        "presentation_id": f"{operation}.{evidence.cause}",
+        "presentation_id": disk_failing_presentation_id(operation, evidence),
     }
+
+
+def disk_failing_context(evidence: DiskFailingEvidence | None) -> dict[str, str]:
+    """What the confirmation id covers about the warning: its cause, so the
+    user's yes to one cause's warning does not confirm the other's. Not the
+    wording: a disk MaSt named on one request and not the next would ask
+    again for nothing."""
+    return {"disk_failing": evidence.cause} if evidence else {}
+
+
+def disk_failing_telemetry_fields(operation: str, evidence: DiskFailingEvidence) -> dict[str, object]:
+    """disk_errors.disk_failing_fields for an app operation's warning."""
+    return disk_failing_fields(evidence, _DISK_FAILING_KINDS[operation][0])
 
 
 def supplied_confirmation_id(params: Mapping[str, object]) -> str:

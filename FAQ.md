@@ -328,7 +328,7 @@ Install / Update Samba, Uninstall, Disk Repair and Checkup read the device's ker
 2. Replace the disk.
 3. Erase the new disk in AirPort Utility, then run “Install / Update Samba” in the app, or `.venv/bin/tcapsule deploy`. Time Machine starts a new, full backup on it.
 
-Install, Uninstall and Disk Repair ask before they go on with a failing disk; `--yes` goes on after printing the warning.
+Install / Update Samba, Uninstall, Disk Repair and Wipe Internal Disk ask before they go on with such a disk. Their warning says the disk may be failing, and names it as the internal disk or a USB disk when the device can tell which one. It asks you to copy off your files first, then to restart the device in AirPort Utility (or unplug it for 10 seconds if it does not restart) and run Checkup to see whether the errors come back. A restart clears the kernel log, so a clean Checkup after one does not prove the disk is fine: the errors come back only when something reads the damaged part of the disk again. When the errors are on the internal disk, the warning adds that Wipe Internal Disk sometimes gets the disk working again if a bad sector is the cause, and that it deletes everything on the disk. From the command line, `--yes` prints the warning and goes on.
 
 #### A Seagate disk reports 3.86 GB
 

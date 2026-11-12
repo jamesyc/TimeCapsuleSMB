@@ -52,12 +52,11 @@ from timecapsulesmb.device.storage import (
     MaStPartitionSnapshot,
     StorageDeviceError,
     diskd_rpc_conn,
-    disk_size_misreported,
     parse_mast_inventory,
     parse_mast_plist,
     raise_if_acpd_silent,
     read_mast_volumes_with_output_conn,
-    seagate_disk_failed,
+    wipe_refusal,
 )
 from timecapsulesmb.device.wipe import (
     APPLE_PARTITION_NAMES,
@@ -164,13 +163,14 @@ def require_wipeable(disk: MaStDiskSnapshot) -> None:
     the wrong size (an erase would format it as that size), or one that diskd
     has lost (its RPCs about it can hang). Other disks:
     disks_with_apple_labels."""
-    if seagate_disk_failed(disk):
-        raise WipeDiskError(SEAGATE_FAILED_MESSAGE, code=ErrorCode.DISK_SEAGATE_FAILED, reason="seagate_failed")
-    if disk_size_misreported(disk):
+    refusal = wipe_refusal(disk)
+    if refusal == "seagate_failed":
+        raise WipeDiskError(SEAGATE_FAILED_MESSAGE, code=ErrorCode.DISK_SEAGATE_FAILED, reason=refusal)
+    if refusal == "size_misreported":
         raise WipeDiskError(size_misreported_message(disk.size_mib), code=ErrorCode.DISK_SIZE_MISREPORTED,
-                            reason="size_misreported")
-    if disk.soft_disconnected:
-        raise WipeDiskError(SOFT_DISCONNECTED_MESSAGE, code=ErrorCode.DISK_FAILING, reason="soft_disconnected")
+                            reason=refusal)
+    if refusal == "soft_disconnected":
+        raise WipeDiskError(SOFT_DISCONNECTED_MESSAGE, code=ErrorCode.DISK_FAILING, reason=refusal)
 
 
 def describe_disk(disk: MaStDiskSnapshot) -> str:
