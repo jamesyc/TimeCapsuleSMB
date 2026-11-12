@@ -247,7 +247,9 @@ class RebootFlowError(CodedError):
 # The restart that turns SSH on (reboot_to_enable_ssh). The dashboard groups
 # enable timeouts by the first message's text.
 SSH_ENABLE_TIMEOUT_MESSAGE = "SSH did not open after enabling via ACP."
-SSH_ENABLE_NO_RETURN_MESSAGE = "The device did not answer within 10 minutes of the restart that turns on SSH."
+# The wait's limit counts again from an unplug request (RESTART_STUCK_HINT,
+# the hang's), so the message names no length.
+SSH_ENABLE_NO_RETURN_MESSAGE = "After the restart that turns on SSH, the device did not answer before the wait ended."
 SSH_ENABLE_FAILURE_CODES = frozenset({ErrorCode.SSH_CLOSED_AFTER_RESTART, ErrorCode.SSH_ENABLE_TIMEOUT})
 
 
@@ -478,22 +480,26 @@ def client_left_message(joined: tuple[IpNetwork, ...], *, platform: str | None =
 
 def restart_stuck_offline_hint(wifi_name: str | None, *, platform: str | None = None) -> str:
     """The unplug hint when this computer has no network at all: true when it
-    reached the device through the device's own Wi-Fi."""
-    wifi = f" (\u201c{wifi_name}\u201d)" if wifi_name else ""
+    reached the network through the device, by the device's own Wi-Fi or one
+    of its LAN ports, whose link the restart takes down too."""
+    wifi = f" network \u201c{wifi_name}\u201d" if wifi_name else ""
     return (
         f"{this_computer(platform, capitalized=True)} has no network connection, and the device has not come back. "
-        f"If it was connected through the device's Wi-Fi{wifi}, unplug the device, wait 10 seconds and plug it back "
-        "in. TimeCapsuleSMB keeps waiting and carries on when it starts up."
+        f"If it reached the network through the device (its Wi-Fi{wifi} or one of its LAN ports), unplug the device, "
+        "wait 10 seconds and plug it back in. TimeCapsuleSMB keeps waiting and carries on when it starts up."
     )
 
 
 def restart_stuck_message(*, platform: str | None = None) -> str:
     """The error when the device stayed silent through the wait while this
-    computer stayed on its network."""
+    computer stayed on its network. The wait follows a device that moved
+    only through Bonjour (services.locate), so on a network that drops
+    multicast a device back at a new DHCP address looks the same. The steps
+    (app.recovery) say what to do."""
     return (
         f"The device did not come back on this network after restarting, while {this_computer(platform)} stayed on "
-        "it. The device may have stopped partway through the restart. Unplug the device, wait 10 seconds and "
-        "plug it back in."
+        "it. The device may have stopped partway through the restart. If the network blocks Bonjour, it may "
+        "instead be back at a new address."
     )
 
 

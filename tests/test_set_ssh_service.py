@@ -175,6 +175,9 @@ class SetSshServiceTests(unittest.TestCase):
                 self.assertEqual(result.code, code)
                 self.assertEqual(result.result, wait_result)
                 self.assertEqual(str(result), message)
+                # An unplug request restarts the wait's limit, so the message
+                # names no length that could be wrong.
+                self.assertNotIn("minutes", str(result))
                 self.assertEqual(recorder.measurement("reboot_cycle")["result"], wait_result)
 
     def test_enable_passes_on_a_mac_that_left_the_devices_network(self) -> None:

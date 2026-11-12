@@ -1148,6 +1148,12 @@ class RestartStuckTests(unittest.TestCase):
 
         self.assertEqual((error.code, error.result), ("restart_stuck", "restart_stuck"))
         self.assertEqual(error.message, restart_stuck_message())
+        # Silence is all it saw: the device may be stuck, or back at a new
+        # address that only Bonjour could have shown (services.locate). The
+        # message states that, and the steps (app.recovery) say what to do.
+        self.assertIn("may have stopped partway through the restart", error.message)
+        self.assertIn("If the network blocks Bonjour, it may instead be back at a new address.", error.message)
+        self.assertNotIn("nplug", error.message)
         cycle = recorder.measurement("reboot_cycle")
         self.assertEqual(cycle["result"], "restart_stuck")
         down = cycle["down_seen_after_sec"]
@@ -1388,6 +1394,12 @@ class RestartStuckTests(unittest.TestCase):
             self.hints(recorder), [hint_state(network_name="Home", restart_stuck=True, client_offline=True)],
         )
         self.assertIn(restart_stuck_offline_hint("Home"), recorder.messages)
+        # A Mac on one of the device's LAN ports loses its link the same way.
+        self.assertIn(
+            "If it reached the network through the device (its Wi-Fi network \u201cHome\u201d or one of its LAN ports), "
+            "unplug the device",
+            restart_stuck_offline_hint("Home"),
+        )
         self.assertEqual(recorder.measurement("reboot_cycle")["stuck_hint_place"], "offline")
 
     def test_a_router_mode_device_that_takes_the_router_away_is_silent_on_the_same_network(self) -> None:
@@ -1575,6 +1587,7 @@ class RestartStuckTests(unittest.TestCase):
     def test_off_macos_the_words_name_this_computer(self) -> None:
         self.assertIn("while this computer stayed on it", restart_stuck_message(platform="linux"))
         self.assertTrue(restart_stuck_offline_hint(None, platform="linux").startswith("This computer has no network"))
+        self.assertIn("(its Wi-Fi or one of its LAN ports)", restart_stuck_offline_hint(None, platform="linux"))
         self.assertTrue(unplug_if_on_network_note(None, platform="linux").startswith("If this computer is on"))
         self.assertIn("(its Wi-Fi network is \u201cHome\u201d)", unplug_if_on_network_note("Home", platform="darwin"))
 

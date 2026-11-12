@@ -103,6 +103,15 @@ _START_UP_THEN_RETRY_STEP = "Wait 2 minutes for the device to start up, then try
 _START_UP_THEN_CHECKUP_STEP = "Wait 2 minutes for the device to start up, then run “Checkup”."
 _RESETS_ITSELF_STEP = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
 _RESTART_STUCK_TITLE = "The device has not come back"
+_RESTART_STUCK_NEW_ADDRESS = "If the network blocks Bonjour, it may instead be back at a new address."
+# The restart wait follows a device that moved only through Bonjour
+# (services.locate), so a device back at a new DHCP address on a network that
+# drops multicast looks stuck. AirPort Utility finds devices through Bonjour
+# too, so the router's own list is where to look.
+_NEW_ADDRESS_STEP = (
+    "If your network blocks Bonjour, the device may have come back at a new address: look for it in your router's "
+    "list of connected devices."
+)
 # The app saves the router toward the device after each operation that reaches
 # it, so a new router looks like another network until then, while the device
 # answers nothing. The CLI's own step runs configure again.
@@ -349,13 +358,14 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         action_ids=("run_checkup",),
     ),
     # Configure and set-ssh: ACP took the request but SSH did not open within
-    # services.reboot.REBOOT_UP_TIMEOUT_SECONDS (10 minutes). A restart that
-    # takes that long has stopped partway, and only unplugging the device
-    # ends it, so waiting longer does not help.
+    # services.reboot.REBOOT_UP_TIMEOUT_SECONDS, counted again from an unplug
+    # request, so the message names no length. A restart that takes that long
+    # has stopped partway, and only unplugging the device ends it, so waiting
+    # longer does not help.
     ErrorCode.SSH_ENABLE_TIMEOUT: RecoveryInfo(
         "The device has not come back",
         (
-            "Turning on SSH restarts the device, and it did not come back with SSH open within 10 minutes. Some "
+            "Turning on SSH restarts the device, and it did not come back with SSH open before the wait ended. Some "
             "devices stop partway through a restart and stay off the network, Wi-Fi included, until they are "
             "unplugged."
         ),
@@ -410,14 +420,16 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     # The device stayed silent through the restart wait while this Mac stayed
     # on its network (services.reboot): it may have stopped partway through
-    # the restart, which only unplugging it ends.
+    # the restart, which only unplugging it ends, or be back at an address
+    # Bonjour did not show.
     ErrorCode.RESTART_STUCK: RecoveryInfo(
         _RESTART_STUCK_TITLE,
         "The device went off the network when it restarted and has not come back, while this Mac stayed on that "
-        "network. It may have stopped partway through the restart, and only unplugging it ends that.",
+        "network. It may have stopped partway through the restart, and only unplugging it ends that. "
+        f"{_RESTART_STUCK_NEW_ADDRESS}",
         # A device reset to factory settings comes back in router mode on its
         # own network and looks the same from here.
-        (_UNPLUG_STEP, _START_UP_THEN_CHECKUP_STEP, _RESETS_ITSELF_STEP),
+        (_UNPLUG_STEP, _START_UP_THEN_CHECKUP_STEP, _NEW_ADDRESS_STEP, _RESETS_ITSELF_STEP),
         retryable=True,
         suggested_operation="doctor",
         action_ids=("run_checkup",),
@@ -1136,8 +1148,8 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         _RESTART_STUCK_TITLE,
         "The installation files were copied and the restart was requested, but the device went off the network and "
         "has not come back, while this Mac stayed on that network. It may have stopped partway through the "
-        "restart.",
-        (_UNPLUG_STEP, _START_UP_THEN_CHECKUP_STEP, _NETBSD4_ACTIVATE_STEP, _RESETS_ITSELF_STEP),
+        f"restart. {_RESTART_STUCK_NEW_ADDRESS}",
+        (_UNPLUG_STEP, _START_UP_THEN_CHECKUP_STEP, _NETBSD4_ACTIVATE_STEP, _NEW_ADDRESS_STEP, _RESETS_ITSELF_STEP),
         retryable=True,
         suggested_operation="doctor",
         action_ids=("run_checkup",),
@@ -1221,8 +1233,26 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ("configure", ErrorCode.RESTART_STUCK): RecoveryInfo(
         _RESTART_STUCK_TITLE,
         "Turning on SSH restarts the device. It went off the network and has not come back, while this Mac stayed "
-        "on that network: it may have stopped partway through the restart.",
-        (_UNPLUG_STEP, _START_UP_THEN_RETRY_STEP, _RESETS_ITSELF_STEP),
+        f"on that network: it may have stopped partway through the restart. {_RESTART_STUCK_NEW_ADDRESS}",
+        (_UNPLUG_STEP, _START_UP_THEN_RETRY_STEP, _NEW_ADDRESS_STEP, _RESETS_ITSELF_STEP),
+        retryable=True,
+    ),
+    # Nothing answers at an address being added while this Mac is on the
+    # device's network (acp_ssh._probe_acp_port, checks.network.silent_device:
+    # the device is this Mac's router, or the router an earlier Add Device
+    # saved). Nothing is saved yet to run a Checkup on, and the address may
+    # be a wrong or old one.
+    ("configure", ErrorCode.DEVICE_SILENT): RecoveryInfo(
+        "Device not answering",
+        "Nothing answers at this address, and this Mac is on the device's network. The device may be off or "
+        "unplugged, it may have stopped partway through a restart, or this may not be its current address.",
+        (
+            "Use discovery or enter the current LAN IP address.",
+            "Make sure the device is plugged in and its status light is on.",
+            _UNPLUG_STEP,
+            _START_UP_THEN_RETRY_STEP,
+            _RESETS_ITSELF_STEP,
+        ),
         retryable=True,
     ),
     # Add Device has no saved device to run a Checkup on. Adding it again

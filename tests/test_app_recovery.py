@@ -139,6 +139,23 @@ class AppRecoveryTests(unittest.TestCase):
                     "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.",
                     recovery_for(operation, "restart_stuck")["actions"],
                 )
+        # The wait follows a moved device only through Bonjour, so on a network
+        # that blocks it a device back at a new address looks the same. The
+        # router's list finds it; AirPort Utility uses Bonjour too.
+        new_address = (
+            "If your network blocks Bonjour, the device may have come back at a new address: look for it in your "
+            "router's list of connected devices."
+        )
+        for operation in ("configure", "set-ssh", "uninstall", "deploy"):
+            with self.subTest(new_address=operation):
+                recovery = recovery_for(operation, "restart_stuck")
+                self.assertIn(new_address, recovery["actions"])
+                self.assertIn("If the network blocks Bonjour, it may instead be back at a new address.",
+                              recovery["message"])
+                self.assertFalse(any("AirPort Utility" in text for text in [recovery["message"], *recovery["actions"]]))
+                # Unplugging, then the start-up, come before looking elsewhere.
+                self.assertGreater(recovery["actions"].index(new_address), 1)
+                self.assertIn(new_address, cli_steps(operation, ErrorCode.RESTART_STUCK))
         deploy = recovery_for("deploy", "restart_stuck")
         self.assertEqual(deploy["localization_key"], "deploy.restart_stuck")
         self.assertIn("installation files were copied", deploy["message"])
@@ -177,15 +194,46 @@ class AppRecoveryTests(unittest.TestCase):
                 self.assertEqual(recovery["actions"][0], "Try again.")
                 self.assertIn("unplug the device", recovery["actions"][1])
 
-    def test_ssh_enable_guidance_names_the_waits_the_restart_wait_uses(self) -> None:
-        # The guidance states each wait in minutes: it must say what
-        # services.reboot actually waits.
-        from timecapsulesmb.services.reboot import REBOOT_SSH_TIMEOUT_SECONDS, REBOOT_UP_TIMEOUT_SECONDS
-        for code, seconds in (("ssh_enable_timeout", REBOOT_UP_TIMEOUT_SECONDS),
-                              ("ssh_closed_after_restart", REBOOT_SSH_TIMEOUT_SECONDS)):
-            with self.subTest(code=code):
-                self.assertEqual(seconds % 60, 0)
-                self.assertIn(f"{seconds // 60} minutes", recovery_for("configure", code)["message"])
+    def test_ssh_enable_guidance_names_only_the_waits_that_cannot_grow(self) -> None:
+        # The wait for SSH after the new boot is fixed, so its card names it
+        # in minutes, as services.reboot waits. The wait for the new boot
+        # counts its limit again from an unplug request, so that card names
+        # no length.
+        from timecapsulesmb.services.reboot import REBOOT_SSH_TIMEOUT_SECONDS, SSH_ENABLE_NO_RETURN_MESSAGE
+        self.assertEqual(REBOOT_SSH_TIMEOUT_SECONDS % 60, 0)
+        self.assertIn(
+            f"{REBOOT_SSH_TIMEOUT_SECONDS // 60} minutes", recovery_for("configure", "ssh_closed_after_restart")["message"],
+        )
+        for operation in ("configure", "set-ssh"):
+            with self.subTest(operation=operation):
+                message = recovery_for(operation, "ssh_enable_timeout")["message"]
+                self.assertNotIn("minutes", message)
+                self.assertIn("before the wait ended", message)
+        self.assertNotIn("minutes", SSH_ENABLE_NO_RETURN_MESSAGE)
+
+    def test_add_device_on_a_silent_address_gets_steps_without_a_checkup(self) -> None:
+        # Add Device: nothing answers at the address while this Mac is on the
+        # device's network. Nothing is saved yet, so no Checkup: the address
+        # comes first, then the device's power, then the unplug.
+        for stage in (None, "acp_port_probe"):
+            with self.subTest(stage=stage):
+                recovery = recovery_for("configure", ErrorCode.DEVICE_SILENT, stage=stage)
+                self.assertEqual(recovery["localization_key"], "configure.device_silent")
+                self.assertEqual(recovery["title"], "Device not answering")
+                self.assertIn("this may not be its current address", recovery["message"])
+                self.assertTrue(recovery["retryable"])
+                self.assertNotIn("run_checkup", recovery.get("action_ids", []))
+                self.assertIsNone(recovery["suggested_operation"])
+                self.assertFalse(any("Checkup" in step for step in recovery["actions"]))
+                self.assertEqual(recovery["actions"][:4], [
+                    "Use discovery or enter the current LAN IP address.",
+                    "Make sure the device is plugged in and its status light is on.",
+                    "Unplug the device, wait 10 seconds and plug it back in.",
+                    "Wait 2 minutes for the device to start up, then try again.",
+                ])
+        self.assertFalse(any("doctor" in step for step in cli_steps("configure", ErrorCode.DEVICE_SILENT)))
+        # Every saved device keeps the Checkup card.
+        self.assertEqual(recovery_for("set-ssh", ErrorCode.DEVICE_SILENT)["action_ids"], ["run_checkup"])
 
     def test_file_sharing_that_did_not_restart_offers_activate_at_every_restart_stage(self) -> None:
         # fsck fails with this code once its reboot is done, whether starting
@@ -575,6 +623,8 @@ class FieldSituationCardTests(unittest.TestCase):
          'acpd_broken', ['run_checkup'], True),
         ('nothing answers at an address being added', 'configure', 'remote_error', 'acp_port_probe',
          'configure.remote_error.acp_port_probe', [], True),
+        ("nothing answers at an address being added while this Mac is on the device's network", 'configure',
+         'device_silent', 'acp_port_probe', 'configure.device_silent', [], True),
         ('another AirPort answers at the saved address', 'deploy', 'device_identity_mismatch', None,
          'device_identity_mismatch', [], True),
         ('the AirPort admin password is wrong', 'configure', 'auth_failed', None,

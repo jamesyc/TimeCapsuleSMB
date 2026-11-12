@@ -134,7 +134,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
         let unplug = L10n.string("timeline.progress.restart_stuck")
 
         XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, stuck])[0].detail, unplug)
-        // With no network at all, the unplug only if this Mac used the device's Wi-Fi.
+        // With no network at all, the unplug only if this Mac reached the network through the device.
         let offline = BackendEvent(type: "progress", operation: "deploy", stage: "wait_for_reboot_up",
                                    restartStuck: true, clientOffline: true)
         XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, offline])[0].detail,

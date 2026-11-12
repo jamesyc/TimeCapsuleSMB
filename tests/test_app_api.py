@@ -7364,6 +7364,12 @@ MaSt = (
                     else:
                         error = self.assert_single_terminal_event(collector, "error")
                         self.assertEqual(error["code"], code, error.get("message"))
+                        if operation == "configure" and code == "device_silent":
+                            # Add Device has nothing saved to run a Checkup on.
+                            self.assertEqual(error["recovery"]["localization_key"], "configure.device_silent")
+                            self.assertNotIn("run_checkup", error["recovery"]["action_ids"])
+                        elif code == "device_silent":
+                            self.assertEqual(error["recovery"]["localization_key"], "device_silent")
 
     def test_deploy_reports_a_local_network_block_with_the_local_network_card(self) -> None:
         # 0b33f140 and 45fcd831: deploy said "not answering" while /usr/bin/ssh
