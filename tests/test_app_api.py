@@ -6926,6 +6926,27 @@ MaSt = (
                 self.assertEqual(finished["result"], "failure")
                 self.assertEqual(finished["stage"], "pre_upload_actions")
 
+    def test_deploy_onto_a_full_disk_says_so_instead_of_dd_output(self) -> None:
+        volume = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
+
+        def full_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
+            if plan.uploads == [plan.migration_upload]:
+                return
+            raise SshError("dd: /Volumes/dk2/.samba4/smbd: No space left on device\n0+63 records in")
+
+        rc, collector = self.run_confirmed_deploy_with_mast(
+            MaStDiscoveryResult((volume,), 1, ""),
+            payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
+            run_remote_actions_side_effect=lambda *args, **kwargs: None,
+            upload_side_effect=full_upload,
+        )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "deploy_disk_not_writable")
+        self.assertTrue(error["message"].startswith("The disk has no free space left"))
+        self.assertIn("Check available free space.", error["recovery"]["actions"])
+
     def test_deploy_reports_payload_upload_timeout_code(self) -> None:
         volume = MaStVolume(
             "wd0",

@@ -1908,6 +1908,100 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertEqual(upload["error_type"], type(error).__name__)
                 self.assertEqual({key: upload[key] for key in upload if key == "bytes_on_device"}, expected_fields)
 
+    def deploy_whose_write_fails(self, error: BaseException, *, step: str, disk_errors=None) -> BaseException:
+        """The error a deploy raises when `step` (upload, pre_upload or
+        replace_software) fails with `error`, given this boot's kernel disk
+        errors (read_disk_errors_conn's answer)."""
+        prepared_plan = self._prepared_deploy_plan()
+
+        def upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
+            if step == "upload" and plan.uploads != [plan.migration_upload]:
+                raise error
+
+        pre_upload = prepared_plan.plan.pre_upload_actions
+        replace_software_count = len(prepared_plan.plan.replace_software_actions)
+
+        def remote(_connection, actions, **_kwargs):
+            # The software step's removals are filtered first, so it is known
+            # by its length, after the pre-upload step.
+            if step == "pre_upload" and actions == pre_upload:
+                raise error
+            if step == "replace_software" and actions != pre_upload and len(actions) == replace_software_count:
+                raise error
+
+        with mock.patch("timecapsulesmb.services.deploy.read_disk_errors_conn", return_value=disk_errors), \
+                self.assertRaises(Exception) as raised:
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}),
+                SshConnection("host", "pw", "-o foo"),
+                prepared_plan,
+                DeployRuntimeConfig(),
+                run_remote_actions_func=remote,
+                upload_payload_func=upload,
+                migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            )
+        return raised.exception
+
+    def test_a_write_the_disk_refused_names_the_disk_whatever_step_wrote_it(self) -> None:
+        # The disk's own answer, wherever the install wrote: a full disk, an
+        # I/O error (failing when the kernel logged disk errors too), or a
+        # folder HFS would not create.
+        from timecapsulesmb.services.deploy import (
+            DISK_FULL_MESSAGE, DISK_IO_ERROR_MESSAGE, DISK_REFUSED_FOLDER_MESSAGE,
+        )
+
+        full = "dd: /Volumes/dk2/.samba4/smbd: No space left on device\n0+63 records in"
+        io = "dd: /Volumes/dk2/.samba4/smbd: Input/output error"
+        cases = (
+            ("upload", full, None, "deploy_disk_not_writable", DISK_FULL_MESSAGE),
+            ("upload", io, (), "deploy_disk_not_writable", DISK_IO_ERROR_MESSAGE),
+            ("upload", io, ("wd0c: error reading fsbn 123",), "disk_failing", "probably failing"),
+            ("pre_upload", "mkdir: /Volumes/dk2/.samba4: Invalid argument", None,
+             "deploy_disk_not_writable", DISK_REFUSED_FOLDER_MESSAGE),
+            ("replace_software", "mkdir: /Volumes/dk2/.samba4/private: Bad file descriptor", None,
+             "deploy_disk_not_writable", DISK_REFUSED_FOLDER_MESSAGE),
+            # The disk's line among others in the same output.
+            ("pre_upload", f"cp: preparing\n{full}", None, "deploy_disk_not_writable", DISK_FULL_MESSAGE),
+        )
+        for step, text, disk_errors, code, words in cases:
+            with self.subTest(step=step, text=text, disk_errors=disk_errors):
+                error = SshError(text)
+                raised = self.deploy_whose_write_fails(error, step=step, disk_errors=disk_errors)
+                self.assertEqual(raised.code, code)
+                self.assertIn(words, str(raised))
+                self.assertIs(raised.__cause__, error)
+
+    def test_a_full_flash_says_so_whatever_step_wrote_it(self) -> None:
+        # The capacity check passed and the write still found the flash full:
+        # that check's code and advice, not the HFS disk's.
+        from timecapsulesmb.services.deploy import FLASH_FULL_MESSAGE
+
+        for step in ("upload", "pre_upload", "replace_software"):
+            with self.subTest(step=step):
+                error = SshError("dd: /mnt/Flash/service: No space left on device\n0+12 records in")
+                raised = self.deploy_whose_write_fails(error, step=step)
+                self.assertEqual((raised.code, raised.message), (ErrorCode.INSUFFICIENT_FLASH_SPACE, FLASH_FULL_MESSAGE))
+                self.assertIs(raised.__cause__, error)
+
+    def test_any_other_write_failure_keeps_its_own_error(self) -> None:
+        # The same steps write the flash and the RAM disk, whose errors are not
+        # the HFS disk's; nor is an error that names no path, or another tool's
+        # refused folder.
+        texts = (
+            "rm: /mnt/Flash/rc.local: Operation not permitted",
+            "mkdir: /mnt/Flash/boot: Invalid argument",
+            "dd: /mnt/Memory/samba4/sbin/smbd: No space left on device",
+            "mkdir: /mnt/Memory/samba4: Invalid argument",
+            "write failed: No space left on device",
+            "rm: /Volumes/dk2/.samba4/private: Bad file descriptor",
+        )
+        for step in ("upload", "pre_upload", "replace_software"):
+            for text in texts:
+                with self.subTest(step=step, text=text):
+                    error = SshError(text)
+                    self.assertIs(self.deploy_whose_write_fails(error, step=step), error)
+
     def timed_out_upload_measurement(self, error: SshUploadTimeout) -> dict[str, object]:
         """The failed upload measurement of a deploy whose smbd upload raises `error`."""
         prepared_plan = self._prepared_deploy_plan()

@@ -952,6 +952,7 @@ Run it after setup, after a deploy, and after a reboot.
 - checks the free space on flash, with a small margin
 - uploads `smbd`, `rsync` and `rsyncd.conf` to the payload, and the `service` image, `boot.sh` and `dfree.sh` to flash
 - checks the uploaded sizes and sets file and directory permissions, then runs `sync`
+- names a write the device refuses by the device's own answer. A full HFS volume, or a folder `mkdir` could not create there, gives `deploy_disk_not_writable`. An input/output error gives `disk_failing` when the kernel logged disk errors this boot, and `deploy_disk_not_writable` otherwise. A full flash gives `insufficient_flash_space`. Any other error, such as one on `/mnt/Memory`, is shown as the device printed it
 - uploads no password files; the device writes them to RAM at boot from the AirPort password (`syPW`)
 - writes the new `/mnt/Flash/tcapsulesmb.conf` and `rc.local` last, then runs `sync` again
 - reboots

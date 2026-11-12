@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+import re
 import shlex
 import time
 import tempfile
@@ -83,6 +84,7 @@ from timecapsulesmb.device.compat import (
     payload_family_description as payload_family_description,
     render_compatibility_message,
 )
+from timecapsulesmb.device.disk_errors import DiskFailingError, read_disk_errors_conn
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.migration_jobs import (
     MigrationActivity,
@@ -740,6 +742,47 @@ def _upload_timeout_fields(exc: BaseException) -> dict[str, object]:
     return fields
 
 
+# What the disk said when a write of the install failed, for the user to act
+# on: a full disk, an I/O error the kernel may also have logged, or a folder
+# HFS would not create (a damaged directory, or a volume gone underneath).
+DISK_FULL_MESSAGE = "The disk has no free space left for the installation files."
+DISK_IO_ERROR_MESSAGE = "The disk reported an input/output error while the installation files were written. It may be failing."
+DISK_REFUSED_FOLDER_MESSAGE = "The disk would not create the installation folder. Its volume may be damaged or no longer mounted."
+# The capacity check before the upload passed, and the write still found the
+# flash full: the same advice as that check's (insufficient_flash_space).
+FLASH_FULL_MESSAGE = "Not enough free space on /mnt/Flash for the installation files. Installation is incomplete."
+# A tool's error line about a path on an HFS disk or the flash; the same steps
+# write /mnt/Memory too, whose errors are neither's.
+_DEVICE_WRITE_ERROR_LINE = re.compile(
+    r"^(\S+): (/Volumes/|/mnt/Flash/)\S.*: (No space left on device|Input/output error|Invalid argument|Bad file descriptor)$",
+    re.MULTILINE,
+)
+
+
+def _device_write_error(exc: BaseException, connection: SshConnection) -> DeviceError | None:
+    """The device's own answer behind a failed write of the install, or None
+    for any other failure. The flash full: insufficient_flash_space. An HFS
+    disk: deploy_disk_not_writable, or disk_failing when an I/O error comes
+    with this boot's kernel disk errors; a folder HFS refused counts only from
+    mkdir. Only an error line that names a path on one of them counts."""
+    text = str(exc)
+    lines = [match.groups() for match in _DEVICE_WRITE_ERROR_LINE.finditer(text)]
+    if any(root == "/mnt/Flash/" and error == "No space left on device" for _tool, root, error in lines):
+        return DeployDeviceError(FLASH_FULL_MESSAGE, code=ErrorCode.INSUFFICIENT_FLASH_SPACE, detail=text)
+    found = {(tool, error) for tool, root, error in lines if root == "/Volumes/"}
+    errors_seen = {error for _tool, error in found}
+    if "No space left on device" in errors_seen:
+        return DeployDeviceError(DISK_FULL_MESSAGE, code=ErrorCode.DEPLOY_DISK_NOT_WRITABLE, detail=text)
+    if "Input/output error" in errors_seen:
+        kernel_errors = read_disk_errors_conn(connection)
+        if kernel_errors:
+            return DiskFailingError(kernel_errors)
+        return DeployDeviceError(DISK_IO_ERROR_MESSAGE, code=ErrorCode.DEPLOY_DISK_NOT_WRITABLE, detail=text)
+    if any(tool == "mkdir" and error in ("Invalid argument", "Bad file descriptor") for tool, error in found):
+        return DeployDeviceError(DISK_REFUSED_FOLDER_MESSAGE, code=ErrorCode.DEPLOY_DISK_NOT_WRITABLE, detail=text)
+    return None
+
+
 def _payload_upload_timed_out(exc: BaseException, transfer: FileTransfer | None, plan: DeploymentPlan) -> bool:
     """A payload file's copy itself timed out. The mount check before it
     keeps its own error: a timeout there is the device not answering, and a
@@ -1392,8 +1435,13 @@ def upload_and_verify_deployment_payload(
         )
         callbacks.stage("pre_upload_actions")
         boot_assets.enter_context(_report_interrupted_install(connection))
-        with stuck_stop_as(MANAGER_STOP_TIMEOUT_MESSAGE, error=DeployDeviceError):
-            run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
+        try:
+            with stuck_stop_as(MANAGER_STOP_TIMEOUT_MESSAGE, error=DeployDeviceError):
+                run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
+        except Exception as exc:
+            if (write_error := _device_write_error(exc, connection)) is not None:
+                raise write_error from exc
+            raise
         # rc.local is gone before any metadata conversion or removal of the
         # historical runtime. The synchronous Flash mount already wrote the
         # removal; the sync also writes out the new payload directories.
@@ -1500,7 +1548,12 @@ def upload_and_verify_deployment_payload(
             ],
         )
         config_uploads = [] if plan.config_upload.destination in kept else [plan.config_upload]
-        run_remote_actions_func(connection, plan.replace_software_actions)
+        try:
+            run_remote_actions_func(connection, plan.replace_software_actions)
+        except Exception as exc:
+            if (write_error := _device_write_error(exc, connection)) is not None:
+                raise write_error from exc
+            raise
         # Apply the same explicit ownership list to other detected payloads,
         # Samba's logs included. Their metadata, receipts, other logs and
         # quarantines stay intact.
@@ -1576,6 +1629,8 @@ def upload_and_verify_deployment_payload(
                 )
             if _payload_upload_timed_out(exc, active_upload, plan):
                 raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code=ErrorCode.PAYLOAD_UPLOAD_TIMEOUT) from exc
+            if (write_error := _device_write_error(exc, connection)) is not None:
+                raise write_error from exc
             raise
         finally:
             callbacks.measurement(
