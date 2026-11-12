@@ -928,8 +928,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "Il disco contiene un volume HFS, ma il dispositivo non lo ha montato, nemmeno quando gli è stato chiesto.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Attendi un minuto, poi esegui di nuovo “Installa/aggiorna Samba”.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.2" = "Se il disco continua a non essere montato, prova a riavviare il dispositivo.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.3" = "Se è il disco interno e non contiene nulla che ti serva, usa “Riformatta disco interno”. L’operazione cancella tutto il contenuto del disco interno e lo formatta per il dispositivo.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.4" = "Esegui di nuovo “Installa/aggiorna Samba” dopo la riformattazione.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.title" = "Disco HFS non montato";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.message" = "Il disco contiene un volume HFS, ma il dispositivo non lo ha montato, nemmeno quando gli è stato chiesto.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.1" = "Attendi un minuto, poi esegui di nuovo “Installa/aggiorna Samba”.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "Se il disco continua a non essere montato, prova a riavviare il dispositivo.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "Se è il disco interno e non contiene nulla che ti serva, usa “Riformatta disco interno”. L’operazione cancella tutto il contenuto del disco interno e lo formatta per il dispositivo.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "Esegui di nuovo “Installa/aggiorna Samba” dopo la riformattazione.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Il disco non resta montato";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Un volume HFS è montato, ma il dispositivo non ha accettato di mantenerlo montato per TimeCapsuleSMB, quindi potrebbe essere smontato durante l’installazione.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Attendi un minuto, poi esegui di nuovo “Installa/aggiorna Samba”.";

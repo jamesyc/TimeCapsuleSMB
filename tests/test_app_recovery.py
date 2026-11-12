@@ -350,14 +350,28 @@ class AppRecoveryTests(unittest.TestCase):
         self.assertFalse(any("Checkup" in step for step in configure["actions"]))
         self.assertIn("try again", configure["actions"][-1])
 
-    def test_a_disk_apple_will_not_mount_offers_the_wipe(self) -> None:
-        # Apple's disk service lists no volume of it, so Disk Repair, which
-        # repairs mounted volumes, finds nothing: the wipe is the way out.
-        recovery = recovery_for("deploy", "deploy_disk_not_mounted")
+    def test_only_a_disk_apples_service_lists_no_volume_of_offers_the_wipe(self) -> None:
+        # Read before a payload home is chosen (read_mast): MaSt lists no
+        # volume of a disk whose table is Apple's, so Disk Repair, which
+        # repairs mounted volumes, finds nothing. The wipe comes after a wait
+        # and a restart.
+        recovery = recovery_for("deploy", "deploy_disk_not_mounted", stage="read_mast")
         self.assertEqual(recovery["action_ids"], ["wipe_disk"])
+        self.assertEqual(recovery["localization_key"], "deploy.deploy_disk_not_mounted.read_mast")
+        self.assertTrue(recovery["actions"][0].startswith("Wait a minute"))
         self.assertIn("“Wipe Internal Disk”", recovery["actions"][2])
         self.assertIn("holds nothing you need", recovery["actions"][2])
         self.assertEqual(recovery["actions"][3], "Run “Install / Update Samba” again after the wipe.")
+        # Later the same code is a volume that did not mount when asked
+        # (select_payload_home), or one diskd unmounted during the upload:
+        # Apple can unmount a disk at any time, and that disk may hold the
+        # backups. No wipe, and no Disk Repair, which needs a mounted volume.
+        for stage in ("select_payload_home", "upload_smbd", None):
+            with self.subTest(stage=stage):
+                later = recovery_for("deploy", "deploy_disk_not_mounted", stage=stage)
+                self.assertEqual(later["action_ids"], [])
+                self.assertFalse(any("Wipe" in step or "Disk Repair" in step for step in later["actions"]))
+                self.assertEqual(later["localization_key"], "deploy.deploy_disk_not_mounted")
 
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
         recovery = recovery_for("deploy", "reboot_not_finished", stage="wait_for_reboot_up")
@@ -616,8 +630,10 @@ class FieldSituationCardTests(unittest.TestCase):
          'wipe_disk_no_internal_disk', [], False),
         ('a disk with no HFS partition', 'deploy', 'deploy_no_hfs_partition', None,
          'deploy.deploy_no_hfs_partition', ['wipe_disk'], True),
-        ('an HFS volume Apple will not mount', 'deploy', 'deploy_disk_not_mounted', None,
-         'deploy.deploy_disk_not_mounted', ['wipe_disk'], True),
+        ('an HFS volume Apple lists none of', 'deploy', 'deploy_disk_not_mounted', 'read_mast',
+         'deploy.deploy_disk_not_mounted.read_mast', ['wipe_disk'], True),
+        ('an HFS volume that did not mount, or was unmounted', 'deploy', 'deploy_disk_not_mounted', None,
+         'deploy.deploy_disk_not_mounted', [], True),
         ('a full, read-only or refusing volume', 'deploy', 'deploy_disk_not_writable', None,
          'deploy.deploy_disk_not_writable', [], True),
         ('kernel disk errors', 'deploy', 'disk_failing', None,

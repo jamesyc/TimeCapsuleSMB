@@ -1325,21 +1325,21 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
-    # Apple's disk service lists no volume of the disk, so Disk Repair, which
-    # repairs mounted volumes, has nothing to work on: wiping it is the way out.
+    # The disk has Apple's HFS layout, but the volume did not mount, or diskd
+    # unmounted it during the install (deploy.executor): Apple can unmount a
+    # disk at any time, so waiting and a restart come first, and nothing here
+    # offers to wipe a disk that may hold backups. Disk Repair is not offered
+    # either: it repairs only volumes that mount. The case where Apple's disk
+    # service lists no volume at all has its own card (stage read_mast).
     ("deploy", ErrorCode.DEPLOY_DISK_NOT_MOUNTED): RecoveryInfo(
         "HFS disk not mounted",
         "The disk has an HFS volume, but the device has not mounted it, and did not when asked.",
         (
             "Wait a minute, then run “Install / Update Samba” again.",
             "If the disk still does not mount, try restarting the device.",
-            "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything "
-            "on the internal disk and formats it for the device.",
-            "Run “Install / Update Samba” again after the wipe.",
         ),
         retryable=True,
         suggested_operation="deploy",
-        action_ids=("wipe_disk",),
     ),
     # Deploy offers this only when uninstall deletes every legacy database
     # (services.deploy), so the second step cannot fail the same way.
@@ -1523,6 +1523,27 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
 
 
 _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
+    # Apple's disk service lists no volume of a disk whose partition table is
+    # Apple's own (services.deploy.mast_no_volume_error, read before any
+    # payload home is chosen), so Disk Repair, which repairs mounted volumes,
+    # has nothing to work on: after a wait and a restart, wiping it is the way
+    # out. Only this stage offers the wipe: the same code later in the install
+    # is a volume that did not mount, or one diskd unmounted, on a disk that
+    # may hold backups.
+    ("deploy", ErrorCode.DEPLOY_DISK_NOT_MOUNTED, "read_mast"): RecoveryInfo(
+        "HFS disk not mounted",
+        "The disk has an HFS volume, but the device has not mounted it, and did not when asked.",
+        (
+            "Wait a minute, then run “Install / Update Samba” again.",
+            "If the disk still does not mount, try restarting the device.",
+            "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything "
+            "on the internal disk and formats it for the device.",
+            "Run “Install / Update Samba” again after the wipe.",
+        ),
+        retryable=True,
+        suggested_operation="deploy",
+        action_ids=("wipe_disk",),
+    ),
     # After the restart, the start that runs file sharing on a device without
     # the startup hook could not stop a service: the files are installed, and
     # Activate starts them once the device is unplugged and back.

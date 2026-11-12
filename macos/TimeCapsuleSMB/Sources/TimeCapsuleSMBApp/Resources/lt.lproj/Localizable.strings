@@ -928,8 +928,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "Diske yra HFS tomas, bet įrenginys jo neprijungė, net kai buvo paprašytas.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Palaukite minutę, tada bandykite diegti dar kartą.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.2" = "Jei diskas vis dar neprijungiamas, pabandykite paleisti įrenginį iš naujo.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.3" = "Jei tai vidinis diskas ir jame nėra nieko, ko jums reikia, naudokite „Performatuoti vidinį diską“. Tai ištrina viską, kas yra vidiniame diske, ir suformatuoja jį įrenginiui.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.4" = "Po performatavimo vėl paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.title" = "HFS diskas neprijungtas";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.message" = "Diske yra HFS tomas, bet įrenginys jo neprijungė, net kai buvo paprašytas.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.1" = "Palaukite minutę, tada bandykite diegti dar kartą.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "Jei diskas vis dar neprijungiamas, pabandykite paleisti įrenginį iš naujo.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "Jei tai vidinis diskas ir jame nėra nieko, ko jums reikia, naudokite „Performatuoti vidinį diską“. Tai ištrina viską, kas yra vidiniame diske, ir suformatuoja jį įrenginiui.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "Po performatavimo vėl paleiskite „Įdiegti / atnaujinti Samba“.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Diskas nelieka prijungtas";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "HFS tomas prijungtas, bet įrenginys nesutiko išlaikyti jo prijungto TimeCapsuleSMB reikmėms, todėl diegimo metu jis galėtų būti atjungtas.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Palaukite minutę, tada bandykite diegti dar kartą.";

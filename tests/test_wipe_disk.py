@@ -1653,7 +1653,8 @@ class DeployVerdictTests(unittest.TestCase):
         # A failed Seagate beside another small disk is named as the Seagate.
         both = (disk(size=1000, partitions=()), disk(device="wd1", size=3950, partitions=()))
         self.assertEqual(self.error(both, wipe.GptVerdict("blank")).code, ErrorCode.DISK_SEAGATE_FAILED)
-        # An Apple HFS partition on disk only has not mounted: no Wipe button.
+        # An Apple HFS partition MaSt does not list: not mounted, whose read_mast
+        # card offers the wipe only after a wait and a restart (test_app_recovery).
         self.assertEqual(self.error((blank,), wipe.GptVerdict("apple_hfs", ("apple_hfs",))).code, ErrorCode.DEPLOY_DISK_NOT_MOUNTED)
         foreign = self.error((blank,), wipe.GptVerdict("foreign", ("apfs",)))
         self.assertEqual(foreign.code, ErrorCode.DEPLOY_NO_HFS_PARTITION)

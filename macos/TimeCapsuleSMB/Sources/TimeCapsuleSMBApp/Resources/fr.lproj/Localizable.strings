@@ -928,8 +928,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "Le disque contient un volume HFS, mais l’appareil ne l’a pas monté, même lorsqu’on le lui a demandé.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Patientez une minute, puis relancez « Installer / mettre à jour Samba ».";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.2" = "Si le disque ne se monte toujours pas, essayez de redémarrer l’appareil.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.3" = "S’il s’agit du disque interne et qu’il ne contient rien dont vous avez besoin, utilisez « Reformater le disque interne ». Cette opération efface tout le contenu du disque interne et le formate pour l’appareil.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.4" = "Relancez « Installer / mettre à jour Samba » après le reformatage.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.title" = "Disque HFS non monté";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.message" = "Le disque contient un volume HFS, mais l’appareil ne l’a pas monté, même lorsqu’on le lui a demandé.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.1" = "Patientez une minute, puis relancez « Installer / mettre à jour Samba ».";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "Si le disque ne se monte toujours pas, essayez de redémarrer l’appareil.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "S’il s’agit du disque interne et qu’il ne contient rien dont vous avez besoin, utilisez « Reformater le disque interne ». Cette opération efface tout le contenu du disque interne et le formate pour l’appareil.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "Relancez « Installer / mettre à jour Samba » après le reformatage.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Disque non maintenu monté";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Un volume HFS est monté, mais l’appareil a refusé de le garder monté pour TimeCapsuleSMB : il pourrait donc être démonté pendant l’installation.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Patientez une minute, puis relancez « Installer / mettre à jour Samba ».";

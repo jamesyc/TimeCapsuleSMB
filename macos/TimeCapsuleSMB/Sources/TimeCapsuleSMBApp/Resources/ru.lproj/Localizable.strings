@@ -928,8 +928,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "На диске есть том HFS, но устройство его не смонтировало, даже когда его об этом попросили.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Подождите минуту, затем снова запустите «Установить/обновить Samba».";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.2" = "Если диск по-прежнему не монтируется, попробуйте перезагрузить устройство.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.3" = "Если это внутренний диск и на нем нет ничего нужного, используйте «Переформатировать внутренний диск». Эта операция стирает все на внутреннем диске и форматирует его для устройства.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.4" = "После переформатирования снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.title" = "Диск HFS не смонтирован";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.message" = "На диске есть том HFS, но устройство его не смонтировало, даже когда его об этом попросили.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.1" = "Подождите минуту, затем снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "Если диск по-прежнему не монтируется, попробуйте перезагрузить устройство.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "Если это внутренний диск и на нем нет ничего нужного, используйте «Переформатировать внутренний диск». Эта операция стирает все на внутреннем диске и форматирует его для устройства.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "После переформатирования снова запустите «Установить/обновить Samba».";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Устройство не удерживает диск смонтированным";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Том HFS смонтирован, но устройство отказалось удерживать его смонтированным для TimeCapsuleSMB, поэтому во время установки он может быть размонтирован.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Подождите минуту, затем снова запустите «Установить/обновить Samba».";

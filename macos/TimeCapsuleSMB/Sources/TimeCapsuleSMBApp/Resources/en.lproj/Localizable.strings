@@ -992,8 +992,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "The disk has an HFS volume, but the device has not mounted it, and did not when asked.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Wait a minute, then run “Install / Update Samba” again.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.2" = "If the disk still does not mount, try restarting the device.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.3" = "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything on the internal disk and formats it for the device.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.4" = "Run “Install / Update Samba” again after the wipe.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.title" = "HFS disk not mounted";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.message" = "The disk has an HFS volume, but the device has not mounted it, and did not when asked.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.1" = "Wait a minute, then run “Install / Update Samba” again.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "If the disk still does not mount, try restarting the device.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything on the internal disk and formats it for the device.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "Run “Install / Update Samba” again after the wipe.";
 // deploy_disk_not_confirmed: “would not keep it mounted for TimeCapsuleSMB” means the device's
 // disk manager refused to hold the volume mounted for the install; it is not a mount failure.
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Disk not kept mounted";

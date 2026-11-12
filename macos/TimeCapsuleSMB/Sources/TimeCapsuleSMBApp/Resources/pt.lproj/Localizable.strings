@@ -928,8 +928,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "O disco tem um volume HFS, mas o dispositivo não o montou, nem quando foi solicitado.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Aguarde um minuto e execute “Instalar/atualizar Samba” novamente.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.2" = "Se o disco ainda não for montado, tente reiniciar o dispositivo.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.3" = "Se for o disco interno e não tiver nada de que você precise, use “Reformatar disco interno”. Isso apaga tudo no disco interno e o formata para o dispositivo.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.4" = "Execute “Instalar/atualizar Samba” novamente depois da reformatação.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.title" = "Disco HFS não montado";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.message" = "O disco tem um volume HFS, mas o dispositivo não o montou, nem quando foi solicitado.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.1" = "Aguarde um minuto e execute “Instalar/atualizar Samba” novamente.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "Se o disco ainda não for montado, tente reiniciar o dispositivo.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "Se for o disco interno e não tiver nada de que você precise, use “Reformatar disco interno”. Isso apaga tudo no disco interno e o formata para o dispositivo.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "Execute “Instalar/atualizar Samba” novamente depois da reformatação.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "O disco não foi mantido montado";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Um volume HFS está montado, mas o dispositivo se recusou a mantê-lo montado para o TimeCapsuleSMB; por isso, ele poderia ser desmontado durante a instalação.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Aguarde um minuto e execute “Instalar/atualizar Samba” novamente.";

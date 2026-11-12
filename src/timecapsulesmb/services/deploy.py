@@ -644,8 +644,11 @@ def mast_no_volume_error(
 ) -> DeviceError:
     """Why MaSt lists no HFS volume, as the code whose guidance fits. With the
     SSH connection, `gpt show` (read-only) says what is on each disk itself:
-    an Apple HFS partition means the disk has not mounted yet, which must not
-    be met with a Wipe Internal Disk button. Apple's diskd stuck on the disk
+    an Apple HFS partition MaSt does not list is deploy_disk_not_mounted, whose
+    card at this stage (read_mast) says to wait and restart first and only
+    then offers Wipe Internal Disk; the same code later in the install (a
+    volume that did not mount, or one diskd unmounted) offers no wipe.
+    Apple's diskd stuck on the disk
     lists nothing, or a disk with no partitions; the process list shows it
     (processes.disk_io_stalls), so it is read before any verdict whose card
     could offer the wipe. A failed or misreported disk keeps its own verdict,

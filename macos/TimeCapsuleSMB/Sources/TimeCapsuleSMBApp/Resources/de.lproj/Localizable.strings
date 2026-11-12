@@ -928,8 +928,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.message" = "Die Festplatte hat einen HFS-Datenträger, aber das Gerät hat ihn nicht eingebunden, auch nicht auf Anforderung.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.1" = "Warten Sie eine Minute und führen Sie dann „Samba installieren / aktualisieren“ erneut aus.";
 "backend.recovery.deploy.deploy_disk_not_mounted.action.2" = "Wenn der Datenträger weiterhin nicht eingebunden wird, versuchen Sie, das Gerät neu zu starten.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.3" = "Wenn es die interne Festplatte ist und sich darauf nichts befindet, was Sie brauchen, verwenden Sie „Interne Festplatte neu formatieren“. Damit wird alles auf der internen Festplatte gelöscht und sie wird für das Gerät formatiert.";
-"backend.recovery.deploy.deploy_disk_not_mounted.action.4" = "Führen Sie nach dem Neuformatieren „Samba installieren / aktualisieren“ erneut aus.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.title" = "HFS-Datenträger nicht eingebunden";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.message" = "Die Festplatte hat einen HFS-Datenträger, aber das Gerät hat ihn nicht eingebunden, auch nicht auf Anforderung.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.1" = "Warten Sie eine Minute und führen Sie dann „Samba installieren / aktualisieren“ erneut aus.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "Wenn der Datenträger weiterhin nicht eingebunden wird, versuchen Sie, das Gerät neu zu starten.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "Wenn es die interne Festplatte ist und sich darauf nichts befindet, was Sie brauchen, verwenden Sie „Interne Festplatte neu formatieren“. Damit wird alles auf der internen Festplatte gelöscht und sie wird für das Gerät formatiert.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "Führen Sie nach dem Neuformatieren „Samba installieren / aktualisieren“ erneut aus.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Datenträger nicht dauerhaft eingebunden";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Ein HFS-Volume ist eingebunden, aber das Gerät hat es abgelehnt, es für TimeCapsuleSMB eingebunden zu halten; es könnte daher während der Installation / Aktualisierung ausgehängt werden.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Warten Sie eine Minute und führen Sie dann „Samba installieren / aktualisieren“ erneut aus.";

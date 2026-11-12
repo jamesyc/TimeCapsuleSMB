@@ -6934,6 +6934,9 @@ MaSt = (
                 self.assertEqual(error["recovery"]["title"], title)
                 self.assertEqual(error["recovery"]["localization_key"], f"deploy.{code}")
                 self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
+                # A volume that did not mount when asked may hold the backups:
+                # no card here offers the wipe.
+                self.assertNotIn("wipe_disk", error["recovery"].get("action_ids", []))
                 finished = self._telemetry_client.emit.call_args_list[-1].kwargs
                 self.assertEqual(finished["result"], "failure")
                 self.assertEqual(finished["stage"], "select_payload_home")
