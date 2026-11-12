@@ -188,8 +188,31 @@ class AppConfig:
     def require(self, key: str, *, messagebefore: str = "", messageafter: str = "") -> str:
         value = self.get(key)
         if not value:
-            raise ConfigError(f"{messagebefore}Missing required setting in {self.path}: {key}{messageafter}")
+            raise ConfigError(
+                f"{messagebefore}Missing required setting in {self.path}: {key}"
+                f"{messageafter or app_profile_password_note(self.path, key)}"
+            )
         return value
+
+
+# The macOS app saves each device's settings in
+# ~/Library/Application Support/TimeCapsuleSMB/Devices/<profile>/.env and its
+# password in the Keychain, so a command run against that file has none.
+APP_PROFILE_PASSWORD_NOTE = (
+    " The TimeCapsuleSMB app keeps this device's password in the macOS Keychain, not in this file: run Checkup in "
+    "the app, or set the device up for the command line with `tcapsule configure`."
+)
+
+
+def app_profile_password_note(path: Path | None, key: str | None) -> str:
+    """APP_PROFILE_PASSWORD_NOTE for TC_PASSWORD missing from a device profile
+    the macOS app saved; empty otherwise."""
+    if key != "TC_PASSWORD" or path is None:
+        return ""
+    parts = Path(path).parts
+    if len(parts) >= 4 and parts[-1] == ".env" and parts[-3] == "Devices" and parts[-4] == "TimeCapsuleSMB":
+        return APP_PROFILE_PASSWORD_NOTE
+    return ""
 
 
 def airport_identity_from_model_or_syap(
@@ -239,7 +262,7 @@ class ConfigIssue:
         if self.kind == "missing_file":
             lines = [f"Missing required configuration file: {self.path}"]
         elif self.kind == "missing_key" and self.key:
-            lines = [f"Missing required setting in {self.path}: {self.key}"]
+            lines = [f"Missing required setting in {self.path}: {self.key}{app_profile_password_note(self.path, self.key)}"]
         elif self.key:
             lines = [f"{self.key} is invalid in {self.path}. Run the `configure` command again.", self.message]
         else:
@@ -589,7 +612,7 @@ def validate_app_config(config: AppConfig, *, profile: str) -> list[ConfigIssue]
             errors.append(ConfigIssue(
                 kind="missing_key",
                 key=key,
-                message=f"Missing required setting in {config.path}: {key}",
+                message=f"Missing required setting in {config.path}: {key}{app_profile_password_note(config.path, key)}",
                 path=config.path,
             ))
     for key in profile_config.required_values:
@@ -598,7 +621,7 @@ def validate_app_config(config: AppConfig, *, profile: str) -> list[ConfigIssue]
             errors.append(ConfigIssue(
                 kind="missing_key",
                 key=key,
-                message=f"Missing required setting in {config.path}: {key}",
+                message=f"Missing required setting in {config.path}: {key}{app_profile_password_note(config.path, key)}",
                 path=config.path,
             ))
 

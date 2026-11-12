@@ -684,5 +684,30 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIsInstance(ctx.exception, SystemExit)
 
 
+class AppProfilePasswordTests(unittest.TestCase):
+    """A command run against a device profile the macOS app saved finds no
+    password there: the app keeps it in the Keychain, and says where to go."""
+
+    APP_PROFILE = Path("/Users/someone/Library/Application Support/TimeCapsuleSMB/Devices/61b31e6b/.env")
+
+    def test_a_missing_password_in_an_app_profile_says_the_app_keeps_it(self) -> None:
+        from timecapsulesmb.core.config import APP_PROFILE_PASSWORD_NOTE, AppConfig, ConfigError
+
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2"}, path=self.APP_PROFILE, exists=True)
+        with self.assertRaises(ConfigError) as raised:
+            config.require("TC_PASSWORD")
+        self.assertEqual(
+            str(raised.exception), f"Missing required setting in {self.APP_PROFILE}: TC_PASSWORD{APP_PROFILE_PASSWORD_NOTE}",
+        )
+
+    def test_other_files_and_other_settings_keep_the_plain_message(self) -> None:
+        from timecapsulesmb.core.config import app_profile_password_note
+
+        self.assertEqual(app_profile_password_note(self.APP_PROFILE, "TC_HOST"), "")
+        self.assertEqual(app_profile_password_note(Path("/home/me/TimeCapsuleSMB/.env"), "TC_PASSWORD"), "")
+        self.assertEqual(app_profile_password_note(Path("/tmp/Devices/x/.env"), "TC_PASSWORD"), "")
+        self.assertEqual(app_profile_password_note(None, "TC_PASSWORD"), "")
+
+
 if __name__ == "__main__":
     unittest.main()
