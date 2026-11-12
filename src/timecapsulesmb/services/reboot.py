@@ -720,8 +720,12 @@ def _wait(
     down_since: float | None = None
     next_follow = 0.0
     next_hang_check = 0.0
-    # When a look found the hang and the user was asked to unplug the device.
+    # When a look found the hang that stands now and the user was asked to
+    # unplug the device, and how it was found; and when the first hang was,
+    # from which the limit counts.
     hang_seen_at: float | None = None
+    hang_evidence: str | None = None
+    hang_first_at: float | None = None
     asked_ssh = False
     up_stage = False
     # Polls in a row with this Mac on another network, what it joined, and
@@ -868,10 +872,23 @@ def _wait(
             # with. Another host that took the address refuses too, but a
             # device that came back elsewhere is followed by its MAC first.
             hang_seen_at = now
+            hang_evidence = "acp_refused"
+            if hang_first_at is None:
+                hang_first_at = now
             fields["acpd_hang_seen_after_sec"] = round(now - started, 3)
             fields["acpd_hang_evidence"] = "acp_refused"
             hints()
             callbacks.message(ACPD_REFUSED_UNPLUG_MESSAGE)
+        elif hang_evidence == "acp_refused" and silence.quiet:
+            # The refusals gave way to silence: the restart's teardown started
+            # after all, or the device was unplugged. What comes next is
+            # judged as any other restart's, and the limit still counts from
+            # the first hang, so refusals and silence in turns cannot hold the
+            # wait open.
+            hang_seen_at = None
+            hang_evidence = None
+            fields["acpd_hang_cleared_after_sec"] = round(now - started, 3)
+            hints()
         if (
             ssh is not None and restart_marker == "written" and hang_seen_at is None
             and now - started >= HANG_CHECK_AFTER_REQUEST_SECONDS and now >= next_hang_check
@@ -896,6 +913,9 @@ def _wait(
             fields["restart_look_last"] = look
             if look == "hung":
                 hang_seen_at = now
+                hang_evidence = "marker"
+                if hang_first_at is None:
+                    hang_first_at = now
                 fields["acpd_hang_seen_after_sec"] = round(now - started, 3)
                 fields["acpd_hang_evidence"] = "marker"
                 hints()
@@ -959,7 +979,7 @@ def _wait(
                     callbacks.update(current_host=located.host)
                     break
         # The user gets the whole limit to unplug the device and for it to start up.
-        limit_from = max(at for at in (down_since, hang_seen_at, stuck_at) if at is not None)
+        limit_from = max(at for at in (down_since, hang_first_at, stuck_at) if at is not None)
         if now - limit_from >= up_timeout_seconds:
             if away_polls >= CLIENT_AWAY_POLLS:
                 # Nothing showed whether the device came back: this Mac was
@@ -967,7 +987,7 @@ def _wait(
                 finish("client_left_network", ErrorCode.CLIENT_LEFT_NETWORK, client_left_message(joined))
             if hang_seen_at is not None:
                 message = stopped_message
-                if fields.get("acpd_hang_evidence") == "acp_refused":
+                if hang_evidence == "acp_refused":
                     # The caller's message opens with ACPD_STOPPED_MESSAGE
                     # (deploy adds what that means for the install).
                     message = message.replace(ACPD_STOPPED_MESSAGE, ACPD_REFUSED_MESSAGE, 1)

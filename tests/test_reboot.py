@@ -1665,6 +1665,98 @@ class AcpRefusedHangTests(unittest.TestCase):
         self.assertNotIn("acpd_hang_evidence", recorder.measurement("reboot_cycle"))
 
 
+    def wait(self, device: FakeAcpDevice, **kwargs):
+        recorder = RecordingCallbacks()
+        recorder.clock = device.monotonic
+        start = device.now
+        with device.patched():
+            try:
+                reboot_device("root@10.0.0.2", "pw", wait=True, callbacks=recorder.callbacks(), **kwargs)
+                error = None
+            except RebootFlowError as exc:
+                error = exc
+        return error, recorder, start
+
+    def test_refusals_that_give_way_to_silence_end_as_a_silent_restart(self) -> None:
+        # ACP refused long enough to ask for the unplug, then nothing answers:
+        # the restart started after all, or the device was unplugged and
+        # never came back. The wait withdraws the hang and ends as any silent
+        # restart, not with the refused message.
+        silent_at = STUCK_AFTER + 60.0
+        device = stuck_device(down_read_error="Connection refused", down_read_error_changes=((silent_at, "timed out"),))
+        error, recorder, start = self.wait(device)
+
+        self.assertEqual(error.code, "restart_stuck")
+        self.assertNotIn(reboot_service.ACPD_REFUSED_MESSAGE, error.message)
+        hints = [fields for _at, stage, fields in recorder.progress if stage == "wait_for_reboot_up"]
+        self.assertEqual(hints, [hint_state(acpd_hung=True), hint_state(), hint_state(restart_stuck=True)])
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["acpd_hang_evidence"], "acp_refused")
+        # Withdrawn once STUCK_QUIET_READS reads in a row went unanswered.
+        self.assertGreaterEqual(
+            cycle["acpd_hang_cleared_after_sec"] - (silent_at + 1.0),
+            (reboot_service.STUCK_QUIET_READS - 1) * reboot_service.REBOOT_POLL_SECONDS,
+        )
+        self.assertLess(cycle["acpd_hang_cleared_after_sec"], cycle["stuck_hint_after_sec"] + 0.001)
+        # The limit counts from the stuck hint, the latest request to unplug.
+        self.assertGreaterEqual(device.now - start, cycle["stuck_hint_after_sec"] + UP_LIMIT)
+
+    def test_without_the_stuck_hint_the_silent_ending_only_conditionally_asks_for_an_unplug(self) -> None:
+        # No router to tell this network from another: the ordinary silent
+        # ending, counted from the first request to unplug.
+        device = stuck_device(
+            mac_router=None, down_read_error="Connection refused",
+            down_read_error_changes=((STUCK_AFTER + 60.0, "timed out"),),
+        )
+        error, recorder, start = self.wait(device, up_timeout_message="Timed out waiting for SSH after reboot.")
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertEqual(error.message, f"Timed out waiting for SSH after reboot. {unplug_if_on_network_note(None)}")
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["result"], "did_not_come_back_up")
+        waited = device.now - start
+        self.assertGreaterEqual(waited, cycle["acpd_hang_seen_after_sec"] + UP_LIMIT)
+        self.assertLess(waited, cycle["acpd_hang_seen_after_sec"] + UP_LIMIT + 2 * reboot_service.REBOOT_POLL_SECONDS)
+
+    def test_a_few_unanswered_reads_among_the_refusals_keep_the_hang(self) -> None:
+        # Fewer than STUCK_QUIET_READS unanswered reads, then refused again
+        # through the limit: still ACPd that never came back.
+        blip = STUCK_AFTER + 60.0
+        device = stuck_device(down_read_error="Connection refused", down_read_error_changes=(
+            (blip, "timed out"), (blip + (reboot_service.STUCK_QUIET_READS - 1) * 5.0, "Connection refused"),
+        ))
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual((error.code, error.message), ("acpd_broken", reboot_service.ACPD_REFUSED_MESSAGE))
+        self.assertEqual(recorder.measurement("reboot_cycle")["read_errors"]["timeout"]["count"],
+                         reboot_service.STUCK_QUIET_READS - 1)
+        self.assertNotIn("acpd_hang_cleared_after_sec", recorder.measurement("reboot_cycle"))
+
+    def test_refusals_and_silence_in_turns_cannot_hold_the_wait_open(self) -> None:
+        # Refused six minutes, silent a while, refused six minutes again: the
+        # second hang asks again, but the limit still counts from the first.
+        first_silence = STUCK_AFTER + 60.0
+        device = stuck_device(mac_router=None, down_read_error="Connection refused", down_read_error_changes=(
+            (first_silence, "timed out"), (first_silence + 60.0, "Connection refused"),
+        ))
+        error, recorder, start = self.wait(device)
+
+        hang_seen = [at - start for at, _stage, fields in recorder.progress if fields["acpd_hung"]]
+        self.assertEqual(len(hang_seen), 2)
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertLess(device.now - start, hang_seen[0] + UP_LIMIT + 2 * reboot_service.REBOOT_POLL_SECONDS)
+        self.assertEqual(recorder.messages.count(reboot_service.ACPD_REFUSED_UNPLUG_MESSAGE), 2)
+
+    def test_the_marker_hang_stays_through_silence(self) -> None:
+        # The marker look saw the old kernel alive: reads that go unanswered
+        # afterwards are that kernel's ACPd gone, not a restart.
+        device = FakeAcpDevice(acpd_hangs=True)
+        error, recorder, _start = self.wait(device, ssh=SshConnection("root@10.0.0.2", "pw", ""))
+
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertNotIn("acpd_hang_cleared_after_sec", recorder.measurement("reboot_cycle"))
+
+
 class DeviceSilenceTests(unittest.TestCase):
     """The restart wait's record of whether nothing answers at the device's
     address lately: answering, quiet, or (for a process macOS may hold, such
