@@ -245,11 +245,22 @@ UNREADABLE_EVIDENCE = DiskFailingEvidence(
 )
 
 
-def internal_disk_errors(errors: tuple[str, ...], device: str) -> tuple[str, ...]:
-    """The lines about the internal disk `device`: its own `wd`/`sd` lines,
-    and the Marvell driver's, which only the internal disk prints."""
+def disk_errors_for(errors: tuple[str, ...], device: str, *, builtin: bool) -> tuple[str, ...]:
+    """The lines about the disk `device`: its own `wd`/`sd` lines, and for the
+    internal disk (`builtin`) the Marvell driver's, which only it prints."""
     own = re.compile(rf"^{re.escape(device)}[a-p]?: ")
-    return tuple(line for line in errors if own.match(line) or _MARVELL_DEVICE_ERROR.match(line))
+    return tuple(line for line in errors if own.match(line) or (builtin and _MARVELL_DEVICE_ERROR.match(line)))
+
+
+def internal_disk_errors(errors: tuple[str, ...], device: str) -> tuple[str, ...]:
+    """The lines about the internal disk `device` (disk_errors_for)."""
+    return disk_errors_for(errors, device, builtin=True)
+
+
+def disk_of_volume(disks: tuple[MaStDiskSnapshot, ...], volume: str) -> MaStDiskSnapshot | None:
+    """The disk holding the partition `volume` (`dk2` or `/dev/dk2`), or None."""
+    partition = volume.strip().removeprefix("/dev/")
+    return next((disk for disk in disks if any(part.device == partition for part in disk.partitions)), None)
 
 
 # MaSt for the warning's disk wording only: a normal read takes well under a
@@ -282,6 +293,7 @@ def read_disk_failing_evidence_conn(
     *,
     internal_device: str | None = None,
     holds_payload: bool = True,
+    volume: str | None = None,
 ) -> DiskFailingEvidence | None:
     """Why the disk may be failing: this boot's kernel disk errors, else
     the manager's title saying the disk could not read its files (NetBSD 4's
@@ -293,14 +305,22 @@ def read_disk_failing_evidence_conn(
     (internal_disk_errors), and the manager's title only when the disk
     holds, or may hold, the files (`holds_payload`). Without it, any disk's
     lines count, and MaSt says whose they are (read only when there are
-    lines)."""
+    lines). With `volume` (Disk Repair's), only the lines of the disk that
+    holds it: another disk's errors are no reason to warn about repairing
+    this one. A volume MaSt does not list, or a MaSt that did not answer,
+    leaves every line in, as before the volume was known."""
     errors = read_disk_errors_conn(connection)
     if errors and internal_device is not None:
         errors = internal_disk_errors(errors, internal_device)
         if errors:
             return DiskFailingEvidence("disk_failing", _kernel_text(errors[-1]), disk="internal", wipeable=True)
     if errors:
-        return kernel_evidence(errors, disks=read_disk_inventory_conn(connection))
+        disks = read_disk_inventory_conn(connection)
+        target = disk_of_volume(disks, volume) if volume and disks is not None else None
+        if target is not None:
+            errors = disk_errors_for(errors, target.device, builtin=target.builtin)
+        if errors:
+            return kernel_evidence(errors, disks=disks)
     if not holds_payload:
         return None
     try:

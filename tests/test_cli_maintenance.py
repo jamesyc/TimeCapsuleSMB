@@ -21,7 +21,7 @@ from timecapsulesmb.services import reboot as reboot_service
 from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.probe import ProbeResult, SshAccessStatus
-from timecapsulesmb.device.storage import MaStDiskSnapshot, MaStVolume
+from timecapsulesmb.device.storage import MaStDiskSnapshot, MaStPartitionSnapshot, MaStVolume
 from timecapsulesmb.deploy.commands import (
     RunScriptAction,
     render_remote_action,
@@ -926,6 +926,33 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn(maintenance_service.FSCK_DURATION_WARNING, at_prompt)
         self.assertIn("Continue?", at_prompt)
 
+    # MaSt's disks for the failing-disk warning: dk2 on the internal wd0, a
+    # USB disk sd0 beside it.
+    FSCK_DISKS = (
+        MaStDiskSnapshot("wd0", "", 1907729, True, (MaStPartitionSnapshot("dk2", "Data", "hfs"),)),
+        MaStDiskSnapshot("sd0", "", 1907729, False, (MaStPartitionSnapshot("dk5", "USB", "hfs"),)),
+    )
+
+    def test_fsck_of_one_disk_is_not_warned_about_anothers_errors(self) -> None:
+        # The USB disk's errors before repairing the internal volume: the
+        # usual question, not the failing-disk warning.
+        errors = ("sd0a: error writing fsbn 8 of 8-15 (sd0 bn 8; cn 0 tn 0 sn 8)",)
+        prompts: list[str] = []
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(self.make_valid_env())))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            stack.enter_context(mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors))
+            stack.enter_context(mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn",
+                                           return_value=self.FSCK_DISKS))
+            stack.enter_context(mock.patch("builtins.input", side_effect=lambda prompt="": prompts.append(prompt) or "n"))
+            stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as warning:
+                rc = fsck.main(["--no-reboot"])
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn("Run fsck anyway? [y/N]: ", prompts)
+        self.assertEqual(warning.getvalue(), "")
+
     def test_fsck_on_a_failing_disk_asks_with_its_warning_instead(self) -> None:
         errors = ("wd0c: error reading fsbn 4 of 4-11 (wd0 bn 4; cn 0 tn 0 sn 4)",)
         prompts: list[str] = []
@@ -935,7 +962,7 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors))
             # MaSt names wd0 as the built-in disk: the errors are its own.
             stack.enter_context(mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn",
-                                           return_value=(MaStDiskSnapshot("wd0", "", 1907729, True, ()),)))
+                                           return_value=self.FSCK_DISKS))
             stack.enter_context(mock.patch("builtins.input", side_effect=lambda prompt="": prompts.append(prompt) or "n"))
             run_ssh = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
             with redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as warning:

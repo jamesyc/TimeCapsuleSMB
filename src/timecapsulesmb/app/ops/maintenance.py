@@ -245,7 +245,8 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         if connection is None:
             connection = _fsck_connection(params, context, rebooting=rebooting)
             require_request_ssh_port(context, connection)
-        disk_failing = read_disk_failing_evidence_conn(connection)
+        # Only the errors of the disk being repaired count.
+        disk_failing = read_disk_failing_evidence_conn(connection, volume=volume)
         presentation = {
             "title": "Confirm fsck",
             "message": "Run fsck on the selected HFS volume" + (" and reboot the device?" if not no_reboot else "?"),

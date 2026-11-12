@@ -19,6 +19,7 @@ from timecapsulesmb.cli.runtime import (
     read_terminal_line,
 )
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
+from timecapsulesmb.device.disk_errors import read_disk_failing_evidence_conn
 from timecapsulesmb.device.storage import VolumeClaims
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import storage as storage_service
@@ -180,6 +181,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         # A failing disk's warning asks instead of the usual question.
         proceed = confirm_despite_failing_disk(
             connection, "repair", yes=args.yes, command="fsck", update_fields=command_context.update_fields,
+            # Only the errors of the disk being repaired count.
+            read_evidence=lambda conn: read_disk_failing_evidence_conn(conn, volume=target.device),
         )
         if proceed is False:
             print("fsck cancelled.")

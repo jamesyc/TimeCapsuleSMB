@@ -245,6 +245,53 @@ def mast_disk(device: str, *, builtin: bool = True, size: int = 1907729, partiti
     return MaStDiskSnapshot(device, "", size, builtin, partitions, soft_disconnected=soft_disconnected)
 
 
+class RepairTargetTests(unittest.TestCase):
+    """Disk Repair warns only about the disk it repairs: a failing USB stick
+    is no reason to warn before repairing the internal volume, nor the
+    reverse."""
+
+    CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+    INTERNAL = "sd0c: error reading fsbn 64 of 64-71 (sd0 bn 64; cn 0 tn 1 sn 1)"
+    USB = "sd1a: error writing fsbn 8 of 8-15 (sd1 bn 8; cn 0 tn 0 sn 8)"
+    DISKS = (
+        mast_disk("sd0", partitions=(MaStPartitionSnapshot("dk2", "Data", "hfs"),)),
+        mast_disk("sd1", builtin=False, partitions=(MaStPartitionSnapshot("dk5", "USB", "hfs"),)),
+    )
+
+    def evidence(self, errors, volume, *, disks=DISKS, problems=()):
+        with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
+            with mock.patch("timecapsulesmb.device.disk_errors.manager_payload_problems", return_value=problems):
+                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", return_value=disks):
+                    return read_disk_failing_evidence_conn(self.CONNECTION, volume=volume)
+
+    def test_another_disks_errors_do_not_warn(self) -> None:
+        for volume, errors in (("/dev/dk2", (self.USB,)), ("dk5", (self.INTERNAL,)),
+                               # The Marvell controller is the internal disk's.
+                               ("dk5", (NETBSD4_DEVICE_ERROR[1],))):
+            with self.subTest(volume=volume, errors=errors):
+                self.assertIsNone(self.evidence(errors, volume))
+
+    def test_the_repaired_disks_own_errors_warn_and_name_it(self) -> None:
+        for volume, errors, disk, quoted in (("/dev/dk2", (self.INTERNAL, self.USB), "internal", self.INTERNAL),
+                                             ("dk5", (self.USB, self.INTERNAL), "usb", self.USB)):
+            with self.subTest(volume=volume):
+                found = self.evidence(errors, volume)
+                self.assertEqual(found.disk, disk)
+                self.assertIn(f"({quoted})", found.text)
+
+    def test_another_disks_errors_leave_the_managers_verdict_to_decide(self) -> None:
+        # No line of this disk: the manager's unreadable verdict still warns.
+        found = self.evidence((self.USB,), "dk2", problems=(probe.DISK_PAYLOAD_UNREADABLE,))
+        self.assertEqual(found, UNREADABLE_EVIDENCE)
+
+    def test_without_mast_every_line_counts_as_before(self) -> None:
+        # MaSt unread, or a volume it does not list: which disk holds the
+        # volume is unknown, so no line is left out.
+        for disks, volume in ((None, "dk2"), (self.DISKS, "dk9")):
+            with self.subTest(disks=disks is not None, volume=volume):
+                self.assertIsNotNone(self.evidence((self.USB,), volume, disks=disks))
+
+
 class DiskInventoryLookupTests(unittest.TestCase):
     """MaSt for the warning's wording only, so a read that fails names no disk
     instead of failing the preflight, and stops there."""

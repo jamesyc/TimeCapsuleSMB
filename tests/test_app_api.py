@@ -72,6 +72,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.device.storage import (
     MaStDiscoveryResult,
     MaStDiskSnapshot,
+    MaStPartitionSnapshot,
     MaStVolume,
     PayloadCandidateCheck,
     PayloadHome,
@@ -8004,6 +8005,31 @@ MaSt = (
         details = self.assert_confirmation(repair, "fsck.disk_failing", {"disk_failing": True})
         self.assertIn("A disk repair may not fix this, and works the disk hard. Repair anyway?", details["message"])
         run_fsck.assert_not_called()
+
+    def test_disk_repair_warns_only_about_the_disk_it_repairs(self) -> None:
+        # The internal volume dk2 is repaired; the errors are the USB disk's
+        # (or the internal disk's). Only the repaired disk's own errors warn.
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        disks = (
+            MaStDiskSnapshot("sd0", "", 1907729, True, (MaStPartitionSnapshot("dk2", "Data", "hfs"),)),
+            MaStDiskSnapshot("sd1", "", 1907729, False, (MaStPartitionSnapshot("dk5", "USB", "hfs"),)),
+        )
+        for errors, presentation_id in ((("sd1a: error writing fsbn 8",), "fsck.no_reboot"),
+                                        (("sd0c: error reading fsbn 64",), "fsck.disk_failing_wipe")):
+            with self.subTest(presentation_id):
+                repair = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+                    with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
+                        with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
+                            with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", return_value=disks):
+                                with mock.patch("timecapsulesmb.app.ops.maintenance.run_fsck") as run_fsck:
+                                    service.run_api_request(
+                                        {"operation": "fsck", "params": {"no_reboot": True, "volume": "/dev/dk2"}},
+                                        repair.sink,
+                                    )
+                self.assert_confirmation(repair, presentation_id)
+                run_fsck.assert_not_called()
 
     # Each failing-disk confirmation the helper can send: operation, the
     # evidence and the presentation id the app shows its own translation for.
