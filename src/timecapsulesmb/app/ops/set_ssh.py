@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.context import AppOperationContext
+from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.app.contracts import set_ssh_payload
 from timecapsulesmb.app.ops.common import load_request_config, refuse_if_local_network_denied, require_request_acpd_ready
 from timecapsulesmb.core.error_codes import ErrorCode
@@ -60,6 +61,7 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 initial=initial,
                 before_enable=confirm_enable_ssh,
                 reading=context.reading_at(connection),
+                router_mac=saved_router_mac(context.config),
             )
         except AppOperationError:
             raise

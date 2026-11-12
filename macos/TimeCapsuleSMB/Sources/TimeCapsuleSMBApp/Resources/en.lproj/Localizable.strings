@@ -356,6 +356,8 @@
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ turns off SMB 3 for the server [%2$@]. If that is this device, delete that line, then remove the disk in Time Machine settings and add it again.";
 "doctor.check.ssh_disabled" = "SSH is turned off on this device.";
 "doctor.check.device_unreachable" = "The device isn't answering on SSH or AirPort ACP.";
+"doctor.check.device_silent" = "The device isn't answering on SSH or AirPort ACP, and this Mac is on the same network as when it last reached it. It may be off or unplugged, stuck partway through a restart, or at a new address.";
+"doctor.check.device_off_network" = "This Mac isn't on the device's network: the device's address isn't on it, or it is another network with the same addresses. Join the device's network by Wi-Fi or one of its LAN ports, then run “Checkup” again.";
 "doctor.check.device_restarting" = "The device is restarting, so it was not checked. Wait a few minutes, then run “Checkup” again.";
 "doctor.check.acp_no_route" = "macOS is refusing this Mac's connections to the device, although SSH reaches it. In “System Settings” > “Privacy & Security” > “Local Network”, turn TimeCapsuleSMB off and on, then quit and reopen TimeCapsuleSMB.";
 "doctor.check.link_local_interface_gone" = "The device's saved address is a link-local address on a network connection this Mac no longer has, such as an unplugged USB Ethernet adapter. Reconnect it, or refresh discovery and reconnect the saved device.";
@@ -707,11 +709,16 @@
 "recovery.guidance.next_steps" = "Next steps";
 "backend.recovery.deploy.reboot_not_finished.title" = "Reboot did not finish";
 "backend.recovery.deploy.reboot_not_finished.message" = "The installation files were copied and the restart was requested, but the device did not answer over SSH again in time. It may still be starting up, or it may have come back at a different IP address.";
-"backend.recovery.deploy.reboot_not_finished.action.1" = "Wait a few more minutes.";
-"backend.recovery.deploy.reboot_not_finished.action.2" = "Make sure you are connected to the same network or Wi-Fi as the device.";
+"backend.recovery.deploy.reboot_not_finished.action.1" = "Make sure you are connected to the same network or Wi-Fi as the device.";
+"backend.recovery.deploy.reboot_not_finished.action.2" = "If this Mac is on the device's network, unplug the device, wait 10 seconds and plug it back in.";
 "backend.recovery.deploy.reboot_not_finished.action.3" = "On NetBSD 4 devices, run “Activate” once SSH is reachable; the install did not get far enough to activate Samba after the reboot.";
 "backend.recovery.deploy.reboot_not_finished.action.4" = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
-"backend.recovery.deploy.reboot_not_finished.action.5" = "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.";
+"backend.recovery.deploy.restart_stuck.title" = "The device has not come back";
+"backend.recovery.deploy.restart_stuck.message" = "The installation files were copied and the restart was requested, but the device went off the network and has not come back, while this Mac stayed on that network. It may have stopped partway through the restart.";
+"backend.recovery.deploy.restart_stuck.action.1" = "Unplug the device, wait 10 seconds and plug it back in.";
+"backend.recovery.deploy.restart_stuck.action.2" = "Wait 2 minutes for the device to start up, then run “Checkup”.";
+"backend.recovery.deploy.restart_stuck.action.3" = "On NetBSD 4 devices, run “Activate” if the checkup says Samba is not running.";
+"backend.recovery.deploy.restart_stuck.action.4" = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort not reachable at this address";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB could not reach the AirPort ACP service before enabling SSH. Backups or AirPort Utility may still work even when ACP is blocked.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Disable VPN or security software that routes local network traffic, then try again.";
@@ -788,7 +795,8 @@
 "backend.recovery.local_network_filtered.title" = "Connection blocked on this Mac";
 "backend.recovery.local_network_filtered.message" = "This Mac dropped the connection before it reached the device. A VPN, firewall or security app is filtering local network traffic.";
 "backend.recovery.device_off_network.title" = "Device not on this Mac's network";
-"backend.recovery.device_off_network.message" = "The device's address isn't on this Mac's network. Check the address, or connect this Mac to the device's network by Wi-Fi or one of its LAN ports, then try again.";
+"backend.recovery.device_off_network.message" = "This Mac isn't on the device's network: the device's address isn't on it, or it is another network with the same addresses. Connect this Mac to the device's network by Wi-Fi or one of its LAN ports, then try again.";
+"backend.recovery.device_off_network.action.1" = "If you replaced the router on the device's network, make sure the device is plugged in and its status light is on, then try again.";
 // client_left_network and timeline.progress.client_away*: during a restart macOS joined another
 // network and stayed there. The Mac left and is reconnected to the device's network; the device's
 // Wi-Fi name, when known, follows as the device's (“(Wi-Fi “%@”)”), since the Mac may be on
@@ -798,6 +806,14 @@
 "backend.recovery.client_left_network.message" = "While the device restarted, this Mac moved to another network and did not come back, so TimeCapsuleSMB could not see whether the device restarted.";
 "backend.recovery.client_left_network.action.1" = "Connect this Mac to the device's network again, by Wi-Fi or one of its LAN ports.";
 "backend.recovery.client_left_network.action.2" = "Then run “Checkup” to see whether the device came back.";
+// restart_stuck (and deploy./configure.restart_stuck): during a restart the device went off the
+// network and nothing answered at its address, while this Mac stayed on that network (same router).
+// It stopped partway through the restart; unplugging it is the way out, so it is the first step.
+"backend.recovery.restart_stuck.title" = "The device has not come back";
+"backend.recovery.restart_stuck.message" = "The device went off the network when it restarted and has not come back, while this Mac stayed on that network. It may have stopped partway through the restart, and only unplugging it ends that.";
+"backend.recovery.restart_stuck.action.1" = "Unplug the device, wait 10 seconds and plug it back in.";
+"backend.recovery.restart_stuck.action.2" = "Wait 2 minutes for the device to start up, then run “Checkup”.";
+"backend.recovery.restart_stuck.action.3" = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.deploy.client_left_network.title" = "This Mac left the device's network";
 "backend.recovery.deploy.client_left_network.message" = "The installation files were copied and the restart was requested, but this Mac moved to another network while the device restarted and did not come back, so TimeCapsuleSMB could not see the device finish.";
 "backend.recovery.deploy.client_left_network.action.1" = "Connect this Mac to the device's network again, by Wi-Fi or one of its LAN ports.";
@@ -807,6 +823,11 @@
 "backend.recovery.configure.client_left_network.message" = "Turning on SSH restarts the device. While it restarted, this Mac moved to another network and did not come back, so TimeCapsuleSMB could not see the device come back.";
 "backend.recovery.configure.client_left_network.action.1" = "Connect this Mac to the device's network again, by Wi-Fi or one of its LAN ports.";
 "backend.recovery.configure.client_left_network.action.2" = "Then try again. If SSH turned on, adding the device does not restart it again.";
+"backend.recovery.configure.restart_stuck.title" = "The device has not come back";
+"backend.recovery.configure.restart_stuck.message" = "Turning on SSH restarts the device. It went off the network and has not come back, while this Mac stayed on that network: it may have stopped partway through the restart.";
+"backend.recovery.configure.restart_stuck.action.1" = "Unplug the device, wait 10 seconds and plug it back in.";
+"backend.recovery.configure.restart_stuck.action.2" = "Wait 2 minutes for the device to start up, then try again.";
+"backend.recovery.configure.restart_stuck.action.3" = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.unsupported_device.title" = "Unsupported device";
 "backend.recovery.unsupported_device.message" = "This operation is not supported on the detected AirPort model or OS.";
 "backend.recovery.unsupported_device.action.1" = "Check the detected model and OS.";
@@ -822,7 +843,18 @@
 "backend.recovery.device_unreachable.message" = "Neither SSH nor AirPort ACP answered at the device's saved address.";
 "backend.recovery.device_unreachable.action.1" = "Make sure the device is turned on and connected to the same network or Wi-Fi as this Mac.";
 "backend.recovery.device_unreachable.action.2" = "If the device is restarting, wait a few minutes, then try again.";
-"backend.recovery.device_unreachable.action.3" = "If AirPort Utility can see the device but TimeCapsuleSMB cannot, macOS is blocking TimeCapsuleSMB: open “System Settings” > “Privacy & Security” > “Local Network”, then turn TimeCapsuleSMB off and on.";
+"backend.recovery.device_unreachable.action.3" = "If this Mac is on the device's network, unplug the device, wait 10 seconds and plug it back in.";
+"backend.recovery.device_unreachable.action.4" = "If AirPort Utility can see the device but TimeCapsuleSMB cannot, macOS is blocking TimeCapsuleSMB: open “System Settings” > “Privacy & Security” > “Local Network”, then turn TimeCapsuleSMB off and on.";
+// device_silent: nothing answers at the device's address and this Mac is on the network it last
+// reached the device on. The device is off, unplugged or stuck; device_unreachable is the same
+// without knowing where this Mac is, so its unplug step starts with "If this Mac is on the device's network".
+"backend.recovery.device_silent.title" = "Device not answering";
+"backend.recovery.device_silent.message" = "Nothing answers at the device's address, and this Mac is on the same network as when it last reached the device. The device may be off or unplugged, it may have stopped partway through a restart, or it may have a new address.";
+"backend.recovery.device_silent.action.1" = "Make sure the device is plugged in and its status light is on.";
+"backend.recovery.device_silent.action.2" = "Unplug the device, wait 10 seconds and plug it back in.";
+"backend.recovery.device_silent.action.3" = "Wait 2 minutes for the device to start up, then try again.";
+"backend.recovery.device_silent.action.4" = "Run “Checkup” for details.";
+"backend.recovery.device_silent.action.5" = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.link_local_interface_gone.title" = "The saved address no longer works";
 "backend.recovery.link_local_interface_gone.message" = "The device's saved address is a link-local IPv6 address on a network connection this Mac no longer has, such as a USB Ethernet adapter that was unplugged.";
 "backend.recovery.link_local_interface_gone.action.1" = "Reconnect the adapter or cable this Mac used to reach the device, then try again.";
@@ -837,8 +869,9 @@
 "backend.recovery.device_probe_failed.action.2" = "Run “Checkup” for details.";
 "backend.recovery.ssh_enable_timeout.title" = "The device has not come back";
 "backend.recovery.ssh_enable_timeout.message" = "Turning on SSH restarts the device, and it did not come back with SSH open within 10 minutes. Some devices stop partway through a restart and stay off the network, Wi-Fi included, until they are unplugged.";
-"backend.recovery.ssh_enable_timeout.action.1" = "Unplug the device, wait 10 seconds and plug it back in.";
-"backend.recovery.ssh_enable_timeout.action.2" = "Wait 2 minutes for the device to start up, then try again.";
+"backend.recovery.ssh_enable_timeout.action.1" = "Make sure you are connected to the same network or Wi-Fi as the device.";
+"backend.recovery.ssh_enable_timeout.action.2" = "If this Mac is on the device's network, unplug the device, wait 10 seconds and plug it back in.";
+"backend.recovery.ssh_enable_timeout.action.3" = "Wait 2 minutes for the device to start up, then try again.";
 "backend.recovery.ssh_closed_after_restart.title" = "SSH did not turn on";
 "backend.recovery.ssh_closed_after_restart.message" = "Turning on SSH restarted the device, and it came back, but SSH stayed off for 4 minutes after that. The device may not have kept the setting.";
 "backend.recovery.ssh_closed_after_restart.action.1" = "Try again.";
@@ -1058,9 +1091,9 @@
 "backend.recovery.deploy.reboot_not_requested.action.3" = "On NetBSD 4 devices, run “Activate” if the checkup says Samba is not running.";
 "backend.recovery.reboot_not_finished.title" = "Reboot did not finish";
 "backend.recovery.reboot_not_finished.message" = "The device went offline or restarted, but did not come back in time. It may still be starting up, or it may have a new IP address.";
-"backend.recovery.reboot_not_finished.action.1" = "Wait a few more minutes.";
-"backend.recovery.reboot_not_finished.action.2" = "Make sure you are connected to the same network or Wi-Fi as the device.";
-"backend.recovery.reboot_not_finished.action.3" = "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.";
+"backend.recovery.reboot_not_finished.action.1" = "Make sure you are connected to the same network or Wi-Fi as the device.";
+"backend.recovery.reboot_not_finished.action.2" = "If this Mac is on the device's network, unplug the device, wait 10 seconds and plug it back in.";
+"backend.recovery.reboot_not_finished.action.3" = "Wait 2 minutes for the device to start up, then run “Checkup”.";
 "backend.recovery.device_restarting.title" = "Device is restarting";
 "backend.recovery.device_restarting.message" = "The device is restarting, so nothing was done.";
 "backend.recovery.device_restarting.action.1" = "Wait a few minutes for the device to start up, then try again.";
@@ -1518,6 +1551,10 @@
 "timeline.progress.client_away" = "This Mac left the device's network. Reconnect it; the device is still restarting.";
 "timeline.progress.client_away_named" = "This Mac left the device's network (Wi-Fi “%@”). Reconnect it; the device is still restarting.";
 "timeline.progress.acpd_hung" = "Apple's AirPort service stopped without restarting the device. Unplug it, wait 10 seconds and plug it back in; this continues when it starts up.";
+// restart_stuck*: the restart wait asks for an unplug and goes on waiting. The _offline text is for
+// a Mac with no network at all, which is right only if it used the device's own Wi-Fi.
+"timeline.progress.restart_stuck" = "The device has not come back on this network. Unplug it, wait 10 seconds and plug it back in; this continues when it starts up.";
+"timeline.progress.restart_stuck_offline" = "This Mac has no network connection, and the device has not come back. If this Mac used the device's Wi-Fi, unplug the device, wait 10 seconds and plug it back in; this continues when it starts up.";
 "timeline.operation.saving_device" = "Saving Device";
 "toggle.internal_share_use_disk_root" = "Share internal disk root";
 "toggle.smb_browse_compatibility" = "Allow SMB share browsing";

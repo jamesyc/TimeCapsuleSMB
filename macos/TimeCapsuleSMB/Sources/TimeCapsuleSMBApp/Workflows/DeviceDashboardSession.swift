@@ -568,11 +568,16 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
 
     /// Error codes after which the device may be at another DHCP address, or
     /// its saved link-local address is on an interface this Mac no longer has.
+    /// A device that stayed silent while this Mac stayed on its network
+    /// (device_silent, restart_stuck) may come back at another address once it
+    /// is unplugged. One this Mac is not on the network of (device_off_network)
+    /// is not looked for: discovery sees only this Mac's networks.
     static let addressOutcomeCodes: Set<String> = [
         "device_unreachable", "device_identity_mismatch", "reboot_not_finished", "link_local_interface_gone",
+        "device_silent", "restart_stuck",
     ]
     /// Checkup's failed checks that mean the same.
-    static let addressOutcomeCheckCodes: Set<String> = ["device_unreachable", "link_local_interface_gone"]
+    static let addressOutcomeCheckCodes: Set<String> = ["device_unreachable", "link_local_interface_gone", "device_silent"]
 
     /// The helper found the device at another address (`current_host`), or
     /// could not find it where it was saved: look again, so the stale-address

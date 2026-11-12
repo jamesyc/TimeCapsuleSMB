@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.error_codes import ErrorCode
@@ -107,6 +108,7 @@ def require_request_acpd_ready(
     try:
         require_acpd_ready(
             connection, context.to_operation_callbacks(), reading=context.reading_at(connection), restarts=restarts,
+            router_mac=saved_router_mac(context.config),
         )
     except DeviceAccessError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc

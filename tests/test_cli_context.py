@@ -152,6 +152,10 @@ class CommandContextHelperTests(unittest.TestCase):
         cases = {
             ("device_unreachable", ""): ("Run `tcapsule doctor`", "has no AirPort MAC"),
             ("device_unreachable", "02:00:00:00:00:0a"): ("Run `tcapsule doctor`", None),
+            # Silent with this computer on the same network may be a device
+            # DHCP moved: without a MAC, commands cannot follow it.
+            ("device_silent", ""): ("Unplug the device", "has no AirPort MAC"),
+            ("device_silent", "02:00:00:00:00:0a"): ("Unplug the device", None),
             ("ssh_disabled", ""): ("tcapsule set-ssh --enable", None),
             ("auth_failed", ""): ("Run `tcapsule configure` again and enter the AirPort admin password.", None),
         }

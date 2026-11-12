@@ -455,6 +455,26 @@ class CliMaintenanceTests(CliTestCase):
                     remove.assert_called_once()
                 self.assertEqual(self.device.calls, [])
 
+    def test_uninstall_on_a_device_with_ssh_turned_off_says_so_before_removing_anything(self) -> None:
+        # SSH Access turned off, or a reset to factory settings that kept the
+        # password: the CLI checks ACPd before the removal without probing SSH
+        # first, and says SSH is off instead of failing on an SSH read.
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_SSH_OPTS": "-o foo"}
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            flow = self._patch_mast_volume_flow(stack, "uninstall")
+            remove = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            stack.enter_context(mock.patch("timecapsulesmb.services.runtime.ssh_port_error", return_value="Connection refused"))
+            stack.enter_context(mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=None))
+            with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                uninstall.main(["--yes"])
+
+        message = str(raised.exception.code)
+        self.assertTrue(message.startswith("SSH is turned off on the device."), message)
+        self.assertIn("tcapsule set-ssh --enable", message)
+        flow.mounted_mast_volumes_conn.assert_not_called()
+        remove.assert_not_called()
+
     def test_uninstall_refuses_a_password_the_device_would_reject_before_removing_anything(self) -> None:
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
         compare = acp_password_answer(False)

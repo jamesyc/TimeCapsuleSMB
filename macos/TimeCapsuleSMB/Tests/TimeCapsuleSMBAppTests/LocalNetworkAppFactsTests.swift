@@ -357,6 +357,24 @@ final class LocalNetworkAppFactsTests: XCTestCase {
         )
     }
 
+    func testASilentDeviceLineIsTranslatedForWhereThisMacIs() throws {
+        // Nothing answers: the helper says whether this Mac is on the network it
+        // last reached the device on. Each line is the app's own, in its language.
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .german)
+        let summary = DoctorSummary(payload: try testDoctorPayload(checks: [
+            testDoctorCheck(status: "FAIL", message: "the helper's English line", domain: "computer", code: "device_silent"),
+            testDoctorCheck(status: "FAIL", message: "the helper's English line", domain: "computer", code: "device_off_network"),
+        ]).decode(DoctorPayload.self))
+
+        XCTAssertEqual(summary.checks[0].localizedMessage(localNetworkFacts: .empty), L10n.string("doctor.check.device_silent"))
+        XCTAssertEqual(summary.checks[1].localizedMessage(localNetworkFacts: .empty),
+                       L10n.string("doctor.check.device_off_network"))
+        XCTAssertNotEqual(L10n.string("doctor.check.device_silent"), "doctor.check.device_silent")
+        XCTAssertTrue(L10n.string("doctor.check.device_off_network").contains("Überprüfung"))
+    }
+
     func testTheCheckupTabLooksUpWhatTheAppSeesOnlyForTheBlockLine() throws {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

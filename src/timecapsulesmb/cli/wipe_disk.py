@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
+from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
@@ -75,7 +76,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.start_optional_airport_identity_probe(connection)
         if not args.dry_run:
             require_acpd_ready(connection, command_context.to_operation_callbacks(),
-                               reading=command_context.reading_at(connection))
+                               reading=command_context.reading_at(connection),
+                               router_mac=saved_router_mac(command_context.config))
 
         callbacks = command_context.to_operation_callbacks()
         try:

@@ -332,6 +332,38 @@ class CliSetSshTests(CliTestCase):
         self.assertIn("Run `tcapsule doctor` to see which AirPorts answer on this network.", rendered)
         self.assertIn("stage=acp_port_probe", self.telemetry_payload("set_ssh_finished")["error"])
 
+    def test_set_ssh_enable_on_the_saved_routers_network_with_nothing_answering_is_a_silent_device(self) -> None:
+        # configure saved the router toward the device; it is still the router
+        # here and nothing answers on either port: the device is off or stuck,
+        # and unplugging it comes first.
+        from timecapsulesmb.checks.network import NetworkPlace
+        from timecapsulesmb.transport.local import Router
+
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_LAN_ROUTER_MAC": "AA:00:00:00:00:01"}
+        here = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)
+        place = NetworkPlace(here, (Router("en0", "10.0.0.1", "aa:00:00:00:00:01"),))
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)), \
+                mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False), \
+                mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="timed out"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=here), \
+                mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place), \
+                mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_mock:
+            with redirect_stdout(output):
+                rc = set_ssh.main([])
+
+        self.assertEqual(rc, 1)
+        enable_mock.assert_not_called()
+        steps = (
+            *cli_steps("set-ssh", ErrorCode.DEVICE_SILENT),
+            "This configuration has no AirPort MAC: run `tcapsule configure` once, so commands find the device "
+            "when its address changes.",
+        )
+        numbered = "\n".join(f"  {index}. {step}" for index, step in enumerate(steps, 1))
+        self.assertIn(f"\n\nNext steps:\n{numbered}", output.getvalue())
+
     def test_set_ssh_disable_failure_is_reported_as_ssh_error(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}

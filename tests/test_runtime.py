@@ -38,6 +38,8 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import DeployDeviceError, require_supported_payload
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshConnectTimeout, SshError
 from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.checks.network import LocalInterfaceNetwork, NetworkPlace
+from timecapsulesmb.transport.local import Router
 
 from tests.cli_support import app_config, valid_env
 from timecapsulesmb.checks.network import PORT_CHECK_TIMEOUT_SECONDS
@@ -369,6 +371,97 @@ class ProbeFailureErrorTests(unittest.TestCase):
         self.assertEqual(error.message, "The device is not answering.")
         self.assertIn("reachable at 10.0.0.2", error.detail)
         self.assertIn("[Errno 64] Host is down", str(error))
+
+    def test_a_silent_device_is_judged_by_where_this_computer_is(self) -> None:
+        # Nothing answers at 10.0.0.2. The router toward it says whether this
+        # computer is where it last reached the device (unplug the device) or
+        # on another network with the same addresses (reconnect).
+        home, other = "aa:00:00:00:00:01", "aa:00:00:00:00:02"
+        networks = (LocalInterfaceNetwork("en0", "10.0.0.20", ipaddress.ip_network("10.0.0.0/24")),)
+        cases = (
+            (home, home, "device_silent", "The device is not answering on this network.",
+             "is on the same network as when it last reached the device"),
+            (home, other, "device_off_network", "is on a different network than when it last reached the device",
+             "although the addresses look alike"),
+            (None, home, "device_unreachable", "The device is not answering.", ""),
+            (home, None, "device_unreachable", "The device is not answering.", ""),
+        )
+        for saved, now, code, message, detail in cases:
+            with self.subTest(saved=saved, now=now):
+                place = NetworkPlace(networks, (Router("en0", "10.0.0.1", now),))
+                with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value="timed out"), \
+                        mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place):
+                    error = service_runtime.probe_failure_error(
+                        self.failed_probe(SshAccessStatus.CLOSED), SshConnection("root@10.0.0.2", "pw", ""),
+                        router_mac=saved,
+                    )
+                self.assertEqual(error.code, code)
+                self.assertIn(message, error.message)
+                self.assertIn("reachable at 10.0.0.2", error.detail)
+                self.assertIn(detail, error.detail)
+
+    def test_a_device_saved_by_a_name_that_no_longer_resolves_is_not_told_to_unplug(self) -> None:
+        # A .local name resolves to nothing while the device is off, and also
+        # while it is up on a network that drops multicast: the saved router
+        # still being this computer's does not tell those apart, so no unplug.
+        networks = (LocalInterfaceNetwork("en0", "10.0.0.20", ipaddress.ip_network("10.0.0.0/24")),)
+        place = NetworkPlace(networks, (Router("en0", "10.0.0.1", "aa:00:00:00:00:01"),))
+        with mock.patch("timecapsulesmb.checks.network.tcp_connect_error",
+                        return_value="[Errno 8] nodename nor servname provided, or not known"), \
+                mock.patch("timecapsulesmb.checks.network.resolve_host_ips", side_effect=OSError("not known")), \
+                mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place):
+            error = service_runtime.probe_failure_error(
+                self.failed_probe(SshAccessStatus.CLOSED), SshConnection("root@Time-Capsule.local", "pw", ""),
+                router_mac="aa:00:00:00:00:01",
+            )
+        self.assertEqual(error.code, "device_unreachable")
+
+    def test_a_terminal_app_macos_may_hold_gets_no_silence_verdict(self) -> None:
+        # Its connects get no route and its .local lookups fail while the
+        # device is up: nothing outside the app can prove that block, so the
+        # error stays generic and its card names the terminal app.
+        networks = (LocalInterfaceNetwork("en0", "10.0.0.20", ipaddress.ip_network("10.0.0.0/24")),)
+        place = NetworkPlace(networks, (Router("en0", "10.0.0.1", "aa:00:00:00:00:01"),))
+        for host, error_text in (
+            ("10.0.0.2", "[Errno 65] No route to host"),
+            ("Time-Capsule.local", "[Errno 8] nodename nor servname provided, or not known"),
+        ):
+            with self.subTest(host=host), \
+                    mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=error_text), \
+                    mock.patch("timecapsulesmb.checks.network.resolve_host_ips", side_effect=OSError("not known")), \
+                    mock.patch("timecapsulesmb.checks.network.macos_may_hold_this_process", return_value=True), \
+                    mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place) as read:
+                error = service_runtime.probe_failure_error(
+                    self.failed_probe(SshAccessStatus.CLOSED), SshConnection(f"root@{host}", "pw", ""),
+                    router_mac="aa:00:00:00:00:01",
+                )
+                self.assertEqual(error.code, "device_unreachable")
+                read.assert_not_called()
+
+    def test_a_refused_acp_port_is_a_host_that_is_up_not_a_silent_device(self) -> None:
+        # The device with ACPd gone, or another device on the address: neither
+        # is off or unplugged, so no place verdict and no unplug.
+        networks = (LocalInterfaceNetwork("en0", "10.0.0.20", ipaddress.ip_network("10.0.0.0/24")),)
+        place = NetworkPlace(networks, (Router("en0", "10.0.0.1", "aa:00:00:00:00:01"),))
+        with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value="Connection refused"), \
+                mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place) as read:
+            error = service_runtime.probe_failure_error(
+                self.failed_probe(SshAccessStatus.CLOSED), SshConnection("root@10.0.0.2", "pw", ""),
+                router_mac="aa:00:00:00:00:01",
+            )
+        self.assertEqual(error.code, "device_unreachable")
+        self.assertEqual(error.message, "The device is not answering.")
+        read.assert_not_called()
+
+    def test_a_silent_device_with_this_computer_off_every_network_says_so(self) -> None:
+        with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value="timed out"), \
+                mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=NetworkPlace((), ())):
+            error = service_runtime.probe_failure_error(
+                self.failed_probe(SshAccessStatus.CLOSED), SshConnection("root@10.0.0.2", "pw", ""),
+                router_mac="aa:00:00:00:00:01",
+            )
+        self.assertEqual(error.code, "device_unreachable")
+        self.assertIn("has no network connection", error.message)
 
     def test_acp_check_targets_ipv6_and_hostname_devices_too(self) -> None:
         for host, expected in (
@@ -941,6 +1034,123 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
     def test_no_password_to_check_is_not_an_unanswered_read(self) -> None:
         error, _debug, _answer, _children = self.gate(reading=AirportAcpReading(password_matches=None))
         self.assertIsNone(error)
+
+    def test_ssh_turned_off_with_acp_answering_is_ssh_disabled_before_any_acpd_read(self) -> None:
+        # SSH Access turned off, or a reset to factory settings that kept the
+        # password: the password check passes, and the ACPd checks would fail
+        # through SSH. The command says SSH is off instead, also from the CLI,
+        # which runs this check without probing SSH first.
+        processes = mock.Mock(return_value="")
+        answers = mock.Mock(return_value=True)
+        updates: list[dict[str, object]] = []
+        callbacks = OperationCallbacks(update_fields=lambda **fields: updates.append(fields))
+        with mock.patch("timecapsulesmb.services.runtime.ssh_port_error", return_value="Connection refused") as port, \
+                mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=None) as connect, \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", processes), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", answers):
+            with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+                service_runtime.require_acpd_ready(self.CONNECTION, callbacks, reading=acp_reading(True))
+        port.assert_called_once_with("10.0.0.2")
+        self.assertEqual(raised.exception.code, "ssh_disabled")
+        processes.assert_not_called()
+        answers.assert_not_called()
+        # The device that answered is still reported, so the app confirms which
+        # one was reset.
+        self.assertIn(DEVICE_AIRPORT_MAC, [fields.get("airport_mac") for fields in updates])
+        # Only ACP's port is tried here: port 22's refusal is already known.
+        connect.assert_called_once_with("10.0.0.2", 5009, mock.ANY)
+
+    def test_an_ssh_port_seen_refused_is_not_tried_again(self) -> None:
+        # ACP unanswered and port 22 refused: ACPd is stuck. The refusal the
+        # preflight saw decides it; a second, shorter connect to port 22 could
+        # time out on a slow link and call the device silent instead.
+        unanswered = AirportAcpReading(password_matches=None, error="ACP receive failed: timed out")
+        with mock.patch("timecapsulesmb.services.runtime.ssh_port_error", return_value="Connection refused"), \
+                mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value="timed out") as connect:
+            with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+                service_runtime.require_acpd_ready(self.CONNECTION, OperationCallbacks(), reading=unanswered)
+        self.assertEqual(raised.exception.code, "acpd_broken")
+        connect.assert_called_once_with("10.0.0.2", 5009, mock.ANY)
+
+    def test_the_router_is_read_only_for_a_read_taken_here(self) -> None:
+        # A read passed in came from confirm_device_address, which reported
+        # the router toward the device with it: one router read per command.
+        for passed, reads in ((acp_reading(True), 0), (None, 1)):
+            with self.subTest(passed=passed is not None), \
+                    mock.patch("timecapsulesmb.services.runtime.read_admin_password", return_value=acp_reading(True)), \
+                    mock.patch("timecapsulesmb.services.runtime.running_in_app", return_value=True), \
+                    mock.patch("timecapsulesmb.services.runtime.router_mac_toward", return_value="aa:00:00:00:00:01") as toward, \
+                    mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True):
+                updates: list[dict[str, object]] = []
+                callbacks = OperationCallbacks(update_fields=lambda **fields: updates.append(fields))
+                service_runtime.require_acpd_ready(self.CONNECTION, callbacks, reading=passed)
+                self.assertEqual(toward.call_count, reads)
+                # The identity is reported either way.
+                self.assertIn(DEVICE_AIRPORT_MAC, [fields.get("airport_mac") for fields in updates])
+
+    def test_a_slow_ssh_port_beside_an_answering_acp_is_left_to_the_ssh_checks(self) -> None:
+        # A Join-mode Wi-Fi link that crawls can miss a connect deadline with
+        # SSH on: the SSH checks below wait it out and give the slow-link
+        # guidance. Only beside an ACP read that went unanswered too is the
+        # device judged silent.
+        with mock.patch("timecapsulesmb.services.runtime.ssh_port_error", return_value="timed out"), \
+                mock.patch("timecapsulesmb.services.runtime.closed_port_error") as closed, \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True) as answers:
+            service_runtime.require_acpd_ready(self.CONNECTION, OperationCallbacks(), reading=acp_reading(True))
+        closed.assert_not_called()
+        answers.assert_called_once_with(self.CONNECTION)
+
+    def test_a_rejected_password_is_reported_before_the_ssh_port(self) -> None:
+        # A reset that changed the password: the password is what to fix first.
+        with mock.patch("timecapsulesmb.services.runtime.ssh_port_error", return_value="Connection refused") as port:
+            with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+                service_runtime.require_acpd_ready(self.CONNECTION, OperationCallbacks(), reading=acp_reading(False))
+        self.assertEqual(raised.exception.code, "auth_failed")
+        port.assert_not_called()
+
+    def test_a_blocked_app_whose_ssh_port_looks_closed_gets_the_local_network_card(self) -> None:
+        # macOS refuses the app's own connect to port 22 while /usr/bin/ssh
+        # reaches the device: the block, not SSH off and not a silent device.
+        from timecapsulesmb.device.probe import SshCommandProbeResult
+
+        no_route = "[Errno 65] No route to host"
+        here = (LocalInterfaceNetwork("en0", "10.0.0.20", ipaddress.ip_network("10.0.0.0/24")),)
+        unanswered = AirportAcpReading(password_matches=None, error=no_route)
+        with mock.patch("timecapsulesmb.services.runtime.ssh_port_error", return_value="[Errno 65] No route to host"), \
+                mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=no_route), \
+                mock.patch("timecapsulesmb.checks.network.running_in_app", return_value=True), \
+                mock.patch("timecapsulesmb.checks.network.local_lan_networks", return_value=here), \
+                mock.patch("timecapsulesmb.services.runtime.probe_ssh_command_conn",
+                           return_value=SshCommandProbeResult(ok=True, detail="ok")):
+            with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+                service_runtime.require_acpd_ready(self.CONNECTION, OperationCallbacks(), reading=unanswered)
+        self.assertEqual(raised.exception.code, "acp_no_route")
+
+    def test_a_device_that_answers_neither_acp_nor_ssh_is_reported_as_silent_not_as_acpd(self) -> None:
+        # Uninstall, Disk Repair, Wipe, flash and SSH Access check ACPd through
+        # SSH first: with nothing answering, those reads would blame ACPd or
+        # this computer's ACP traffic. Where this computer is decides instead.
+        unanswered = AirportAcpReading(password_matches=None, error="ACP receive failed: timed out")
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        place = NetworkPlace(
+            (LocalInterfaceNetwork("en0", "10.0.0.20", ipaddress.ip_network("10.0.0.0/24")),),
+            (Router("en0", "10.0.0.1", "aa:00:00:00:00:01"),),
+        )
+        processes = mock.Mock(return_value="")
+        for router_now, code in (("aa:00:00:00:00:01", "device_silent"), ("aa:00:00:00:00:02", "device_off_network"),
+                                 (None, "device_unreachable")):
+            with self.subTest(router_now=router_now):
+                now = NetworkPlace(place.networks, (Router("en0", "10.0.0.1", router_now),))
+                with mock.patch("timecapsulesmb.services.runtime.ssh_port_error", return_value="timed out"), \
+                        mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value="timed out"), \
+                        mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=now), \
+                        mock.patch("timecapsulesmb.device.acpd.read_processes", processes):
+                    with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+                        service_runtime.require_acpd_ready(
+                            connection, OperationCallbacks(), reading=unanswered, router_mac="aa:00:00:00:00:01",
+                        )
+                self.assertEqual(raised.exception.code, code)
+        processes.assert_not_called()
 
 
 class RequireAcpdReadyDiskCheckTests(unittest.TestCase):
@@ -1567,6 +1777,19 @@ class AirportIdentityTests(unittest.TestCase):
                 self.assertEqual("airport_mac" in recorder.fields, reported)
                 self.assertNotIn("Den", recorder.fields.values())
 
+    def test_the_saved_device_at_its_address_reports_the_router_toward_it(self) -> None:
+        # Every command confirms the saved device first: that is where the app
+        # learns the router it saves for a later silent device.
+        named = AirportAcpReading(password_matches=True, airport_mac=DEVICE_AIRPORT_MAC, airport_name="Office")
+        networks = (LocalInterfaceNetwork("en0", "10.0.0.20", ipaddress.ip_network("10.0.0.0/24")),)
+        place = NetworkPlace(networks, (Router("en0", "10.0.0.1", "aa:00:00:00:00:01"),))
+        recorder = RecordingCallbacks()
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=named), \
+                mock.patch("timecapsulesmb.services.runtime.running_in_app", return_value=True), \
+                mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place):
+            service_runtime.confirm_device_address("root@10.0.0.2", "pw", DEVICE_AIRPORT_MAC, recorder.callbacks())
+        self.assertEqual(recorder.fields["lan_router_mac"], "aa:00:00:00:00:01")
+
     def test_learning_reads_once(self) -> None:
         recorder = RecordingCallbacks()
         reading = AirportAcpReading(password_matches=True, airport_mac=DEVICE_AIRPORT_MAC, airport_name="Office")
@@ -1574,6 +1797,70 @@ class AirportIdentityTests(unittest.TestCase):
             service_runtime.learn_airport_identity("root@10.0.0.2", "pw", recorder.callbacks())
         read.assert_called_once_with("root@10.0.0.2", "pw", attempts=1)
         self.assertEqual(recorder.fields["airport_mac"], DEVICE_AIRPORT_MAC)
+
+
+class LanRouterReportTests(unittest.TestCase):
+    """The router toward the device, reported with its identity whenever a
+    read with the right password reached it, so the app saves it and a later
+    device that answers nothing is judged against it."""
+
+    NETWORKS = (LocalInterfaceNetwork("en0", "10.0.0.20", ipaddress.ip_network("10.0.0.0/24")),)
+
+    def report(self, host: str, place, *, in_app: bool = True):
+        recorder = RecordingCallbacks()
+        reading = AirportAcpReading(password_matches=True, airport_mac=DEVICE_AIRPORT_MAC)
+        with mock.patch("timecapsulesmb.services.runtime.running_in_app", return_value=in_app), \
+                mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place) as read:
+            service_runtime.report_airport_identity(recorder.callbacks(), reading, host)
+        self.read_place = read
+        return recorder.fields
+
+    def test_the_cli_does_not_read_its_routers_for_the_identity(self) -> None:
+        # The CLI saves its router only in configure: reading one on every
+        # command would run netstat and arp for nothing.
+        place = NetworkPlace(self.NETWORKS, (Router("en0", "10.0.0.1", "aa:00:00:00:00:01"),))
+
+        fields = self.report("root@10.0.0.2", place, in_app=False)
+
+        self.assertEqual(fields["airport_mac"], DEVICE_AIRPORT_MAC)
+        self.assertNotIn("lan_router_mac", fields)
+        self.read_place.assert_not_called()
+
+    def test_the_router_toward_a_device_on_this_computers_network_is_reported(self) -> None:
+        place = NetworkPlace(self.NETWORKS, (Router("en0", "10.0.0.1", "aa:00:00:00:00:01"),))
+
+        self.assertEqual(self.report("root@10.0.0.2", place)["lan_router_mac"], "aa:00:00:00:00:01")
+
+    def test_a_device_reached_through_a_router_or_an_unreadable_router_reports_none(self) -> None:
+        for name, host, place in (
+            ("routed", "root@192.168.9.2", NetworkPlace(self.NETWORKS, (Router("en0", "10.0.0.1", "aa:00:00:00:00:01"),))),
+            ("unresolved", "root@10.0.0.2", NetworkPlace(self.NETWORKS, (Router("en0", "10.0.0.1", None),))),
+            ("no place", "root@10.0.0.2", None),
+        ):
+            with self.subTest(name):
+                fields = self.report(host, place)
+                self.assertNotIn("lan_router_mac", fields)
+                self.assertEqual(fields["airport_mac"], DEVICE_AIRPORT_MAC)
+
+    def test_the_saved_router_comes_from_the_config_in_one_spelling(self) -> None:
+        from timecapsulesmb.checks.network import saved_router_mac
+
+        self.assertEqual(saved_router_mac(app_config({"TC_LAN_ROUTER_MAC": "AA:0:0:0:0:1"})), "aa:00:00:00:00:01")
+        for value in ("", "not a mac", "00:00:00:00:00:00"):
+            with self.subTest(value=value):
+                self.assertIsNone(saved_router_mac(app_config({"TC_LAN_ROUTER_MAC": value})))
+        self.assertIsNone(saved_router_mac(None))
+
+    def test_the_apps_saved_router_replaces_the_one_configure_wrote(self) -> None:
+        from timecapsulesmb.services.credentials import overlay_request_airport_mac
+
+        config = app_config({**valid_env(), "TC_LAN_ROUTER_MAC": "aa:00:00:00:00:01"})
+        newer = overlay_request_airport_mac(config, {"lan_router_mac": "AA:00:00:00:00:02"})
+        self.assertEqual(newer.get("TC_LAN_ROUTER_MAC"), "aa:00:00:00:00:02")
+        # None from the app, or nothing usable, keeps configure's.
+        for params in ({}, {"lan_router_mac": "junk"}, {"lan_router_mac": 5}):
+            with self.subTest(params=params):
+                self.assertEqual(overlay_request_airport_mac(config, params).get("TC_LAN_ROUTER_MAC"), "aa:00:00:00:00:01")
 
 
 class FollowSavedDeviceTests(unittest.TestCase):

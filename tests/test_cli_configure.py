@@ -2953,12 +2953,15 @@ class CliConfigureTests(CliTestCase):
 
     def test_configure_hard_fails_when_ssh_does_not_open_after_acp(self) -> None:
         # A restart still not back after the whole wait stays stuck until the
-        # device is unplugged, so its steps say to unplug it, not to wait; one
-        # back with SSH closed is enabled again first.
+        # device is unplugged, which helps only a computer on its network: the
+        # network first, then the unplug, never waiting longer. One back with
+        # SSH closed is enabled again first.
         cases = (
             (ErrorCode.SSH_ENABLE_TIMEOUT,
-             "  1. Unplug the device, wait 10 seconds and plug it back in.\n"
-             "  2. Wait 2 minutes for the device to start up, then try again."),
+             "  1. Make sure you are connected to the same network or Wi-Fi as the device.\n"
+             "  2. If this computer is on the device's network, unplug the device, wait 10 seconds and plug it back "
+             "in.\n"
+             "  3. Wait 2 minutes for the device to start up, then try again."),
             (ErrorCode.SSH_CLOSED_AFTER_RESTART,
              "  1. Try again.\n"
              "  2. If SSH still does not turn on, unplug the device, wait 10 seconds and plug it back in, then "

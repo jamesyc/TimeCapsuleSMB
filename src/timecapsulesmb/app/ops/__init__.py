@@ -48,7 +48,12 @@ class OperationSpec:
 # Read by the shared request helpers for every operation: the config path,
 # request-scoped credentials, and the answer to a confirmation.
 # airport_mac is the saved device's AirPort MAC, to find it where it moved.
-COMMON_PARAMS = frozenset({"airport_mac", "config", "credentials", "password", "confirmation_id", "confirmation"}) | APP_FACT_PARAM_KEYS
+# lan_router_mac: this Mac's router toward the device the last time an
+# operation reached it, which the app saves with the profile
+# (services.credentials.overlay_request_airport_mac).
+COMMON_PARAMS = frozenset({
+    "airport_mac", "lan_router_mac", "config", "credentials", "password", "confirmation_id", "confirmation",
+}) | APP_FACT_PARAM_KEYS
 MANAGED_SETTING_PARAMS = frozenset({
     "any_protocol",
     "ata_idle_seconds",

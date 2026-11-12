@@ -86,7 +86,7 @@ def test_uninstall_stops_a_running_migration_before_removing_it(monkeypatch, tmp
     measurements = []
     callbacks = OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields)))
     context = SimpleNamespace(stage=lambda *a: None, log=lambda *a: None, to_operation_callbacks=lambda: callbacks,
-                              reading_at=lambda connection: None)
+                              reading_at=lambda connection: None, config=None)
 
     if scenario in ('unkillable', 'ps_failure'):
         with pytest.raises(RuntimeError) as failure:

@@ -808,6 +808,7 @@ class FlashBackupServiceTests(unittest.TestCase):
         # ACPd replies only after it has erased, written and verified the bank;
         # field writes took up to 200 s and a 300 s wait cut some replies off.
         target = SimpleNamespace(
+            router_mac=None,
             connection=SshConnection("root@10.0.0.2", "pw", "-o foo"),
             acp_host="10.0.0.2",
             compatibility=SimpleNamespace(os_release="4.0_STABLE"),

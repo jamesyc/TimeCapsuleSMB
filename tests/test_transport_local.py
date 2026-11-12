@@ -18,7 +18,8 @@ from timecapsulesmb.transport.local import (
     command_exists,
     connect_answered,
     connect_unanswered,
-    mac_default_gateway,
+    Router,
+    lan_routers,
     mac_network_filters,
     run_local_capture,
     scoped_tcp_connect_errors,
@@ -309,66 +310,147 @@ class MacNetworkFiltersTests(unittest.TestCase):
 
 # `route -n get default` on macOS, wired to a router and on a VPN without a
 # gateway of its own.
-DEFAULT_ROUTE_OUTPUT = """   route to: default
-destination: default
-       mask: default
-    gateway: 192.168.1.1
-  interface: en0
-      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>
+NETSTAT_OUTPUT = """Routing tables
+
+Internet:
+Destination        Gateway            Flags               Netif Expire
+default            192.168.1.1        UGScg                 en0
+default            192.168.1.1        UGScIg                en7
+default            10.0.0.1           UGScIg                en1
+default            link#27            UCSIg               utun4
+default            link#44            UCSIg           bridge100      !
+127                127.0.0.1          UCS                   lo0
+192.168.1          link#14            UCS                   en0      !
 """
-DEFAULT_ROUTE_IPV6_SCOPED_OUTPUT = """   route to: default
-destination: default
-    gateway: fe80::1%en0
-  interface: en0
+ARP_OUTPUT = """? (169.254.169.254) at (incomplete) on en0 [ethernet]
+? (192.168.1.1) at 84:78:48:9e:4:51 on en0 ifscope [ethernet]
+? (192.168.1.1) at 84:78:48:9e:4:51 on en7 ifscope [ethernet]
+? (192.168.1.20) at 0:1b:63:aa:bb:cc on en0 ifscope [ethernet]
 """
-DEFAULT_ROUTE_TUNNEL_OUTPUT = """   route to: default
-destination: default
-       mask: default
-  interface: utun4
-      flags: <UP,DONE,STATIC,PRCLONING,GLOBAL>
+LINUX_ROUTE = """Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
+eth0\t00000000\t0100000A\t0003\t0\t0\t100\t00000000\t0\t0\t0
+wlan0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0
+tun0\t00000000\t00000000\t0001\t0\t0\t50\t00000000\t0\t0\t0
+"""
+LINUX_ARP = """IP address       HW type     Flags       HW address            Mask     Device
+192.168.1.1      0x1         0x2         84:78:48:9e:04:51     *        wlan0
+10.0.0.1         0x1         0x0         00:00:00:00:00:00     *        eth0
 """
 
 
-class MacDefaultGatewayTests(unittest.TestCase):
-    def gateway(self, result: object) -> tuple[str | None, mock.Mock]:
-        def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+class LanRoutersTests(unittest.TestCase):
+    """This computer's default router on each interface, with its hardware
+    address: what tells another Wi-Fi with the same addresses from this one."""
+
+    def darwin(self, outputs: dict[str, object], **kwargs):
+        def run(command: list[str], **run_kwargs: object) -> subprocess.CompletedProcess[str]:
+            result = outputs[command[0]]
+            if callable(result):
+                result = result()
             if isinstance(result, BaseException):
                 raise result
             returncode, stdout = result if isinstance(result, tuple) else (0, result)
             return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
 
         runner = mock.Mock(side_effect=run)
-        return mac_default_gateway(platform="darwin", run=runner), runner
+        primed: list[str] = []
+        routers = lan_routers(platform="darwin", run=runner, prime=primed.append, sleep=lambda _s: None, **kwargs)
+        return routers, runner, primed
 
-    def test_reads_the_gateway_line(self) -> None:
-        gateway, runner = self.gateway(DEFAULT_ROUTE_OUTPUT)
-
-        self.assertEqual(gateway, "192.168.1.1")
-        runner.assert_called_once()
-        self.assertEqual(runner.call_args.args[0], ["/sbin/route", "-n", "get", "default"])
-        self.assertEqual(runner.call_args.kwargs["timeout"], 5)
-        self.assertIs(runner.call_args.kwargs["stdin"], subprocess.DEVNULL)
-
-    def test_keeps_a_scoped_address_whole_for_the_caller_to_split(self) -> None:
-        self.assertEqual(self.gateway(DEFAULT_ROUTE_IPV6_SCOPED_OUTPUT)[0], "fe80::1%en0")
-
-    def test_no_gateway_line_no_default_route_or_a_failed_route_is_unknown(self) -> None:
-        cases = (
-            ("tunnel", DEFAULT_ROUTE_TUNNEL_OUTPUT),
-            ("no default route", (1, "")),
-            ("empty gateway", "    gateway: \n"),
-            ("missing", FileNotFoundError(2, "No such file")),
-            ("timeout", subprocess.TimeoutExpired(["route"], 5)),
+    def test_an_older_netstat_layout_finds_the_interface_by_its_header(self) -> None:
+        # macOS before 10.13 printed Refs and Use before Netif: the fourth
+        # column is then a count, which would match no interface.
+        old_layout = (
+            "Routing tables\n\nInternet:\n"
+            "Destination        Gateway            Flags        Refs      Use   Netif Expire\n"
+            "default            192.168.1.1        UGSc           12        0     en0\n"
+            "127                127.0.0.1          UCS             0        0     lo0\n"
         )
-        for name, result in cases:
+        routers, _runner, _primed = self.darwin({"/usr/sbin/netstat": old_layout, "/usr/sbin/arp": ARP_OUTPUT})
+
+        self.assertEqual(routers, (Router("en0", "192.168.1.1", "84:78:48:9e:04:51"),))
+
+    def test_reads_every_default_router_and_its_hardware_address(self) -> None:
+        routers, runner, primed = self.darwin({"/usr/sbin/netstat": NETSTAT_OUTPUT, "/usr/sbin/arp": ARP_OUTPUT})
+
+        self.assertEqual(routers, (
+            Router("en0", "192.168.1.1", "84:78:48:9e:04:51"),
+            Router("en7", "192.168.1.1", "84:78:48:9e:04:51"),
+            # Not in the table, even after one datagram asked for it.
+            Router("en1", "10.0.0.1", None),
+        ))
+        self.assertEqual(primed, ["10.0.0.1"])
+        commands = [call.args[0] for call in runner.call_args_list]
+        self.assertEqual(commands, [
+            ["/usr/sbin/netstat", "-rn", "-f", "inet"], ["/usr/sbin/arp", "-an"], ["/usr/sbin/arp", "-an"],
+        ])
+        self.assertTrue(all(call.kwargs["stdin"] is subprocess.DEVNULL for call in runner.call_args_list))
+        self.assertTrue(all(call.kwargs["timeout"] == 5 for call in runner.call_args_list))
+
+    def test_a_router_resolved_after_the_datagram_is_read_again(self) -> None:
+        tables = iter(("", "? (10.0.0.1) at a:b:c:d:e:f on en1 ifscope [ethernet]\n"))
+        routes = "default            10.0.0.1           UGScg                 en1\n"
+        routers, _runner, primed = self.darwin({"/usr/sbin/netstat": routes, "/usr/sbin/arp": lambda: next(tables)})
+
+        self.assertEqual(routers, (Router("en1", "10.0.0.1", "0a:0b:0c:0d:0e:0f"),))
+        self.assertEqual(primed, ["10.0.0.1"])
+
+    def test_resolved_routers_are_not_sent_anything(self) -> None:
+        routes = "default            192.168.1.1        UGScg                 en0\n"
+        _routers, runner, primed = self.darwin({"/usr/sbin/netstat": routes, "/usr/sbin/arp": ARP_OUTPUT})
+
+        self.assertEqual(primed, [])
+        self.assertEqual(runner.call_count, 2)
+
+    def test_no_route_or_a_failed_command_is_none(self) -> None:
+        cases = (
+            ("tunnel only", {"/usr/sbin/netstat": "default            link#27            UCSIg               utun4\n"}),
+            ("netstat failed", {"/usr/sbin/netstat": (1, NETSTAT_OUTPUT)}),
+            ("netstat missing", {"/usr/sbin/netstat": FileNotFoundError(2, "No such file")}),
+            ("netstat timed out", {"/usr/sbin/netstat": subprocess.TimeoutExpired(["netstat"], 5)}),
+        )
+        for name, outputs in cases:
             with self.subTest(name):
-                self.assertIsNone(self.gateway(result)[0])
+                self.assertEqual(self.darwin(outputs)[0], ())
 
-    def test_other_platforms_run_nothing(self) -> None:
+    def test_an_unreadable_neighbour_table_leaves_the_hardware_addresses_unknown(self) -> None:
+        routes = "default            192.168.1.1        UGScg                 en0\n"
+        routers, _runner, _primed = self.darwin(
+            {"/usr/sbin/netstat": routes, "/usr/sbin/arp": subprocess.TimeoutExpired(["arp"], 5)},
+        )
+
+        self.assertEqual(routers, (Router("en0", "192.168.1.1", None),))
+
+    def test_linux_reads_proc(self) -> None:
+        files = {"/proc/net/route": LINUX_ROUTE, "/proc/net/arp": LINUX_ARP}
+        primed: list[str] = []
         runner = mock.Mock()
+        routers = lan_routers(
+            platform="linux", run=runner, read_text=files.__getitem__, prime=primed.append, sleep=lambda _s: None,
+        )
 
-        self.assertIsNone(mac_default_gateway(platform="linux", run=runner))
+        self.assertEqual(routers, (
+            Router("wlan0", "192.168.1.1", "84:78:48:9e:04:51"),
+            # An incomplete entry (flags 0x0, all-zero address) is no address.
+            Router("eth0", "10.0.0.1", None),
+        ))
+        self.assertEqual(primed, ["10.0.0.1"])
         runner.assert_not_called()
+
+    def test_linux_without_proc_is_none(self) -> None:
+        def missing(path: str) -> str:
+            raise FileNotFoundError(2, "No such file", path)
+
+        self.assertEqual(lan_routers(platform="linux", read_text=missing, prime=lambda _a: None), ())
+
+    def test_other_systems_read_nothing(self) -> None:
+        runner = mock.Mock()
+        read = mock.Mock()
+
+        self.assertEqual(lan_routers(platform="win32", run=runner, read_text=read), ())
+        runner.assert_not_called()
+        read.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1831,6 +1831,22 @@ class CheckTests(unittest.TestCase):
             ipv4=[address], services={"_airport._tcp.local."}, properties={"waMA": mac}, fullname=f"{name}._airport._tcp.local.",
         )
 
+    def test_every_verdict_on_a_silent_device_skips_the_network_checks_of_its_address(self) -> None:
+        # Same network, another network or unknown: nothing answers at the
+        # saved address, so Bonjour, SMB and NBNS checks of it would only fail
+        # again, and the AirPorts this computer sees are listed instead.
+        for code in ("device_silent", "device_off_network", "device_unreachable"):
+            with self.subTest(code=code):
+                query = mock.Mock()
+                query.return_value.browse.return_value = (BonjourDiscoverySnapshot([], []), None)
+                run = self.run_doctor_with_mocks(
+                    None,
+                    ssh_login=CheckResult("FAIL", "The device is not answering on this network.", {"code": code}),
+                    extra_patches={"timecapsulesmb.checks.doctor_steps.BonjourQuery": query},
+                )
+                self.assertTrue(any(r.details.get("code") == "network_not_checked" for r in run.results))
+                run.mocks.check_smb_port.assert_not_called()
+
     def test_doctor_at_a_dead_address_lists_the_airports_instead_of_repeating_the_failure(self) -> None:
         # Telemetry install 079bca09: the device had moved, and Bonjour and SMB
         # checks of its old address failed again without saying where it was.
@@ -2836,7 +2852,7 @@ class CheckTests(unittest.TestCase):
         )
         self.assertFalse(run.fatal)
         self.assertTrue(any(result.status == "PASS" and result.message == "ssh ok" for result in run.results))
-        run.mocks.check_ssh_login.assert_called_once_with(connection)
+        run.mocks.check_ssh_login.assert_called_once_with(connection, router_mac=None)
 
     def test_run_doctor_checks_reports_managed_mdns_takeover_state(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -6647,6 +6663,41 @@ class CheckTests(unittest.TestCase):
         self.assertEqual((result.details["ssh_port_error"], result.details["acp_port_error"]), ("timed out", "timed out"))
         self.assertEqual([call.args[:2] for call in connect.call_args_list], [("10.0.0.5", 22), ("10.0.0.5", 5009)])
 
+    def test_an_address_nothing_answers_at_says_where_this_computer_is(self) -> None:
+        # Checkup's line adds whether this computer is on the network it last
+        # reached the device on, by the router toward it.
+        from timecapsulesmb.checks.network import LocalInterfaceNetwork, NetworkPlace
+        from timecapsulesmb.transport.local import Router
+
+        networks = (LocalInterfaceNetwork("en0", "10.0.0.20", ipaddress.ip_network("10.0.0.0/24")),)
+        for now, code, words in (
+            ("aa:00:00:00:00:01", "device_silent", "on the same network as when it last reached the device"),
+            ("aa:00:00:00:00:02", "device_off_network", "on a different network than when it last reached the device"),
+        ):
+            with self.subTest(code=code):
+                connection = SshConnection("root@10.0.0.5", "pw", "")
+                timed_out = SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/echo ok")
+                place = NetworkPlace(networks, (Router("en0", "10.0.0.1", now),))
+                with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=timed_out), \
+                        mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value="timed out"), \
+                        mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place):
+                    result = check_ssh_login(connection, router_mac="aa:00:00:00:00:01")
+                self.assertEqual(result.status, "FAIL")
+                self.assertEqual(result.details["code"], code)
+                self.assertIn("neither SSH port 22 nor AirPort ACP port 5009 is reachable", result.message)
+                self.assertIn(words, result.message)
+                self.assertEqual(result.details["router_mac_now"], now)
+
+    def test_a_refused_acp_port_keeps_the_plain_line(self) -> None:
+        # A refusal is a host that answered: Checkup says what it saw, without
+        # a verdict on where this computer is.
+        with mock.patch("timecapsulesmb.checks.network.read_network_place") as read:
+            result, _connect = self.check_unanswered_ssh({22: "timed out", 5009: "Connection refused"})
+
+        self.assertEqual(result.details["code"], "device_unreachable")
+        self.assertNotIn("client_place", result.details)
+        read.assert_not_called()
+
     def test_ssh_off_with_acp_answering_says_so(self) -> None:
         result, _connect = self.check_unanswered_ssh({22: "Connection refused", 5009: None})
 
@@ -9952,7 +10003,7 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
     def test_disk_health_skips_only_an_acpd_that_cannot_answer_acp(self) -> None:
         # Each problem as _doctor_check_apple_acpd records it, ahead of this step.
         self.give_mast(test_storage_runtime.netbsd6_internal_and_usb_xml())
-        target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", ""))
+        target = SimpleNamespace(router_mac=None, connection=SshConnection("root@10.0.0.2", "pw", ""))
         remote = SimpleNamespace(remote_checks_enabled=True)
         for problem, gone, asked in (("quit", True, False), ("restart_never_happened", True, False),
                                      ("syut_silent", False, False), ("stuck_child", False, True),
@@ -9978,14 +10029,14 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
 
     def test_disk_health_reads_nothing_without_remote_checks(self) -> None:
         sink = DoctorSink(on_result=None, debug_fields={})
-        _doctor_check_disk_health(SimpleNamespace(connection=None), SimpleNamespace(remote_checks_enabled=False), sink)
+        _doctor_check_disk_health(SimpleNamespace(router_mac=None, connection=None), SimpleNamespace(remote_checks_enabled=False), sink)
         self._mast_read.assert_not_called()
         self.assertEqual((sink.results, sink.debug_fields), ([], {}))
 
     def test_disk_health_keeps_no_telemetry_without_debug_fields(self) -> None:
         self.give_mast(test_storage_runtime.netbsd6_internal_and_usb_xml())
         sink = DoctorSink(on_result=None, debug_fields=None)
-        _doctor_check_disk_health(SimpleNamespace(connection=None), SimpleNamespace(remote_checks_enabled=True), sink)
+        _doctor_check_disk_health(SimpleNamespace(router_mac=None, connection=None), SimpleNamespace(remote_checks_enabled=True), sink)
         self.assertEqual(len(sink.results), 2)
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from timecapsulesmb.app.context import AppOperationContext
+from timecapsulesmb.transport.local import normalize_hardware_address
 from timecapsulesmb.app.ops.common import refuse_if_local_network_denied
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.contracts import configure_payload
@@ -156,6 +157,11 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     app_paths = resolve_app_paths(config_path=config_path(params))
     env_path = app_paths.config_path
     existing = parse_env_file(env_path)
+    # The router the app saved with the profile, newer than the one an earlier
+    # configure wrote: it judges an address where nothing answers.
+    router = params.get("lan_router_mac")
+    if isinstance(router, str) and (router_mac := normalize_hardware_address(router)) is not None:
+        existing = {**existing, "TC_LAN_ROUTER_MAC": router_mac}
     configure_id = str(uuid.uuid4())
     ssh_opts = string_param(params, "ssh_opts", existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
     selected_record = params.get("selected_record")
@@ -275,7 +281,13 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             ) from exc
         if exc.code == ErrorCode.SSH_COMPATIBILITY_FAILED:
             raise AppOperationError(str(exc), code=ErrorCode.SSH_COMPATIBILITY_FAILED) from exc
-        if exc.code in (ErrorCode.SSH_ENABLE_TIMEOUT, ErrorCode.SSH_CLOSED_AFTER_RESTART):
+        # The restart that turns SSH on: each ending has guidance of its own
+        # (services.reboot), which a generic remote_error would hide.
+        if exc.code in (
+            ErrorCode.SSH_ENABLE_TIMEOUT, ErrorCode.SSH_CLOSED_AFTER_RESTART, ErrorCode.RESTART_STUCK,
+            ErrorCode.CLIENT_LEFT_NETWORK, ErrorCode.REBOOT_NOT_STARTED, ErrorCode.REBOOT_NOT_REQUESTED,
+            ErrorCode.ACPD_BROKEN,
+        ):
             raise AppOperationError(str(exc), code=exc.code) from exc
         if exc.code in (ErrorCode.DEVICE_IDENTITY_MISMATCH, ErrorCode.LOCAL_NETWORK_FILTERED, ErrorCode.SSH_CLIENT_FAILED,
                         ErrorCode.ACPD_QUIT):

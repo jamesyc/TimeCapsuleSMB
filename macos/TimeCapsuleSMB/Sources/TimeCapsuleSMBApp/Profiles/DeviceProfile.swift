@@ -6,11 +6,16 @@ public struct DeviceRuntimeContext: Equatable, Sendable {
     /// The device's confirmed AirPort MAC, so the helper can find it at a new
     /// address when DHCP moved it.
     public let airportMAC: String?
+    /// The hardware address of this Mac's router toward the device the last
+    /// time an operation reached it, so the helper can tell a device that
+    /// answers nothing from this Mac being on another network.
+    public let lanRouterMAC: String?
 
-    public init(profileID: String, configURL: URL, airportMAC: String? = nil) {
+    public init(profileID: String, configURL: URL, airportMAC: String? = nil, lanRouterMAC: String? = nil) {
         self.profileID = profileID
         self.configURL = configURL
         self.airportMAC = airportMAC
+        self.lanRouterMAC = lanRouterMAC
     }
 }
 
@@ -465,6 +470,10 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
     var runtimeState: DeviceRuntimeStateSnapshot?
     var settings: DeviceProfileSettings
     var passwordState: DevicePasswordState
+    /// This Mac's router toward the device the last time an operation reached
+    /// it (the helper's lan_router_mac). Add Device saves its own in the .env,
+    /// so a profile it makes starts without one.
+    var lanRouterMAC: String? = nil
 
     var host: String {
         get { network.configuredSSHTarget }
@@ -526,7 +535,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
     }
 
     var runtimeContext: DeviceRuntimeContext {
-        DeviceRuntimeContext(profileID: id, configURL: URL(fileURLWithPath: configPath), airportMAC: network.airportMAC)
+        DeviceRuntimeContext(profileID: id, configURL: URL(fileURLWithPath: configPath), airportMAC: network.airportMAC,
+                             lanRouterMAC: lanRouterMAC)
     }
 
     var configURL: URL {
@@ -604,6 +614,7 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         case runtimeState
         case settings
         case passwordState
+        case lanRouterMAC
     }
 
     init(from decoder: Decoder) throws {
@@ -628,6 +639,7 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         runtimeState = try container.decodeIfPresent(DeviceRuntimeStateSnapshot.self, forKey: .runtimeState)
         settings = try container.decodeIfPresent(DeviceProfileSettings.self, forKey: .settings) ?? .default
         passwordState = try container.decodeIfPresent(DevicePasswordState.self, forKey: .passwordState) ?? .unknown
+        lanRouterMAC = try container.decodeIfPresent(String.self, forKey: .lanRouterMAC)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -650,6 +662,7 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         try container.encodeIfPresent(runtimeState, forKey: .runtimeState)
         try container.encode(settings, forKey: .settings)
         try container.encode(passwordState, forKey: .passwordState)
+        try container.encodeIfPresent(lanRouterMAC, forKey: .lanRouterMAC)
     }
 
     init(

@@ -80,6 +80,14 @@ class FakeAcpDevice:
     first_read_error: ACPError | None = None
     # Host clock seconds that elapse during each ACP read.
     read_latency: float = 0.0
+    # How a read fails while nothing answers ACP: a timeout, or (by setting
+    # it) a refused port, a host that is down, no route.
+    down_read_error: str = "timed out"
+    # Other read failures from each time (host seconds after the request) on.
+    down_read_error_changes: tuple[tuple[float, str], ...] = ()
+    # How a connect to port 22 fails while SSH does not answer
+    # (transport.local.tcp_connect_error): unanswered, or refused, no route.
+    ssh_port_error: str = "timed out"
     # Host seconds during which ACP reads fail although the device is up.
     flaky_reads_at: tuple[tuple[float, float], ...] = ()
     # Device clock speed relative to the host's.
@@ -90,8 +98,15 @@ class FakeAcpDevice:
     # and SSH reach the device only from a network holding its address.
     mac_networks_before: tuple[str, ...] = ("10.0.0.0/24",)
     mac_network_changes: tuple[tuple[float, tuple[str, ...]], ...] = ()
-    # This Mac's default router (transport.local.mac_default_gateway).
+    # This Mac's default router on en0 (transport.local.lan_routers): its
+    # address, and its hardware address before the request, then from each
+    # time (host seconds after the request) on. A router is listed only while
+    # this Mac has a network; no address means the first host of that network.
     mac_gateway: str | None = None
+    mac_router: str | None = None
+    mac_router_changes: tuple[tuple[float, str | None], ...] = ()
+    # Host seconds after the request at which each router read ran.
+    router_reads: list[float] = field(default_factory=list)
     # The address the new boot answers at, when DHCP gave the device another
     # one; the old address then answers nothing.
     new_address: str | None = None
@@ -159,6 +174,27 @@ class FakeAcpDevice:
                     current = networks
         return current
 
+    def current_router_mac(self) -> str | None:
+        current = self.mac_router
+        if self.requested_at is not None:
+            for at, mac in self.mac_router_changes:
+                if self.now >= self.requested_at + at:
+                    current = mac
+        return current
+
+    def lan_routers(self):
+        from timecapsulesmb.transport.local import Router
+
+        if self.requested_at is not None:
+            self.router_reads.append(self.now - self.requested_at)
+        networks = [ipaddress.ip_network(network) for network in self.mac_networks()]
+        networks = [network for network in networks if network.version == 4 and not network.network_address.is_link_local]
+        mac = self.current_router_mac()
+        if not networks or (self.mac_gateway is None and mac is None):
+            return ()
+        address = self.mac_gateway or str(next(networks[0].hosts()))
+        return (Router("en0", address, mac),)
+
     def local_lan_networks(self):
         # As checks.network.local_interface_networks, without link-local ones.
         networks = (ipaddress.ip_network(network) for network in self.mac_networks())
@@ -198,7 +234,7 @@ class FakeAcpDevice:
         self.now += self.read_latency
         if (not self._acp_up() or not self._answers_at(host)
                 or any(start <= self.now < end for start, end in self.flaky_reads_at)):
-            raise ACPConnectionError(f"Could not connect to ACP on {host}:5009: timed out")
+            raise ACPConnectionError(f"Could not connect to ACP on {host}:5009: {self._down_read_error()}")
         kernel = self._new_kernel_at()
         if kernel is not None and self.now >= kernel:
             self.served_new_boot = True
@@ -235,12 +271,28 @@ class FakeAcpDevice:
             return False
         kernel = self._new_kernel_at()
         if kernel is None:
+            # An old kernel told to stop answering SSH (old_ssh_until) closes it.
+            if (self.old_ssh_until is not None and self.requested_at is not None
+                    and self.now >= self.requested_at + self.old_ssh_until):
+                return False
             return self.ssh_open
         if self.now < self.requested_at + self._old_ssh_until():
             return self.ssh_open
         if self.ssh_up_after_boot is None:
             return False
         return self.now >= kernel + self.ssh_up_after_boot
+
+    def _down_read_error(self) -> str:
+        current = self.down_read_error
+        if self.requested_at is not None:
+            for at, error in self.down_read_error_changes:
+                if self.now >= self.requested_at + at:
+                    current = error
+        return current
+
+    def tcp_connect_error(self, host: str, port: int, timeout: float = 2.0) -> str | None:
+        """transport.local.tcp_connect_error for port 22, as tcp_open sees it."""
+        return None if self.tcp_open(host, port, timeout) else self.ssh_port_error
 
     def _old_ssh_until(self) -> float:
         if self.old_ssh_until is not None:
@@ -307,8 +359,9 @@ class FakeAcpDevice:
             ),
             mock.patch("timecapsulesmb.integrations.acp.reboot", side_effect=self.reboot),
             mock.patch("timecapsulesmb.services.reboot.tcp_open", side_effect=self.tcp_open),
+            mock.patch("timecapsulesmb.services.reboot.tcp_connect_error", side_effect=self.tcp_connect_error),
             mock.patch("timecapsulesmb.services.reboot.local_lan_networks", side_effect=self.local_lan_networks),
-            mock.patch("timecapsulesmb.services.reboot.mac_default_gateway", side_effect=lambda: self.mac_gateway),
+            mock.patch("timecapsulesmb.services.reboot.lan_routers", side_effect=self.lan_routers),
             mock.patch("timecapsulesmb.device.acpd.mark_restart", side_effect=self.mark_restart),
             mock.patch("timecapsulesmb.device.acpd.restart_verdict", side_effect=self.restart_verdict),
             mock.patch(

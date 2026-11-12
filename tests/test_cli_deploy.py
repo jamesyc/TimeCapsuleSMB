@@ -145,6 +145,7 @@ class CliDeployTests(CliTestCase):
                 compatibility=deploy_compatibility,
             )
             deploy_target = SimpleNamespace(
+                router_mac=None,
                 connection=SshConnection("root@10.0.0.2", "pw", "-o foo"),
                 probe_state=deploy_probe_state,
             )
@@ -809,7 +810,11 @@ class CliDeployTests(CliTestCase):
             "MaSt found 1 deployable HFS volume(s).\n\n"
             "Next steps:\n"
             "  1. Wait a minute, then run `tcapsule deploy` again.\n"
-            "  2. If the disk still does not mount, try restarting the device.",
+            "  2. If the disk still does not mount, try restarting the device.\n"
+            # Disk Repair finds no mounted volume to work on: the wipe is the way out.
+            "  3. If it is the internal disk and it holds nothing you need, use `tcapsule wipe-internal-disk`. It "
+            "deletes everything on the internal disk and formats it for the device.\n"
+            "  4. Run `tcapsule deploy` again after the wipe.",
         )
         result.mocks.run_remote_actions.assert_not_called()
         telemetry_error = self.telemetry_payload("deploy_finished")["error"]

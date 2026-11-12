@@ -8,7 +8,14 @@ from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.device import acpd
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.services import reboot as reboot_service
-from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
+from timecapsulesmb.services.reboot import (
+    RESTART_STUCK_HINT,
+    RebootFlowError,
+    reboot_device,
+    restart_stuck_message,
+    restart_stuck_offline_hint,
+    unplug_if_on_network_note,
+)
 from timecapsulesmb.transport.errors import SshError
 from timecapsulesmb.transport.ssh import SshConnection
 from tests.reboot_support import NETWORK_CONTEXT, FakeAcpDevice, RecordingCallbacks
@@ -149,7 +156,8 @@ class RebootDeviceTests(unittest.TestCase):
         error, recorder = run(device, up_timeout_message="Timed out waiting for SSH after reboot.")
 
         self.assertEqual(error.code, "reboot_not_finished")
-        self.assertEqual(str(error), "Timed out waiting for SSH after reboot.")
+        # Nothing showed where this Mac is, so the unplug is only conditional.
+        self.assertEqual(str(error), f"Timed out waiting for SSH after reboot. {unplug_if_on_network_note(None)}")
         cycle = recorder.measurement("reboot_cycle")
         self.assertEqual(cycle["result"], "did_not_come_back_up")
         # The up limit counts from the first unanswered read, not the request.
@@ -626,7 +634,7 @@ class AcpdHangTests(unittest.TestCase):
                 )
                 self.assertEqual(recorder.stages[-1], "wait_for_reboot_up")
                 self.assertEqual([(stage, fields) for _at, stage, fields in recorder.progress],
-                                 [("wait_for_reboot_up", {"acpd_hung": True})])
+                                 [("wait_for_reboot_up", hint_state(acpd_hung=True))])
                 self.assertIn(reboot_service.UNPLUG_MESSAGE, recorder.messages)
                 # The whole limit again from the request to unplug.
                 self.assertGreaterEqual(
@@ -691,7 +699,7 @@ class AcpdHangTests(unittest.TestCase):
         self.assertIn("acpd_hang_seen_after_sec", cycle)
         # Asked once the hang was seen, and cleared when the device came back.
         self.assertEqual([(stage, fields) for _at, stage, fields in recorder.progress],
-                         [("wait_for_reboot_up", {"acpd_hung": True}), ("wait_for_reboot_up", {"acpd_hung": False})])
+                         [("wait_for_reboot_up", hint_state(acpd_hung=True)), ("wait_for_reboot_up", hint_state())])
 
     def test_a_hung_device_unplugged_during_the_wait_comes_back_as_a_restart(self) -> None:
         device = FakeAcpDevice(acpd_hangs=True, unplugged_after=180.0)
@@ -704,7 +712,7 @@ class AcpdHangTests(unittest.TestCase):
         self.assertEqual((cycle["restart_looks"], cycle["restart_look_last"]), (1, "hung"))
         self.assertLess(cycle["acpd_hang_seen_after_sec"], cycle["reset_seen_after_sec"])
         self.assertEqual(recorder.fields.get("device_came_back_after_reboot"), True)
-        self.assertEqual([fields for _at, _stage, fields in recorder.progress], [{"acpd_hung": True}, {"acpd_hung": False}])
+        self.assertEqual([fields for _at, _stage, fields in recorder.progress], [hint_state(acpd_hung=True), hint_state()])
         # The look opened a shared connection to the old kernel, which the
         # power-off left dead.
         self.assertIn(("10.0.0.2", True), device.ssh_master_closes)
@@ -904,7 +912,7 @@ class ClientLeftNetworkTests(unittest.TestCase):
         # naming the device's Wi-Fi in the app and the CLI.
         self.assertEqual(len(recorder.progress), 1)
         at, stage, fields = recorder.progress[0]
-        self.assertEqual((stage, fields), ("wait_for_reboot_up", {"client_away": True, "network_name": "Apple Network 619b7d", "acpd_hung": False}))
+        self.assertEqual((stage, fields), ("wait_for_reboot_up", hint_state(client_away=True, network_name="Apple Network 619b7d")))
         self.assertGreaterEqual(at - start, cycle["down_seen_after_sec"] + reboot_service.CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS)
         hint = [message for message in recorder.messages if " left the device's network and is now on " in message]
         self.assertEqual(len(hint), 1)
@@ -984,7 +992,9 @@ class ClientLeftNetworkTests(unittest.TestCase):
 
                 self.assertEqual(error.code, "reboot_not_finished")
                 self.assertNotIn("client_left_after_sec", recorder.measurement("reboot_cycle"))
-                self.assertEqual(recorder.progress, [])
+                self.assertNotIn(hint_state(client_away=True), [
+                    fields for _at, _stage, fields in recorder.progress
+                ])
 
     def test_one_interface_still_on_the_devices_network_is_not_a_leave(self) -> None:
         device = FakeAcpDevice(
@@ -1058,8 +1068,8 @@ class ClientLeftNetworkTests(unittest.TestCase):
 
         self.assertIsNone(error)
         hints = [fields for _at, stage, fields in recorder.progress if stage == "wait_for_reboot_up"]
-        self.assertEqual(hints[0], {"acpd_hung": True})
-        self.assertEqual(hints[1], {"client_away": True, "network_name": "", "acpd_hung": True})
+        self.assertEqual(hints[0], hint_state(acpd_hung=True))
+        self.assertEqual(hints[1], hint_state(client_away=True, acpd_hung=True))
 
     def test_whether_the_device_is_this_macs_router_is_recorded_on_success(self) -> None:
         # Telemetry weighs how often a router-mode restart loses the Mac. It is
@@ -1068,29 +1078,662 @@ class ClientLeftNetworkTests(unittest.TestCase):
         for gateway, expected in (("10.0.0.2", True), ("10.0.0.1", False), (None, None)):
             with self.subTest(gateway=gateway):
                 device = FakeAcpDevice(mac_gateway=gateway)
-                read_before_request: list[bool] = []
-
-                def router():
-                    read_before_request.append(device.requested_at is None)
-                    return device.mac_gateway
-
                 recorder = RecordingCallbacks()
-                with device.patched(), mock.patch.object(reboot_service, "mac_default_gateway", side_effect=router):
+                with device.patched():
                     reboot_device("root@10.0.0.2", "pw", wait=True, callbacks=recorder.callbacks())
 
-                self.assertEqual(read_before_request, [True])
+                # One read before the request; the device was back before any other.
+                self.assertEqual(device.router_reads, [])
                 self.assertEqual(recorder.measurement("reboot_cycle").get("device_is_gateway"), expected)
 
     def test_without_a_wifi_name_the_hint_names_the_devices_network(self) -> None:
         device = FakeAcpDevice(mac_network_changes=((20, ("192.168.50.0/24",)),))
         error, recorder, _start = self.wait(device)
 
-        self.assertEqual(recorder.progress[0][2], {"client_away": True, "network_name": "", "acpd_hung": False})
+        self.assertEqual(recorder.progress[0][2], hint_state(client_away=True))
         hint = next(message for message in recorder.messages if " left the device's network" in message)
         self.assertIn("Reconnect it to the device's network;", hint)
         self.assertIn("192.168.50.0/24", hint)
         # The ending's message reaches telemetry: never a Wi-Fi name.
         self.assertNotIn("“", error.message)
+
+
+
+def hint_state(**shown: object) -> dict[str, object]:
+    """A restart wait's progress event: every hint's state, as the app reads
+    the latest event alone (services.reboot._wait's hints)."""
+    return {
+        "client_away": False, "network_name": "", "acpd_hung": False, "restart_stuck": False, "client_offline": False,
+        **shown,
+    }
+
+
+ROUTER = "aa:bb:cc:00:00:01"
+OTHER_ROUTER = "aa:bb:cc:00:00:02"
+STUCK_AFTER = reboot_service.RESTART_STUCK_AFTER_DOWN_SECONDS
+
+
+def stuck_device(**kwargs) -> FakeAcpDevice:
+    """A device that took the request, went off the network and never starts
+    again until it is unplugged (unplugged_after): ACP and SSH stay silent."""
+    kwargs.setdefault("mac_router", ROUTER)
+    kwargs.setdefault("old_ssh_until", 10.0)
+    return FakeAcpDevice(acpd_hangs=True, **kwargs)
+
+
+class RestartStuckTests(unittest.TestCase):
+    """A device that stays silent long after it went down, while this Mac is
+    still on its network (the same router toward it), may have stopped partway
+    through the restart: the wait asks for an unplug and goes on."""
+
+    def wait(self, device: FakeAcpDevice, **kwargs):
+        recorder = RecordingCallbacks()
+        recorder.clock = device.monotonic
+        start = device.now
+        with device.patched():
+            try:
+                reboot_device("root@10.0.0.2", "pw", wait=True, callbacks=recorder.callbacks(), **kwargs)
+                error = None
+            except RebootFlowError as exc:
+                error = exc
+        return error, recorder, start
+
+    @staticmethod
+    def hints(recorder: RecordingCallbacks) -> list[dict[str, object]]:
+        return [fields for _at, stage, fields in recorder.progress if stage == "wait_for_reboot_up"]
+
+    def test_silent_on_the_same_network_asks_for_an_unplug_then_ends_with_its_own_code(self) -> None:
+        device = stuck_device()
+        error, recorder, start = self.wait(device)
+
+        self.assertEqual((error.code, error.result), ("restart_stuck", "restart_stuck"))
+        self.assertEqual(error.message, restart_stuck_message())
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["result"], "restart_stuck")
+        down = cycle["down_seen_after_sec"]
+        stuck = cycle["stuck_hint_after_sec"]
+        # Not before the threshold, and within one poll and a router read of it.
+        self.assertGreaterEqual(stuck - down, STUCK_AFTER)
+        self.assertLess(stuck - down, STUCK_AFTER + 2 * reboot_service.REBOOT_POLL_SECONDS)
+        self.assertEqual(cycle["stuck_hint_place"], "same")
+        # The whole limit again after the hint, for the unplug and the start-up.
+        self.assertGreaterEqual(device.now - start, stuck + UP_LIMIT)
+        self.assertEqual(self.hints(recorder), [hint_state(restart_stuck=True)])
+        self.assertEqual([m for m in recorder.messages if "Unplug" in m], [RESTART_STUCK_HINT])
+        # Telemetry carries the routers that decided it.
+        self.assertEqual(cycle["routers_before"], [{"interface": "en0", "ip": "10.0.0.1", "mac": ROUTER}])
+        self.assertEqual((cycle["client_place"], cycle["place_evidence"]), ("same", "router"))
+        self.assertEqual((cycle["router_mac_before"], cycle["router_mac_now"]), (ROUTER, ROUTER))
+
+    def test_an_unplug_after_the_hint_finishes_the_wait(self) -> None:
+        device = stuck_device(unplugged_after=STUCK_AFTER + 120.0)
+        error, recorder, _start = self.wait(device)
+
+        self.assertIsNone(error)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["result"], "success")
+        self.assertIn("stuck_hint_after_sec", cycle)
+        self.assertEqual(
+            self.hints(recorder), [hint_state(restart_stuck=True), hint_state()],
+        )
+
+    def test_a_restart_back_before_the_threshold_never_hints(self) -> None:
+        device = FakeAcpDevice(kernel_after=STUCK_AFTER - 60.0, mac_router=ROUTER)
+        error, recorder, _start = self.wait(device)
+
+        self.assertIsNone(error)
+        self.assertNotIn("stuck_hint_after_sec", recorder.measurement("reboot_cycle"))
+        self.assertEqual(self.hints(recorder), [])
+
+    def test_without_a_readable_router_the_ending_only_conditionally_asks_for_an_unplug(self) -> None:
+        # Another Wi-Fi with the same addresses looks the same as this one:
+        # only the router would tell them apart.
+        device = stuck_device(mac_router=None)
+        error, recorder, _start = self.wait(device, wifi_name="Home")
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertTrue(error.message.endswith(unplug_if_on_network_note("Home")))
+        self.assertEqual(self.hints(recorder), [])
+        self.assertEqual(recorder.measurement("reboot_cycle")["client_place"], "unknown")
+
+    def test_another_router_on_the_same_addresses_is_another_network(self) -> None:
+        device = stuck_device(mac_router_changes=((20.0, OTHER_ROUTER),))
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "client_left_network")
+        self.assertIn("is on another network and did not come back", error.message)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertNotIn("stuck_hint_after_sec", cycle)
+        self.assertEqual(cycle["router_mac_away"], OTHER_ROUTER)
+        self.assertEqual((cycle["client_place"], cycle["place_evidence"]), ("moved", "router"))
+        self.assertIn(hint_state(client_away=True), self.hints(recorder))
+        hint = next(m for m in recorder.messages if " left the device's network" in m)
+        self.assertIn("is now on another network.", hint)
+
+    def test_one_reading_of_another_router_is_not_a_leave(self) -> None:
+        # A roam can show another router for a moment; two readings in a row decide.
+        device = stuck_device(mac_router_changes=((190.0, OTHER_ROUTER), (200.0, ROUTER)))
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "restart_stuck")
+        self.assertNotIn("client_left_after_sec", recorder.measurement("reboot_cycle"))
+
+    def test_an_unreadable_router_mid_wait_is_not_a_leave(self) -> None:
+        device = stuck_device(mac_router_changes=((20.0, None),))
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertNotIn("client_left_after_sec", recorder.measurement("reboot_cycle"))
+        self.assertEqual(recorder.measurement("reboot_cycle")["client_place"], "unknown")
+
+    def test_acp_refused_all_along_is_an_acpd_hang_not_a_stuck_restart(self) -> None:
+        # A refused port is a host that is up: never the stuck hint. Refused
+        # for six minutes, the kernel is up with ACPd gone, the hang, and the
+        # wait asks for the unplug as the marker look would.
+        device = stuck_device(down_read_error="Connection refused")
+        error, recorder, _start = self.wait(device, up_timeout_message="Timed out waiting for SSH after reboot.")
+
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertEqual(self.hints(recorder), [hint_state(acpd_hung=True)])
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["acpd_hang_evidence"], "acp_refused")
+        self.assertNotIn("stuck_hint_after_sec", cycle)
+        # Inferred, not seen: the words say what was seen, never "Apple ACPd
+        # is broken", which telemetry files as the known firmware bug.
+        self.assertEqual(error.message, reboot_service.ACPD_REFUSED_MESSAGE)
+        self.assertIn(reboot_service.ACPD_REFUSED_UNPLUG_MESSAGE, recorder.messages)
+        self.assertNotIn(reboot_service.UNPLUG_MESSAGE, recorder.messages)
+
+    def test_an_inferred_hang_keeps_what_the_caller_adds(self) -> None:
+        # Deploy's message adds what the hang means for the install; the
+        # inferred hang swaps only the opening sentence.
+        from timecapsulesmb.services.deploy import DEPLOY_ACPD_STOPPED_MESSAGE
+
+        device = stuck_device(down_read_error="Connection refused")
+        error, _recorder, _start = self.wait(device, stopped_message=DEPLOY_ACPD_STOPPED_MESSAGE)
+
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertEqual(
+            error.message,
+            DEPLOY_ACPD_STOPPED_MESSAGE.replace(reboot_service.ACPD_STOPPED_MESSAGE, reboot_service.ACPD_REFUSED_MESSAGE),
+        )
+        self.assertTrue(error.message.startswith(reboot_service.ACPD_REFUSED_MESSAGE))
+        self.assertIn("The update is installed", error.message)
+
+    def test_in_the_app_no_route_reads_are_not_a_stuck_device(self) -> None:
+        # macOS refusing the app's connections (Local Network access) fails
+        # every read at once with no route, while the device is up: no unplug,
+        # not even a conditional one.
+        device = stuck_device(down_read_error="[Errno 65] No route to host",
+                              ssh_port_error="[Errno 65] No route to host")
+        with mock.patch.object(reboot_service, "macos_may_hold_this_process", return_value=True):
+            error, recorder, _start = self.wait(device, up_timeout_message="Timed out waiting for SSH after reboot.")
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertEqual(error.message, "Timed out waiting for SSH after reboot.")
+        self.assertEqual(self.hints(recorder), [])
+
+    def test_in_the_app_a_stray_unclear_read_keeps_the_unplug_request(self) -> None:
+        # A device that stopped partway (9b5781b4) gives host down with now
+        # and then one no route; a firewall can refuse one read. Neither is an
+        # answer: the request stays up, even for a stray read just before the
+        # limit.
+        down, no_route = "[Errno 64] Host is down", "[Errno 65] No route to host"
+        refused_here = "[Errno 1] Operation not permitted"
+        limit = STUCK_AFTER + reboot_service.REBOOT_UP_TIMEOUT_SECONDS
+        device = stuck_device(down_read_error=down, ssh_port_error=down, down_read_error_changes=(
+            (236.0, no_route), (241.0, down), (541.0, no_route), (546.0, down),
+            (limit - 15.0, refused_here), (limit - 10.0, down),
+        ))
+        with mock.patch.object(reboot_service, "macos_may_hold_this_process", return_value=True):
+            error, recorder, _start = self.wait(device)
+
+        cycle = recorder.measurement("reboot_cycle")
+        # One read in each window, so the case exercises what it names.
+        self.assertEqual((cycle["read_errors"]["no_route"]["count"], cycle["read_errors"]["not_permitted"]["count"]),
+                         (2, 1))
+        self.assertEqual(self.hints(recorder), [hint_state(restart_stuck=True)])
+        self.assertNotIn("stuck_hint_cleared_after_sec", cycle)
+        self.assertNotIn(reboot_service.RESTART_STUCK_WITHDRAWN_MESSAGE, recorder.messages)
+        self.assertEqual(error.code, "restart_stuck")
+
+    def test_unclear_reads_in_a_row_take_the_unplug_request_back(self) -> None:
+        # Reads that keep failing in a way that says nothing about the device
+        # (a firewall that starts refusing) no longer show it silent: the
+        # request goes, and comes back once a read finds nothing again.
+        down = "[Errno 64] Host is down"
+        device = stuck_device(down_read_error=down, ssh_port_error=down, down_read_error_changes=(
+            (STUCK_AFTER + 30.0, "[Errno 1] Operation not permitted"), (STUCK_AFTER + 45.0, down),
+        ))
+        with mock.patch.object(reboot_service, "macos_may_hold_this_process", return_value=True):
+            error, recorder, _start = self.wait(device)
+
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["read_errors"]["not_permitted"]["count"], reboot_service.STUCK_QUIET_READS)
+        self.assertEqual(
+            self.hints(recorder), [hint_state(restart_stuck=True), hint_state(), hint_state(restart_stuck=True)],
+        )
+        self.assertIn(reboot_service.RESTART_STUCK_WITHDRAWN_MESSAGE, recorder.messages)
+        self.assertEqual(error.code, "restart_stuck")
+
+    def test_in_the_app_a_wait_ending_in_no_route_with_ssh_through_is_a_local_network_block(self) -> None:
+        # Apple's ssh is not held by Local Network access: it reaching the
+        # device proves macOS refused the app's reads, which an unplug does
+        # not fix.
+        from timecapsulesmb.device.probe import SshCommandProbeResult
+
+        device = stuck_device(down_read_error="[Errno 65] No route to host")
+        reached = SshCommandProbeResult(ok=True, detail="ok")
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        with mock.patch.object(reboot_service, "macos_may_hold_this_process", return_value=True), \
+                mock.patch.object(reboot_service, "probe_ssh_command_conn", return_value=reached) as proof, \
+                mock.patch("timecapsulesmb.checks.network.running_in_app", return_value=True), \
+                mock.patch("timecapsulesmb.checks.network.local_lan_networks", side_effect=device.local_lan_networks), \
+                mock.patch("timecapsulesmb.checks.network.tcp_connect_error",
+                           return_value="[Errno 65] No route to host"):
+            error, recorder, _start = self.wait(device, ssh=connection)
+
+        proof.assert_called_once()
+        self.assertEqual((error.code, error.result), ("acp_no_route", "local_network_blocked"))
+        self.assertEqual(recorder.measurement("reboot_cycle")["local_network_block_proof"], "ssh")
+
+    def test_in_the_app_without_ssh_to_prove_it_a_no_route_ending_gives_no_unplug(self) -> None:
+        # Add Device's restart has no SSH yet: nothing proves the block, and
+        # nothing shows the device is off either.
+        device = stuck_device(down_read_error="[Errno 65] No route to host")
+        with mock.patch.object(reboot_service, "macos_may_hold_this_process", return_value=True):
+            error, _recorder, _start = self.wait(device, up_timeout_message="Timed out waiting for SSH after reboot.")
+
+        self.assertEqual((error.code, error.message), ("reboot_not_finished", "Timed out waiting for SSH after reboot."))
+
+    def test_where_nothing_holds_this_process_no_route_reads_are_a_silent_device(self) -> None:
+        # Linux reports a host gone from its link as no route and has no Local
+        # Network access, as Terminal and an SSH session on a Mac have none:
+        # there no route is silence.
+        device = stuck_device(down_read_error="[Errno 113] No route to host",
+                              ssh_port_error="[Errno 113] No route to host")
+        with mock.patch.object(reboot_service, "macos_may_hold_this_process", return_value=False):
+            error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "restart_stuck")
+        self.assertEqual(self.hints(recorder)[0], hint_state(restart_stuck=True))
+
+    def test_an_answering_ssh_port_is_not_a_stuck_device(self) -> None:
+        # A new boot whose ACPd quit at once, or an old kernel whose sshd still
+        # takes connections: the device is up, so it did not go off the network.
+        for name, device in (
+            ("open", stuck_device(old_ssh_until=10_000.0)),
+            ("refused", stuck_device(ssh_port_error="Connection refused")),
+        ):
+            with self.subTest(name):
+                error, recorder, _start = self.wait(device, up_timeout_message="Timed out waiting for SSH after reboot.")
+                self.assertEqual((error.code, error.message), ("reboot_not_finished", "Timed out waiting for SSH after reboot."))
+                self.assertEqual(self.hints(recorder), [])
+                self.assertEqual(recorder.measurement("reboot_cycle")["stuck_ssh_port"], name)
+
+    def test_a_host_that_is_down_counts_as_silent(self) -> None:
+        device = stuck_device(down_read_error="[Errno 64] Host is down")
+        error, _recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "restart_stuck")
+
+    def test_a_mac_left_without_a_network_gets_a_conditional_hint(self) -> None:
+        # A Mac on the device's own Wi-Fi has no network while the device is
+        # off; one that lost its Wi-Fi for another reason looks the same.
+        device = stuck_device(mac_network_changes=((20.0, ()),))
+        error, recorder, _start = self.wait(device, wifi_name="Home")
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertEqual(
+            self.hints(recorder), [hint_state(network_name="Home", restart_stuck=True, client_offline=True)],
+        )
+        self.assertIn(restart_stuck_offline_hint("Home"), recorder.messages)
+        self.assertEqual(recorder.measurement("reboot_cycle")["stuck_hint_place"], "offline")
+
+    def test_a_router_mode_device_that_takes_the_router_away_is_silent_on_the_same_network(self) -> None:
+        # The device is this Mac's router: while it is down there is none toward
+        # it, and a Mac that stayed has no other.
+        device = stuck_device(mac_gateway="10.0.0.2", mac_router_changes=((15.0, None),))
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "restart_stuck")
+        self.assertTrue(recorder.measurement("reboot_cycle")["device_is_gateway"])
+
+    def test_the_routers_are_read_at_most_every_fifteen_seconds(self) -> None:
+        device = stuck_device()
+        _error, recorder, _start = self.wait(device)
+
+        cycle = recorder.measurement("reboot_cycle")
+        stuck = cycle["stuck_hint_after_sec"]
+        # The readings while the device is down, before the hint and the
+        # ending's own. The fake times them from the request, which comes a
+        # second after the wait's start.
+        periodic = [at + 1.0 for at in device.router_reads if at + 1.0 < stuck]
+        self.assertTrue(periodic)
+        self.assertGreaterEqual(periodic[0], cycle["down_seen_after_sec"] + reboot_service.CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS)
+        gaps = [later - earlier for earlier, later in zip(periodic, periodic[1:])]
+        self.assertTrue(all(gap >= reboot_service.PLACE_READ_INTERVAL_SECONDS for gap in gaps), gaps)
+
+    def test_a_device_reached_through_a_router_is_not_judged(self) -> None:
+        # This Mac's own networks say nothing about a device it reaches through
+        # a router (another subnet, a VPN).
+        device = stuck_device(mac_networks_before=("192.168.9.0/24",))
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertEqual(self.hints(recorder), [])
+        self.assertNotIn("client_place", recorder.measurement("reboot_cycle"))
+
+    def test_the_enable_ssh_restart_keeps_the_stuck_code(self) -> None:
+        # Configure and set-ssh convert only reboot_not_finished.
+        device = stuck_device()
+        recorder = RecordingCallbacks()
+        with device.patched(), self.assertRaises(RebootFlowError) as caught:
+            reboot_service.reboot_to_enable_ssh("root@10.0.0.2", "pw", wait=True, callbacks=recorder.callbacks())
+
+        self.assertEqual(caught.exception.code, "restart_stuck")
+
+    def test_a_saved_name_that_stops_resolving_counts_as_silent(self) -> None:
+        # A device saved by its .local name: once it is off nothing answers
+        # for the name, and every read fails the lookup.
+        device = stuck_device(down_read_error="[Errno 8] nodename nor servname provided, or not known")
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "restart_stuck")
+        self.assertEqual(self.hints(recorder)[0], hint_state(restart_stuck=True))
+
+    def test_with_an_unreadable_router_the_routers_are_still_read_every_fifteen_seconds(self) -> None:
+        # No verdict to give, so the hint never shows: the check must not read
+        # the routers on every poll meanwhile.
+        device = stuck_device(mac_router=None, mac_gateway="10.0.0.1")
+        error, _recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        reads = [at for at in device.router_reads]
+        gaps = [later - earlier for earlier, later in zip(reads, reads[1:-1])]
+        self.assertTrue(gaps)
+        self.assertTrue(all(gap >= reboot_service.PLACE_READ_INTERVAL_SECONDS for gap in gaps), gaps)
+
+    def test_a_device_that_answers_after_the_hint_does_not_end_as_stuck(self) -> None:
+        # Unplugged and back on a new boot whose ACPd refuses: it came back,
+        # so not "did not come back on this network". The stuck hint goes at
+        # the first refusal, as an unplug then would interrupt a device that is
+        # starting up; six minutes of refusals are ACPd that never came up.
+        device = stuck_device(down_read_error_changes=((STUCK_AFTER + 120.0, "Connection refused"),))
+        error, recorder, _start = self.wait(device, up_timeout_message="Timed out waiting for SSH after reboot.")
+
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertEqual(
+            self.hints(recorder), [hint_state(restart_stuck=True), hint_state(), hint_state(acpd_hung=True)],
+        )
+        self.assertGreater(cycle["stuck_hint_cleared_after_sec"], cycle["stuck_hint_after_sec"])
+        self.assertGreaterEqual(
+            cycle["acpd_hang_seen_after_sec"] - cycle["stuck_hint_cleared_after_sec"], STUCK_AFTER,
+        )
+        # The CLI says each change: its last line would otherwise still ask for an unplug.
+        unplug_lines = [m for m in recorder.messages if "Unplug" in m or "plugged in" in m]
+        self.assertEqual(
+            unplug_lines,
+            [RESTART_STUCK_HINT, reboot_service.RESTART_STUCK_WITHDRAWN_MESSAGE, reboot_service.ACPD_REFUSED_UNPLUG_MESSAGE],
+        )
+
+    def test_withdrawing_the_stuck_hint_keeps_the_away_hint(self) -> None:
+        # The stuck hint shows, then this Mac roams to another network with
+        # the same addresses, where some other host holds the device's address
+        # and refuses ACP. The refusal withdraws the stuck hint; the event that
+        # says so still carries the away hint, which the app shows on its own.
+        device = stuck_device(
+            mac_router_changes=((STUCK_AFTER + 30.0, OTHER_ROUTER),),
+            down_read_error_changes=((STUCK_AFTER + 120.0, "Connection refused"),),
+        )
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "client_left_network")
+        hints = self.hints(recorder)
+        self.assertEqual(
+            hints, [hint_state(restart_stuck=True), hint_state(client_away=True, restart_stuck=True),
+                    hint_state(client_away=True)],
+        )
+        # That host's refusals say nothing about ACPd on the device.
+        self.assertNotIn("acpd_hang_evidence", recorder.measurement("reboot_cycle"))
+
+    def test_a_device_that_keeps_answering_and_falling_silent_ends_the_terminal_lines_with_one_that_stays_true(self) -> None:
+        # Refused and silent in turns, a minute each: the app's progress line
+        # follows every turn. A terminal prints each change until the second
+        # withdrawal, then one line that holds whichever way the device turns,
+        # so neither a flood nor a last line that contradicts the wait.
+        changes = tuple(
+            (STUCK_AFTER + 60.0 * index, "Connection refused" if index % 2 else "timed out") for index in range(1, 9)
+        )
+        device = stuck_device(down_read_error_changes=changes)
+        _error, recorder, _start = self.wait(device)
+
+        hints = self.hints(recorder)
+        self.assertGreaterEqual(hints.count(hint_state(restart_stuck=True)), 4)
+        withdrawn = reboot_service.RESTART_STUCK_WITHDRAWN_MESSAGE
+        stuck_lines = [
+            message for message in recorder.messages
+            if message in (RESTART_STUCK_HINT, withdrawn, reboot_service.RESTART_STUCK_FLAPPING_MESSAGE)
+        ]
+        self.assertEqual(
+            stuck_lines,
+            [RESTART_STUCK_HINT, withdrawn, RESTART_STUCK_HINT, withdrawn, reboot_service.RESTART_STUCK_FLAPPING_MESSAGE],
+        )
+
+    def test_a_device_that_answers_then_falls_silent_again_is_hinted_again_within_the_same_limit(self) -> None:
+        # ACPd refused for a while, then nothing answers again: the unplug is
+        # asked for again, but the limit still counts from the first hint, so
+        # a device that keeps answering and falling silent cannot hold the wait open.
+        device = stuck_device(down_read_error_changes=(
+            (STUCK_AFTER + 60.0, "Connection refused"), (STUCK_AFTER + 120.0, "timed out"),
+        ))
+        error, recorder, start = self.wait(device)
+
+        self.assertEqual(error.code, "restart_stuck")
+        shown = hint_state(restart_stuck=True)
+        self.assertEqual(self.hints(recorder), [shown, hint_state(), shown])
+        # A terminal's last line asks for the unplug again, as the wait does.
+        withdrawn = reboot_service.RESTART_STUCK_WITHDRAWN_MESSAGE
+        self.assertEqual(
+            [m for m in recorder.messages if m in (RESTART_STUCK_HINT, withdrawn)],
+            [RESTART_STUCK_HINT, withdrawn, RESTART_STUCK_HINT],
+        )
+        first = recorder.measurement("reboot_cycle")["stuck_hint_after_sec"]
+        self.assertLess(device.now - start, first + UP_LIMIT + 2 * reboot_service.REBOOT_POLL_SECONDS)
+
+    def test_the_hint_follows_this_mac_getting_its_network_back(self) -> None:
+        # Offline when the hint showed (its Wi-Fi was the device's), then back
+        # on the same router while the device stays silent: the hint drops the
+        # offline wording, and the wait ends as a stuck restart.
+        device = stuck_device(mac_network_changes=((20.0, ()), (STUCK_AFTER + 60.0, ("10.0.0.0/24",))))
+        error, recorder, _start = self.wait(device, wifi_name="Home")
+
+        self.assertEqual(error.code, "restart_stuck")
+        self.assertEqual(
+            self.hints(recorder),
+            [
+                hint_state(network_name="Home", restart_stuck=True, client_offline=True),
+                hint_state(network_name="Home", restart_stuck=True),
+            ],
+        )
+        self.assertEqual(
+            [m for m in recorder.messages if "unplug" in m.lower()],
+            [restart_stuck_offline_hint("Home"), RESTART_STUCK_HINT],
+        )
+
+    def test_the_away_hint_clears_when_this_mac_is_back_behind_its_router(self) -> None:
+        device = stuck_device(mac_router_changes=((20.0, OTHER_ROUTER), (300.0, ROUTER)))
+        error, recorder, _start = self.wait(device)
+
+        self.assertEqual(error.code, "restart_stuck")
+        hints = self.hints(recorder)
+        self.assertIn(hint_state(client_away=True), hints)
+        self.assertIn(hint_state(), hints)
+        self.assertIn(reboot_service.client_back_message(), recorder.messages)
+
+    def test_off_macos_the_words_name_this_computer(self) -> None:
+        self.assertIn("while this computer stayed on it", restart_stuck_message(platform="linux"))
+        self.assertTrue(restart_stuck_offline_hint(None, platform="linux").startswith("This computer has no network"))
+        self.assertTrue(unplug_if_on_network_note(None, platform="linux").startswith("If this computer is on"))
+        self.assertIn("(its Wi-Fi network is \u201cHome\u201d)", unplug_if_on_network_note("Home", platform="darwin"))
+
+class AcpRefusedHangTests(unittest.TestCase):
+    """ACP refused for RESTART_STUCK_AFTER_DOWN_SECONDS: the kernel is up and
+    ACPd is gone, the hang the marker look finds, also where there is no SSH
+    to look with (the restart that turns SSH on)."""
+
+    def enable_ssh(self, device: FakeAcpDevice):
+        recorder = RecordingCallbacks()
+        recorder.clock = device.monotonic
+        with device.patched():
+            try:
+                reboot_service.reboot_to_enable_ssh("root@10.0.0.2", "pw", wait=True, callbacks=recorder.callbacks())
+                error = None
+            except RebootFlowError as exc:
+                error = exc
+        return error, recorder
+
+    def test_the_enable_ssh_restart_tells_a_hang_from_a_timeout(self) -> None:
+        # SSH is still off on the old kernel, so its port refuses too: before,
+        # this ended as ssh_enable_timeout with only a conditional unplug.
+        device = stuck_device(down_read_error="Connection refused", ssh_open=False, ssh_port_error="Connection refused")
+        error, recorder = self.enable_ssh(device)
+
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertEqual(error.message, reboot_service.ACPD_REFUSED_MESSAGE)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["acpd_hang_evidence"], "acp_refused")
+        self.assertGreaterEqual(cycle["acpd_hang_seen_after_sec"] - cycle["down_seen_after_sec"], STUCK_AFTER)
+        self.assertIn(reboot_service.ACPD_REFUSED_UNPLUG_MESSAGE, recorder.messages)
+
+    def test_an_unplug_after_the_inferred_hang_finishes_the_wait(self) -> None:
+        device = stuck_device(
+            down_read_error="Connection refused", ssh_open=False, ssh_port_error="Connection refused",
+            unplugged_after=STUCK_AFTER + 120.0,
+        )
+        error, recorder = self.enable_ssh(device)
+
+        self.assertIsNone(error)
+        hints = [fields for _at, stage, fields in recorder.progress if stage == "wait_for_reboot_up"]
+        self.assertEqual(hints, [hint_state(acpd_hung=True), hint_state()])
+
+    def test_refusals_while_a_restart_starts_up_are_no_hang(self) -> None:
+        # ACPd refuses until it listens on the new boot: minutes at most on a
+        # slow start, never six.
+        device = FakeAcpDevice(kernel_after=STUCK_AFTER - 60.0, down_read_error="Connection refused", mac_router=ROUTER)
+        recorder = RecordingCallbacks()
+        recorder.clock = device.monotonic
+        with device.patched():
+            reboot_device("root@10.0.0.2", "pw", wait=True, callbacks=recorder.callbacks())
+
+        self.assertNotIn("acpd_hang_evidence", recorder.measurement("reboot_cycle"))
+        self.assertEqual(recorder.progress, [])
+
+    def test_a_break_in_the_refusals_starts_the_count_again(self) -> None:
+        # Refused, then silent for a while, then refused again: no run of six
+        # minutes before the limit, so no hang.
+        device = stuck_device(down_read_error="Connection refused", down_read_error_changes=(
+            (200.0, "timed out"), (300.0, "Connection refused"),
+        ), ssh_port_error="Connection refused")
+        recorder = RecordingCallbacks()
+        recorder.clock = device.monotonic
+        with device.patched(), self.assertRaises(RebootFlowError) as caught:
+            reboot_device("root@10.0.0.2", "pw", wait=True, callbacks=recorder.callbacks())
+
+        self.assertEqual(caught.exception.code, "reboot_not_finished")
+        self.assertNotIn("acpd_hang_evidence", recorder.measurement("reboot_cycle"))
+
+
+class DeviceSilenceTests(unittest.TestCase):
+    """The restart wait's record of whether nothing answers at the device's
+    address lately: answering, quiet, or (for a process macOS may hold, such
+    as the app) maybe blocked."""
+
+    def feed(self, held: bool, events) -> reboot_service.DeviceSilence:
+        silence = reboot_service.DeviceSilence(held=held)
+        for event in events:
+            if event[0] == "ssh":
+                silence.observe_ssh_port(event[1])
+            else:
+                silence.observe_read(event[0], f"error {event[0]}")
+        return silence
+
+    def test_each_read_kind_and_ssh_port_moves_the_record(self) -> None:
+        three = lambda kind: [(kind,)] * 3  # noqa: E731
+        cases = (
+            # (name, held, events, quiet, maybe_blocked)
+            ("timeouts", True, three("timeout"), True, False),
+            ("host down", True, three("host_down"), True, False),
+            ("a name that no longer resolves", True, three("name_lookup_failed"), True, False),
+            ("this computer's network is down", True, three("network_unreachable"), True, False),
+            ("each address silent its own way", True, three("timeout+host_down"), True, False),
+            # Failures that say nothing about the device are unclear: neither
+            # silence nor an answer. One leaves the count as it was; a run of
+            # them ends the silence.
+            ("an address this computer cannot use", True, three("address_unavailable"), False, False),
+            ("a firewall on this computer", True, three("not_permitted"), False, False),
+            ("an unknown failure", True, three("other"), False, False),
+            ("an unknown failure where nothing holds it", False, three("other"), False, False),
+            ("one unknown failure leaves the count", True, [("timeout",), ("timeout",), ("other",), ("timeout",)], True, False),
+            ("one unknown failure after silence", True, [*three("timeout"), ("other",)], True, False),
+            ("unknown failures in a row end the silence", True, [*three("timeout"), *three("other")], False, False),
+            ("silent again after unknown failures, never answered", True,
+             [*three("timeout"), *three("other"), ("timeout",)], True, False),
+            ("silence after an unknown failure", True, [("other",), *three("timeout")], True, False),
+            ("one address silent, one unknown", True, three("timeout+other"), False, False),
+            ("one address refused", True, three("timeout+refused"), False, False),
+            ("unknown after no route ends the maybe-block", True, [*three("no_route"), ("other",)], False, False),
+            ("two reads are not enough", True, [("timeout",)] * 2, False, False),
+            ("a refusal starts over", True, [("timeout",), ("timeout",), ("refused",), ("timeout",)], False, False),
+            ("a rejected password starts over", True, [*three("timeout"), ("auth",)], False, False),
+            ("a reset connection starts over", True, [*three("timeout"), ("reset",)], False, False),
+            ("another AirPort at the address", True, [*three("timeout"), ("other_device",)], False, False),
+            ("no route where macOS may hold this process", True, three("no_route"), False, True),
+            ("no route where nothing holds it", False, three("no_route"), True, False),
+            ("no route then a timeout", True, [*three("no_route"), ("timeout",)], False, False),
+            # The stray no route a down device gives now and then (9b5781b4).
+            ("one no route where macOS may hold this process", True, [*three("timeout"), ("no_route",)], True, False),
+            ("no route in a row after silence", True, [*three("timeout"), *three("no_route")], False, True),
+            ("no route not in a row", True, [("no_route",), ("no_route",), ("other",), ("no_route",)], False, False),
+            ("an open SSH port", True, [*three("timeout"), ("ssh", None)], False, False),
+            ("a refused SSH port", True, [*three("timeout"), ("ssh", "Connection refused")], False, False),
+            # An answer at an earlier look does not outlast later silence.
+            ("SSH answered, then silent again", True,
+             [*three("timeout"), ("ssh", None), *three("timeout")], True, False),
+            ("SSH silent at its next look", True,
+             [*three("timeout"), ("ssh", None), *three("timeout"), ("ssh", "timed out")], True, False),
+            ("one SSH no route where macOS may hold this process", True,
+             [*three("timeout"), ("ssh", "No route to host")], True, False),
+            ("SSH no route where nothing holds it", False, [*three("timeout"), ("ssh", "No route to host")], True, False),
+        )
+        for name, held, events, quiet, blocked in cases:
+            with self.subTest(name):
+                silence = self.feed(held, events)
+                self.assertEqual((silence.quiet, silence.maybe_blocked), (quiet, blocked))
+
+
+    def test_a_long_block_keeps_only_the_last_no_route_errors(self) -> None:
+        # A blocked app gets no route for the whole wait: the block check
+        # needs only the latest errors, not one per poll.
+        silence = reboot_service.DeviceSilence(held=True)
+        for index in range(200):
+            silence.observe_read("no_route", f"no route {index}")
+        self.assertTrue(silence.maybe_blocked)
+        self.assertEqual(silence.no_route_errors, ["no route 197", "no route 198", "no route 199"])
+
+
+class ReadErrorKindTests(unittest.TestCase):
+    def test_a_connection_the_other_end_reset_is_an_answer(self) -> None:
+        # ACPd closing a connection it had taken, as it stops or starts: the
+        # device is there, so it is not silence.
+        for text in ("ACP receive failed: [Errno 54] Connection reset by peer", "ACP send failed: [Errno 32] Broken pipe"):
+            with self.subTest(text):
+                kind = reboot_service._read_error_kind(ACPConnectionError(text))
+                self.assertEqual(kind, "reset")
+                self.assertIn(kind, reboot_service._ANSWER_KINDS)
+        self.assertEqual(reboot_service._read_error_kind(ACPConnectionError("ACP connect failed: timed out")), "timeout")
+        self.assertEqual(reboot_service._read_error_kind(ACPConnectionError("something odd")), "other")
 
 
 class ClientAwayMessageTests(unittest.TestCase):

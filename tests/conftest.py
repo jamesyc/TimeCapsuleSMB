@@ -184,6 +184,47 @@ def device_password_matches(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_router_reads(monkeypatch: pytest.MonkeyPatch):
+    # Reading this computer's routers runs netstat and arp, or reads /proc,
+    # and sends a datagram to a router missing from the neighbour table. Tests
+    # see no routers, which their callers treat as unknown; a test that needs
+    # some fakes them (tests/reboot_support.py), and tests of the reader call
+    # transport.local.lan_routers itself.
+    from timecapsulesmb.checks import network
+    from timecapsulesmb.services import reboot
+
+    monkeypatch.setattr(network, "lan_routers", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(reboot, "lan_routers", lambda *_args, **_kwargs: ())
+    # A device that answers nothing is judged against this computer's place
+    # (checks.network.silent_device): tests get none, which is "unknown",
+    # unless they pass or patch one, so the host's own networks never decide.
+    monkeypatch.setattr(network, "read_network_place", lambda *_args, **_kwargs: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def terminal_not_held(monkeypatch: pytest.MonkeyPatch):
+    # On a Mac, a command in a terminal app other than Terminal may be held by
+    # Local Network access, which changes how no route and unresolved names
+    # read (checks.network.macos_may_hold_this_process). Tests run as if from
+    # Terminal, whatever runs them (an IDE, a CI runner with no terminal);
+    # a test of a held terminal patches it.
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def ssh_port_answers(monkeypatch: pytest.MonkeyPatch):
+    # The ACPd preflight first looks at port 22 (services.runtime.ssh_port_error):
+    # tests reach the device's SSH through fakes, so the port connects unless a
+    # test patches another answer.
+    from timecapsulesmb.services import runtime
+
+    monkeypatch.setattr(runtime, "ssh_port_error", lambda *_args, **_kwargs: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def apple_acpd_healthy(monkeypatch: pytest.MonkeyPatch):
     # Reboots, flash and doctor ask the device over SSH whether Apple's ACPd
     # answers syUT, has no stuck fork and ran the last restart requested, and

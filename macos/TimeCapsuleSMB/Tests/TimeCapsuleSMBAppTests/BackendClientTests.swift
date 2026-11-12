@@ -356,6 +356,14 @@ final class BackendClientTests: XCTestCase {
         client.run(operation: "doctor", params: [:], context: DeviceRuntimeContext(profileID: "device-one", configURL: withMAC.configURL))
         try await waitUntil { !client.isRunning && runner.calls.count == 2 }
         XCTAssertNil(runner.calls[1].params["airport_mac"])
+        XCTAssertNil(runner.calls[1].params["lan_router_mac"])
+
+        // The router toward the device the last time an operation reached it.
+        let withRouter = DeviceRuntimeContext(profileID: "device-one", configURL: withMAC.configURL,
+                                              lanRouterMAC: "84:78:48:9e:04:51")
+        client.run(operation: "doctor", params: [:], context: withRouter)
+        try await waitUntil { !client.isRunning && runner.calls.count == 3 }
+        XCTAssertEqual(runner.calls[2].params["lan_router_mac"], .string("84:78:48:9e:04:51"))
     }
 
     func testConfirmationReplayPreservesDeviceContext() async throws {

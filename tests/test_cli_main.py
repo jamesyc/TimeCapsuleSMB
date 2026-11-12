@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 import tempfile
 import unittest
 from contextlib import ExitStack, contextmanager
@@ -508,6 +509,92 @@ class CliMainTests(CliTestCase):
         self.assertEqual(finished["result"], "success")
         self.assertEqual(finished["bonjour_instance_count"], 1)
         self.assertEqual(finished["bonjour_resolved_count"], 1)
+
+
+class SilentDeviceCommandTests(CliTestCase):
+    """Every command that talks to the device, against one that answers
+    nothing at its saved address: each ends with where this computer is
+    against the router configure saved (checks.network.silent_device), never
+    a generic or raw SSH failure. The app operations have the same table
+    (tests/test_app_api.py)."""
+
+    COMMANDS = (
+        ["deploy", "--yes"], ["doctor"], ["uninstall", "--yes"], ["fsck", "--yes"], ["wipe-internal-disk", "--yes"],
+        ["flash", "--read-only"], ["set-ssh"], ["activate", "--yes"],
+    )
+
+    def run_against_silent_device(self, argv: list[str], router_now: str, silence: str, *, held: bool = False) -> str:
+        import ipaddress
+
+        from timecapsulesmb.checks.network import LocalInterfaceNetwork, NetworkPlace
+        from timecapsulesmb.device.probe import AirportAcpReading, SshCommandProbeResult
+        from timecapsulesmb.transport.errors import SshNetworkError
+        from timecapsulesmb.transport.local import Router
+        from tests.test_app_api import SshAccessStatus, failed_probe_state
+
+        networks = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)
+        place = NetworkPlace(networks, (Router("en0", "10.0.0.1", router_now),))
+        timed_out = SshNetworkError(f"ssh: connect to host 10.0.0.2 port 22: {silence}")
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / ".env"
+            config.write_text("TC_HOST=root@10.0.0.2\nTC_PASSWORD=pw\nTC_LAN_ROUTER_MAC=aa:00:00:00:00:01\n")
+            with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state",
+                            return_value=failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet.")), \
+                    mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=silence), \
+                    mock.patch("timecapsulesmb.checks.network.probe_ssh_command_conn",
+                               return_value=SshCommandProbeResult(ok=False, detail=str(timed_out), error=timed_out)), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=silence), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=networks), \
+                    mock.patch("timecapsulesmb.services.runtime.ssh_port_error", return_value=silence), \
+                    mock.patch("timecapsulesmb.services.set_ssh.tcp_connect_error", return_value=silence), \
+                    mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False), \
+                    mock.patch("timecapsulesmb.device.probe.read_airport_acp",
+                               return_value=AirportAcpReading(password_matches=None, error=f"ACP receive failed: {silence}")), \
+                    mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place), \
+                    mock.patch("timecapsulesmb.checks.network.macos_may_hold_this_process", return_value=held), \
+                    mock.patch("timecapsulesmb.discovery.bonjour.BonjourQuery.browse", return_value=(
+                        BonjourDiscoverySnapshot([], []), BonjourQueryDiagnostics("zeroconf", [], 0, 0, 0, 0),
+                    )), \
+                    mock.patch("sys.platform", "darwin" if held else sys.platform), \
+                    redirect_stdout(output), redirect_stderr(output):
+                try:
+                    rc = main([*argv, "--config", str(config)])
+                except SystemExit as exc:
+                    rc = 1
+                    output.write(str(exc.code))
+        self.assertNotEqual(rc, 0)
+        return output.getvalue()
+
+    def test_every_command_judges_a_silent_device_by_the_saved_router(self) -> None:
+        # Silence is a timeout, the "Host is down" macOS gives for a device on
+        # its network that is off, or no route, which Linux gives for one gone
+        # from its link and nothing holds a process there.
+        for silence in ("timed out", "[Errno 64] Host is down", "[Errno 113] No route to host"):
+            for argv in self.COMMANDS:
+                self.assert_judged(argv, silence)
+
+    def test_a_terminal_app_macos_may_hold_is_not_told_the_device_is_silent(self) -> None:
+        # iTerm2 or Visual Studio Code without Local Network access: every
+        # connect gets no route and a .local name does not resolve, while the
+        # device is up, and Bonjour sees nothing. No unplug as the verdict: the
+        # generic card, or Checkup's Bonjour line, names the terminal app.
+        for silence in ("[Errno 65] No route to host", "[Errno 8] nodename nor servname provided, or not known"):
+            for argv in self.COMMANDS:
+                with self.subTest(command=argv[0], silence=silence):
+                    text = self.run_against_silent_device(argv, "aa:00:00:00:00:01", silence, held=True)
+                    self.assertNotIn("same network as when it last reached the device", text)
+                    self.assertIn("terminal app other than Terminal", text)
+
+    def assert_judged(self, argv: list[str], silence: str) -> None:
+        with self.subTest(command=argv[0], silence=silence, router="same"):
+            text = self.run_against_silent_device(argv, "aa:00:00:00:00:01", silence)
+            self.assertIn("is on the same network as when it last reached the device", text)
+        with self.subTest(command=argv[0], silence=silence, router="another"):
+            text = self.run_against_silent_device(argv, "aa:00:00:00:00:02", silence)
+            self.assertIn("is on a different network than when it last reached the device", text)
+            self.assertNotIn("is on the same network as when it last reached the device", text)
 
 
 if __name__ == "__main__":

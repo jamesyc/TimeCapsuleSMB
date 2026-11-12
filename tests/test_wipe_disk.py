@@ -601,7 +601,7 @@ class InMemoryVolumeTests(unittest.TestCase):
         mast = subprocess.CompletedProcess([], 0, "MaSt=" + plistlib.dumps(mast).decode(), "")
         sink = DoctorSink(on_result=None, debug_fields={})
         with mock.patch.object(doctor_steps, "run_ssh", return_value=mast) as mast_read:
-            doctor_steps._doctor_check_disk_health(SimpleNamespace(connection=CONNECTION),
+            doctor_steps._doctor_check_disk_health(SimpleNamespace(router_mac=None, connection=CONNECTION),
                                                    SimpleNamespace(remote_checks_enabled=True), sink)
         self.device_commands[:0] = [call.args[1] for call in mast_read.call_args_list]
         return [result for result in sink.results if result.status == "FAIL"], sink.debug_fields
@@ -646,7 +646,7 @@ class InMemoryVolumeTests(unittest.TestCase):
         mast = subprocess.CompletedProcess([], 0, "MaSt=" + plistlib.dumps(bare).decode(), "")
         with mock.patch.object(doctor_steps, "run_ssh", return_value=mast), \
                 mock.patch.object(doctor_steps, "_doctor_check_disks_without_hfs") as without_hfs:
-            doctor_steps._doctor_check_disk_health(SimpleNamespace(connection=CONNECTION),
+            doctor_steps._doctor_check_disk_health(SimpleNamespace(router_mac=None, connection=CONNECTION),
                                                    SimpleNamespace(remote_checks_enabled=True),
                                                    DoctorSink(on_result=None, debug_fields={}))
         without_hfs.assert_called_once()
@@ -1724,7 +1724,7 @@ class DoctorDiskVerdictTests(unittest.TestCase):
             mock.patch.object(doctor_steps, "read_in_memory_volumes_conn",
                               return_value=wipe.InMemoryCheck(wipe.EraseLog())) as in_memory,
         ):
-            doctor_steps._doctor_check_disk_health(SimpleNamespace(connection=CONNECTION),
+            doctor_steps._doctor_check_disk_health(SimpleNamespace(router_mac=None, connection=CONNECTION),
                                                    SimpleNamespace(remote_checks_enabled=True), sink)
         self.gpt_disks = [call.args[1] for call in gpt.call_args_list]
         self.in_memory_read = in_memory.called

@@ -1317,7 +1317,7 @@ class CliFlashTests(CliTestCase):
         debug_fields: dict[str, object] = {}
         command_context.add_debug_fields = debug_fields.update  # type: ignore[method-assign]
         command_context.debug_fields = debug_fields  # type: ignore[attr-defined]
-        target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
+        target = SimpleNamespace(router_mac=None, connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
         args = argparse.Namespace(reboot=reboot, no_wait=no_wait)
         with tempfile.TemporaryDirectory() as tmp:
             backup_dir = Path(tmp)

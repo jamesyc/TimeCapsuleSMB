@@ -56,6 +56,28 @@ final class AirportIdentityLearningTests: XCTestCase {
         }
     }
 
+    func testAFinishedOperationSavesTheRouterTowardTheDeviceAndSendsItNextTime() async throws {
+        // The helper reports this Mac's router with the identity, successes and
+        // failures alike; the next operation sends it back, so a device that
+        // answers nothing can be told from this Mac being on another network.
+        var fields = identityFields()
+        fields["lan_router_mac"] = .string("84:78:48:9e:04:51")
+        let cases: [(String, BackendEvent)] = [
+            ("doctor", BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(fields))),
+            ("deploy", BackendEvent(type: "error", operation: "deploy", code: "restart_stuck", debug: .object(fields))),
+        ]
+        for (operation, event) in cases {
+            let fixture = try await AppViewFixture(responses: [.init(events: [event])], discoveryWaitsForReadiness: false)
+            let profile = try await namedProfile(fixture)
+
+            _ = fixture.appStore.operationCoordinator.run(operation: operation, profile: profile, password: "pw")
+            try await waitUntilStoreState { fixture.registry.profile(id: profile.id)?.lanRouterMAC == "84:78:48:9e:04:51" }
+            // Saved only once the identity made the profile this device's.
+            XCTAssertEqual(fixture.registry.profile(id: profile.id)?.network.airportMAC, mac, operation)
+            XCTAssertEqual(fixture.registry.profile(id: profile.id)?.runtimeContext.lanRouterMAC, "84:78:48:9e:04:51")
+        }
+    }
+
     func testATwinOnTheNetworkKeepsTheMACUnsaved() async throws {
         // Another AirPort with the same name: Apple renamed it, and the two can
         // swap names, so the name says which device this is no longer.

@@ -92,6 +92,24 @@ _MISMATCH_STEPS = (
     "If “Helper path” is set in “Settings”, clear it.",
 )
 
+# Unplugging ends a restart that stopped partway (services.reboot); only a
+# computer on the device's network can tell that the device went silent.
+_UNPLUG_STEP = "Unplug the device, wait 10 seconds and plug it back in."
+_UNPLUG_IF_ON_NETWORK_STEP = (
+    "If this Mac is on the device's network, unplug the device, wait 10 seconds and plug it back in."
+)
+_SAME_NETWORK_STEP = "Make sure you are connected to the same network or Wi-Fi as the device."
+_START_UP_THEN_RETRY_STEP = "Wait 2 minutes for the device to start up, then try again."
+_START_UP_THEN_CHECKUP_STEP = "Wait 2 minutes for the device to start up, then run “Checkup”."
+_RESETS_ITSELF_STEP = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
+_RESTART_STUCK_TITLE = "The device has not come back"
+# The app saves the router toward the device after each operation that reaches
+# it, so a new router looks like another network until then, while the device
+# answers nothing. The CLI's own step runs configure again.
+_NEW_ROUTER_STEP = (
+    "If you replaced the router on the device's network, make sure the device is plugged in and its status light "
+    "is on, then try again."
+)
 # After a restart on NetBSD 4, whose boot hook may be missing.
 _NETBSD4_ACTIVATE_STEP = "On NetBSD 4 devices, run “Activate” if the checkup says Samba is not running."
 # services.reboot.reboot_device: two ACP reads just before the request did
@@ -173,15 +191,20 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         action_ids=("open_system_settings", "retry"),
     ),
     # The helper's own message names the address and this Mac's networks.
+    # The device's address is on none of this Mac's networks, or it is on
+    # another network with the same addresses, which only its router told
+    # apart (checks.network.silent_device).
     ErrorCode.DEVICE_OFF_NETWORK: RecoveryInfo(
         "Device not on this Mac's network",
-        "The device's address isn't on this Mac's network. Check the address, or connect this Mac "
-        "to the device's network by Wi-Fi or one of its LAN ports, then try again.",
-        (),
+        "This Mac isn't on the device's network: the device's address isn't on it, or it is another network with "
+        "the same addresses. Connect this Mac to the device's network by Wi-Fi or one of its LAN ports, then try "
+        "again.",
+        (_NEW_ROUTER_STEP,),
         retryable=True,
         cli_extra=(
             "Check the address, or connect this computer to the device's network by Wi-Fi or one of its LAN ports, "
             "then try again.",
+            "If the device's network has a new router, run `tcapsule configure` again.",
         ),
     ),
     # No step: the filtering app may be a VPN the user cannot turn off.
@@ -240,10 +263,36 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         (
             "Make sure the device is turned on and connected to the same network or Wi-Fi as this Mac.",
             "If the device is restarting, wait a few minutes, then try again.",
+            _UNPLUG_IF_ON_NETWORK_STEP,
             _BLOCKED_IF_AIRPORT_UTILITY_SEES_IT,
         ),
         retryable=True,
         cli_extra=("Run `tcapsule doctor` to see which AirPorts answer on this network.",),
+    ),
+    # Nothing answers at the device's address while this Mac is on the network
+    # it last reached the device on, by its router (checks.network.silent_device):
+    # off, unplugged, or stopped partway through a restart.
+    # A device that moved to another address, where Bonjour does not show it
+    # or no MAC is saved to find it by, looks the same: Checkup lists the
+    # AirPorts this Mac sees.
+    ErrorCode.DEVICE_SILENT: RecoveryInfo(
+        "Device not answering",
+        "Nothing answers at the device's address, and this Mac is on the same network as when it last reached the "
+        "device. The device may be off or unplugged, it may have stopped partway through a restart, or it may have "
+        "a new address.",
+        (
+            "Make sure the device is plugged in and its status light is on.",
+            _UNPLUG_STEP,
+            _START_UP_THEN_RETRY_STEP,
+            "Run “Checkup” for details.",
+            # A device that reset itself to factory settings sits in router mode
+            # on its own network: its old address is silent, and unplugging
+            # does not bring it back.
+            _RESETS_ITSELF_STEP,
+        ),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
     ),
     # The saved address is a link-local one on an interface this Mac no longer
     # has (checks.network.link_local_interface_gone): its connects get no route.
@@ -298,8 +347,9 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
             "unplugged."
         ),
         (
-            "Unplug the device, wait 10 seconds and plug it back in.",
-            "Wait 2 minutes for the device to start up, then try again.",
+            _SAME_NETWORK_STEP,
+            _UNPLUG_IF_ON_NETWORK_STEP,
+            _START_UP_THEN_RETRY_STEP,
         ),
         retryable=True,
     ),
@@ -337,10 +387,24 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
             "starting up, or it may have a new IP address."
         ),
         (
-            "Wait a few more minutes.",
-            "Make sure you are connected to the same network or Wi-Fi as the device.",
-            "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.",
+            _SAME_NETWORK_STEP,
+            _UNPLUG_IF_ON_NETWORK_STEP,
+            _START_UP_THEN_CHECKUP_STEP,
         ),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
+    # The device stayed silent through the restart wait while this Mac stayed
+    # on its network (services.reboot): it may have stopped partway through
+    # the restart, which only unplugging it ends.
+    ErrorCode.RESTART_STUCK: RecoveryInfo(
+        _RESTART_STUCK_TITLE,
+        "The device went off the network when it restarted and has not come back, while this Mac stayed on that "
+        "network. It may have stopped partway through the restart, and only unplugging it ends that.",
+        # A device reset to factory settings comes back in router mode on its
+        # own network and looks the same from here.
+        (_UNPLUG_STEP, _START_UP_THEN_CHECKUP_STEP, _RESETS_ITSELF_STEP),
         retryable=True,
         suggested_operation="doctor",
         action_ids=("run_checkup",),
@@ -1018,20 +1082,28 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
+    # The install is done; the device did not start again (services.reboot).
+    ("deploy", ErrorCode.RESTART_STUCK): RecoveryInfo(
+        _RESTART_STUCK_TITLE,
+        "The installation files were copied and the restart was requested, but the device went off the network and "
+        "has not come back, while this Mac stayed on that network. It may have stopped partway through the "
+        "restart.",
+        (_UNPLUG_STEP, _START_UP_THEN_CHECKUP_STEP, _NETBSD4_ACTIVATE_STEP, _RESETS_ITSELF_STEP),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
     ("deploy", ErrorCode.REBOOT_NOT_FINISHED): RecoveryInfo(
         "Reboot did not finish",
         "The installation files were copied and the restart was requested, but the device did not "
         "answer over SSH again in time. It may still be starting up, or it may have come back "
         "at a different IP address.",
         (
-            "Wait a few more minutes.",
-            "Make sure you are connected to the same network or Wi-Fi as the device.",
+            _SAME_NETWORK_STEP,
+            _UNPLUG_IF_ON_NETWORK_STEP,
             "On NetBSD 4 devices, run “Activate” once SSH is reachable; the install did not "
             "get far enough to activate Samba after the reboot.",
-            "If your device resets itself, see "
-            "https://github.com/jamesyc/TimeCapsuleSMB/issues/177.",
-            "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back "
-            "in.",
+            _RESETS_ITSELF_STEP,
         ),
         retryable=True,
         suggested_operation="doctor",
@@ -1084,6 +1156,13 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ),
         retryable=True,
         suggested_operation="configure",
+    ),
+    ("configure", ErrorCode.RESTART_STUCK): RecoveryInfo(
+        _RESTART_STUCK_TITLE,
+        "Turning on SSH restarts the device. It went off the network and has not come back, while this Mac stayed "
+        "on that network: it may have stopped partway through the restart.",
+        (_UNPLUG_STEP, _START_UP_THEN_RETRY_STEP, _RESETS_ITSELF_STEP),
+        retryable=True,
     ),
     # Add Device has no saved device to run a Checkup on. Adding it again
     # restarts it only when SSH is still off.
@@ -1712,6 +1791,7 @@ _MACOS_ONLY_STEPS = frozenset({_BLOCKED_IF_AIRPORT_UTILITY_SEES_IT})
 _APP_ONLY_STEPS = frozenset({
     "If “Helper path” is set in “Settings”, clear it.",
     "Refresh the volume list, then try again.",
+    _NEW_ROUTER_STEP,
 })
 
 

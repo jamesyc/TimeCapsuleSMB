@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import (
     activation_plan_payload,
@@ -304,7 +305,9 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         probe_state = probe_managed_connection_state(connection)
         context.apply_probe_state(probe_state)
         if probe_state.compatibility is None:
-            raise device_operation_error(context, probe_failure_error(probe_state.probe_result, connection))
+            raise device_operation_error(context, probe_failure_error(
+                probe_state.probe_result, connection, router_mac=saved_router_mac(context.config),
+            ))
         netbsd4_autostart = installed_netbsd4_autostart(connection, probe_state, context.to_operation_callbacks())
     try:
         outcome = run_fsck(
@@ -410,7 +413,9 @@ def wipe_disk_operation(params: dict[str, object], context: AppOperationContext)
             probe_state = probe_managed_connection_state(connection)
             context.apply_probe_state(probe_state)
             if probe_state.compatibility is None:
-                raise device_operation_error(context, probe_failure_error(probe_state.probe_result, connection))
+                raise device_operation_error(context, probe_failure_error(
+                    probe_state.probe_result, connection, router_mac=saved_router_mac(context.config),
+                ))
             netbsd4_autostart = installed_netbsd4_autostart(connection, probe_state, callbacks)
         outcome = run_wipe(connection, plan, netbsd4_autostart=netbsd4_autostart, callbacks=callbacks)
     except WipeDiskError as exc:

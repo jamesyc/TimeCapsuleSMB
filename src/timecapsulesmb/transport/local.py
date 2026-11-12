@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import errno
+import ipaddress
 import os
 import re
 import selectors
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 
 from timecapsulesmb.core.net import ipv6_scope_index
 from timecapsulesmb.core.process import SPAWN_LOCK, run_process
@@ -175,36 +178,196 @@ def run_local_capture(
     return run_process(cmd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
-DEFAULT_ROUTE_COMMAND = ("/sbin/route", "-n", "get", "default")
-DEFAULT_ROUTE_TIMEOUT_SECONDS = 5
+ROUTE_TABLE_COMMAND = ("/usr/sbin/netstat", "-rn", "-f", "inet")
+NEIGHBOR_TABLE_COMMAND = ("/usr/sbin/arp", "-an")
+ROUTE_TABLE_TIMEOUT_SECONDS = 5
+LINUX_ROUTE_TABLE = "/proc/net/route"
+LINUX_NEIGHBOR_TABLE = "/proc/net/arp"
+# The discard port: a datagram there makes the kernel resolve the router's
+# hardware address, and nothing needs to answer it.
+_NEIGHBOR_PRIME_PORT = 9
+_NEIGHBOR_PRIME_WAIT_SECONDS = 0.3
+# Linux route flags RTF_UP and RTF_GATEWAY, and ARP flag ATF_COM (resolved).
+_RTF_UP = 0x1
+_RTF_GATEWAY = 0x2
+_ATF_COM = 0x2
 
 
-def mac_default_gateway(
+@dataclass(frozen=True)
+class Router:
+    """A default route's router on one interface: its IPv4 address, and its
+    hardware address from the neighbour table (None while unresolved)."""
+
+    interface: str
+    ip: str
+    mac: str | None
+
+
+def normalize_hardware_address(text: str) -> str | None:
+    """A hardware address in one spelling: lowercase, two digits per octet
+    (macOS's arp prints `0:1b:…`). None for anything else, and for the
+    all-zero address Linux lists for an unresolved entry."""
+    parts = text.strip().lower().split(":")
+    if len(parts) != 6 or not all(re.fullmatch(r"[0-9a-f]{1,2}", part) for part in parts):
+        return None
+    value = ":".join(f"{int(part, 16):02x}" for part in parts)
+    return None if value == "00:00:00:00:00:00" else value
+
+
+def _ipv4_text(text: str) -> str | None:
+    try:
+        return str(ipaddress.IPv4Address(text))
+    except ValueError:
+        return None
+
+
+def parse_darwin_default_routes(output: str) -> list[tuple[str, str]]:
+    """(interface, router) for each IPv4 default route in `netstat -rn -f
+    inet`, scoped ones included. A route through a link (`link#27`, as a VPN
+    tunnel's) has no router. The interface column is found by its `Netif`
+    header: macOS before 10.13 printed `Refs` and `Use` columns before it,
+    and the CLI still runs there."""
+    routes: list[tuple[str, str]] = []
+    netif = 3
+    for line in output.splitlines():
+        columns = line.split()
+        if columns[:1] == ["Destination"] and "Netif" in columns:
+            netif = columns.index("Netif")
+            continue
+        if len(columns) <= netif or columns[0] != "default":
+            continue
+        router = _ipv4_text(columns[1])
+        if router is not None and (columns[netif], router) not in routes:
+            routes.append((columns[netif], router))
+    return routes
+
+
+def parse_darwin_neighbors(output: str) -> dict[tuple[str, str], str]:
+    """{(interface, address): hardware address} from `arp -an`. An
+    `(incomplete)` entry is left out."""
+    neighbors: dict[tuple[str, str], str] = {}
+    for line in output.splitlines():
+        match = re.match(r"^\S+ \((?P<ip>[0-9.]+)\) at (?P<mac>\S+) on (?P<iface>\S+)", line.strip())
+        if match is None:
+            continue
+        mac = normalize_hardware_address(match.group("mac"))
+        if mac is not None:
+            neighbors[(match.group("iface"), match.group("ip"))] = mac
+    return neighbors
+
+
+def parse_linux_default_routes(text: str) -> list[tuple[str, str]]:
+    """(interface, router) for each default route in /proc/net/route, whose
+    addresses are little-endian hex."""
+    routes: list[tuple[str, str]] = []
+    for line in text.splitlines()[1:]:
+        columns = line.split()
+        if len(columns) < 8:
+            continue
+        try:
+            destination, gateway, flags, mask = (int(columns[index], 16) for index in (1, 2, 3, 7))
+        except ValueError:
+            continue
+        if destination or mask or not flags & _RTF_UP or not flags & _RTF_GATEWAY or not gateway:
+            continue
+        router = socket.inet_ntoa(struct.pack("<I", gateway))
+        if (columns[0], router) not in routes:
+            routes.append((columns[0], router))
+    return routes
+
+
+def parse_linux_neighbors(text: str) -> dict[tuple[str, str], str]:
+    """{(interface, address): hardware address} from /proc/net/arp, resolved
+    entries only."""
+    neighbors: dict[tuple[str, str], str] = {}
+    for line in text.splitlines()[1:]:
+        columns = line.split()
+        if len(columns) < 6:
+            continue
+        try:
+            flags = int(columns[2], 16)
+        except ValueError:
+            continue
+        mac = normalize_hardware_address(columns[3])
+        if flags & _ATF_COM and mac is not None:
+            neighbors[(columns[5], columns[0])] = mac
+    return neighbors
+
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="ascii", errors="replace") as handle:
+        return handle.read()
+
+
+def _prime_neighbor(address: str) -> None:
+    """Send one datagram to `address`, so the kernel looks up its hardware
+    address."""
+    try:
+        with SPAWN_LOCK, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.sendto(b"", (address, _NEIGHBOR_PRIME_PORT))
+    except OSError:
+        pass
+
+
+def lan_routers(
     *,
     platform: str = sys.platform,
     run: Callable[..., subprocess.CompletedProcess[str]] = run_process,
-) -> str | None:
-    """The address of this Mac's default router (`route -n get default`'s
-    gateway); None on another system, without a default route, or when route
-    fails."""
-    if platform != "darwin":
-        return None
-    try:
-        proc = run(
-            list(DEFAULT_ROUTE_COMMAND),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=DEFAULT_ROUTE_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    for line in (proc.stdout or "").splitlines():
-        key, _, value = line.strip().partition(":")
-        if key == "gateway" and value.strip():
-            return value.strip()
-    return None
+    read_text: Callable[[str], str] = _read_text,
+    prime: Callable[[str], None] = _prime_neighbor,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[Router, ...]:
+    """This computer's IPv4 default routers, one per interface that has a
+    default route, each with its hardware address. A router whose address is
+    not in the neighbour table gets one datagram and is looked up once more.
+    Empty on a system other than macOS or Linux, and when the tables cannot
+    be read; the caller treats that as unknown."""
+    if platform == "darwin":
+
+        def command_output(command: tuple[str, ...]) -> str | None:
+            try:
+                proc = run(
+                    list(command), stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=ROUTE_TABLE_TIMEOUT_SECONDS, check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return None
+            return proc.stdout if proc.returncode == 0 else None
+
+        routes_text = command_output(ROUTE_TABLE_COMMAND)
+        routes = parse_darwin_default_routes(routes_text) if routes_text is not None else []
+
+        def neighbors() -> dict[tuple[str, str], str]:
+            output = command_output(NEIGHBOR_TABLE_COMMAND)
+            return parse_darwin_neighbors(output) if output is not None else {}
+
+    elif platform.startswith("linux"):
+
+        def file_text(path: str) -> str | None:
+            try:
+                return read_text(path)
+            except OSError:
+                return None
+
+        routes_text = file_text(LINUX_ROUTE_TABLE)
+        routes = parse_linux_default_routes(routes_text) if routes_text is not None else []
+
+        def neighbors() -> dict[tuple[str, str], str]:
+            text = file_text(LINUX_NEIGHBOR_TABLE)
+            return parse_linux_neighbors(text) if text is not None else {}
+
+    else:
+        return ()
+    if not routes:
+        return ()
+    table = neighbors()
+    missing = [router for interface, router in routes if (interface, router) not in table]
+    if missing:
+        for router in dict.fromkeys(missing):
+            prime(router)
+        sleep(_NEIGHBOR_PRIME_WAIT_SECONDS)
+        table = neighbors()
+    return tuple(Router(interface, router, table.get((interface, router))) for interface, router in routes)
 
 
 SYSTEM_EXTENSIONS_COMMAND = ("/usr/bin/systemextensionsctl", "list")

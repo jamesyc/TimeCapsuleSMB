@@ -119,19 +119,24 @@ enum OperationTimelineBuilder {
             return fsckPhaseDetail(phase, recheck: event.recheck == true)
         }
         // A restart wait. Away from the device's network this Mac sees nothing
-        // else, so that comes first; then an ACPd that stopped without
-        // restarting the device; back on the network, or the device back up,
-        // the stage's own text.
+        // else, so that comes first; then a device that stayed silent while
+        // this Mac stayed on its network (or had no network); then an ACPd
+        // that stopped without restarting the device; back on the network, or
+        // the device back up, the stage's own text.
         if event.clientAway == true {
             if let name = event.networkName, !name.isEmpty {
                 return L10n.format("timeline.progress.client_away_named", name)
             }
             return L10n.string("timeline.progress.client_away")
         }
+        if event.restartStuck == true {
+            return L10n.string(event.clientOffline == true
+                ? "timeline.progress.restart_stuck_offline" : "timeline.progress.restart_stuck")
+        }
         if event.acpdHung == true {
             return L10n.string("timeline.progress.acpd_hung")
         }
-        if event.clientAway == false || event.acpdHung == false {
+        if event.clientAway == false || event.acpdHung == false || event.restartStuck == false {
             return stageDetail(for: event.operation, stage: event.stage)
         }
         return nil

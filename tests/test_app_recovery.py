@@ -95,11 +95,14 @@ class AppRecoveryTests(unittest.TestCase):
                 self.assertEqual(recovery["message"], "This operation is not supported on the detected AirPort model or OS.")
                 self.assertFalse(any("Forget" in action for action in recovery["actions"]))
 
-    def test_ssh_enable_timeout_recovery_says_to_unplug_and_retry(self) -> None:
+    def test_ssh_enable_timeout_recovery_says_to_unplug_only_on_the_devices_network(self) -> None:
         # configure and set-ssh both report this code once ACP took the request
-        # but SSH stayed closed for the whole wait. A restart that long has
-        # stopped partway and ends only when the device is unplugged, so the
-        # first step is unplugging it, never waiting longer.
+        # but SSH stayed closed for the whole wait, when nothing showed where
+        # this Mac was (a device that stays silent while this Mac stays on its
+        # network gets restart_stuck instead). A restart that long has stopped
+        # partway and ends only when the device is unplugged, which helps only
+        # a Mac on its network: the network comes first, then the unplug,
+        # never waiting longer.
         for operation in ("configure", "set-ssh"):
             with self.subTest(operation=operation):
                 recovery = recovery_for(operation, "ssh_enable_timeout")
@@ -109,10 +112,56 @@ class AppRecoveryTests(unittest.TestCase):
                 self.assertIn("until they are unplugged", recovery["message"])
                 self.assertTrue(recovery["retryable"])
                 self.assertEqual(recovery["actions"], [
-                    "Unplug the device, wait 10 seconds and plug it back in.",
+                    "Make sure you are connected to the same network or Wi-Fi as the device.",
+                    "If this Mac is on the device's network, unplug the device, wait 10 seconds and plug it back in.",
                     "Wait 2 minutes for the device to start up, then try again.",
                 ])
                 self.assertFalse(any("Wait a few minutes" in action for action in recovery["actions"]))
+
+    def test_a_restart_that_stayed_silent_on_the_same_network_unplugs_first(self) -> None:
+        # The wait saw this Mac stay on the device's network (by its router)
+        # while nothing answered: the unplug is the first step, without an if.
+        for operation, retry in (
+            ("configure", "Wait 2 minutes for the device to start up, then try again."),
+            ("set-ssh", "Wait 2 minutes for the device to start up, then run “Checkup”."),
+            ("uninstall", "Wait 2 minutes for the device to start up, then run “Checkup”."),
+            ("deploy", "Wait 2 minutes for the device to start up, then run “Checkup”."),
+        ):
+            with self.subTest(operation=operation):
+                recovery = recovery_for(operation, "restart_stuck")
+                self.assertEqual(recovery["title"], "The device has not come back")
+                self.assertIn("while this Mac stayed on that network", recovery["message"])
+                self.assertEqual(recovery["actions"][:2], ["Unplug the device, wait 10 seconds and plug it back in.", retry])
+        # A reset to factory settings looks the same from here, in every flow.
+        for operation in ("configure", "set-ssh", "deploy"):
+            with self.subTest(reset_step=operation):
+                self.assertIn(
+                    "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.",
+                    recovery_for(operation, "restart_stuck")["actions"],
+                )
+        deploy = recovery_for("deploy", "restart_stuck")
+        self.assertEqual(deploy["localization_key"], "deploy.restart_stuck")
+        self.assertIn("installation files were copied", deploy["message"])
+        self.assertIn("On NetBSD 4 devices, run “Activate” if the checkup says Samba is not running.", deploy["actions"])
+        self.assertEqual(deploy["action_ids"], ["run_checkup"])
+        # Add Device has no saved device to run a Checkup on.
+        self.assertNotIn("action_ids", {k: v for k, v in recovery_for("configure", "restart_stuck").items() if v})
+
+    def test_a_silent_device_is_told_apart_by_where_this_mac_is(self) -> None:
+        # Same network: off, unplugged or stuck, so the unplug comes without an
+        # if. Unknown: only conditionally. Another network: reconnect, no unplug.
+        same = recovery_for("deploy", "device_silent")
+        self.assertEqual(same["title"], "Device not answering")
+        self.assertIn("same network as when it last reached the device", same["message"])
+        self.assertIn("Unplug the device, wait 10 seconds and plug it back in.", same["actions"])
+        unknown = recovery_for("deploy", "device_unreachable")
+        self.assertIn(
+            "If this Mac is on the device's network, unplug the device, wait 10 seconds and plug it back in.",
+            unknown["actions"],
+        )
+        moved = recovery_for("deploy", "device_off_network")
+        self.assertIn("another network with the same addresses", moved["message"])
+        self.assertFalse(any("nplug" in step for step in [moved["message"], *moved["actions"]]))
 
     def test_ssh_that_stayed_closed_after_a_finished_restart_says_to_try_again_first(self) -> None:
         # The device came back on a new boot and is on the network, so the
@@ -323,8 +372,10 @@ class AppRecoveryTests(unittest.TestCase):
         self.assertEqual(
             recovery["actions"],
             [
-                "Wait a few more minutes.",
+                # Ten minutes have passed: a restart that long ends only with an
+                # unplug, which helps only a Mac on the device's network.
                 "Make sure you are connected to the same network or Wi-Fi as the device.",
+                "If this Mac is on the device's network, unplug the device, wait 10 seconds and plug it back in.",
                 (
                     "On NetBSD 4 devices, run “Activate” once SSH is reachable; the install did not get far "
                     "enough to activate Samba after the reboot."
@@ -333,7 +384,6 @@ class AppRecoveryTests(unittest.TestCase):
                     "If your device resets itself, see "
                     "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
                 ),
-                "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.",
             ],
         )
 
@@ -462,6 +512,7 @@ class CliStepsTests(unittest.TestCase):
             (
                 "Make sure the device is turned on and connected to the same network or Wi-Fi as this computer.",
                 "If the device is restarting, wait a few minutes, then try again.",
+                "If this computer is on the device's network, unplug the device, wait 10 seconds and plug it back in.",
                 # A command's connections count as its terminal app's.
                 "If AirPort Utility can see the device but this command cannot, and it runs in a terminal app other than "
                 "Terminal, such as iTerm2 or Visual Studio Code, macOS is blocking that app: turn it on in System "
@@ -472,7 +523,7 @@ class CliStepsTests(unittest.TestCase):
         # The CLI also runs on Linux, where a step about macOS has no use.
         linux = cli_steps("deploy", ErrorCode.DEVICE_UNREACHABLE, platform="linux")
         self.assertFalse(any("macOS" in step for step in linux))
-        self.assertEqual(len(linux), 3)
+        self.assertEqual(len(linux), 4)
         # A stale link-local address: the CLI finds the device again with configure.
         self.assertEqual(
             cli_steps("deploy", ErrorCode.LINK_LOCAL_INTERFACE_GONE),

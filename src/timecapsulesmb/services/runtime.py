@@ -6,15 +6,21 @@ from pathlib import Path
 import time
 
 from timecapsulesmb.checks.network import (
+    SSH_PORT,
+    SSH_PROOF_TIMEOUT_SECONDS,
     LinkLocalInterfaceGone,
     closed_ssh_port_error,
     link_local_interface_gone,
     local_network_block,
     local_network_block_possible,
+    router_mac_toward,
+    saved_router_mac,
+    silent_device,
     ssh_reached_device,
 )
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
 from timecapsulesmb.core.error_codes import ErrorCode, coded_error_in
+from timecapsulesmb.core.install import running_in_app
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.paths import AppPaths, resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility
@@ -45,7 +51,7 @@ from timecapsulesmb.device.processes import (
 from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
-from timecapsulesmb.transport.local import tcp_open
+from timecapsulesmb.transport.local import connect_answered, tcp_connect_error, tcp_open
 from timecapsulesmb.transport.errors import bare_timeout
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -114,10 +120,24 @@ def airport_identity_fields(
     return fields
 
 
-def report_airport_identity(callbacks: OperationCallbacks, reading: device_probe.AirportAcpReading) -> None:
-    """Report the device a read with the right password reached."""
-    if reading.password_matches:
-        callbacks.update(**airport_identity_fields(reading.airport_mac, reading.airport_name, reading.airport_dns_name))
+def report_airport_identity(
+    callbacks: OperationCallbacks, reading: device_probe.AirportAcpReading, host: str | None = None,
+) -> None:
+    """Report the device a read with the right password reached at `host`,
+    and, in the macOS app, this computer's router toward it there
+    (lan_router_mac): the app saves it, so a device that later answers
+    nothing is told apart from this computer being on another network
+    (checks.network.silent_device). The CLI saves its router only in
+    configure, so it does not read one here. A device reached through a
+    router, not on one of this computer's networks, has none."""
+    if not reading.password_matches:
+        return
+    fields = airport_identity_fields(reading.airport_mac, reading.airport_name, reading.airport_dns_name)
+    router_mac = router_mac_toward(endpoint_host(host)) if host and running_in_app() else None
+    if router_mac is not None:
+        fields["lan_router_mac"] = router_mac
+    if fields:
+        callbacks.update(**fields)
 
 
 def acpd_problems_and_disk_stalls(
@@ -329,12 +349,24 @@ def wifi_link_error(exc: BaseException, *, known: object) -> bool:
     return known is True and _slow_link_symptom(exc)
 
 
+# require_acpd_ready's look at port 22: a Wi-Fi link that crawls at a few
+# KB/s takes seconds to complete a connect, so a short limit would call a
+# device with SSH on silent.
+SSH_PORT_LOOK_TIMEOUT_SECONDS = 10.0
+
+
+def ssh_port_error(host: str) -> str | None:
+    """require_acpd_ready's look at port 22: tcp_connect_error, None when it connected."""
+    return tcp_connect_error(host, SSH_PORT, SSH_PORT_LOOK_TIMEOUT_SECONDS)
+
+
 def require_acpd_ready(
     connection: SshConnection,
     callbacks: OperationCallbacks,
     *,
     reading: device_probe.AirportAcpReading | None = None,
     restarts: bool = True,
+    router_mac: str | None = None,
 ) -> None:
     """Refuse, before anything changes, a device whose ACPd cannot take the work.
 
@@ -358,12 +390,26 @@ def require_acpd_ready(
     as the second read would only repeat the same retry, but ACPd's listener
     is read through SSH (acpd.acpd_problems).
     """
+    read_here = reading is None
     if reading is None:
         reading = read_admin_password(connection)
     callbacks.debug(**password_check_fields(reading))
     if reading.password_matches is False:
         raise DeviceAccessError(AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, code=ErrorCode.AUTH_FAILED)
-    report_airport_identity(callbacks, reading)
+    # Reported before the port look: a device reset to factory settings with
+    # SSH off still tells the app which device answered. The router toward it
+    # only for a read taken here: confirm_device_address already reported it
+    # with the read it passed in.
+    report_airport_identity(callbacks, reading, connection.host if read_here else None)
+    ssh_error = ssh_port_error(endpoint_host(connection.host))
+    if ssh_error is not None and (connect_answered(ssh_error) or reading.error):
+        # The checks below read through SSH, and would blame ACPd or this
+        # computer's ACP traffic. A refused port 22 is SSH off: ssh_disabled
+        # while ACP answers (a device reset to factory settings that kept its
+        # password), acpd_broken when it does not. A port that does not answer
+        # counts only beside an ACP read that did not either: alone it may be a
+        # slow link, which the SSH checks below wait out.
+        raise closed_port_error(connection, router_mac=router_mac, ssh_error=ssh_error)
     try:
         problems, stalls = acpd_problems_and_disk_stalls(
             connection, callbacks, network_reading=reading, disk_check=restarts,
@@ -408,7 +454,7 @@ def learn_airport_identity(host: str, password: str, callbacks: OperationCallbac
     its address, so an old profile learns the MAC before DHCP moves the device.
     One try: a device that does not answer is looked at again next time.
     """
-    report_airport_identity(callbacks, device_probe.read_airport_acp(host, password, attempts=1))
+    report_airport_identity(callbacks, device_probe.read_airport_acp(host, password, attempts=1), host)
 
 
 def confirm_device_address(
@@ -429,7 +475,7 @@ def confirm_device_address(
     """
     reading = device_probe.read_airport_acp(host, password, attempts=attempts)
     if reading.password_matches and reading.airport_mac in (None, airport_mac):
-        report_airport_identity(callbacks, reading)
+        report_airport_identity(callbacks, reading, host)
         return host, reading
     if reading.password_matches is None:
         trigger = "unreachable"
@@ -482,13 +528,43 @@ def follow_saved_device(
     return moved, device_reading
 
 
-# Apple's ssh, asked whether the device is up when this program's own
-# connections get no route: a reachable device answers within seconds. Its
-# login has transport.ssh.SSH_LOGIN_SECONDS on top.
-SSH_PROOF_TIMEOUT_SECONDS = 15
 
 
-def probe_failure_error(probe_result: ProbeResult, connection: SshConnection) -> DeviceAccessError:
+def closed_port_error(
+    connection: SshConnection, *, router_mac: str | None = None, ssh_error: str | None = None,
+) -> DeviceAccessError:
+    """The error for a device whose SSH port does not let this computer in:
+    see probe_failure_error. `router_mac` is saved_router_mac's; `ssh_error`
+    is port 22's failed connect when the caller has one
+    (checks.network.closed_ssh_port_error)."""
+    host = endpoint_host(connection.host)
+    if (interface := link_local_interface_gone(host)) is not None:
+        gone = LinkLocalInterfaceGone(host, interface)
+        return DeviceAccessError(gone.message, code=gone.code, detail=gone.detail)
+    closed = closed_ssh_port_error(host, ssh_error=ssh_error)
+    detail = closed.detail
+    reached = False
+    if closed.code == ErrorCode.DEVICE_UNREACHABLE and local_network_block_possible(host, (closed.acp_error,)):
+        ssh = probe_ssh_command_conn(connection, "/bin/echo ok", timeout=SSH_PROOF_TIMEOUT_SECONDS)
+        reached = ssh_reached_device(ssh)
+        block = local_network_block(host, (closed.acp_error,), proof="ssh" if reached else None)
+        if block is not None:
+            return DeviceAccessError(block.message, code=block.code, detail=block.detail)
+        if not reached:
+            # Telemetry then says whether /usr/bin/ssh is held by the same
+            # block (no route) or the device is gone (a timeout).
+            detail = f"{detail} SSH from this computer did not reach it either ({ssh.detail})."
+    if closed.silent and not reached:
+        # Nothing answers: where this computer is says whether the device
+        # is off or stuck, or this computer is on another network.
+        silent = silent_device(closed, router_mac)
+        return DeviceAccessError(silent.message, code=silent.code, detail=f"{detail} {silent.place_sentence}".rstrip())
+    return DeviceAccessError(closed.message, code=closed.code, detail=detail)
+
+
+def probe_failure_error(
+    probe_result: ProbeResult, connection: SshConnection, *, router_mac: str | None = None,
+) -> DeviceAccessError:
     """The error for a probe that did not log in. A closed SSH port says why
     (checks.network.closed_ssh_port_error), after two causes that look the
     same from here: a saved link-local address on an interface this computer
@@ -499,23 +575,7 @@ def probe_failure_error(probe_result: ProbeResult, connection: SshConnection) ->
     an ACP connect with no route, an address not on another network), so
     other failures cost nothing more."""
     if probe_result.ssh_status == SshAccessStatus.CLOSED:
-        host = endpoint_host(connection.host)
-        if (interface := link_local_interface_gone(host)) is not None:
-            gone = LinkLocalInterfaceGone(host, interface)
-            return DeviceAccessError(gone.message, code=gone.code, detail=gone.detail)
-        closed = closed_ssh_port_error(host)
-        detail = closed.detail
-        if closed.code == ErrorCode.DEVICE_UNREACHABLE and local_network_block_possible(host, (closed.acp_error,)):
-            ssh = probe_ssh_command_conn(connection, "/bin/echo ok", timeout=SSH_PROOF_TIMEOUT_SECONDS)
-            reached = ssh_reached_device(ssh)
-            block = local_network_block(host, (closed.acp_error,), proof="ssh" if reached else None)
-            if block is not None:
-                return DeviceAccessError(block.message, code=block.code, detail=block.detail)
-            if not reached:
-                # Telemetry then says whether /usr/bin/ssh is held by the same
-                # block (no route) or the device is gone (a timeout).
-                detail = f"{detail} SSH from this computer did not reach it either ({ssh.detail})."
-        return DeviceAccessError(closed.message, code=closed.code, detail=detail)
+        return closed_port_error(connection, router_mac=router_mac)
     if probe_result.timeout is not None:
         # The device did not answer in time; nothing closed the connection.
         # The timeout stays the cause, so the error gets its guidance.
@@ -562,6 +622,8 @@ def probe_managed_connection_state(
 class ManagedTargetState:
     connection: SshConnection
     probe_state: ProbedDeviceState | None
+    # saved_router_mac of the config the target came from.
+    router_mac: str | None = None
 
 
 def load_env_config(
@@ -646,13 +708,15 @@ def resolve_validated_managed_target(
         password_provider=password_provider,
     )
     if profile == "flash":
-        return ManagedTargetState(connection=connection, probe_state=None)
+        return ManagedTargetState(connection=connection, probe_state=None, router_mac=saved_router_mac(config))
     probe_state = probe_managed_connection_state(connection) if include_probe else None
-    return ManagedTargetState(connection=connection, probe_state=probe_state)
+    return ManagedTargetState(connection=connection, probe_state=probe_state, router_mac=saved_router_mac(config))
 
 
-def require_connection_compatibility(connection: SshConnection) -> DeviceCompatibility:
+def require_connection_compatibility(
+    connection: SshConnection, *, router_mac: str | None = None,
+) -> DeviceCompatibility:
     state = probe_managed_connection_state(connection)
     if state.compatibility is None:
-        raise probe_failure_error(state.probe_result, connection)
+        raise probe_failure_error(state.probe_result, connection, router_mac=router_mac)
     return state.compatibility

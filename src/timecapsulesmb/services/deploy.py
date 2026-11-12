@@ -116,7 +116,7 @@ from timecapsulesmb.device.wipe import (
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import Netbsd4StartMessages, start_netbsd4_runtime_after_reboot
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.reboot import ACPD_STOPPED_MESSAGE, followed, reboot_device
+from timecapsulesmb.services.reboot import ACPD_STOPPED_MESSAGE, followed, reboot_device, restart_stuck_message
 from timecapsulesmb.device.probe import AirportAcpReading
 from timecapsulesmb.device.processes import UNREADABLE_SERVICE_STOP_MESSAGE
 from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error, require_acpd_ready
@@ -143,6 +143,10 @@ DEPLOY_ACPD_STOPPED_MESSAGE = f"{ACPD_STOPPED_MESSAGE} The update is installed a
 # A NetBSD 4 device without the firmware startup hook starts nothing at boot.
 DEPLOY_ACPD_STOPPED_ACTIVATE_MESSAGE = (
     f"{ACPD_STOPPED_MESSAGE} The update is installed, but this device does not start it by itself when it starts up."
+)
+DEPLOY_RESTART_STUCK_MESSAGE = f"{restart_stuck_message()} The update is installed and starts when the device starts up again."
+DEPLOY_RESTART_STUCK_ACTIVATE_MESSAGE = (
+    f"{restart_stuck_message()} The update is installed, but this device does not start it by itself when it starts up."
 )
 DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not restart. "
@@ -839,7 +843,7 @@ def prepare_deploy_preflight(
         # Deploy ends in an ACP reboot: refuse a password ACP would reject, or
         # an ACPd that would not restart the device, before the confirmation,
         # not after the upload has stopped the runtime.
-        require_acpd_ready(connection, callbacks, reading=device_reading)
+        require_acpd_ready(connection, callbacks, reading=device_reading, router_mac=target.router_mac)
     payload_context = prepare_deploy_payload_context(
         connection,
         compatibility,
@@ -881,7 +885,7 @@ def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: 
         raise DeviceError("Failed to determine remote device OS compatibility.")
     compatibility = probe_state.compatibility
     if compatibility is None:
-        raise probe_failure_error(probe_state.probe_result, target.connection)
+        raise probe_failure_error(probe_state.probe_result, target.connection, router_mac=target.router_mac)
     if not compatibility.supported and not allow_unsupported:
         raise DeployDeviceError(render_compatibility_message(compatibility), code=ErrorCode.UNSUPPORTED_DEVICE)
     if not compatibility.payload_family:
@@ -1683,6 +1687,8 @@ def complete_deployment_after_upload(
 
     if messages.reboot_request_message:
         callbacks.message(messages.reboot_request_message)
+    # A NetBSD 4 device without the firmware startup hook starts nothing at boot.
+    activates_by_hand = startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE and not payload_context.rc_local_autostart
     connection = followed(connection, reboot_device(
         connection.host,
         connection.password,
@@ -1691,10 +1697,9 @@ def complete_deployment_after_upload(
         no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
         up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
         stopped_message=(
-            DEPLOY_ACPD_STOPPED_ACTIVATE_MESSAGE
-            if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE and not payload_context.rc_local_autostart
-            else DEPLOY_ACPD_STOPPED_MESSAGE
+            DEPLOY_ACPD_STOPPED_ACTIVATE_MESSAGE if activates_by_hand else DEPLOY_ACPD_STOPPED_MESSAGE
         ),
+        stuck_message=DEPLOY_RESTART_STUCK_ACTIVATE_MESSAGE if activates_by_hand else DEPLOY_RESTART_STUCK_MESSAGE,
         ssh=connection,
     ))
 

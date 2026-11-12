@@ -46,6 +46,7 @@ from timecapsulesmb.checks.local_tools import check_required_artifacts, check_re
 from timecapsulesmb.checks.models import DEVICE_NOT_CHECKED_CODE, DOMAIN_COMPUTER, DOMAIN_DEVICE, CheckResult
 from timecapsulesmb.checks.nsmb_conf import check_nsmb_conf
 from timecapsulesmb.checks.network import (
+    saved_router_mac,
     CLI_TERMINAL_APP_BLOCKED,
     IpNetwork,
     NetworkLinkResult,
@@ -2240,6 +2241,7 @@ def _build_doctor_target(inputs: DoctorInputs) -> DoctorTarget:
         connection=connection,
         host=endpoint_host(connection.host),
         smb_password=inputs.config.require("TC_PASSWORD"),
+        router_mac=saved_router_mac(inputs.config),
     )
 
 
@@ -2252,7 +2254,7 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
             active_smb_conf_reason="SSH check skipped",
         )
 
-    ssh_result = check_ssh_login(target.connection)
+    ssh_result = check_ssh_login(target.connection, router_mac=target.router_mac)
     sink.add(ssh_result)
     if ssh_result.details.get("code") == acpd.APPLE_ACPD_BROKEN_CODE and sink.debug_fields is not None:
         # The ACPd step needs SSH and does not run; doctor_finished reports
@@ -2269,7 +2271,10 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
         active_smb_conf_reason="SSH check not run" if ssh_ok else "SSH login failed",
         # A saved link-local address on an interface this computer no longer
         # has answers nothing either, and the AirPorts it sees show the one to use.
-        device_unreachable=code in ("device_unreachable", ErrorCode.LINK_LOCAL_INTERFACE_GONE),
+        device_unreachable=code in (
+            ErrorCode.DEVICE_UNREACHABLE, ErrorCode.DEVICE_SILENT, ErrorCode.DEVICE_OFF_NETWORK,
+            ErrorCode.LINK_LOCAL_INTERFACE_GONE,
+        ),
     )
 
 

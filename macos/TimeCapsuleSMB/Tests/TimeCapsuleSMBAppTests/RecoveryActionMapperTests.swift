@@ -439,8 +439,8 @@ final class RecoveryActionMapperTests: XCTestCase {
         let recovery = try recoveryValue(
             title: "Reboot did not finish",
             actions: [
-                "Wait a few more minutes.",
                 "Make sure you are connected to the same network or Wi-Fi as the device.",
+                "If this Mac is on the device's network, unplug the device, wait 10 seconds and plug it back in.",
                 "On NetBSD 4 devices, run “Activate” once SSH is reachable; the install did not get far enough to activate Samba after the reboot.",
                 "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
             ],
@@ -463,7 +463,9 @@ final class RecoveryActionMapperTests: XCTestCase {
             "The installation files were copied and the restart was requested, but the device did not answer over SSH again in time. It may still be starting up, or it may have come back at a different IP address."
         )
         XCTAssertEqual(english.steps.count, 4)
-        XCTAssertEqual(english.steps[1], "Make sure you are connected to the same network or Wi-Fi as the device.")
+        XCTAssertEqual(english.steps[0], "Make sure you are connected to the same network or Wi-Fi as the device.")
+        XCTAssertEqual(english.steps[1],
+                       "If this Mac is on the device's network, unplug the device, wait 10 seconds and plug it back in.")
         XCTAssertEqual(
             english.steps[3],
             "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
@@ -472,7 +474,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         L10n.apply(language: .simplifiedChinese)
         let chinese = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(chinese.title, "重启未完成")
-        XCTAssertEqual(chinese.steps[0], "再等待几分钟。")
+        XCTAssertEqual(chinese.steps[1], "如果此 Mac 在设备的网络中，请拔掉设备电源，等待 10 秒，然后重新插上。")
         XCTAssertEqual(chinese.steps.count, 4)
         XCTAssertEqual(
             chinese.steps[3],

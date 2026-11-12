@@ -122,6 +122,37 @@ final class OperationTimelineBuilderTests: XCTestCase {
                        OperationTimelineBuilder.stageDetail(for: "deploy", stage: "wait_for_reboot_up"))
     }
 
+    func testARestartThatStayedSilentOnThisNetworkAsksForAnUnplug() throws {
+        let data = """
+        {"schema_version":1,"type":"progress","operation":"deploy","stage":"wait_for_reboot_up","restart_stuck":true,"client_offline":false}
+        """.data(using: .utf8)!
+        let stuck = try JSONDecoder().decode(BackendEvent.self, from: data)
+        XCTAssertEqual(stuck.restartStuck, true)
+        XCTAssertEqual(stuck.withRequestId("req-3").restartStuck, true)
+        XCTAssertEqual(stuck.withRequestId("req-3").clientOffline, false)
+        let stage = BackendEvent(type: "stage", operation: "deploy", stage: "wait_for_reboot_up")
+        let unplug = L10n.string("timeline.progress.restart_stuck")
+
+        XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, stuck])[0].detail, unplug)
+        // With no network at all, the unplug only if this Mac used the device's Wi-Fi.
+        let offline = BackendEvent(type: "progress", operation: "deploy", stage: "wait_for_reboot_up",
+                                   restartStuck: true, clientOffline: true)
+        XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, offline])[0].detail,
+                       L10n.string("timeline.progress.restart_stuck_offline"))
+        // Away from the network comes first; back on it, the unplug again.
+        let away = BackendEvent(type: "progress", operation: "deploy", stage: "wait_for_reboot_up",
+                                clientAway: true, networkName: "", acpdHung: false, restartStuck: true, clientOffline: false)
+        let back = BackendEvent(type: "progress", operation: "deploy", stage: "wait_for_reboot_up",
+                                clientAway: false, acpdHung: false, restartStuck: true, clientOffline: false)
+        XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, stuck, away])[0].detail,
+                       L10n.string("timeline.progress.client_away"))
+        XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, stuck, away, back])[0].detail, unplug)
+        // The device came back: the stage's own text.
+        let upAgain = BackendEvent(type: "progress", operation: "deploy", stage: "wait_for_reboot_up", restartStuck: false)
+        XCTAssertEqual(OperationTimelineBuilder.timeline(from: [stage, stuck, upAgain])[0].detail,
+                       OperationTimelineBuilder.stageDetail(for: "deploy", stage: "wait_for_reboot_up"))
+    }
+
     func testStageWithoutProgressKeepsItsDetail() {
         let events = [
             BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy"),

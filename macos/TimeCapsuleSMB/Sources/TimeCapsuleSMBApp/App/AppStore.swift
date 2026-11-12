@@ -362,8 +362,12 @@ final class AppStore: ObservableObject {
                   checkedIdentityEvents.updateValue(event.id, forKey: lane.key) != event.id,
                   let identity = AirportIdentityObservation(event: event) else { continue }
             let visible = deviceDiscovery.devices.map(\.observedIdentity)
+            let router = [event.payload, event.debug].lazy.compactMap { $0?.stringValue(for: "lan_router_mac") }.first
             deviceRegistry.enqueueOperationUpdate { [deviceRegistry] in
                 await deviceRegistry.confirmAirportIdentity(identity, for: profileID, visible: visible)
+                if let router {
+                    await deviceRegistry.recordLanRouter(router, airportMAC: identity.mac, for: profileID)
+                }
             }
         }
     }

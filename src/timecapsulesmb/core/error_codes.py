@@ -39,6 +39,10 @@ class ErrorCode(str, Enum):
     # Reaching the device.
     AUTH_FAILED = "auth_failed"
     DEVICE_UNREACHABLE = "device_unreachable"
+    # Nothing answers at the device's address while this computer is on the
+    # network it last reached the device on (checks.network.silent_device):
+    # the device is off, unplugged, or stuck.
+    DEVICE_SILENT = "device_silent"
     DEVICE_OFF_NETWORK = "device_off_network"
     DEVICE_IDENTITY_MISMATCH = "device_identity_mismatch"
     # Configure found an AirPort the app has saved and stopped before writing
@@ -76,6 +80,10 @@ class ErrorCode(str, Enum):
     # This Mac left the device's network during the restart wait and never
     # came back to it (services.reboot): whether the device restarted is unknown.
     CLIENT_LEFT_NETWORK = "client_left_network"
+    # The device stayed silent through the restart wait while this computer
+    # stayed on its network (services.reboot): the device may have stopped
+    # partway through the restart, which only unplugging it ends.
+    RESTART_STUCK = "restart_stuck"
     # A restart TimeCapsuleSMB asked for, often by another command, is under
     # way: the command stopped before doing anything.
     DEVICE_RESTARTING = "device_restarting"

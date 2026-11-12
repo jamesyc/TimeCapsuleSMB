@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
+from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
@@ -125,6 +126,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     callbacks=command_context.to_operation_callbacks(),
                     initial=status,
                     reading=command_context.reading_at(connection),
+                    router_mac=saved_router_mac(command_context.config),
                 )
             except Exception as e:
                 error_text = str(e)
@@ -153,7 +155,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         # Disabling SSH ends in an ACP reboot: check ACPd and the password
         # before the prompt and before SSH is turned off in the saved settings.
-        require_acpd_ready(connection, command_context.to_operation_callbacks(), reading=command_context.reading_at(connection))
+        require_acpd_ready(connection, command_context.to_operation_callbacks(),
+                           reading=command_context.reading_at(connection), router_mac=saved_router_mac(command_context.config))
 
         if action is SetSshAction.PROMPT_DISABLE:
             command_context.set_stage("prompt_disable_ssh")

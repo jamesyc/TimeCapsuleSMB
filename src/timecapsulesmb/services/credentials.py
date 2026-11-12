@@ -4,6 +4,7 @@ from typing import Mapping
 
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.discovery.models import normalize_airport_mac
+from timecapsulesmb.transport.local import normalize_hardware_address
 
 
 def request_password(params: Mapping[str, object]) -> str:
@@ -73,6 +74,12 @@ def overlay_request_airport_mac(config: AppConfig, params: Mapping[str, object])
     mac = request_airport_mac(params)
     values = dict(config.values)
     values["TC_AIRPORT_MAC"] = mac or ""
+    # The router toward the device the last time the app reached it: newer
+    # than the one configure saved in the .env, which stays without one.
+    router = params.get("lan_router_mac")
+    router_mac = normalize_hardware_address(router) if isinstance(router, str) else None
+    if router_mac is not None:
+        values["TC_LAN_ROUTER_MAC"] = router_mac
     return AppConfig.from_values(
         values,
         path=config.path,

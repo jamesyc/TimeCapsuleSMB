@@ -109,6 +109,9 @@ class DoctorTarget:
     connection: SshConnection
     host: str
     smb_password: str
+    # This computer's router toward the device when it last reached it
+    # (checks.network.saved_router_mac).
+    router_mac: str | None = None
 
 
 @dataclass(frozen=True)

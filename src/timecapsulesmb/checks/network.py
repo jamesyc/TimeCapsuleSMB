@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
+import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal, Union
 
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.install import running_in_app, this_computer
 from timecapsulesmb.core.net import (
@@ -28,7 +31,15 @@ from timecapsulesmb.transport.errors import (
     TransportError,
     local_network_filtered_message,
 )
-from timecapsulesmb.transport.local import connect_answered, connect_error_kind, connect_unanswered, tcp_connect_error
+from timecapsulesmb.transport.local import (
+    Router,
+    connect_answered,
+    connect_error_kind,
+    connect_unanswered,
+    lan_routers,
+    normalize_hardware_address,
+    tcp_connect_error,
+)
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -244,8 +255,188 @@ def classify_network_link(
     return NetworkLinkResult(verdict, device, local, source, detail)
 
 
+PlaceVerdict = Literal["same", "moved", "offline", "unknown"]
+
+
+@dataclass(frozen=True)
+class NetworkPlace:
+    """Where this computer is: its LAN networks (local_lan_networks) and the
+    default router on each LAN interface (transport.local.lan_routers), as
+    read at one moment."""
+
+    networks: tuple[LocalInterfaceNetwork, ...]
+    routers: tuple[Router, ...]
+
+    @property
+    def router_macs(self) -> frozenset[str]:
+        return frozenset(router.mac for router in self.routers if router.mac)
+
+    def router_toward(self, device_networks: Iterable[IpNetwork]) -> Router | None:
+        """The router on an interface whose network holds one of the device's
+        addresses: the network this computer reaches the device on. A
+        full-tunnel VPN takes the system default route, never this one."""
+        device = tuple(device_networks)
+        interfaces = [
+            item.interface for item in self.networks
+            if any(item.network.version == network.version and item.network.overlaps(network) for network in device)
+        ]
+        for interface in interfaces:
+            for router in self.routers:
+                if router.interface == interface:
+                    return router
+        return None
+
+    def routes_through(self, device_networks: Iterable[IpNetwork]) -> bool:
+        """Whether one of this computer's routers holds one of the device's
+        addresses: a Time Capsule in router mode, whose restart takes the route
+        toward it away."""
+        addresses = {str(network.network_address) for network in device_networks}
+        return any(router.ip in addresses for router in self.routers)
+
+
+def read_network_place(
+    *,
+    networks: Callable[[], tuple[LocalInterfaceNetwork, ...]] | None = None,
+    routers: Callable[[], tuple[Router, ...]] | None = None,
+) -> NetworkPlace | None:
+    """This computer's place now; None when its interfaces cannot be read.
+    VPN and virtual interfaces' routers are left out, as their networks are
+    (interface_kind)."""
+    try:
+        lan = (networks or local_lan_networks)()
+        found = (routers or lan_routers)()
+    except Exception:
+        return None
+    return NetworkPlace(
+        tuple(lan),
+        tuple(router for router in found if interface_kind(router.interface) not in ("vpn", "virtual")),
+    )
+
+
+@dataclass(frozen=True)
+class PlaceComparison:
+    """Whether this computer is on the network it reached the device on.
+
+    `verdict`: `same`, the router toward the device is the one it was;
+    `moved`, no network holds the device's address, or that network's router
+    is another one this computer did not already have; `offline`, this
+    computer has no LAN address at all; `unknown`, nothing settles it, such as
+    an unreadable router. `evidence` names what decided it.
+    """
+
+    verdict: PlaceVerdict
+    evidence: str | None = None
+    router_before: str | None = None
+    router_now: str | None = None
+
+    def telemetry(self) -> dict[str, object]:
+        fields: dict[str, object] = {"client_place": self.verdict}
+        if self.evidence is not None:
+            fields["place_evidence"] = self.evidence
+        if self.router_before is not None:
+            fields["router_mac_before"] = self.router_before
+        if self.router_now is not None:
+            fields["router_mac_now"] = self.router_now
+        return fields
+
+
+def compare_place(
+    now: NetworkPlace | None,
+    device_networks: Iterable[IpNetwork],
+    *,
+    router_mac: str | None,
+    known_router_macs: frozenset[str] = frozenset(),
+    known_networks: Iterable[IpNetwork] | None = None,
+    device_is_router: bool = False,
+) -> PlaceComparison:
+    """Compare this computer's place `now` with where it reached the device:
+    `router_mac`, the router toward the device then. `known_router_macs` and
+    `known_networks` are every router and network it had then, when known:
+    leaving for one of them is not moving, as a Mac on the device's Ethernet
+    and on another Wi-Fi network is only left on that Wi-Fi when the restart
+    drops the Ethernet link. `device_is_router`: the device was this
+    computer's router (router mode), so while it is down there is no router
+    toward it, and a computer that stayed has no other."""
+    if now is None:
+        return PlaceComparison("unknown", router_before=router_mac)
+    if not now.networks:
+        return PlaceComparison("offline", "no_address", router_before=router_mac)
+    device = tuple(device_networks)
+    if not device:
+        # A saved name that no longer resolves, as a .local name does while
+        # the device is off, and also while it is up on a network that drops
+        # multicast: the router alone would tell a working device to be
+        # unplugged.
+        return PlaceComparison("unknown", "unresolved", router_before=router_mac)
+    link = classify_network_link(device, [item.network for item in now.networks], source="place")
+    if link.verdict == "separate":
+        local, _device = link.compared()
+        if known_networks is not None and set(local) <= set(known_networks):
+            return PlaceComparison("unknown", "known_networks", router_before=router_mac)
+        return PlaceComparison("moved", "subnet", router_before=router_mac)
+    router = now.router_toward(device)
+    current = router.mac if router is not None else None
+    if device_is_router:
+        if current is None:
+            # Still routed through the device, which does not answer for its
+            # address: this computer has no other router to have moved to.
+            return PlaceComparison("same", "device_is_router", router_mac, current)
+        if router_mac is None:
+            # A router answers, and nothing says whether it is the device's.
+            return PlaceComparison("unknown", "device_is_router", router_mac, current)
+        if current == router_mac or current in known_router_macs:
+            return PlaceComparison("same", "device_is_router", router_mac, current)
+        return PlaceComparison("moved", "router", router_mac, current)
+    if current is None or router_mac is None:
+        return PlaceComparison("unknown", router_before=router_mac, router_now=current)
+    if current == router_mac:
+        return PlaceComparison("same", "router", router_mac, current)
+    if current in known_router_macs:
+        return PlaceComparison("unknown", "known_router", router_mac, current)
+    return PlaceComparison("moved", "router", router_mac, current)
+
+
 PORT_CHECK_TIMEOUT_SECONDS = 2.0
 SSH_PORT = 22
+# Apple's ssh, asked whether the device is up when this program's own
+# connections get no route (local_network_block's proof): a reachable device
+# answers within seconds. Its login has transport.ssh.SSH_LOGIN_SECONDS on top.
+SSH_PROOF_TIMEOUT_SECONDS = 15
+
+
+def macos_may_hold_this_process(*, platform: str | None = None, environ: dict[str, str] | None = None) -> bool:
+    """Whether macOS's Local Network access may refuse this process's
+    connections to the LAN: it holds apps, this one included, and every
+    terminal app but Terminal, a command's connections counting as its
+    terminal app's (CLI_TERMINAL_APP_BLOCKED). A command run over SSH is not
+    held, and Linux has no such access."""
+    if (platform or sys.platform) != "darwin":
+        return False
+    if running_in_app():
+        return True
+    env = os.environ if environ is None else environ
+    return env.get("TERM_PROGRAM") != "Apple_Terminal" and not env.get("SSH_CONNECTION")
+
+
+# What a terminal app macOS holds gets for every connect to the LAN: no route,
+# and a .local name that does not resolve, its mDNS lookups being refused too.
+_HELD_TERMINAL_KINDS = frozenset({"no_route", "name_lookup_failed"})
+
+
+def terminal_may_be_held(
+    errors: Iterable[str | None], *, platform: str | None = None, environ: dict[str, str] | None = None,
+) -> bool:
+    """Whether a command outside the app got connect errors that its terminal
+    app being held by Local Network access would give
+    (macos_may_hold_this_process): they say nothing about whether the device
+    is up, so they are not a silent device. Nothing outside the app can
+    prove such a block (local_network_block_possible), so the error keeps its
+    generic code, whose card names the terminal app. The app proves or rules
+    out its own block before it judges a silent device."""
+    if running_in_app() or not macos_may_hold_this_process(platform=platform, environ=environ):
+        return False
+    kinds = {kind for error in errors if error for kind in (connect_error_kind(error) or "").split("+")}
+    return bool(kinds & _HELD_TERMINAL_KINDS)
 
 
 @dataclass(frozen=True)
@@ -265,6 +456,17 @@ class ClosedSshPort:
         if self.acp_error is None:
             return ErrorCode.SSH_DISABLED
         return ErrorCode.ACPD_BROKEN if self.acp_stuck else ErrorCode.DEVICE_UNREACHABLE
+
+    @property
+    def silent(self) -> bool:
+        """Nothing answered at the address: a refusal on the ACP port is a host
+        that is up (the device with ACPd gone, or another one that took the
+        address), so only a device that is not answered at all is judged by
+        where this computer is (silent_device)."""
+        return (
+            self.code == ErrorCode.DEVICE_UNREACHABLE and not connect_answered(self.acp_error)
+            and not terminal_may_be_held((self.acp_error,))
+        )
 
     @property
     def _ssh_answer(self) -> str:
@@ -330,6 +532,112 @@ def closed_ssh_port_error(host: str, *, ssh_error: str | None = None) -> ClosedS
     if ssh_error is None:
         ssh_error = tcp_connect_error(host, SSH_PORT, PORT_CHECK_TIMEOUT_SECONDS)
     return ClosedSshPort(host, acp_error, acp_stuck=connect_answered(ssh_error), ssh_accepted=ssh_error is None)
+
+
+@dataclass(frozen=True)
+class SilentDevice:
+    """A device that answers nothing at its address (ClosedSshPort's
+    device_unreachable), with where this computer is against the network it
+    last reached the device on (compare_place against `router_mac`, the
+    router toward the device then)."""
+
+    closed: ClosedSshPort
+    place: PlaceComparison
+    platform: str | None = None
+
+    @property
+    def code(self) -> ErrorCode:
+        if self.place.verdict == "same":
+            return ErrorCode.DEVICE_SILENT
+        if self.place.verdict == "moved":
+            return ErrorCode.DEVICE_OFF_NETWORK
+        return ErrorCode.DEVICE_UNREACHABLE
+
+    @property
+    def place_sentence(self) -> str:
+        computer = this_computer(self.platform)
+        capitalized = this_computer(self.platform, capitalized=True)
+        if self.place.verdict == "same":
+            return f"{capitalized} is on the same network as when it last reached the device."
+        if self.place.verdict == "moved" and self.place.evidence == "router":
+            return (
+                f"{capitalized} is on a different network than when it last reached the device, "
+                "although the addresses look alike."
+            )
+        if self.place.verdict == "moved":
+            return f"The device's address is not on {computer}'s network."
+        if self.place.verdict == "offline":
+            return f"{capitalized} has no network connection."
+        return ""
+
+    @property
+    def message(self) -> str:
+        if self.place.verdict == "same":
+            return "The device is not answering on this network."
+        if self.place.verdict == "moved":
+            return self.place_sentence
+        if self.place.verdict == "offline":
+            return f"The device is not answering, and {this_computer(self.platform)} has no network connection."
+        return self.closed.message
+
+    @property
+    def detail(self) -> str:
+        return f"{self.closed.detail} {self.place_sentence}".rstrip()
+
+    @property
+    def line(self) -> str:
+        """Checkup's result line."""
+        return f"{self.closed.line} {self.place_sentence}".rstrip()
+
+    @property
+    def details(self) -> dict[str, object]:
+        return {**self.closed.details, **self.place.telemetry()}
+
+
+def saved_router_mac(config: AppConfig | None) -> str | None:
+    """This computer's router toward the device when it last reached it
+    (TC_LAN_ROUTER_MAC: configure's, or the app's newer one), for telling a
+    device that answers nothing from this computer being on another network.
+    None without a config (a command that has not loaded one)."""
+    value = config.get("TC_LAN_ROUTER_MAC") if config is not None else None
+    return normalize_hardware_address(value) if value else None
+
+
+def router_mac_toward(host: str, *, place: NetworkPlace | None = None) -> str | None:
+    """The hardware address of this computer's router toward `host` now: the
+    default router on the interface whose network holds it. None for a host
+    on none of this computer's networks, or when the router cannot be read."""
+    now = place if place is not None else read_network_place()
+    if now is None:
+        return None
+    try:
+        device = host_networks(host)
+    except Exception:
+        return None
+    router = now.router_toward(device)
+    return router.mac if router is not None else None
+
+
+def silent_device(
+    closed: ClosedSshPort,
+    router_mac: str | None,
+    *,
+    place: NetworkPlace | None = None,
+    platform: str | None = None,
+) -> SilentDevice:
+    """Where this computer is, for a device that answers nothing at
+    `closed.host`. `place` is this computer's place now (read_network_place
+    by default). A device whose address is one of this computer's routers is
+    in router mode: while it is down there is no router toward it."""
+    now = place if place is not None else read_network_place()
+    try:
+        device = host_networks(closed.host)
+    except Exception:
+        device = []
+    device_is_router = now is not None and now.routes_through(device)
+    return SilentDevice(
+        closed, compare_place(now, device, router_mac=router_mac, device_is_router=device_is_router), platform,
+    )
 
 
 def link_local_interface_gone(host: str, addresses: Iterable[str] | None = None) -> str | None:
@@ -510,7 +818,10 @@ def local_network_block(
     return LocalNetworkBlock(host, proof, tuple(dict.fromkeys((*errors, retry))))
 
 
-def check_ssh_login(connection: SshConnection) -> CheckResult:
+def check_ssh_login(connection: SshConnection, *, router_mac: str | None = None) -> CheckResult:
+    """SSH logs in at `connection`. A device that answers nothing is judged
+    against `router_mac`, this computer's router toward it when it last
+    reached it (silent_device)."""
     result = probe_ssh_command_conn(
         connection,
         "/bin/echo ok",
@@ -521,7 +832,9 @@ def check_ssh_login(connection: SshConnection) -> CheckResult:
         return CheckResult("PASS", f"SSH command works for {connection.host}")
     details = {"code": ssh_login_failure_code(result.error)}
     if details["code"] == "ssh_unreachable" and (
-        unanswered := _unanswered_ssh_port(connection.host, ssh_reached=ssh_reached_device(result))
+        unanswered := _unanswered_ssh_port(
+            connection.host, ssh_reached=ssh_reached_device(result), router_mac=router_mac,
+        )
     ) is not None:
         return unanswered
     if result.detail.startswith(("Connecting to the device failed, SSH error:", local_network_filtered_message())):
@@ -529,7 +842,7 @@ def check_ssh_login(connection: SshConnection) -> CheckResult:
     return CheckResult("FAIL", f"SSH command failed for {connection.host}: {result.detail}", details)
 
 
-def _unanswered_ssh_port(target: str, *, ssh_reached: bool = False) -> CheckResult | None:
+def _unanswered_ssh_port(target: str, *, ssh_reached: bool = False, router_mac: str | None = None) -> CheckResult | None:
     """Why SSH did not get through, when its port does not answer.
 
     ssh waits out its own connect timeout, so an address nothing answers at
@@ -552,6 +865,11 @@ def _unanswered_ssh_port(target: str, *, ssh_reached: bool = False) -> CheckResu
         block := local_network_block(host, (ssh_error, closed.acp_error), proof="ssh" if ssh_reached else None)
     ) is not None:
         return CheckResult("FAIL", block.line, block.details)
+    if closed.silent:
+        # Nothing answers: where this computer is says whether to unplug the
+        # device or to reconnect this computer.
+        silent = silent_device(closed, router_mac)
+        return CheckResult("FAIL", silent.line, {"code": silent.code, "ssh_port_error": ssh_error, **silent.details})
     # A stuck ACPd gets the ACPd step's own code, which needs SSH and does not run.
     code = acpd.APPLE_ACPD_BROKEN_CODE if closed.acp_stuck else closed.code
     return CheckResult("FAIL", closed.line, {"code": code, "ssh_port_error": ssh_error, **closed.details})

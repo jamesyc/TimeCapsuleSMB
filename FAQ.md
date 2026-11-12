@@ -355,7 +355,7 @@ Apple's disk checker (`fsck_hfs`) ended with a crash signal, such as SIGBUS (exi
 
 Turning on SSH restarts the device. When that fails, Configure and “Enable SSH” tell three cases apart:
 
-- **The device has not come back:** no new startup answered within 10 minutes. Some Time Capsules stop partway through a restart and stay off the network, Wi-Fi included, until they are unplugged. Unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, then try again.
+- **The device has not come back:** no new startup answered within 10 minutes. Some Time Capsules stop partway through a restart and stay off the network, Wi-Fi included, until they are unplugged. If this Mac stayed on the device's network, the app says so after 6 minutes and asks you to unplug the device, and it keeps waiting while you do. If it could not tell, check that this Mac is on the device's network first. Then unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, and try again.
 - **SSH did not turn on:** the device restarted and is back, but SSH stayed off for 4 minutes after that. Try again; if it still does not turn on, unplug the device, wait 10 seconds and plug it back in, then try again after 2 minutes.
 - **This Mac moved to another network:** while the device restarted, macOS joined another network it knows, such as an iPhone hotspot, and stayed on it, so TimeCapsuleSMB could not see the device come back. Connect the Mac to the device's network again. Then, in Configure, try again: if SSH turned on, it does not restart the device again. After “Enable SSH”, run a Checkup instead. The same can happen at any restart, such as the one at the end of an install.
 

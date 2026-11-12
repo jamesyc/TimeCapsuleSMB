@@ -52,6 +52,38 @@ final class ApplianceIdentityTests: XCTestCase {
         XCTAssertEqual(registry.profiles, recorded)
     }
 
+    func testTheRouterTowardTheSavedDeviceIsKeptAcrossLaunches() async throws {
+        // The helper tells a device that answers nothing from this Mac being on
+        // another network by the router it reached the device through last.
+        let registry = try await loadedRegistry()
+        let profile = try await registry.storeTestProfile(configuredDevice: testConfiguredDevice(host: "192.0.2.10", airportMAC: mac),
+            discoveredDevice: nil, passwordState: .available, preferredID: "known")
+        XCTAssertNil(registry.profile(id: profile.id)?.lanRouterMAC)
+
+        await registry.recordLanRouter("84:78:48:9E:04:51", airportMAC: mac, for: profile.id)
+        XCTAssertEqual(registry.profile(id: profile.id)?.lanRouterMAC, "84:78:48:9e:04:51")
+        XCTAssertEqual(registry.profile(id: profile.id)?.runtimeContext.lanRouterMAC, "84:78:48:9e:04:51")
+        await registry.load()
+        XCTAssertEqual(registry.profile(id: profile.id)?.lanRouterMAC, "84:78:48:9e:04:51")
+
+        // Another AirPort's operation, or no usable address, changes nothing.
+        let recorded = registry.profiles
+        await registry.recordLanRouter("aa:aa:aa:aa:aa:aa", airportMAC: peerMAC, for: profile.id)
+        await registry.recordLanRouter("not a mac", airportMAC: mac, for: profile.id)
+        await registry.recordLanRouter("00:00:00:00:00:00", airportMAC: mac, for: profile.id)
+        XCTAssertEqual(registry.profiles, recorded)
+
+        // A new router on the device's network replaces the old one.
+        await registry.recordLanRouter("aa:aa:aa:aa:aa:aa", airportMAC: mac, for: profile.id)
+        XCTAssertEqual(registry.profile(id: profile.id)?.lanRouterMAC, "aa:aa:aa:aa:aa:aa")
+
+        // A profile with no saved MAC: whatever answered may be another AirPort.
+        let unsaved = try await registry.storeTestProfile(configuredDevice: testConfiguredDevice(host: "192.0.2.20"),
+            discoveredDevice: nil, passwordState: .available, preferredID: "unsaved")
+        await registry.recordLanRouter("84:78:48:9e:04:51", airportMAC: peerMAC, for: unsaved.id)
+        XCTAssertNil(registry.profile(id: unsaved.id)?.lanRouterMAC)
+    }
+
     func testConflictRecoveryUsesLocalizedActionLabelsAndPreservesUserNames() {
         let previousLanguage = L10n.currentLanguage
         defer { L10n.apply(language: previousLanguage) }

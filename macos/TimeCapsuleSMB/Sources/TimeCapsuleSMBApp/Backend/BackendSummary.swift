@@ -303,6 +303,12 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.ssh_disabled")
         case "device_unreachable":
             return L10n.string("doctor.check.device_unreachable")
+        // Nothing answers, judged by this Mac's router toward the device
+        // (checks.network.silent_device): the same network, or another one.
+        case "device_silent":
+            return L10n.string("doctor.check.device_silent")
+        case "device_off_network":
+            return L10n.string("doctor.check.device_off_network")
         // The helper's line says how long ago the restart was asked for.
         case "device_restarting":
             return L10n.string("doctor.check.device_restarting")

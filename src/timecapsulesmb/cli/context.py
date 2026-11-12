@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
+from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.cli.util import color_red
@@ -83,7 +84,10 @@ def error_with_next_steps(
     if code is None:
         return message
     steps = list(cli_steps(command, code, stage=stage))
-    if code == ErrorCode.DEVICE_UNREACHABLE and config is not None and not config.get("TC_AIRPORT_MAC"):
+    if (
+        code in (ErrorCode.DEVICE_UNREACHABLE, ErrorCode.DEVICE_SILENT)
+        and config is not None and not config.get("TC_AIRPORT_MAC")
+    ):
         steps.append(
             "This configuration has no AirPort MAC: run `tcapsule configure` once, so commands "
             "find the device when its address changes."
@@ -464,7 +468,9 @@ class CommandContext:
         if self.probe_state.compatibility is None:
             # Say why SSH did not log in (SSH off, device unreachable, password
             # rejected) rather than leave it to look like an unsupported device.
-            raise service_runtime.probe_failure_error(self.probe_state.probe_result, self.connection)
+            raise service_runtime.probe_failure_error(
+                self.probe_state.probe_result, self.connection, router_mac=saved_router_mac(self.config),
+            )
         self.compatibility = self.probe_state.compatibility
         self.operation_context.apply_probe_state(self.probe_state)
         return self.compatibility

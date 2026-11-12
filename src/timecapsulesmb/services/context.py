@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 # and the identity it answered with (services.runtime.airport_identity_fields).
 # The app saves them with the profile, failures included.
 DEVICE_UPDATE_FIELDS = ("current_host", "airport_mac", "airport_instance_name", "airport_host_label",
-                        "airport_host_label_source")
+                        "airport_host_label_source", "lan_router_mac")
 # The names the user gave the device, and which name the host label came
 # from, go to the app only, not to telemetry: not as operation fields, nor in
 # the debug text of a failure.

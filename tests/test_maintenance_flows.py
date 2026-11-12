@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from timecapsulesmb.services.reboot import unplug_if_on_network_note
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.deploy.executor import FLUSH_REMOTE_FILESYSTEMS_COMMAND, remote_uninstall_payload
 from timecapsulesmb.deploy.verify import VerificationResult
@@ -374,7 +375,9 @@ class RunFsckTests(FsckHarness, unittest.TestCase):
         self.assertEqual(outcome.code, "reboot_not_finished")
         self.assertEqual(
             str(outcome),
-            f"{REBOOT_UP_TIMEOUT_MESSAGE}\nfsck_hfs exited with status 8; the disk may still need repair.",
+            # Nothing showed where this Mac was, so the unplug is conditional.
+            f"{REBOOT_UP_TIMEOUT_MESSAGE} {unplug_if_on_network_note(None)}\n"
+            "fsck_hfs exited with status 8; the disk may still need repair.",
         )
 
 

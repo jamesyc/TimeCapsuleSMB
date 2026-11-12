@@ -87,6 +87,10 @@ ENV_FILE_KEYS = [
     # The AirPort MAC configure confirmed, so commands find the device again
     # after DHCP moves it (services.locate).
     "TC_AIRPORT_MAC",
+    # This computer's router toward the device when configure reached it, so
+    # a device that later answers nothing is told apart from this computer
+    # being on another network (checks.network.silent_device).
+    "TC_LAN_ROUTER_MAC",
 ]
 # Identity settings now come from the device. `configure` strips these
 # obsolete overrides from an existing .env with a notice.

@@ -16,10 +16,19 @@ final class DeviceProfilePersistenceServiceTests: XCTestCase {
         let edit = try service.prepareConfigureTarget(targetHost: "10.0.0.3", discoveredDevice: nil,
             existingProfile: saved, preferredID: saved.id, settings: .default)
         XCTAssertEqual(edit.context.airportMAC, "02:aa:bb:cc:dd:ee")
+        XCTAssertNil(edit.context.lanRouterMAC)
+        // The router the profile saved goes too (lan_router_mac), so a device
+        // that answers nothing is judged as in every other operation.
+        await registry.recordLanRouter("84:78:48:9e:04:51", airportMAC: "02:aa:bb:cc:dd:ee", for: saved.id)
+        let routed = try service.prepareConfigureTarget(targetHost: "10.0.0.3", discoveredDevice: nil,
+            existingProfile: registry.profile(id: saved.id), preferredID: saved.id, settings: .default)
+        XCTAssertEqual(routed.context.lanRouterMAC, "84:78:48:9e:04:51")
         // A new device has no MAC yet, so configure reads whichever answers.
         let added = try service.prepareConfigureTarget(targetHost: "10.0.0.4", discoveredDevice: nil,
             existingProfile: nil, preferredID: "new", settings: .default)
         XCTAssertNil(added.context.airportMAC)
+        XCTAssertNil(added.context.lanRouterMAC)
+        service.discardConfigureDraft(routed)
         service.discardConfigureDraft(edit)
         service.discardConfigureDraft(added)
     }

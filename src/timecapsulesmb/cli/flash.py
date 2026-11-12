@@ -5,6 +5,7 @@ import base64
 from pathlib import Path
 from typing import Optional
 
+from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
     LogCallback,
@@ -331,7 +332,8 @@ def _resolve_flash_target(
     # ACP reboot: refuse a stuck ACPd before the first read. Only the reboot
     # could interrupt a disk check (`restarts`).
     require_acpd_ready(connection, command_context.to_operation_callbacks(),
-                       reading=command_context.reading_at(connection), restarts=restarts)
+                       reading=command_context.reading_at(connection),
+                       router_mac=saved_router_mac(command_context.config), restarts=restarts)
     emit_progress(log, f"Using ACP host {flash_target.acp_host}.")
     return flash_target
 

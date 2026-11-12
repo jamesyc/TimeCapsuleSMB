@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Mapping
 
+from timecapsulesmb.checks.network import router_mac_toward
 from timecapsulesmb.configure_defaults import existing_config_value_or_default, validated_value_or_empty
 from timecapsulesmb.core.config import (
     AIRPORT_SYAP_TO_MODEL,
@@ -47,7 +48,7 @@ from timecapsulesmb.services.runtime import (
     DeviceAccessError,
     confirm_device_address,
 )
-from timecapsulesmb.transport.local import connect_error_kind, connect_unanswered, tcp_connect_error
+from timecapsulesmb.transport.local import connect_error_kind, connect_unanswered, normalize_hardware_address, tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection
 
 # SSH's port did not answer, where a device with SSH off refuses it at once.
@@ -192,9 +193,12 @@ def enable_ssh_and_reprobe(
     record: BonjourResolvedService | None = None,
     before_enable: Callable[[str], None] | None = None,
     unanswered: bool = False,
+    router_mac: str | None = None,
 ) -> tuple[SshConnection, ProbedDeviceState]:
     """Turn SSH on through ACP, reboot, and probe again. `unanswered`: SSH's
     port did not answer rather than refuse, so SSH may be on already.
+    `router_mac`: the router toward the device an earlier configure saved,
+    which judges an address where nothing answers (acp_ssh.ACPSilentError).
 
     Returns the connection to the address SSH was turned on at, which moves
     when the device is found at a new address by its AirPort MAC, and the new
@@ -220,6 +224,7 @@ def enable_ssh_and_reprobe(
             callbacks=callbacks,
             record=record,
             before_enable=before_enable,
+            router_mac=router_mac,
         )
     except ACPAuthError:
         callbacks.debug(
@@ -374,6 +379,8 @@ def run_configure_flow(
                 probe=probe_connection,
                 record=request.selected_record,
                 unanswered=ssh_port_unanswered,
+                # Configure run again on a device it set up before.
+                router_mac=normalize_hardware_address(request.existing.get("TC_LAN_ROUTER_MAC", "")),
                 before_enable=(
                     (lambda acp_host: hooks.confirm_enable_ssh(acp_host, ssh_port_unanswered))
                     if hooks.confirm_enable_ssh is not None else None
@@ -486,6 +493,10 @@ def run_configure_flow(
     # Empty when the device could not say: a MAC kept from an earlier device
     # would send later commands looking for that one.
     values["TC_AIRPORT_MAC"] = airport_mac or ""
+    # The router toward the device now, so a device that later answers
+    # nothing is told apart from this computer being on another network
+    # (checks.network.silent_device). None through a router or a VPN.
+    values["TC_LAN_ROUTER_MAC"] = router_mac_toward(endpoint_host(values.get("TC_HOST") or connection.host)) or ""
 
     for removed_key, removed_reason in REMOVED_ENV_FILE_KEYS.items():
         if removed_key in request.existing:

@@ -17,6 +17,9 @@ from timecapsulesmb.checks.network import (
     local_lan_networks,
     local_network_block,
     reportable_network,
+    macos_may_hold_this_process,
+    silent_device,
+    terminal_may_be_held,
 )
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.device import probe
@@ -88,6 +91,19 @@ class ACPStuckError(ACPConnectionError):
     ACP's port would look the same."""
 
     code = ErrorCode.ACPD_BROKEN
+
+
+class ACPSilentError(ACPConnectionError):
+    """Every ACP connect, and SSH's port after them, went unanswered: nothing
+    answers at the address. `code` is where this computer is against the
+    router it last reached the device through (checks.network.silent_device):
+    device_silent or device_off_network, or None when that settles nothing,
+    so the operation's stage picks the code. `closed` is what the ports showed."""
+
+    def __init__(self, message: str, *, detail: str, closed: ClosedSshPort, code: ErrorCode | None = None) -> None:
+        super().__init__(message, detail=detail)
+        self.closed = closed
+        self.code = code
 
 
 # Advice for an ACP port that does not answer at an address on this
@@ -175,6 +191,7 @@ def _probe_acp_port(
     callbacks: OperationCallbacks,
     tcp_connect_error_func: Callable[[str, int], str | None],
     sleep_func: Callable[[float], None],
+    router_mac: str | None = None,
 ) -> None:
     errors: list[dict[str, object]] = []
     for attempt in range(1, ACP_PORT_PROBE_ATTEMPTS + 1):
@@ -222,7 +239,10 @@ def _probe_acp_port(
     if (interface := link_local_interface_gone(host)) is not None:
         gone = LinkLocalInterfaceGone(host, interface)
         raise ACPLinkLocalInterfaceGoneError(f"{failure} {gone.message}", detail=f"{unanswered} {gone.detail}")
-    if all(entry["kind"] == "no_route" for entry in errors):
+    # No route is macOS refusing a process its Local Network access holds (the
+    # app, a terminal app other than Terminal), or a host gone from its link,
+    # which is all it can be where nothing is held (Linux): silence below.
+    if macos_may_hold_this_process() and all(entry["kind"] == "no_route" for entry in errors):
         connect_errors = tuple(str(entry["error"]) for entry in errors)
         # The Bonjour record this address came from shows the device is up.
         block = _local_network_block(host, connect_errors, "bonjour" if record is not None else None, tcp_connect_error_func)
@@ -241,6 +261,20 @@ def _probe_acp_port(
         if connect_answered(ssh_error):
             stuck = ClosedSshPort(host, errors[-1]["error"], acp_stuck=True, ssh_accepted=ssh_error is None)
             raise ACPStuckError(f"{failure} {stuck.message}", detail=stuck.detail)
+    connect_errors = [str(entry["error"]) for entry in errors]
+    if not any(connect_answered(error) for error in connect_errors) and not terminal_may_be_held(connect_errors):
+        # Nothing answered: timeouts, "Host is down", which macOS gives for a
+        # device on this computer's network that is off, or no route outside
+        # macOS. Only a timeout can be a stuck ACPd's full queue, so only
+        # timeouts try SSH's port above. A router-mode device needs no saved
+        # router to be judged (silent_device).
+        closed = ClosedSshPort(host, connect_errors[-1])
+        silent = silent_device(closed, router_mac)
+        if silent.code == ErrorCode.DEVICE_UNREACHABLE:
+            raise ACPSilentError(failure, detail=unanswered, closed=closed)
+        raise ACPSilentError(
+            f"{failure} {silent.message}", detail=f"{unanswered} {silent.place_sentence}", closed=closed, code=silent.code,
+        )
     raise ACPConnectionError(failure, detail=unanswered)
 
 
@@ -306,6 +340,7 @@ def enable_ssh_with_port_preflight(
     tcp_connect_error_func: Callable[[str, int], str | None] | None = None,
     sleep_func: Callable[[float], None] | None = None,
     before_enable: Callable[[str], None] | None = None,
+    router_mac: str | None = None,
 ) -> str:
     """Ask ACP to turn SSH on at the next boot, once its port answers.
 
@@ -319,6 +354,8 @@ def enable_ssh_with_port_preflight(
     `before_enable` gets the address once ACP answers there and before
     anything is changed, so a confirmation names the device that will
     reboot and a device that does not answer is never offered a reboot.
+    `router_mac`: this computer's router toward the device when it last
+    reached it, which judges an address where nothing answers (ACPSilentError).
     """
     callbacks = callbacks or OperationCallbacks()
     tcp_connect_error_func = tcp_connect_error_func or tcp_connect_error
@@ -328,7 +365,7 @@ def enable_ssh_with_port_preflight(
     callbacks.message(f"Checking AirPort ACP on {host}:{ACP_PORT}...")
     callbacks.stage("acp_port_probe")
     try:
-        _probe_acp_port(host, record, callbacks, tcp_connect_error_func, sleep_func)
+        _probe_acp_port(host, record, callbacks, tcp_connect_error_func, sleep_func, router_mac)
     except ACPConnectionError as exc:
         found = _follow(airport_mac, password, host, trigger="acp_unreachable", callbacks=callbacks) if airport_mac else None
         if found is None:

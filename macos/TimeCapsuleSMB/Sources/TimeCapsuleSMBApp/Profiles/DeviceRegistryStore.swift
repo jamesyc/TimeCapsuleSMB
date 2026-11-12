@@ -232,6 +232,17 @@ final class DeviceRegistryStore: ObservableObject {
         }
     }
 
+    /// Save this Mac's router toward the device an operation reached, so a
+    /// later operation can tell a device that answers nothing from this Mac
+    /// being on another network. Only for the saved device: `airportMAC` is the
+    /// MAC the operation read, which must be the profile's saved one (AppStore
+    /// confirms an identity first, so a profile that just learned it counts).
+    func recordLanRouter(_ routerMAC: String, airportMAC: String, for profileID: DeviceProfile.ID) async {
+        await applyBackgroundMutation {
+            try await repository.recordLanRouter(routerMAC, airportMAC: airportMAC, for: profileID)
+        }
+    }
+
     func updateDeployState(_ snapshot: DeviceDeployStateSnapshot, for profileID: DeviceProfile.ID) async {
         await applyBackgroundMutation {
             try await repository.updateDeployState(snapshot, for: profileID)
@@ -611,6 +622,33 @@ private actor DeviceRegistryRepository {
         var updatedProfiles = profiles
         updatedProfiles[index].network.airportMAC = identity.mac
         try validateProfileIdentity(updatedProfiles[index])
+        updatedProfiles[index].updatedAt = now()
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return updatedProfiles
+    }
+
+    func recordLanRouter(
+        _ routerMAC: String, airportMAC: String, for profileID: DeviceProfile.ID
+    ) throws -> [DeviceProfile]? {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }),
+              // The helper sends the canonical spelling (lowercase, two digits per octet).
+              let router = DeviceNetworkIdentity.normalizedAirportMAC(routerMAC) else {
+            return nil
+        }
+        let profile = profiles[index]
+        // Only for the saved device: a profile without a MAC may be answered
+        // by another AirPort at its address (confirmAirportIdentity refused
+        // its names, or has not learned it yet), whose router says nothing
+        // about this device.
+        guard let saved = profile.network.airportMAC, saved == DeviceNetworkIdentity.normalizedAirportMAC(airportMAC) else {
+            return nil
+        }
+        guard profile.lanRouterMAC != router else {
+            return nil
+        }
+        var updatedProfiles = profiles
+        updatedProfiles[index].lanRouterMAC = router
         updatedProfiles[index].updatedAt = now()
         try persist(updatedProfiles)
         profiles = updatedProfiles

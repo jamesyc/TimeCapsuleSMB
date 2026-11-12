@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import sys
 import unittest
 from pathlib import Path
@@ -11,11 +12,14 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.services.reboot import unplug_if_on_network_note
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.integrations.acp import ACP_PORT, ACPConnectionError
-from timecapsulesmb.services.acp_ssh import ACPNoRouteUnprovenError, ACPStuckError
+from timecapsulesmb.checks.network import ClosedSshPort, LocalInterfaceNetwork, NetworkPlace
+from timecapsulesmb.services.acp_ssh import ACPNoRouteUnprovenError, ACPSilentError, ACPStuckError
+from timecapsulesmb.transport.local import Router
 from timecapsulesmb.services.reboot import SSH_ENABLE_NO_RETURN_MESSAGE, SSH_ENABLE_TIMEOUT_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.set_ssh import (
@@ -91,6 +95,29 @@ class SetSshServiceTests(unittest.TestCase):
         set_dbug.assert_not_called()
         reboot.assert_not_called()
 
+    def test_an_address_where_neither_port_answers_is_a_silent_device(self) -> None:
+        # ACP's port three times and SSH's after them, all unanswered: nothing
+        # is at the address, which enable_failure_code judges by where this
+        # computer is.
+        connects: list[int] = []
+
+        def connect(_host: str, port: int) -> str | None:
+            connects.append(port)
+            return "timed out"
+
+        closed = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=False, ssh_port_reachable=False)
+        with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", side_effect=connect), \
+                mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=()), \
+                mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug:
+            with self.assertRaises(ACPSilentError) as raised:
+                enable_set_ssh(CONNECTION, no_wait=False, initial=closed)
+
+        self.assertEqual(connects, [ACP_PORT] * 3 + [SSH_PORT])
+        self.assertEqual(raised.exception.closed, ClosedSshPort("10.0.0.2", "timed out"))
+        set_dbug.assert_not_called()
+
     def test_enable_noops_when_ssh_is_already_open(self) -> None:
         with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable:
             result = enable_set_ssh(CONNECTION, no_wait=False, initial=SSH_OPEN)
@@ -137,8 +164,9 @@ class SetSshServiceTests(unittest.TestCase):
         for device, wait_result, code, message in (
             (FakeAcpDevice(ssh_open=False, ssh_up_after_boot=None), "ssh_not_open", "ssh_closed_after_restart",
              SSH_ENABLE_TIMEOUT_MESSAGE),
+            # Nothing showed where this Mac was: the unplug is conditional.
             (FakeAcpDevice(ssh_open=False, kernel_after=10_000.0), "did_not_come_back_up", "ssh_enable_timeout",
-             SSH_ENABLE_NO_RETURN_MESSAGE),
+             f"{SSH_ENABLE_NO_RETURN_MESSAGE} {unplug_if_on_network_note(None)}"),
         ):
             with self.subTest(wait_result=wait_result):
                 result, recorder, _enable = self.enable(device)
@@ -237,7 +265,11 @@ class SetSshServiceTests(unittest.TestCase):
         result, _recorder, _remove = self.disable(FakeAcpDevice(kernel_after=10_000))
 
         self.assertEqual(result.code, "reboot_not_finished")
-        self.assertEqual(str(result), "Device went down after disable request but did not come back within timeout.")
+        self.assertEqual(
+            str(result),
+            "Device went down after disable request but did not come back within timeout. "
+            f"{unplug_if_on_network_note(None)}",
+        )
 
     def test_disable_no_wait_requests_the_reboot_only(self) -> None:
         device = FakeAcpDevice()
@@ -258,6 +290,29 @@ class EnableFailureCodeTests(unittest.TestCase):
         for stage in ("acp_port_probe", "acp_enable_ssh", None):
             with self.subTest(stage=stage):
                 self.assertEqual(enable_failure_code(stuck, stage), stuck.code)
+
+    def test_a_silent_address_is_judged_by_the_router_saved_with_the_device(self) -> None:
+        # Nothing answers on either port: the router this computer reached the
+        # device through says whether to unplug the device or reconnect.
+        here = (LocalInterfaceNetwork("en0", "10.0.0.20", ipaddress.ip_network("10.0.0.0/24")),)
+        saved = "aa:00:00:00:00:01"
+        closed = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=False, ssh_port_reachable=False)
+        for router_now, saved_router, code in (
+            (saved, saved, ErrorCode.DEVICE_SILENT),
+            ("aa:00:00:00:00:02", saved, ErrorCode.DEVICE_OFF_NETWORK),
+            # Nothing saved to compare with: no verdict, and the stage's code.
+            (saved, None, ErrorCode.DEVICE_UNREACHABLE),
+        ):
+            with self.subTest(router_now=router_now, saved=saved_router):
+                place = NetworkPlace(here, (Router("en0", "10.0.0.1", router_now),))
+                with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="timed out"), \
+                        mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=()), \
+                        mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                        mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                        mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place):
+                    with self.assertRaises(ACPSilentError) as raised:
+                        enable_set_ssh(CONNECTION, no_wait=False, initial=closed, router_mac=saved_router)
+                self.assertEqual(enable_failure_code(raised.exception, "acp_port_probe"), code)
 
     def test_nothing_answering_at_the_saved_address_is_an_unreachable_device(self) -> None:
         # The port probe's stage: neither SSH nor ACP answered there.

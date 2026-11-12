@@ -26,7 +26,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.device.migration_jobs import MigrationActivity
 from timecapsulesmb.device.wipe import GptVerdict
-from timecapsulesmb.checks.network import LocalInterfaceNetwork
+from timecapsulesmb.checks.network import LocalInterfaceNetwork, NetworkPlace
+from timecapsulesmb.transport.local import Router
 from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
 from timecapsulesmb.core.summaries import Summary
@@ -61,6 +62,7 @@ from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     ReadinessProbeResult,
     SshAccessStatus,
+    SshCommandProbeResult,
 )
 from timecapsulesmb.device.storage import (
     MaStDiscoveryResult,
@@ -98,6 +100,7 @@ from timecapsulesmb.transport.errors import (
     SshConnectTimeout,
     SshError,
     SshLocalNetworkFilteredError,
+    SshNetworkError,
     SshUploadTimeout,
     TransportError,
     ssh_timeout_slow_device_message,
@@ -3855,6 +3858,41 @@ class AppApiTests(unittest.TestCase):
         self.assertLess(stages.index("acp_port_probe"), stages.index("acp_enable_ssh"))
         self.assertNotIn("secret", json.dumps(confirmed_collector.events))
 
+    def test_configure_keeps_each_restart_endings_code_for_its_guidance(self) -> None:
+        # The restart that turns SSH on can end in ways with guidance of their
+        # own; a generic remote_error would show none of it (Add Device's
+        # card for a Mac that left the network, the unplug for a stuck one).
+        codes = ("restart_stuck", "client_left_network", "reboot_not_started", "reboot_not_requested", "acpd_broken",
+                 "ssh_enable_timeout")
+        for code in codes:
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                config_path = Path(tmp) / ".env"
+                first_collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()), \
+                        mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
+                    service.run_api_request(
+                        {"operation": "configure",
+                         "params": {"config": str(config_path), "host": "root@10.0.0.2", "password": "secret"}},
+                        first_collector.sink,
+                    )
+                confirmation_id = self.assert_confirmation(first_collector, "configure.enable_ssh_reboot")["confirmation_id"]
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state",
+                                return_value=unreachable_probed_state()), \
+                        mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
+                        mock.patch("timecapsulesmb.services.acp_ssh.set_dbug"), \
+                        mock.patch("timecapsulesmb.services.reboot.reboot_device",
+                                   side_effect=RebootFlowError("restart ended", code=code)):
+                    rc = service.run_api_request(
+                        {"operation": "configure",
+                         "params": {"config": str(config_path), "host": "root@10.0.0.2", "password": "secret",
+                                    "confirmation_id": confirmation_id}},
+                        collector.sink,
+                    )
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], code)
+
     def test_set_ssh_status_reports_acp_reachable_ssh_closed(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
@@ -4627,6 +4665,7 @@ class AppApiTests(unittest.TestCase):
                         password_matches=None, error="Could not connect to ACP on 10.0.0.2:5009: [Errno 65] No route to host",
                     )), \
                     mock.patch("timecapsulesmb.services.runtime.locate_airport", locate), \
+                    mock.patch("timecapsulesmb.core.install.sys.platform", "darwin"), \
                     mock.patch("timecapsulesmb.services.reboot.reboot_device", return_value=None) as reboot, \
                     mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": "macos_gui"}):
                 rc = service.run_api_request({"operation": "set-ssh", "params": params}, collector.sink)
@@ -5653,7 +5692,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_dry_run_returns_structured_plan_without_remote_actions(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -5691,7 +5730,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_dry_run_no_wait_returns_request_only_plan(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -5720,7 +5759,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_netbsd4_dry_run_no_wait_does_not_plan_activation(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=netbsd4_probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -5748,7 +5787,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_requires_reboot_confirmation_before_remote_actions(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -5783,7 +5822,7 @@ class AppApiTests(unittest.TestCase):
     def run_deploy_with_password_answer(self, matches: bool | None, params: dict[str, object]) -> tuple[CollectingSink, int, mock.Mock, mock.Mock]:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -5829,7 +5868,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_requires_netbsd4_activation_confirmation_before_remote_actions(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=netbsd4_probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -5866,7 +5905,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_no_wait_confirmation_uses_reboot_request_copy(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -5903,7 +5942,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_netbsd4_no_wait_confirmation_does_not_promise_activation(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=netbsd4_probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -5961,7 +6000,7 @@ class AppApiTests(unittest.TestCase):
         first = CollectingSink()
         second = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -6056,7 +6095,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_uploads_and_reboots_with_runtime_settings(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -6157,7 +6196,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_emits_grouped_upload_stages_before_each_upload_group(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -6246,7 +6285,7 @@ class AppApiTests(unittest.TestCase):
                 self._telemetry_client.emit.reset_mock()
                 collector = CollectingSink()
                 connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-                target = SimpleNamespace(connection=connection, probe_state=probed_state())
+                target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
                 artifacts = {
                     "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
                     "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -6308,7 +6347,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_no_wait_requests_reboot_without_wait_or_runtime_verify(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -6366,7 +6405,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_netbsd4_no_wait_requests_reboot_without_activation(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=netbsd4_probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -6421,7 +6460,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_no_wait_reports_reboot_request_failure(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -6478,7 +6517,7 @@ class AppApiTests(unittest.TestCase):
         once the device went down."""
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -6606,7 +6645,7 @@ class AppApiTests(unittest.TestCase):
     ) -> tuple[int, CollectingSink]:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probe_state or probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probe_state or probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -6936,7 +6975,7 @@ MaSt = (
     def test_activate_accepts_confirmation_id(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=netbsd4_probed_state())
         params = {}
         params["confirmation_id"] = self.confirmation_id_for(
             "activate",
@@ -6966,7 +7005,7 @@ MaSt = (
     def test_activate_that_runs_actions_reports_the_netbsd4_followup(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=netbsd4_probed_state())
         params = {}
         params["confirmation_id"] = self.confirmation_id_for(
             "activate", params, {"host": "root@10.0.0.2", "netbsd4": True})
@@ -6990,7 +7029,7 @@ MaSt = (
     def test_activate_rejects_saved_airport_express_before_touching_runtime(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.40", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=airport_express_probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=airport_express_probed_state())
         params = {}
         params["confirmation_id"] = self.confirmation_id_for(
             "activate", params, {"host": "root@10.0.0.40", "netbsd4": True})
@@ -7012,7 +7051,7 @@ MaSt = (
     def test_activate_on_netbsd6_reports_unsupported_operation_without_forget_advice(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         params = {}
         params["confirmation_id"] = self.confirmation_id_for(
             "activate", params, {"host": "root@10.0.0.2", "netbsd4": True})
@@ -7039,7 +7078,7 @@ MaSt = (
         """A dry-run deploy whose port checks all get `acp_error`, or each
         port's error from `ports`."""
         collector = CollectingSink()
-        target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"), probe_state=probe_state)
+        target = SimpleNamespace(router_mac=None, connection=SshConnection("root@10.0.0.2", "pw", "-o foo"), probe_state=probe_state)
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
@@ -7088,6 +7127,114 @@ MaSt = (
         self.assertIn("Host is down", error["message"])
         self.assertEqual(error["recovery"]["localization_key"], "device_unreachable")
         self.assert_not_unsupported_model_guidance(error)
+
+    def test_a_silent_device_is_judged_against_the_router_the_app_saved(self) -> None:
+        # The app sends the router it saved from the last operation that reached
+        # the device; the helper compares this computer's router with it.
+        home, other = "aa:00:00:00:00:01", "aa:00:00:00:00:02"
+        networks = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)
+        cases = (
+            ("deploy", home, home, "device_silent"),
+            ("deploy", home, other, "device_off_network"),
+            ("deploy", None, home, "device_unreachable"),
+        )
+        for operation, saved, now, code in cases:
+            with self.subTest(operation=operation, saved=saved, now=now), tempfile.TemporaryDirectory() as tmp:
+                config_path = Path(tmp) / ".env"
+                config_path.write_text("TC_HOST=root@10.0.0.2\nTC_PASSWORD=pw\n")
+                params: dict[str, object] = {"config": str(config_path)}
+                if saved is not None:
+                    params["lan_router_mac"] = saved
+                params["dry_run"] = True
+                place = NetworkPlace(networks, (Router("en0", "10.0.0.1", now),))
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state",
+                                return_value=failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet.")), \
+                        mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value="timed out"), \
+                        mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place), \
+                        mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths",
+                                   return_value=SimpleNamespace(distribution_root=REPO_ROOT)), \
+                        mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                    rc = service.run_api_request({"operation": operation, "params": params}, collector.sink)
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], code)
+                self.assertEqual(error["recovery"]["localization_key"], code)
+
+    def test_every_device_operation_judges_a_silent_device_by_the_saved_router(self) -> None:
+        # Nothing answers at the saved address, on either port, with the ACP
+        # read and SSH's own look failing too. Every operation that talks to the
+        # device ends with where this Mac is against the router the app saved,
+        # never remote_error or a raw SSH failure: the probe failure (deploy,
+        # activate, flash), the ACPd preflight (uninstall, Disk Repair, Wipe),
+        # the ACP port probe (SSH Access, Add Device run again) and Checkup's
+        # SSH check all reach checks.network.silent_device. Silence is a
+        # timeout, or the "Host is down" macOS gives for a device on its network
+        # that is off; in the app, no route may be macOS's Local Network block.
+        home, other = "aa:00:00:00:00:01", "aa:00:00:00:00:02"
+        networks = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)
+        closed = failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet.")
+        operations = {
+            "deploy": {"dry_run": True},
+            "activate": {},
+            "doctor": {},
+            "flash": {"action": "backup"},
+            "fsck": {"volume": "dk2"},
+            "set-ssh": {"action": "enable"},
+            "uninstall": {},
+            "wipe-disk": {},
+            "configure": {"host": "root@10.0.0.2", "password": "pw"},
+        }
+        cases = [
+            (silence, now, code)
+            for silence in ("timed out", "[Errno 64] Host is down")
+            for now, code in ((home, "device_silent"), (other, "device_off_network"))
+        ]
+        for silence, now, code in cases:
+            place = NetworkPlace(networks, (Router("en0", "10.0.0.1", now),))
+            unanswered = AirportAcpReading(password_matches=None, error=f"ACP receive failed: {silence}")
+            ssh_error = SshNetworkError(f"ssh: connect to host 10.0.0.2 port 22: {silence}")
+            ssh_failed = SshCommandProbeResult(ok=False, detail=str(ssh_error), error=ssh_error)
+            for operation, extra in operations.items():
+                with self.subTest(operation=operation, silence=silence, code=code), tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / ".env"
+                    config_path.write_text("TC_HOST=root@10.0.0.2\nTC_PASSWORD=pw\n")
+                    params: dict[str, object] = {"config": str(config_path), "lan_router_mac": home, **extra}
+                    if operation == "activate":
+                        params["confirmation_id"] = self.confirmation_id_for(
+                            "activate", dict(params), {"host": "root@10.0.0.2", "netbsd4": True},
+                        )
+                    collector = CollectingSink()
+                    with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=closed), \
+                            mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=silence), \
+                            mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=silence), \
+                            mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                            mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=networks), \
+                            mock.patch("timecapsulesmb.services.acp_ssh.locate_airport",
+                                       return_value=LocateResult("not_found")), \
+                            mock.patch("timecapsulesmb.services.runtime.ssh_port_error", return_value=silence), \
+                            mock.patch("timecapsulesmb.services.set_ssh.tcp_connect_error", return_value=silence), \
+                            mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=closed), \
+                            mock.patch("timecapsulesmb.checks.network.probe_ssh_command_conn", return_value=ssh_failed), \
+                            mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=unanswered), \
+                            mock.patch("timecapsulesmb.checks.network.read_network_place", return_value=place), \
+                            mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths",
+                                       return_value=SimpleNamespace(distribution_root=REPO_ROOT)), \
+                            mock.patch("timecapsulesmb.services.deploy.validate_artifacts",
+                                       return_value=[("smbd", True, "ok")]), \
+                            mock.patch("timecapsulesmb.discovery.bonjour.BonjourQuery.browse", return_value=(
+                                BonjourDiscoverySnapshot([], []), BonjourQueryDiagnostics("zeroconf", [], 0, 0, 0, 0),
+                            )):
+                        rc = service.run_api_request({"operation": operation, "params": params}, collector.sink)
+                    self.assertEqual(rc, 1)
+                    if operation == "doctor":
+                        result = self.assert_single_terminal_event(collector, "result")
+                        failed = [check["details"].get("code") for check in result["payload"]["results"]
+                                  if check["status"] == "FAIL"]
+                        self.assertIn(code, failed)
+                    else:
+                        error = self.assert_single_terminal_event(collector, "error")
+                        self.assertEqual(error["code"], code, error.get("message"))
 
     def test_deploy_reports_a_local_network_block_with_the_local_network_card(self) -> None:
         # 0b33f140 and 45fcd831: deploy said "not answering" while /usr/bin/ssh
@@ -7197,7 +7344,7 @@ MaSt = (
 
     def test_deploy_reports_an_uncoded_device_error_as_a_retryable_remote_error(self) -> None:
         collector = CollectingSink()
-        target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"), probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=SshConnection("root@10.0.0.2", "pw", "-o foo"), probe_state=probed_state())
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
@@ -7212,7 +7359,7 @@ MaSt = (
 
     def run_activate_against_probe(self, probe_state: ProbedDeviceState, *, acp_error: str | None = None):
         collector = CollectingSink()
-        target = SimpleNamespace(connection=SshConnection("root@10.0.0.40", "pw", "-o foo"), probe_state=probe_state)
+        target = SimpleNamespace(router_mac=None, connection=SshConnection("root@10.0.0.40", "pw", "-o foo"), probe_state=probe_state)
         params = {"confirmation_id": self.confirmation_id_for("activate", {}, {"host": "root@10.0.0.40", "netbsd4": True})}
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.40", "TC_PASSWORD": "pw"})
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
@@ -7286,7 +7433,7 @@ MaSt = (
     def run_activate_against_install(self, *, config_present: bool, version: DeployedVersionProbeResult):
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=netbsd4_probed_state())
         params = {}
         params["confirmation_id"] = self.confirmation_id_for(
             "activate", params, {"host": "root@10.0.0.2", "netbsd4": True})
@@ -7341,7 +7488,7 @@ MaSt = (
     def test_activate_runtime_failure_reports_remote_error_with_runtime_logs(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=netbsd4_probed_state())
         params = {}
         params["confirmation_id"] = self.confirmation_id_for(
             "activate", params, {"host": "root@10.0.0.2", "netbsd4": True})
@@ -7389,7 +7536,8 @@ MaSt = (
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection") as resolve_connection:
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection",
+                            return_value=SshConnection("root@10.0.0.2", "pw", "")) as resolve_connection:
                 with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
                     rc = service.run_api_request({"operation": "uninstall", "params": {}}, collector.sink)
 
@@ -7572,7 +7720,7 @@ MaSt = (
 
     def test_deploy_and_disk_repair_on_a_failing_disk_ask_with_its_warning(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(router_mac=None, connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),

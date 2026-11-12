@@ -5,6 +5,7 @@
     "confirmation",
     "confirmation_id",
     "credentials",
+    "lan_router_mac",
     "macos_app_just_updated",
     "macos_app_other_copies",
     "password"

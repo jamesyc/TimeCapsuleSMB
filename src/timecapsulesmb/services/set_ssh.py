@@ -100,9 +100,10 @@ def probe_set_ssh_status(
 
 def enable_failure_code(exc: ACPConnectionError, stage: str | None) -> ErrorCode:
     """What a failed ACP enable reports, in the app and the CLI alike: the
-    port probe's own cause (services.acp_ssh), else device_unreachable when
-    neither SSH nor ACP answered at the saved address (the probe's stage, after
-    which the app looks for the device elsewhere), else remote_error."""
+    port probe's own cause (services.acp_ssh, where this computer is included),
+    else device_unreachable when neither SSH nor ACP answered at the saved
+    address (the probe's stage, after which the app looks for the device
+    elsewhere), else remote_error."""
     if exc.code is not None:
         return exc.code
     return ErrorCode.DEVICE_UNREACHABLE if stage == "acp_port_probe" else ErrorCode.REMOTE_ERROR
@@ -117,6 +118,7 @@ def enable_set_ssh(
     probe: Callable[[str], SetSshStatusResult] | None = None,
     before_enable: Callable[[str], None] | None = None,
     reading: AirportAcpReading | None = None,
+    router_mac: str | None = None,
 ) -> SetSshResult:
     """Turn SSH on through ACP and reboot, unless it is already open.
     `before_enable` gets the address once its ACP answers, before anything
@@ -148,7 +150,7 @@ def enable_set_ssh(
 
     target_host = enable_ssh_with_port_preflight(
         target_host, connection.password, callbacks=callbacks, before_enable=before_enable,
-        listed_by_bonjour=reading is not None and reading.listed_by_bonjour,
+        listed_by_bonjour=reading is not None and reading.listed_by_bonjour, router_mac=router_mac,
     )
     moved = reboot_to_enable_ssh(target_host, connection.password, wait=not no_wait, callbacks=callbacks)
     target_host = endpoint_host(moved or target_host)

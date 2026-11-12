@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
+from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
@@ -71,7 +72,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.no_reboot and not args.dry_run:
             # The reboot goes through ACP: check ACPd and the password before anything is removed.
             require_acpd_ready(connection, command_context.to_operation_callbacks(),
-                               reading=command_context.reading_at(connection))
+                               reading=command_context.reading_at(connection),
+                               router_mac=saved_router_mac(command_context.config))
         elif not args.dry_run:
             # A repair's volume is unmounted: the uninstall would report success with its files still there.
             require_no_disk_check(connection, command_context.to_operation_callbacks())
