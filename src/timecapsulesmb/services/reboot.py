@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import ipaddress
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from enum import Enum
+from typing import Union
 
 from timecapsulesmb.checks.network import (
     PORT_CHECK_TIMEOUT_SECONDS,
     SSH_PORT,
     SSH_PROOF_TIMEOUT_SECONDS,
     IpNetwork,
+    LocalNetworkBlock,
     NetworkLinkResult,
     NetworkPlace,
     PlaceComparison,
@@ -649,6 +652,392 @@ def _request(host: str, password: str, callbacks: OperationCallbacks, *, raise_e
         callbacks.message("ACP reboot request failed; checking whether the device is restarting anyway...")
 
 
+# The restart wait's state machine (_wait drives it).
+#
+# Every poll the wait reads the uptime and feeds step() what it saw, one
+# observation at a time, in this order:
+#
+#   Answered      the old boot answered; nothing else this poll
+#   Read          the read failed: its kind (_read_error_kind)
+#   Surroundings  this Mac's place, when place_due (every
+#                 PLACE_READ_INTERVAL_SECONDS once the device has been down
+#                 CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS), and the networks it
+#                 joined (_client_away) when the wait watches it; refusals
+#                 are judged here
+#   Look          the restart marker's look over SSH, only when look_due
+#   StuckCheck    this poll's place again, and the SSH port's answer when
+#                 stuck_candidate asked for it; the stuck hint is judged here
+#   Located       a look for the device by its MAC that did not find it on a
+#                 new boot, only when follow_due
+#
+# A new boot read at the address, or at one the look by MAC found, ends the
+# wait outside the machine. verdict() decides every other ending: at the
+# start limit while GOING_DOWN, and at the up limit once DOWN. _wait's show()
+# says each transition: one progress event per hint that changes, in the
+# order of the parts below, each carrying the parts said so far.
+#
+# The state has four parts that change on their own, so their hints can show
+# together: AWAY beside STUCK or a hang, and STUCK beside a MARKER hang found
+# by a later look.
+#
+#   phase   GOING_DOWN -Read-> DOWN -Answered-> GOING_DOWN
+#           The up limit counts from the first unanswered read since the last
+#           answer (down_since), or from a later request to unplug.
+#   client  HOME -(away)-> LEAVING -(CLIENT_AWAY_POLLS polls away, the device
+#           down CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS)-> AWAY, which shows its
+#           hint; any poll back on the device's network -> HOME. Away: on
+#           networks the device is not on, or behind another router toward
+#           it for CLIENT_AWAY_POLLS readings in a row. An unwatched wait
+#           stays HOME.
+#   hang    NONE -(ACP refused RESTART_STUCK_AFTER_DOWN_SECONDS, all of it
+#           HOME)-> REFUSED -(silent: DeviceSilence.quiet)-> NONE;
+#           NONE -(Look "hung")-> MARKER, which stays. Both ask for an unplug.
+#   stuck   NONE -(silent, down RESTART_STUCK_AFTER_DOWN_SECONDS, place same
+#           or offline, HOME, no hang, no rejected password, then the SSH
+#           port silent too)-> SHOWN -(no longer silent)-> WITHDRAWN -(as from
+#           NONE)-> SHOWN. stuck_offline is the latest showing's wording (this
+#           Mac had no network), and follows the place while SHOWN.
+#
+# Beside them: the silence record, polls away, router readings in a row,
+# since when ACP has refused, when the first hang and the first stuck hint
+# asked for an unplug (the limit counts from those only, so a device that
+# keeps changing cannot hold the wait open), a rejected password, and the
+# look and follow timers.
+
+
+class Phase(Enum):
+    GOING_DOWN = "going_down"
+    DOWN = "down"
+
+
+class Client(Enum):
+    HOME = "home"
+    LEAVING = "leaving"
+    AWAY = "away"
+
+
+class Hang(Enum):
+    NONE = "none"
+    REFUSED = "acp_refused"
+    MARKER = "marker"
+
+
+class Stuck(Enum):
+    NONE = "none"
+    SHOWN = "shown"
+    WITHDRAWN = "withdrawn"
+
+
+@dataclass(frozen=True)
+class Answered:
+    """The old boot answered the read."""
+
+
+@dataclass(frozen=True)
+class Read:
+    """The read failed: _read_error_kind's kind (or "other_device"), and the error."""
+
+    kind: str | None
+    error: str
+
+
+@dataclass(frozen=True)
+class Surroundings:
+    """This Mac's place, when it was read this poll (place_due), and the
+    networks it joined (_client_away; None while it shares one, and always
+    for a wait that does not watch it)."""
+
+    place: PlaceComparison | None
+    away: tuple[IpNetwork, ...] | None
+
+
+@dataclass(frozen=True)
+class Look:
+    """The restart marker's look over SSH (look_due): "hung" or what else it saw."""
+
+    look: str
+
+
+@dataclass(frozen=True)
+class StuckCheck:
+    """This poll's place, if read, and the SSH port's answer (tcp_connect_error)
+    when stuck_candidate asked for it (`probed`)."""
+
+    place: PlaceComparison | None
+    probed: bool = False
+    ssh_error: str | None = None
+
+
+@dataclass(frozen=True)
+class Located:
+    """A look for the device by its MAC (follow_due) that did not find it on
+    a new boot; `rejected` when an AirPort with its MAC rejected the password."""
+
+    rejected: LocateResult | None
+
+
+Observation = Union[Answered, Read, Surroundings, Look, StuckCheck, Located]
+
+
+@dataclass(frozen=True)
+class WaitState:
+    """Where the restart wait is (see the comment above Phase)."""
+
+    started: float
+    silence: DeviceSilence
+    phase: Phase = Phase.GOING_DOWN
+    # Whether the device has been seen down at all: the up stage began.
+    went_down: bool = False
+    # The first unanswered read since the last answer.
+    down_since: float | None = None
+    # The latest read's kind.
+    read_kind: str | None = None
+    client: Client = Client.HOME
+    # Polls in a row on another network, and what this Mac joined.
+    away_polls: int = 0
+    joined: tuple[IpNetwork, ...] = ()
+    # The latest place reading, and how many in a row put this Mac behind
+    # another router toward the device.
+    place_read_at: float | None = None
+    router_moved_reads: int = 0
+    hang: Hang = Hang.NONE
+    # When the first hang asked for an unplug.
+    hang_first_at: float | None = None
+    # Since when every read has been refused while this Mac was HOME.
+    refused_since: float | None = None
+    next_hang_check: float = 0.0
+    stuck: Stuck = Stuck.NONE
+    # When the stuck hint first showed, and whether its latest showing was
+    # the one for this Mac without a network.
+    stuck_at: float | None = None
+    stuck_offline: bool = False
+    next_follow: float = 0.0
+    rejected: LocateResult | None = None
+
+    @property
+    def limit_from(self) -> float:
+        """The up limit counts from here: going down, or the first request to
+        unplug (a hang's, the stuck hint's), whichever came last."""
+        return max(at for at in (self.down_since, self.hang_first_at, self.stuck_at) if at is not None)
+
+    def place_due(self, now: float) -> bool:
+        """Whether this poll reads this Mac's place (for a wait that has one to
+        compare): once the device has been down a while, at most every
+        PLACE_READ_INTERVAL_SECONDS."""
+        return (
+            self.down_since is not None and now - self.down_since >= CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS
+            and (self.place_read_at is None or now - self.place_read_at >= PLACE_READ_INTERVAL_SECONDS)
+        )
+
+    def look_due(self, now: float) -> bool:
+        """Whether this poll looks at the restart marker (for a wait that
+        wrote one and has SSH)."""
+        return (
+            self.hang is Hang.NONE and now - self.started >= HANG_CHECK_AFTER_REQUEST_SECONDS
+            and now >= self.next_hang_check
+        )
+
+    def stuck_candidate(self, place: PlaceComparison | None, now: float) -> bool:
+        """Whether the stuck hint would show if the SSH port is silent too."""
+        return (
+            place is not None and place.verdict in ("same", "offline")
+            and self.stuck is not Stuck.SHOWN and self.hang is Hang.NONE and self.away_polls == 0
+            and self.rejected is None and self.silence.quiet
+            and self.down_since is not None and now - self.down_since >= RESTART_STUCK_AFTER_DOWN_SECONDS
+        )
+
+    def follow_due(self, now: float) -> bool:
+        """Whether this poll looks for the device by its MAC (for a wait that knows it)."""
+        return (
+            self.down_since is not None and now - self.down_since >= FOLLOW_AFTER_DOWN_SECONDS
+            and now >= self.next_follow
+        )
+
+
+def step(state: WaitState, observation: Observation, now: float) -> WaitState:
+    """The restart wait's state after `observation` at `now`."""
+    if isinstance(observation, Answered):
+        return replace(state, phase=Phase.GOING_DOWN, down_since=None, refused_since=None)
+    if isinstance(observation, Read):
+        silence = replace(state.silence)
+        if observation.kind is not None:
+            silence.observe_read(observation.kind, observation.error)
+        return replace(
+            state,
+            phase=Phase.DOWN,
+            went_down=True,
+            down_since=now if state.down_since is None else state.down_since,
+            read_kind=observation.kind,
+            silence=silence,
+        )
+    if isinstance(observation, Surroundings):
+        return _judge_refusals(_follow_client(state, observation.place, observation.away, now), now)
+    if isinstance(observation, Look):
+        state = replace(state, next_hang_check=now + HANG_CHECK_INTERVAL_SECONDS)
+        return _hang(state, Hang.MARKER, now) if observation.look == "hung" else state
+    if isinstance(observation, StuckCheck):
+        return _judge_stuck(state, observation, now)
+    state = replace(state, next_follow=now + FOLLOW_INTERVAL_SECONDS)
+    return state if observation.rejected is None else replace(state, rejected=observation.rejected)
+
+
+def _follow_client(
+    state: WaitState, place: PlaceComparison | None, away: tuple[IpNetwork, ...] | None, now: float,
+) -> WaitState:
+    if place is not None:
+        moved = place.verdict == "moved" and place.evidence == "router"
+        state = replace(state, place_read_at=now, router_moved_reads=state.router_moved_reads + 1 if moved else 0)
+    if away is None and state.router_moved_reads >= CLIENT_AWAY_POLLS:
+        # Another network with the same addresses: only its router tells it
+        # apart, so no network is named.
+        away = ()
+    if away is None:
+        return replace(state, client=Client.HOME, away_polls=0)
+    away_polls = state.away_polls + 1
+    client = state.client
+    if (
+        client is not Client.AWAY and away_polls >= CLIENT_AWAY_POLLS
+        and state.down_since is not None and now - state.down_since >= CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS
+    ):
+        client = Client.AWAY
+    elif client is Client.HOME:
+        client = Client.LEAVING
+    return replace(state, client=client, away_polls=away_polls, joined=away)
+
+
+def _hang(state: WaitState, hang: Hang, now: float) -> WaitState:
+    return replace(state, hang=hang, hang_first_at=now if state.hang_first_at is None else state.hang_first_at)
+
+
+def _judge_refusals(state: WaitState, now: float) -> WaitState:
+    # Refusals count only while this Mac is on the device's network: on
+    # another one with the same addresses, another host refuses.
+    if state.read_kind != "refused" or state.away_polls:
+        state = replace(state, refused_since=None)
+    elif state.refused_since is None:
+        state = replace(state, refused_since=now)
+    if (
+        state.hang is Hang.NONE and state.refused_since is not None
+        and now - state.refused_since >= RESTART_STUCK_AFTER_DOWN_SECONDS
+    ):
+        # ACP refused for this long: the kernel is up and ACPd is gone, as
+        # in the hang the marker look finds (a restart that finishes
+        # listens again seconds after its network comes up). It also
+        # covers the restart that turns SSH on, which has no SSH to look
+        # with. Another host that took the address refuses too, but a
+        # device that came back elsewhere is followed by its MAC first.
+        return _hang(state, Hang.REFUSED, now)
+    if state.hang is Hang.REFUSED and state.silence.quiet:
+        # The refusals gave way to silence: the restart's teardown started
+        # after all, or the device was unplugged. What comes next is
+        # judged as any other restart's, and the limit still counts from
+        # the first hang, so refusals and silence in turns cannot hold the
+        # wait open.
+        return replace(state, hang=Hang.NONE)
+    return state
+
+
+def _judge_stuck(state: WaitState, check: StuckCheck, now: float) -> WaitState:
+    place = check.place
+    if state.stuck is Stuck.SHOWN and not state.silence.quiet:
+        # Something answers at the address again, such as ACPd refusing
+        # while the device starts up: an unplug now would interrupt it.
+        return replace(state, stuck=Stuck.WITHDRAWN)
+    if (
+        state.stuck is Stuck.SHOWN and place is not None and place.verdict in ("same", "offline")
+        and (place.verdict == "offline") != state.stuck_offline
+    ):
+        # This Mac lost or got back its network connection: the hint's
+        # wording follows it.
+        return replace(state, stuck_offline=place.verdict == "offline")
+    if not check.probed or place is None:
+        return state
+    silence = replace(state.silence)
+    silence.observe_ssh_port(check.ssh_error)
+    state = replace(state, silence=silence)
+    if not silence.quiet:
+        return state
+    # Shown again after the device answered, the hint does not restart the
+    # limit: a device that keeps answering and falling silent cannot hold
+    # the wait open.
+    return replace(
+        state, stuck=Stuck.SHOWN, stuck_offline=place.verdict == "offline",
+        stuck_at=now if state.stuck_at is None else state.stuck_at,
+    )
+
+
+@dataclass(frozen=True)
+class WaitEnding:
+    """How a restart wait that did not see the new boot ends: its
+    reboot_cycle result, error code, message and any telemetry it adds."""
+
+    result: str
+    code: ErrorCode
+    message: str
+    fields: tuple[tuple[str, object], ...] = ()
+
+
+@dataclass(frozen=True)
+class WaitTerms:
+    """The caller's limits and words for verdict."""
+
+    start_timeout_seconds: int
+    up_timeout_seconds: int
+    no_down_message: str
+    up_timeout_message: str
+    stopped_message: str
+    stuck_message: str
+    wifi_name: str | None
+
+
+def verdict(
+    state: WaitState, now: float, words: WaitTerms,
+    block: Callable[[list[str]], LocalNetworkBlock | None] = lambda _errors: None,
+) -> WaitEnding | None:
+    """How the wait ends at `now`, or None while it goes on. `block` proves a
+    Local Network block from the last no route errors (_local_network_block),
+    asked only when nothing else decides first."""
+    if state.phase is Phase.GOING_DOWN:
+        if now - state.started >= words.start_timeout_seconds:
+            return WaitEnding("did_not_go_down", ErrorCode.REBOOT_NOT_STARTED, words.no_down_message)
+        return None
+    # The user gets the whole limit to unplug the device and for it to start up.
+    if now - state.limit_from < words.up_timeout_seconds:
+        return None
+    if state.away_polls >= CLIENT_AWAY_POLLS:
+        # Nothing showed whether the device came back: this Mac was
+        # not on its network to see it.
+        return WaitEnding("client_left_network", ErrorCode.CLIENT_LEFT_NETWORK, client_left_message(state.joined))
+    if state.hang is not Hang.NONE:
+        message = words.stopped_message
+        if state.hang is Hang.REFUSED:
+            # The caller's message opens with ACPD_STOPPED_MESSAGE
+            # (deploy adds what that means for the install).
+            message = message.replace(ACPD_STOPPED_MESSAGE, ACPD_REFUSED_MESSAGE, 1)
+        return WaitEnding("acpd_stopped_without_reboot", ErrorCode.ACPD_BROKEN, message)
+    silence = state.silence
+    if state.stuck_at is not None and not state.stuck_offline and silence.quiet:
+        # Still silent since the unplug was asked for.
+        return WaitEnding("restart_stuck", ErrorCode.RESTART_STUCK, words.stuck_message)
+    if silence.maybe_blocked:
+        # The app's reads all got no route at the end: macOS may be
+        # refusing its connections to a device that is up.
+        found = block(silence.no_route_errors)
+        if found is not None:
+            return WaitEnding(
+                "local_network_blocked", found.code, found.message, (("local_network_block_proof", found.proof),),
+            )
+    if state.rejected is not None:
+        message = f"{words.up_timeout_message} {state.rejected.rejected_note}"
+    elif silence.quiet:
+        message = f"{words.up_timeout_message} {unplug_if_on_network_note(words.wifi_name)}"
+    else:
+        # Something answered at the address lately, or macOS may have
+        # refused the reads: not a device known to be off.
+        message = words.up_timeout_message
+    return WaitEnding("did_not_come_back_up", ErrorCode.REBOOT_NOT_FINISHED, message)
+
+
 def _wait(
     host: str,
     password: str,
@@ -672,6 +1061,8 @@ def _wait(
     wifi_name: str | None = None,
     place_before: NetworkPlace | None = None,
 ) -> str | None:
+    """Wait for the new boot: gather each poll's observations for the state
+    machine (step), say what its transitions show, and end as verdict says."""
     fields: dict[str, object] = {
         "start_timeout_sec": start_timeout_seconds,
         "up_timeout_sec": up_timeout_seconds,
@@ -689,8 +1080,16 @@ def _wait(
         fields["routers_before"] = [
             {"interface": router.interface, "ip": router.ip, "mac": router.mac} for router in place_before.routers
         ]
+    terms = WaitTerms(
+        start_timeout_seconds=start_timeout_seconds,
+        up_timeout_seconds=up_timeout_seconds,
+        no_down_message=no_down_message,
+        up_timeout_message=up_timeout_message,
+        stopped_message=stopped_message,
+        stuck_message=stuck_message,
+        wifi_name=wifi_name,
+    )
     moved: str | None = None
-    rejected: LocateResult | None = None
     # Each kind of failed read, and when it was first and last seen: refused
     # means something answers at the address but not ACPd, host down or no
     # route that nothing answers there at all.
@@ -712,57 +1111,26 @@ def _wait(
         if code is not None:
             raise RebootFlowError(message, code=code, result=result)
 
+    def end(ending: WaitEnding | None) -> None:
+        if ending is not None:
+            fields.update(ending.fields)
+            finish(ending.result, ending.code, ending.message)
+
     def is_new_boot(uptime: int | None, read_started: float) -> bool:
         return uptime is not None and uptime + UPTIME_SLACK_SECONDS < u0 + (read_started - started)
 
-    callbacks.message("Waiting for the device to restart...")
-    callbacks.stage("wait_for_reboot_down")
-    down_since: float | None = None
-    next_follow = 0.0
-    next_hang_check = 0.0
-    # When a look found the hang that stands now and the user was asked to
-    # unplug the device, and how it was found; and when the first hang was,
-    # from which the limit counts.
-    hang_seen_at: float | None = None
-    hang_evidence: str | None = None
-    hang_first_at: float | None = None
-    asked_ssh = False
-    up_stage = False
-    # Polls in a row with this Mac on another network, what it joined, and
-    # whether the hint is showing.
-    away_polls = 0
-    joined: tuple[IpNetwork, ...] = ()
-    hinting = False
-    # This Mac's place against the one before the request, read every
-    # PLACE_READ_INTERVAL_SECONDS once the device has been down a while: when,
-    # and how many readings in a row put it on another network by its router.
-    place_read_at: float | None = None
-    router_moved_reads = 0
-    # Whether nothing has answered at the device's address lately.
-    silence = DeviceSilence(held=macos_may_hold_this_process())
-    # When the wait first asked for an unplug because the device stayed silent
-    # with this Mac on its network (the limit counts from then, once); whether
-    # the hint shows now, which ends when something answers at the address
-    # again and returns when it goes silent again; and whether this Mac has no
-    # network at all, by the latest place reading.
-    stuck_at: float | None = None
-    stuck_showing = False
-    stuck_offline = False
-    # Since when every read has been refused: the device's kernel is up and
-    # nothing listens on ACP's port.
-    refused_since: float | None = None
-
-    def hints(*, cleared: bool = False) -> None:
+    def hints(state: WaitState, *, cleared: bool = False) -> None:
         """Every hint's state in one progress event. The app shows the latest
         event of the step on its own, so one that left a hint out would hide
         it. `cleared`: the device came back, and no hint stands."""
+        stuck = state.stuck is Stuck.SHOWN and not cleared
         callbacks.progress(
             "wait_for_reboot_up",
-            client_away=hinting and not cleared,
+            client_away=state.client is Client.AWAY and not cleared,
             network_name=wifi_name or "",
-            acpd_hung=hang_seen_at is not None and not cleared,
-            restart_stuck=stuck_showing and not cleared,
-            client_offline=stuck_showing and stuck_offline and not cleared,
+            acpd_hung=state.hang is not Hang.NONE and not cleared,
+            restart_stuck=stuck,
+            client_offline=stuck and state.stuck_offline,
         )
 
     # The stuck hint's lines printed so far. A device that keeps answering and
@@ -779,9 +1147,63 @@ def _wait(
             told.append(message)
             callbacks.message(message)
 
-    def stuck_hint() -> None:
-        hints()
-        tell(restart_stuck_offline_hint(wifi_name) if stuck_offline else RESTART_STUCK_HINT)
+    def show(before: WaitState, after: WaitState, now: float) -> None:
+        """Say what changed from `before` to `after`, one part of the state
+        at a time, each hint event showing the parts said so far."""
+        if after.down_since is not None and before.down_since is None:
+            fields.setdefault("down_seen_after_sec", round(now - started, 3))
+        if after.went_down and not before.went_down:
+            callbacks.message("Device went down; waiting for it to come back up...")
+            callbacks.stage("wait_for_reboot_up")
+        if after.away_polls and not before.away_polls:
+            fields["client_leaves"] = int(fields.get("client_leaves", 0)) + 1
+            fields.setdefault("client_left_after_sec", round(now - started, 3))
+        elif before.away_polls and not after.away_polls:
+            fields["client_rejoined_after_sec"] = round(now - started, 3)
+        view = replace(before, client=after.client, joined=after.joined)
+        if (after.client is Client.AWAY) != (before.client is Client.AWAY):
+            hints(view)
+            if after.client is Client.AWAY:
+                fields["client_hinted"] = True
+                callbacks.message(client_away_message(after.joined, wifi_name))
+            else:
+                callbacks.message(client_back_message())
+        view = replace(view, hang=after.hang)
+        if after.hang is not before.hang:
+            if after.hang is Hang.NONE:
+                fields["acpd_hang_cleared_after_sec"] = round(now - started, 3)
+                hints(view)
+            else:
+                fields["acpd_hang_seen_after_sec"] = round(now - started, 3)
+                fields["acpd_hang_evidence"] = after.hang.value
+                hints(view)
+                callbacks.message(ACPD_REFUSED_UNPLUG_MESSAGE if after.hang is Hang.REFUSED else UNPLUG_MESSAGE)
+        view = replace(view, stuck=after.stuck, stuck_offline=after.stuck_offline)
+        stuck_line = restart_stuck_offline_hint(wifi_name) if after.stuck_offline else RESTART_STUCK_HINT
+        if before.stuck is Stuck.SHOWN and after.stuck is Stuck.WITHDRAWN:
+            fields["stuck_hint_cleared_after_sec"] = round(now - started, 3)
+            hints(view)
+            tell(RESTART_STUCK_WITHDRAWN_MESSAGE)
+        elif after.stuck is Stuck.SHOWN and before.stuck is not Stuck.SHOWN:
+            if before.stuck_at is None:
+                fields["stuck_hint_after_sec"] = round(now - started, 3)
+                fields["stuck_hint_place"] = "offline" if after.stuck_offline else "same"
+            hints(view)
+            tell(stuck_line)
+        elif after.stuck is Stuck.SHOWN and after.stuck_offline != before.stuck_offline:
+            hints(view)
+            tell(stuck_line)
+
+    callbacks.message("Waiting for the device to restart...")
+    callbacks.stage("wait_for_reboot_down")
+    state = WaitState(started=started, silence=DeviceSilence(held=macos_may_hold_this_process()))
+    can_look = ssh is not None and restart_marker == "written"
+    asked_ssh = False
+
+    def advance(observation: Observation, now: float) -> None:
+        nonlocal state
+        before, state = state, step(state, observation, now)
+        show(before, state, now)
 
     while True:
         time.sleep(REBOOT_POLL_SECONDS)
@@ -803,97 +1225,18 @@ def _wait(
         if is_new_boot(uptime, read_started):
             break
         if uptime is not None:
-            down_since = None
-            refused_since = None
-            if now - started >= start_timeout_seconds:
-                finish("did_not_go_down", ErrorCode.REBOOT_NOT_STARTED, no_down_message)
+            advance(Answered(), now)
+            end(verdict(state, now, terms))
             continue
-        if down_since is None:
-            down_since = now
-            fields.setdefault("down_seen_after_sec", round(now - started, 3))
-        if read_kind is not None:
-            silence.observe_read(read_kind, str(error))
-        if not up_stage:
-            up_stage = True
-            callbacks.message("Device went down; waiting for it to come back up...")
-            callbacks.stage("wait_for_reboot_up")
+        advance(Read(read_kind, str(error)), now)
         # This poll's place, when it is one of the regular readings.
         place: PlaceComparison | None = None
-        if (
-            place_before is not None and now - down_since >= CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS
-            and (place_read_at is None or now - place_read_at >= PLACE_READ_INTERVAL_SECONDS)
-        ):
-            place_read_at = now
+        if place_before is not None and state.place_due(now):
             place = _compare_now(place_before, device_networks, device_is_router=bool(device_is_gateway))
             if place.verdict == "moved" and place.evidence == "router":
-                router_moved_reads += 1
                 fields["router_mac_away"] = place.router_now
-            else:
-                router_moved_reads = 0
-        if watched_link is not None:
-            away = _client_away(watched_link)
-            if away is None and router_moved_reads >= CLIENT_AWAY_POLLS:
-                # Another network with the same addresses: only its router
-                # tells it apart, so no network is named.
-                away = ()
-            if away is not None:
-                if not away_polls:
-                    fields["client_leaves"] = int(fields.get("client_leaves", 0)) + 1
-                away_polls += 1
-                joined = away
-                fields.setdefault("client_left_after_sec", round(now - started, 3))
-                if (
-                    not hinting and away_polls >= CLIENT_AWAY_POLLS
-                    and now - down_since >= CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS
-                ):
-                    hinting = True
-                    fields["client_hinted"] = True
-                    hints()
-                    callbacks.message(client_away_message(joined, wifi_name))
-            else:
-                if away_polls:
-                    fields["client_rejoined_after_sec"] = round(now - started, 3)
-                away_polls = 0
-                if hinting:
-                    hinting = False
-                    hints()
-                    callbacks.message(client_back_message())
-        # Refusals count only while this Mac is on the device's network: on
-        # another one with the same addresses, another host refuses.
-        if read_kind != "refused" or away_polls:
-            refused_since = None
-        elif refused_since is None:
-            refused_since = now
-        if hang_seen_at is None and refused_since is not None and now - refused_since >= RESTART_STUCK_AFTER_DOWN_SECONDS:
-            # ACP refused for this long: the kernel is up and ACPd is gone, as
-            # in the hang the marker look finds (a restart that finishes
-            # listens again seconds after its network comes up). It also
-            # covers the restart that turns SSH on, which has no SSH to look
-            # with. Another host that took the address refuses too, but a
-            # device that came back elsewhere is followed by its MAC first.
-            hang_seen_at = now
-            hang_evidence = "acp_refused"
-            if hang_first_at is None:
-                hang_first_at = now
-            fields["acpd_hang_seen_after_sec"] = round(now - started, 3)
-            fields["acpd_hang_evidence"] = "acp_refused"
-            hints()
-            callbacks.message(ACPD_REFUSED_UNPLUG_MESSAGE)
-        elif hang_evidence == "acp_refused" and silence.quiet:
-            # The refusals gave way to silence: the restart's teardown started
-            # after all, or the device was unplugged. What comes next is
-            # judged as any other restart's, and the limit still counts from
-            # the first hang, so refusals and silence in turns cannot hold the
-            # wait open.
-            hang_seen_at = None
-            hang_evidence = None
-            fields["acpd_hang_cleared_after_sec"] = round(now - started, 3)
-            hints()
-        if (
-            ssh is not None and restart_marker == "written" and hang_seen_at is None
-            and now - started >= HANG_CHECK_AFTER_REQUEST_SECONDS and now >= next_hang_check
-        ):
-            next_hang_check = now + HANG_CHECK_INTERVAL_SECONDS
+        advance(Surroundings(place, _client_away(watched_link) if watched_link is not None else None), now)
+        if can_look and state.look_due(now):
             fields["restart_looks"] = int(fields.get("restart_looks", 0)) + 1
             # The port check ends at once where SSH to a device that is off would
             # wait out the marker read's timeout. A read that fails with the port
@@ -903,70 +1246,31 @@ def _wait(
             else:
                 asked_ssh = True
                 try:
-                    verdict = acpd.restart_verdict(ssh)
+                    restart = acpd.restart_verdict(ssh)
                 except TransportError:
                     look = "ssh_failed"
                 else:
-                    look = verdict.state
+                    look = restart.state
                     # What the latest look saw, for a restart that outlives the grace.
-                    fields.update(verdict.details)
+                    fields.update(restart.details)
             fields["restart_look_last"] = look
-            if look == "hung":
-                hang_seen_at = now
-                hang_evidence = "marker"
-                if hang_first_at is None:
-                    hang_first_at = now
-                fields["acpd_hang_seen_after_sec"] = round(now - started, 3)
-                fields["acpd_hang_evidence"] = "marker"
-                hints()
-                callbacks.message(UNPLUG_MESSAGE)
+            advance(Look(look), now)
         # Judged on the regular place readings only, so the routers are read no
         # more often than PLACE_READ_INTERVAL_SECONDS.
-        if stuck_showing and not silence.quiet:
-            # Something answers at the address again, such as ACPd refusing
-            # while the device starts up: an unplug now would interrupt it.
-            stuck_showing = False
-            fields["stuck_hint_cleared_after_sec"] = round(now - started, 3)
-            hints()
-            tell(RESTART_STUCK_WITHDRAWN_MESSAGE)
-        elif (
-            stuck_showing and place is not None and place.verdict in ("same", "offline")
-            and (place.verdict == "offline") != stuck_offline
-        ):
-            # This Mac lost or got back its network connection: the hint's
-            # wording follows it.
-            stuck_offline = place.verdict == "offline"
-            stuck_hint()
-        elif (
-            place is not None and place.verdict in ("same", "offline")
-            and not stuck_showing and hang_seen_at is None and away_polls == 0 and rejected is None
-            and silence.quiet and now - down_since >= RESTART_STUCK_AFTER_DOWN_SECONDS
-        ):
+        if state.stuck_candidate(place, now):
             ssh_error = tcp_connect_error(host, SSH_PORT, PORT_CHECK_TIMEOUT_SECONDS)
-            silence.observe_ssh_port(ssh_error)
             if connect_answered(ssh_error):
                 fields["stuck_ssh_port"] = "open" if ssh_error is None else "refused"
-            if silence.quiet:
-                if stuck_at is None:
-                    # Shown again after the device answered, the hint does
-                    # not restart the limit: a device that keeps answering and
-                    # falling silent cannot hold the wait open.
-                    stuck_at = now
-                    fields["stuck_hint_after_sec"] = round(now - started, 3)
-                    fields["stuck_hint_place"] = place.verdict
-                stuck_showing = True
-                stuck_offline = place.verdict == "offline"
-                stuck_hint()
-        if airport_mac and now - down_since >= FOLLOW_AFTER_DOWN_SECONDS and now >= next_follow:
-            next_follow = now + FOLLOW_INTERVAL_SECONDS
+            advance(StuckCheck(place, probed=True, ssh_error=ssh_error), now)
+        else:
+            advance(StuckCheck(place), now)
+        if airport_mac and state.follow_due(now):
             # One read per candidate: a device still booting fails every read,
             # and the next look is FOLLOW_INTERVAL_SECONDS away.
             located = locate_airport(
                 airport_mac, password, current_host=host, trigger="reboot_wait", callbacks=callbacks, attempts=1,
             )
-            if located.outcome == "password_rejected":
-                rejected = located
-            elif located.host is not None:
+            if located.host is not None and located.outcome != "password_rejected":
                 candidate = endpoint_host(located.host)
                 read_started = time.monotonic()
                 uptime, _mac, _error = _read_uptime(candidate, password)
@@ -978,56 +1282,25 @@ def _wait(
                     callbacks.message(f"The device came back at {candidate}; the saved address is out of date.")
                     callbacks.update(current_host=located.host)
                     break
-        # The user gets the whole limit to unplug the device and for it to start up.
-        limit_from = max(at for at in (down_since, hang_first_at, stuck_at) if at is not None)
-        if now - limit_from >= up_timeout_seconds:
-            if away_polls >= CLIENT_AWAY_POLLS:
-                # Nothing showed whether the device came back: this Mac was
-                # not on its network to see it.
-                finish("client_left_network", ErrorCode.CLIENT_LEFT_NETWORK, client_left_message(joined))
-            if hang_seen_at is not None:
-                message = stopped_message
-                if hang_evidence == "acp_refused":
-                    # The caller's message opens with ACPD_STOPPED_MESSAGE
-                    # (deploy adds what that means for the install).
-                    message = message.replace(ACPD_STOPPED_MESSAGE, ACPD_REFUSED_MESSAGE, 1)
-                finish("acpd_stopped_without_reboot", ErrorCode.ACPD_BROKEN, message)
-            if stuck_at is not None and not stuck_offline and silence.quiet:
-                # Still silent since the unplug was asked for.
-                finish("restart_stuck", ErrorCode.RESTART_STUCK, stuck_message)
-            if silence.maybe_blocked:
-                # The app's reads all got no route at the end: macOS may be
-                # refusing its connections to a device that is up.
-                block = _local_network_block(host, silence.no_route_errors, ssh)
-                if block is not None:
-                    fields["local_network_block_proof"] = block.proof
-                    finish("local_network_blocked", block.code, block.message)
-            if rejected is not None:
-                message = f"{up_timeout_message} {rejected.rejected_note}"
-            elif silence.quiet:
-                message = f"{up_timeout_message} {unplug_if_on_network_note(wifi_name)}"
-            else:
-                # Something answered at the address lately, or macOS may have
-                # refused the reads: not a device known to be off.
-                message = up_timeout_message
-            finish("did_not_come_back_up", ErrorCode.REBOOT_NOT_FINISHED, message)
+            advance(Located(located if located.outcome == "password_rejected" else None), now)
+        end(verdict(state, now, terms, lambda errors: _local_network_block(host, errors, ssh)))
 
     fields["reset_seen_after_sec"] = round(now - started, 3)
-    if away_polls:
+    if state.away_polls:
         # The device answered, so this Mac is back on its network.
         fields["client_rejoined_after_sec"] = round(now - started, 3)
-    if hinting or stuck_showing or hang_seen_at is not None:
+    if state.client is Client.AWAY or state.stuck is Stuck.SHOWN or state.hang is not Hang.NONE:
         # The device came back, after an unplug or by itself, and this Mac is
         # on its network: no hint stands.
-        hints(cleared=True)
-    if hinting:
+        hints(state, cleared=True)
+    if state.client is Client.AWAY:
         callbacks.message(client_back_message())
     if asked_ssh:
         # A look may have opened a shared SSH connection to the old kernel,
         # which the restart left dead: the next command logs in afresh.
         close_ssh_masters(endpoint_host(ssh.host))
     fields["uptime_at_return_sec"] = uptime
-    if not up_stage:
+    if not state.went_down:
         callbacks.stage("wait_for_reboot_up")
     if expect_ssh:
         fields["ssh_timeout_sec"] = REBOOT_SSH_TIMEOUT_SECONDS

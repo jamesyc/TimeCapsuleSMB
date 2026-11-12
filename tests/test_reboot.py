@@ -1969,3 +1969,360 @@ class ClientAwayMessageTests(unittest.TestCase):
         message = reboot_service.client_left_message((ipaddress.ip_network("8.8.8.0/24"),))
         self.assertIn("ipv4-public/24", message)
         self.assertNotIn("8.8.8", message)
+
+
+STUCK_LINE = RESTART_STUCK_HINT
+WITHDRAWN_LINE = reboot_service.RESTART_STUCK_WITHDRAWN_MESSAGE
+FLAPPING_LINE = reboot_service.RESTART_STUCK_FLAPPING_MESSAGE
+BACK_LINE = reboot_service.client_back_message()
+ONLINE_LINE = "Device is back online."
+TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
+
+
+def _hotspot():
+    import ipaddress
+
+    return (ipaddress.ip_network(HOTSPOT[0]),)
+
+
+class RestartWaitTranscriptTests(unittest.TestCase):
+    """Whole restart waits over read sequences shaped like ones seen in the
+    field, each pinned to its ending, how long it waited, and every hint it
+    showed (seconds after the wait began, and which hints) and line it
+    printed, on the simulated clock."""
+
+    def transcript(self, device: FakeAcpDevice, *, held: bool = False, **kwargs):
+        recorder = RecordingCallbacks()
+        recorder.clock = device.monotonic
+        start = device.now
+        moved = end = None
+        with device.patched(), mock.patch.object(reboot_service, "macos_may_hold_this_process", return_value=held):
+            try:
+                moved = reboot_device("root@10.0.0.2", "pw", wait=True, callbacks=recorder.callbacks(),
+                                      up_timeout_message=TIMEOUT_MESSAGE, **kwargs)
+            except RebootFlowError as exc:
+                end = (exc.code, exc.result, exc.message)
+        names = ("client_away", "acpd_hung", "restart_stuck", "client_offline")
+        hints = [
+            (round(at - start), tuple(name for name in names if fields[name]))
+            for at, stage, fields in recorder.progress if stage == "wait_for_reboot_up"
+        ]
+        skipped = {"Waiting for the device to restart...", "ACP reboot requested.",
+                   "Device went down; waiting for it to come back up..."}
+        lines = [message for message in recorder.messages if message not in skipped]
+        return {"end": end, "moved": moved, "took": round(device.now - start), "hints": hints, "lines": lines}
+
+    def assertTranscript(self, got, *, end, took, hints, lines, moved=None) -> None:
+        self.assertEqual(got, {"end": end, "moved": moved, "took": took, "hints": hints, "lines": lines})
+
+    STUCK_END = ("restart_stuck", "restart_stuck", restart_stuck_message())
+
+    def test_held_no_route_bursts_withdraw_the_stuck_hint_each_time(self) -> None:
+        # The app on a device that stopped partway: host down, with bursts of
+        # no route that say nothing either way.
+        down, no_route = "[Errno 64] Host is down", "[Errno 65] No route to host"
+        device = stuck_device(down_read_error=down, ssh_port_error=down, down_read_error_changes=(
+            (STUCK_AFTER + 40, no_route), (STUCK_AFTER + 60, down), (STUCK_AFTER + 200, no_route), (STUCK_AFTER + 215, down),
+        ))
+        self.assertTranscript(
+            self.transcript(device, held=True), end=self.STUCK_END, took=971,
+            hints=[(371, ("restart_stuck",)), (411, ()), (431, ("restart_stuck",)), (571, ()), (596, ("restart_stuck",))],
+            lines=[STUCK_LINE, WITHDRAWN_LINE, STUCK_LINE, WITHDRAWN_LINE, FLAPPING_LINE],
+        )
+
+    def test_held_no_route_to_the_end_without_ssh_ends_with_no_unplug(self) -> None:
+        down = "[Errno 64] Host is down"
+        device = stuck_device(down_read_error=down, ssh_port_error=down, down_read_error_changes=(
+            (STUCK_AFTER + UP_LIMIT - 30, "[Errno 65] No route to host"),
+        ))
+        self.assertTranscript(
+            self.transcript(device, held=True), end=("reboot_not_finished", "did_not_come_back_up", TIMEOUT_MESSAGE),
+            took=971, hints=[(371, ("restart_stuck",)), (941, ())], lines=[STUCK_LINE, WITHDRAWN_LINE],
+        )
+
+    def test_refused_for_a_while_then_silent_is_a_stuck_restart(self) -> None:
+        device = stuck_device(down_read_error="Connection refused", down_read_error_changes=((100.0, "timed out"),))
+        self.assertTranscript(
+            self.transcript(device), end=self.STUCK_END, took=971, hints=[(371, ("restart_stuck",))], lines=[STUCK_LINE],
+        )
+
+    def test_refused_hang_then_silent_then_stuck(self) -> None:
+        device = stuck_device(down_read_error="Connection refused", down_read_error_changes=((STUCK_AFTER + 60.0, "timed out"),))
+        self.assertTranscript(
+            self.transcript(device), end=self.STUCK_END, took=1031,
+            hints=[(371, ("acpd_hung",)), (431, ()), (431, ("restart_stuck",))],
+            lines=[reboot_service.ACPD_REFUSED_UNPLUG_MESSAGE, STUCK_LINE],
+        )
+
+    def test_refused_hang_then_an_unplug(self) -> None:
+        device = stuck_device(down_read_error="Connection refused", unplugged_after=STUCK_AFTER + 120.0)
+        self.assertTranscript(
+            self.transcript(device), end=None, took=491, hints=[(371, ("acpd_hung",)), (486, ())],
+            lines=[reboot_service.ACPD_REFUSED_UNPLUG_MESSAGE, ONLINE_LINE],
+        )
+
+    def test_router_moved_then_back_and_the_device_returns(self) -> None:
+        device = FakeAcpDevice(mac_router=ROUTER, kernel_after=420.0,
+                               mac_router_changes=((30.0, OTHER_ROUTER), (300.0, ROUTER)))
+        self.assertTranscript(
+            self.transcript(device), end=None, took=431,
+            hints=[(211, ("client_away",)), (311, ()), (371, ("restart_stuck",)), (426, ())],
+            lines=[reboot_service.client_away_message((), None), BACK_LINE, STUCK_LINE, ONLINE_LINE],
+        )
+
+    def test_away_then_back_then_stuck(self) -> None:
+        device = stuck_device(mac_network_changes=((20.0, HOTSPOT), (250.0, ("10.0.0.0/24",))))
+        self.assertTranscript(
+            self.transcript(device), end=self.STUCK_END, took=971,
+            hints=[(191, ("client_away",)), (251, ()), (371, ("restart_stuck",))],
+            lines=[reboot_service.client_away_message(_hotspot(), None), BACK_LINE, STUCK_LINE],
+        )
+
+    def test_away_to_the_end(self) -> None:
+        device = stuck_device(mac_network_changes=((20.0, HOTSPOT),))
+        self.assertTranscript(
+            self.transcript(device, wifi_name="Home"),
+            end=("client_left_network", "client_left_network", reboot_service.client_left_message(_hotspot())),
+            took=611, hints=[(191, ("client_away",))],
+            lines=[reboot_service.client_away_message(_hotspot(), "Home")],
+        )
+
+    def test_a_new_boot_at_the_same_address_after_the_stuck_hint(self) -> None:
+        device = stuck_device(unplugged_after=STUCK_AFTER + 100.0)
+        self.assertTranscript(
+            self.transcript(device), end=None, took=471, hints=[(371, ("restart_stuck",)), (466, ())],
+            lines=[STUCK_LINE, ONLINE_LINE],
+        )
+
+    def test_a_new_address_found_after_the_stuck_hint(self) -> None:
+        device = stuck_device(unplugged_after=STUCK_AFTER + 100.0, new_address="10.0.0.9")
+        self.assertTranscript(
+            self.transcript(device), end=None, moved="root@10.0.0.9", took=491,
+            hints=[(371, ("restart_stuck",)), (491, ())],
+            lines=[STUCK_LINE, "The device came back at 10.0.0.9; the saved address is out of date.", ONLINE_LINE],
+        )
+
+    def test_a_rejected_password_found_by_mac_holds_back_the_stuck_hint(self) -> None:
+        from timecapsulesmb.services.locate import LocateResult
+
+        device = stuck_device()
+        device.locate_airport = lambda *_args, **_kwargs: LocateResult("password_rejected", address="10.0.1.1")
+        got = self.transcript(device)
+        self.assertEqual(got["end"][:2], ("reboot_not_finished", "did_not_come_back_up"))
+        self.assertTrue(got["end"][2].startswith(f"{TIMEOUT_MESSAGE} An AirPort advertising this device's MAC"))
+        self.assertEqual((got["took"], got["hints"], got["lines"]), (611, [], []))
+
+    def test_the_stuck_hint_withdrawn_by_a_refusal_then_shown_again(self) -> None:
+        device = stuck_device(down_read_error_changes=(
+            (STUCK_AFTER + 60.0, "Connection refused"), (STUCK_AFTER + 90.0, "timed out"),
+        ))
+        self.assertTranscript(
+            self.transcript(device), end=self.STUCK_END, took=971,
+            hints=[(371, ("restart_stuck",)), (421, ()), (461, ("restart_stuck",))],
+            lines=[STUCK_LINE, WITHDRAWN_LINE, STUCK_LINE],
+        )
+
+    def test_the_marker_hang_never_unplugged(self) -> None:
+        device = FakeAcpDevice(acpd_hangs=True, mac_router=ROUTER)
+        self.assertTranscript(
+            self.transcript(device, ssh=AcpdHangTests.SSH),
+            end=("acpd_broken", "acpd_stopped_without_reboot", reboot_service.ACPD_STOPPED_MESSAGE),
+            took=663, hints=[(63, ("acpd_hung",))], lines=[reboot_service.UNPLUG_MESSAGE],
+        )
+
+    def test_the_marker_hang_then_this_mac_leaves(self) -> None:
+        # Leaving the network outranks the hang at the limit.
+        device = FakeAcpDevice(acpd_hangs=True, mac_router=ROUTER, mac_network_changes=((200.0, HOTSPOT),))
+        self.assertTranscript(
+            self.transcript(device, ssh=AcpdHangTests.SSH),
+            end=("client_left_network", "client_left_network", reboot_service.client_left_message(_hotspot())),
+            took=663, hints=[(63, ("acpd_hung",)), (208, ("client_away", "acpd_hung"))],
+            lines=[reboot_service.UNPLUG_MESSAGE, reboot_service.client_away_message(_hotspot(), None)],
+        )
+
+    def test_the_stuck_hint_then_another_router_shows_both_hints(self) -> None:
+        device = stuck_device(mac_router_changes=((STUCK_AFTER + 30.0, OTHER_ROUTER),))
+        self.assertTranscript(
+            self.transcript(device),
+            end=("client_left_network", "client_left_network", reboot_service.client_left_message(())),
+            took=971, hints=[(371, ("restart_stuck",)), (421, ("client_away", "restart_stuck"))],
+            lines=[STUCK_LINE, reboot_service.client_away_message((), None)],
+        )
+
+    def test_leaving_two_polls_before_the_limit_ends_as_left(self) -> None:
+        device = stuck_device(mac_network_changes=((STUCK_AFTER + UP_LIMIT + 4.0, HOTSPOT),))
+        self.assertTranscript(
+            self.transcript(device),
+            end=("client_left_network", "client_left_network", reboot_service.client_left_message(_hotspot())),
+            took=971, hints=[(371, ("restart_stuck",)), (971, ("client_away", "restart_stuck"))],
+            lines=[STUCK_LINE, reboot_service.client_away_message(_hotspot(), None)],
+        )
+
+    def test_leaving_one_poll_before_the_limit_ends_as_stuck(self) -> None:
+        # One poll away is not yet a leave, so the stuck ending stands.
+        device = stuck_device(mac_network_changes=((STUCK_AFTER + UP_LIMIT + 8.0, HOTSPOT),))
+        self.assertTranscript(
+            self.transcript(device), end=self.STUCK_END, took=971, hints=[(371, ("restart_stuck",))], lines=[STUCK_LINE],
+        )
+
+    def test_offline_stuck_hint_withdrawn_then_shown_again_online(self) -> None:
+        device = stuck_device(
+            mac_network_changes=((20.0, ()), (STUCK_AFTER + 80.0, ("10.0.0.0/24",))),
+            down_read_error_changes=((STUCK_AFTER + 60.0, "Connection refused"), (STUCK_AFTER + 75.0, "timed out")),
+        )
+        self.assertTranscript(
+            self.transcript(device, wifi_name="Home"), end=self.STUCK_END, took=971,
+            hints=[(371, ("restart_stuck", "client_offline")), (421, ()), (446, ("restart_stuck",))],
+            lines=[restart_stuck_offline_hint("Home"), WITHDRAWN_LINE, STUCK_LINE],
+        )
+
+    def test_withdrawn_stuck_hint_with_the_place_unknown_still_ends_as_stuck(self) -> None:
+        # The router became unreadable, so the hint is not shown again; the
+        # ending still counts the first hint.
+        device = stuck_device(
+            mac_router_changes=((STUCK_AFTER + 50.0, None),),
+            down_read_error_changes=((STUCK_AFTER + 60.0, "Connection refused"), (STUCK_AFTER + 75.0, "timed out")),
+        )
+        self.assertTranscript(
+            self.transcript(device), end=self.STUCK_END, took=971,
+            hints=[(371, ("restart_stuck",)), (421, ())], lines=[STUCK_LINE, WITHDRAWN_LINE],
+        )
+
+    def test_withdrawn_offline_stuck_hint_with_the_place_unknown_ends_with_the_conditional_unplug(self) -> None:
+        # As above, but the first hint was the offline one.
+        device = stuck_device(
+            mac_network_changes=((20.0, ()), (STUCK_AFTER + 80.0, ("10.0.0.0/24",))),
+            mac_router_changes=((STUCK_AFTER + 79.0, None),),
+            down_read_error_changes=((STUCK_AFTER + 60.0, "Connection refused"), (STUCK_AFTER + 75.0, "timed out")),
+        )
+        self.assertTranscript(
+            self.transcript(device, wifi_name="Home"),
+            end=("reboot_not_finished", "did_not_come_back_up", f"{TIMEOUT_MESSAGE} {unplug_if_on_network_note('Home')}"),
+            took=971, hints=[(371, ("restart_stuck", "client_offline")), (421, ())],
+            lines=[restart_stuck_offline_hint("Home"), WITHDRAWN_LINE],
+        )
+
+
+class RestartWaitMachineTests(unittest.TestCase):
+    """The restart wait's state machine on its own: step() and verdict()."""
+
+    T0 = 1000.0
+
+    def state(self, **changes) -> reboot_service.WaitState:
+        from dataclasses import replace
+
+        start = reboot_service.WaitState(started=self.T0, silence=reboot_service.DeviceSilence(held=False))
+        return replace(start, **changes)
+
+    @staticmethod
+    def place(verdict: str, evidence: str | None = "router"):
+        from timecapsulesmb.checks.network import PlaceComparison
+
+        return PlaceComparison(verdict, evidence)
+
+    def feed(self, state, observations):
+        for now, observation in observations:
+            state = reboot_service.step(state, observation, now)
+        return state
+
+    def terms(self, **changes):
+        values = dict(
+            start_timeout_seconds=90, up_timeout_seconds=UP_LIMIT, no_down_message="no down",
+            up_timeout_message="timed out", stopped_message=reboot_service.ACPD_STOPPED_MESSAGE,
+            stuck_message="stuck", wifi_name=None,
+        )
+        values.update(changes)
+        return reboot_service.WaitTerms(**values)
+
+    def test_going_down_and_answering_again(self) -> None:
+        t = self.T0
+        Read, Answered = reboot_service.Read, reboot_service.Answered
+        state = self.feed(self.state(), [(t + 10, Read("timeout", "timed out")), (t + 15, Read("timeout", "timed out"))])
+        self.assertEqual((state.phase, state.down_since, state.went_down), (reboot_service.Phase.DOWN, t + 10, True))
+        # The old boot answers: the up limit will count from the next unanswered read.
+        state = self.feed(state, [(t + 20, Answered()), (t + 25, Read("timeout", "timed out"))])
+        self.assertEqual((state.phase, state.down_since, state.went_down), (reboot_service.Phase.DOWN, t + 25, True))
+        # The start limit applies only while the old boot answers.
+        answered = reboot_service.step(state, Answered(), t + 95)
+        self.assertEqual(reboot_service.verdict(answered, t + 95, self.terms()).result, "did_not_go_down")
+        self.assertIsNone(reboot_service.verdict(answered, t + 85, self.terms()))
+        self.assertIsNone(reboot_service.verdict(state, t + 95, self.terms()))
+
+    def test_step_leaves_the_state_it_was_given_alone(self) -> None:
+        state = self.state(phase=reboot_service.Phase.DOWN, down_since=self.T0)
+        for _ in range(reboot_service.STUCK_QUIET_READS):
+            after = reboot_service.step(state, reboot_service.Read("timeout", "timed out"), self.T0 + 5)
+            self.assertIsNot(after.silence, state.silence)
+            state = after
+        self.assertTrue(state.silence.quiet)
+        before = state.silence.quiet_reads
+        reboot_service.step(state, reboot_service.StuckCheck(self.place("same"), probed=True, ssh_error=None), self.T0 + 400)
+        self.assertEqual((state.silence.quiet, state.silence.quiet_reads), (True, before))
+
+    def test_this_mac_leaving_and_coming_back(self) -> None:
+        Client, Surroundings = reboot_service.Client, reboot_service.Surroundings
+        hotspot = _hotspot()
+        state = self.state(phase=reboot_service.Phase.DOWN, down_since=self.T0)
+        # Away early: leaving, with no hint before the device has been down a while.
+        state = self.feed(state, [(self.T0 + 20, Surroundings(None, hotspot)), (self.T0 + 25, Surroundings(None, hotspot))])
+        self.assertEqual((state.client, state.away_polls, state.joined), (Client.LEAVING, 2, hotspot))
+        later = self.T0 + reboot_service.CLIENT_AWAY_HINT_AFTER_DOWN_SECONDS
+        state = reboot_service.step(state, Surroundings(None, hotspot), later)
+        self.assertIs(state.client, Client.AWAY)
+        state = reboot_service.step(state, Surroundings(None, None), later + 5)
+        self.assertEqual((state.client, state.away_polls), (Client.HOME, 0))
+        # Behind another router twice in a row is away too, naming no network.
+        moved = self.place("moved")
+        state = self.feed(state, [(later + 20, Surroundings(moved, None)), (later + 35, Surroundings(moved, None))])
+        self.assertEqual((state.client, state.away_polls, state.joined), (Client.LEAVING, 1, ()))
+
+    def test_the_limit_counts_from_the_first_request_to_unplug_only(self) -> None:
+        Hang = reboot_service.Hang
+        state = self.state(phase=reboot_service.Phase.DOWN, down_since=self.T0, read_kind="refused",
+                           refused_since=self.T0)
+        hang_at = self.T0 + STUCK_AFTER
+        state = reboot_service.step(state, reboot_service.Surroundings(None, None), hang_at)
+        self.assertEqual((state.hang, state.limit_from), (Hang.REFUSED, hang_at))
+        # Silence clears it, and a later hang does not move the limit.
+        for index in range(reboot_service.STUCK_QUIET_READS):
+            state = reboot_service.step(state, reboot_service.Read("timeout", "timed out"), hang_at + 5 * index)
+        state = reboot_service.step(state, reboot_service.Surroundings(None, None), hang_at + 15)
+        self.assertIs(state.hang, Hang.NONE)
+        state = reboot_service.step(state, reboot_service.Look("hung"), hang_at + 100)
+        self.assertEqual((state.hang, state.limit_from), (Hang.MARKER, hang_at))
+        self.assertIsNone(reboot_service.verdict(state, hang_at + UP_LIMIT - 1, self.terms()))
+        self.assertEqual(reboot_service.verdict(state, hang_at + UP_LIMIT, self.terms()).code, "acpd_broken")
+
+    def test_verdict_order_at_the_limit(self) -> None:
+        from types import SimpleNamespace
+
+        Hang, Stuck = reboot_service.Hang, reboot_service.Stuck
+        quiet = reboot_service.DeviceSilence(held=True, quiet=True)
+        blocked = reboot_service.DeviceSilence(held=True, no_route_errors=["a", "b", "c"])
+        down = dict(phase=reboot_service.Phase.DOWN, down_since=self.T0)
+        at = self.T0 + UP_LIMIT
+        asked: list[list[str]] = []
+
+        def block(errors):
+            asked.append(errors)
+            return SimpleNamespace(code="acp_no_route", message="blocked", proof="ssh")
+
+        for name, state, result in (
+            ("away beats a hang", self.state(**down, away_polls=2, hang=Hang.MARKER), "client_left_network"),
+            ("one poll away is not away", self.state(**down, away_polls=1, hang=Hang.MARKER), "acpd_stopped_without_reboot"),
+            ("a hang beats the stuck hint", self.state(**down, hang=Hang.REFUSED, stuck=Stuck.SHOWN, stuck_at=self.T0,
+                                                         silence=quiet), "acpd_stopped_without_reboot"),
+            ("stuck when still silent", self.state(**down, stuck=Stuck.SHOWN, stuck_at=self.T0, silence=quiet), "restart_stuck"),
+            ("not stuck when no longer silent", self.state(**down, stuck=Stuck.WITHDRAWN, stuck_at=self.T0),
+             "did_not_come_back_up"),
+            ("a proven block", self.state(**down, silence=blocked), "local_network_blocked"),
+        ):
+            with self.subTest(name):
+                asked.clear()
+                ending = reboot_service.verdict(state, at, self.terms(), block)
+                self.assertEqual(ending.result, result)
+                self.assertEqual(bool(asked), result == "local_network_blocked")
+        refused = reboot_service.verdict(self.state(**down, hang=Hang.REFUSED), at, self.terms())
+        self.assertEqual(refused.message, reboot_service.ACPD_REFUSED_MESSAGE)
+        self.assertEqual(dict(reboot_service.verdict(self.state(**down, silence=blocked), at, self.terms(), block).fields),
+                         {"local_network_block_proof": "ssh"})
