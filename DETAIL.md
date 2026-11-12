@@ -749,7 +749,7 @@ Run `doctor` after a deploy or a reboot. Its SMB checks create, change and remov
 
 ### `fsck`
 
-`tcapsule fsck` runs `fsck_hfs` on the device against one HFS volume. It mounts and wakes Apple's volumes, picks a volume or asks for one, stops TimeCapsuleSMB and Apple's file sharing (and gives up if anything will not stop), unmounts the disk, runs `fsck_hfs`, and reboots. Unless `--no-reboot` is given, it refuses to start while a volume exists only in memory, because the reboot would take it (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)). With or without `--no-reboot`, it refuses with `disk_not_responding` before stopping anything when a process has waited minutes on the disk, because that process would not stop and file sharing would be left half off.
+`tcapsule fsck` runs `fsck_hfs` on the device against one HFS volume. It mounts and wakes Apple's volumes, picks a volume or asks for one, stops TimeCapsuleSMB and Apple's file sharing (and gives up with `manager_stop_timeout` if anything will not stop), unmounts the disk, runs `fsck_hfs`, and reboots. Unless `--no-reboot` is given, it refuses to start while a volume exists only in memory, because the reboot would take it (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory)). With or without `--no-reboot`, it refuses with `disk_not_responding` before stopping anything when a process has waited minutes on the disk, because that process would not stop and file sharing would be left half off.
 
 - A repair can take an hour or more on a large disk, and then checks the volume again. Progress shows each `fsck_hfs` step as it starts.
 - If the SSH session drops, `fsck_hfs` keeps running on the device and file sharing stays off until it ends; the command reports `fsck_session_dropped`. A second repair is refused while one is running.
@@ -792,7 +792,7 @@ Copy off anything you need from the volume first. For the internal disk, run Wip
 
 ### `uninstall`
 
-`tcapsule uninstall` removes TimeCapsuleSMB's files from the device. It stops the manager, removes the payload directories from the mounted HFS volumes, removes the loader files under `/mnt/Flash` and the runtime state, runs `sync`, and reboots so Apple's services and the root filesystem start clean. After a waited reboot it checks the files are gone. Unless `--no-reboot` or `--dry-run` is given, it stops before mounting anything while a volume exists only in memory. It does not restore a firmware bank changed by `flash --patch`; `flash --restore` does that.
+`tcapsule uninstall` removes TimeCapsuleSMB's files from the device. It stops the manager (giving up with `manager_stop_timeout` if a process will not stop), removes the payload directories from the mounted HFS volumes, removes the loader files under `/mnt/Flash` and the runtime state, runs `sync`, and reboots so Apple's services and the root filesystem start clean. After a waited reboot it checks the files are gone. Unless `--no-reboot` or `--dry-run` is given, it stops before mounting anything while a volume exists only in memory. It does not restore a firmware bank changed by `flash --patch`; `flash --restore` does that.
 
 Arguments:
 - `--config PATH`: use another config
@@ -946,7 +946,7 @@ Run it after setup, after a deploy, and after a reboot.
 - stops before changing anything while a volume exists only in memory (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory))
 - builds the plan and the configuration on this computer before stopping anything
 - asks before stopping or replacing anything, unless `--yes` is given; answering no leaves the device as it was
-- stops the current and older TimeCapsuleSMB processes and Apple's file servers, disables `rc.local`, deletes Samba's logs, and runs `sync`
+- stops the current and older TimeCapsuleSMB processes and Apple's file servers, disables `rc.local`, deletes Samba's logs, and runs `sync`. A process still there after `SIGKILL` is asleep in the kernel, maybe waiting on the disk, and the deploy stops with `manager_stop_timeout`
 - migrates old metadata (see [Migrating older metadata](#migrating-older-metadata))
 - removes known obsolete programs, keeping data, metadata, quarantined databases, other logs, SSH keys and Apple's settings
 - checks the free space on flash, with a small margin

@@ -431,6 +431,8 @@ class FakeInstalledRuntime:
     disk_stall_listing: str = ""
     # Apple's ACPd quit once the runtime started (device.acpd, "quit").
     acpd_quit: bool = False
+    # A process the start's stop could not stop: asleep in the kernel.
+    stuck_stop: bool = False
     calls: list[str] = field(default_factory=list)
     # The SSH target each start and wait reached the device at.
     hosts: list[str] = field(default_factory=list)
@@ -451,6 +453,10 @@ class FakeInstalledRuntime:
     def _run_actions(self, connection, actions, **_kwargs):
         self.hosts.append(connection.host)
         self.calls.append("run " + ", ".join(getattr(action, "path", repr(action)) for action in actions))
+        if self.stuck_stop:
+            from timecapsulesmb.transport.errors import SshError
+
+            raise SshError("process smbd did not stop; retry after its active work finishes")
 
     def _verify(self, connection, *, callbacks, stage, timeout_seconds, heading, failure_message):
         from timecapsulesmb.device.errors import DeviceError, RsyncNotRunningError

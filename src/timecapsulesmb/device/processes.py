@@ -251,10 +251,6 @@ SUPERVISOR_STOP_SECONDS = 2 * MANAGER_CHILD_GRACE_SECONDS
 # the kernel wait channel: a Samba child blocked on disk I/O is the usual
 # reason a manager cannot finish stopping.
 STUCK_PROCESS_PS_COMMAND = f"/bin/ps ax {PS_COLUMNS}"
-# How the stop script names a service process it waited for in vain without
-# reading its command line: asleep in the kernel throughout, like a manager
-# that does not stop, often waiting on the disk.
-UNREADABLE_SERVICE_STOP_MESSAGE = "process service did not show its command line"
 
 
 def describe_uninterruptible(stuck_listing: str) -> str:
@@ -561,8 +557,8 @@ managed_processes() {
                 *) continue ;;
             esac
         elif [ "$comm" = service ]; then
-            # Deploy classifies "process manager did not stop" as a stuck
-            # supervisor; workers keep the generic label.
+            # A failed stop names the supervisor "manager" and a worker
+            # "service".
             label=manager
             case "$command" in
                 '/mnt/Flash/service run'|'/mnt/Flash/service run '*|\
@@ -777,6 +773,22 @@ def render_wait_for_process_absent(present_command: str, *, attempts: int) -> st
         "sleep 1; "
         "done"
     )
+
+
+# The stop scripts' lines for a process that would not stop, asleep in the
+# kernel, maybe on the disk: one still there after SIGKILL (pkill's and the
+# service stop's "process X did not stop", the idle-job stop's "job X (pid N)
+# did not stop"), or a service process waited for in vain without reading its
+# command line, which only ours can be. An unreadable sh may be another
+# program's shell, so its line is not one.
+_PROCESS_STOP_FAILED = re.compile(
+    r"process \S+ did not stop|process service did not show its command line|job \S+ \(pid \d+\) did not stop"
+)
+
+
+def process_stop_failed(text: str) -> bool:
+    """Whether a stop command's output says a process would not stop."""
+    return _PROCESS_STOP_FAILED.search(text) is not None
 
 
 def render_pkill_wait_pkill9_by_ucomm(name: str, *, attempts: int = 5) -> str:

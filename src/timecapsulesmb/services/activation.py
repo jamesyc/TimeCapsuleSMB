@@ -25,7 +25,7 @@ from timecapsulesmb.device.probe import (
     runtime_payload_problem,
 )
 from timecapsulesmb.deploy.commands import RemoteAction
-from timecapsulesmb.deploy.executor import run_remote_actions
+from timecapsulesmb.deploy.executor import run_remote_actions, stuck_stop_as
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import DeviceAccessError, DiskCheckRunningError, acpd_problems_and_disk_stalls
 from timecapsulesmb.services.runtime_verification import (
@@ -251,6 +251,9 @@ def installed_netbsd4_autostart(
     return autostart
 
 
+ACTIVATION_STOP_TIMEOUT_SENTENCE = "A service on the device is stuck and did not stop. It may be waiting on the disk."
+
+
 def run_activation_actions_and_verify(
     connection: SshConnection,
     activation_actions: list[RemoteAction],
@@ -271,7 +274,9 @@ def run_activation_actions_and_verify(
         verify_runtime_func = verify_managed_runtime_ready
     callbacks.stage(activation_stage)
     callbacks.message(activation_message)
-    run_remote_actions_func(connection, activation_actions)
+    # The start stops the running services first.
+    with stuck_stop_as(f"{failure_message} {ACTIVATION_STOP_TIMEOUT_SENTENCE}"):
+        run_remote_actions_func(connection, activation_actions)
     verify_runtime_func(
         connection,
         callbacks=callbacks,

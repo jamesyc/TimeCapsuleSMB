@@ -18,6 +18,7 @@ from unittest import mock
 from tests.device_ps import ps_row
 from timecapsulesmb.app.confirmations import build_confirmation
 from timecapsulesmb.app.ops import OPERATION_PARAMS
+from timecapsulesmb.app.recovery import recovery_for
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device import wipe
 from timecapsulesmb.device.storage import (
@@ -1319,9 +1320,20 @@ class RunWipeTests(unittest.TestCase):
             device.run()
         self.assertNotIn("rpc eraseDisk method:i:0", device.calls)
 
-    def test_a_stop_that_failed_wrote_nothing_and_needs_a_restart(self) -> None:
+    def test_a_process_that_would_not_stop_wrote_nothing_and_needs_an_unplug(self) -> None:
         device = FakeDevice()
         device.wipe_output = "process smbd did not stop\n"
+        with self.assertRaises(wipe_disk.WipeDiskError) as raised:
+            device.run()
+        self.assertEqual((raised.exception.code, raised.exception.reason), (ErrorCode.MANAGER_STOP_TIMEOUT, "stop_failed"))
+        self.assertNotIn("rpc eraseDisk method:i:0", device.calls)
+        card = recovery_for("wipe-disk", ErrorCode.MANAGER_STOP_TIMEOUT)
+        self.assertIn("Unplug", card["actions"][0])
+        self.assertIn("Nothing on the disk was changed", card["message"])
+
+    def test_any_other_failed_stop_wrote_nothing_and_needs_a_restart(self) -> None:
+        device = FakeDevice()
+        device.wipe_output = "managed stop failed\n"
         with self.assertRaises(wipe_disk.WipeDiskError) as raised:
             device.run()
         self.assertEqual((raised.exception.code, raised.exception.reason), (ErrorCode.WIPE_DISK_RESTART_NEEDED, "stop_failed"))

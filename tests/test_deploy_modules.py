@@ -1605,6 +1605,36 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertNotIn(("migrate", "cleanup"), events)
                 self.assertEqual(stages[-1], "verify_payload_upload")
 
+    def test_an_activation_whose_stop_fails_names_the_stuck_service(self) -> None:
+        # Activate stops the running services before it starts them: any that
+        # survives SIGKILL is asleep in the kernel. Another failure stays its own.
+        from timecapsulesmb.services.activation import ACTIVATION_STOP_TIMEOUT_SENTENCE, run_activation_actions_and_verify
+
+        def run(error):
+            verify = mock.Mock()
+            try:
+                run_activation_actions_and_verify(
+                    SshConnection("host", "pw", ""), [], callbacks=OperationCallbacks(),
+                    activation_message="Activating.", activation_stage="run_activation",
+                    verification_stage="verify_runtime_activation", verification_timeout_seconds=1,
+                    verification_heading="Waiting.", failure_message="NetBSD 4 activation failed.",
+                    run_remote_actions_func=mock.Mock(side_effect=error), verify_runtime_func=verify,
+                )
+            except Exception as exc:  # noqa: BLE001 - the error is what the test reads
+                verify.assert_not_called()
+                return exc
+            self.fail("no error")
+
+        for name in ("smbd", "manager", "mdns-advertiser"):
+            with self.subTest(name=name):
+                error = SshError(f"process {name} did not stop")
+                raised = run(error)
+                self.assertEqual(raised.code, ErrorCode.MANAGER_STOP_TIMEOUT)
+                self.assertEqual(str(raised), f"NetBSD 4 activation failed. {ACTIVATION_STOP_TIMEOUT_SENTENCE}")
+                self.assertIs(raised.__cause__, error)
+        other = SshError("/bin/sh: Can't open /mnt/Flash/rc.local")
+        self.assertIs(run(other), other)
+
     def test_afp_stop_failure_aborts_before_migration(self) -> None:
         prepared_plan = self._prepared_deploy_plan()
         upload = mock.Mock()
@@ -1614,7 +1644,8 @@ class DeployModuleTests(unittest.TestCase):
             if StopProcessAction("afpserver") in actions:
                 raise SshError("process afpserver did not stop")
 
-        with self.assertRaisesRegex(SshError, "afpserver did not stop"):
+        # Like any process that would not stop: asleep in the kernel.
+        with self.assertRaises(DeployDeviceError) as raised:
             upload_and_verify_deployment_payload(
                 AppConfig.from_values({}),
                 SshConnection("host", "pw", "-o foo"),
@@ -1626,6 +1657,7 @@ class DeployModuleTests(unittest.TestCase):
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
             )
 
+        self.assertEqual(raised.exception.code, ErrorCode.MANAGER_STOP_TIMEOUT)
         upload.assert_not_called()
         migrate.assert_not_called()
 
@@ -3368,6 +3400,37 @@ describe_managed_smbd_status "" ""
         moved = SshConnection("root@10.0.0.9", "pw", "-o foo")
         run_actions.assert_called_once_with(moved, prepared_plan.plan.activation_actions)
         self.assertEqual(verify_runtime.call_args.args[0], moved)
+
+    def test_complete_deployment_netbsd4_stuck_stop_after_reboot_gets_the_activate_card(self) -> None:
+        # The post-reboot start stops what the boot started; a process asleep
+        # in the kernel is a stuck service, and its card says Activate, since
+        # the payload is already installed.
+        from timecapsulesmb.app.recovery import recovery_for
+
+        prepared_plan = self._prepared_deploy_plan(
+            startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+            payload_family="netbsd4be_samba4",
+            is_netbsd4=True,
+        )
+        callbacks, stages, _logs, _debug_fields, _finish_fields = self._operation_callbacks()
+        verify_runtime = mock.Mock()
+        with mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None), \
+                self.assertRaises(DeviceError) as raised:
+            complete_deployment_after_upload(
+                SshConnection("root@10.0.0.2", "pw", "-o foo"),
+                prepared_plan,
+                no_wait=False,
+                callbacks=callbacks,
+                run_remote_actions_func=mock.Mock(side_effect=SshError("process smbd did not stop")),
+                verify_runtime_func=verify_runtime,
+            )
+
+        self.assertEqual(raised.exception.code, ErrorCode.MANAGER_STOP_TIMEOUT)
+        verify_runtime.assert_not_called()
+        self.assertEqual(stages, ["post_reboot_activation"])
+        card = recovery_for("deploy", raised.exception.code, stage=stages[-1])
+        self.assertEqual(card["localization_key"], "deploy.manager_stop_timeout.post_reboot_activation")
+        self.assertIn("“Activate”", card["actions"][-1])
 
     def test_complete_deployment_netbsd4_runs_activation_after_reboot_when_autostart_missing(self) -> None:
         prepared_plan = self._prepared_deploy_plan(

@@ -238,24 +238,25 @@ def test_role_observation_ignores_one_shot_diagnostics_and_zombies():
     assert [process.pid for process in service_role_processes(rows, 'telemetry')] == [16]
 
 
-@pytest.mark.parametrize('stuck_row,expected_label,manager_timeout', [
-    ('30 S service service: role=manager', 'manager', True),
+@pytest.mark.parametrize('stuck_row,expected_label', [
+    ('30 S service service: role=manager', 'manager'),
     # While Samba waits for the device hostname the title carries that state.
-    ('35 S service service: role=manager waiting=hostname', 'manager', True),
+    ('35 S service service: role=manager waiting=hostname', 'manager'),
     # The title a device shows now: started= always follows the role.
-    ('36 S service service: role=manager started=12', 'manager', True),
-    ('37 S service service: role=manager started=12 waiting=hostname stuck=3166:smbd:biowait:600', 'manager', True),
-    ('31 S service /mnt/Flash/service manager', 'manager', True),
-    ('32 S sh /bin/sh /mnt/Flash/manager.sh', 'manager', True),
-    ('33 S service service: role=discovery nbns=ready', 'service', False),
-    ('34 S sh /bin/sh /mnt/Flash/boot.sh', 'boot', False),
+    ('36 S service service: role=manager started=12', 'manager'),
+    ('37 S service service: role=manager started=12 waiting=hostname stuck=3166:smbd:biowait:600', 'manager'),
+    ('31 S service /mnt/Flash/service manager', 'manager'),
+    ('32 S sh /bin/sh /mnt/Flash/manager.sh', 'manager'),
+    ('33 S service service: role=discovery nbns=ready', 'service'),
+    ('34 S sh /bin/sh /mnt/Flash/boot.sh', 'boot'),
 ])
-def test_stuck_process_is_named_so_deploy_can_classify_a_stuck_manager(tmp_path, stuck_row, expected_label, manager_timeout):
-    # Deploy maps "process manager did not stop" to its manager_stop_timeout
-    # error. That text must come from the stop script deploy actually runs.
+def test_stuck_process_is_named_so_deploy_can_classify_a_stuck_manager(tmp_path, stuck_row, expected_label):
+    # Every command that stops the runtime maps "process X did not stop" to
+    # manager_stop_timeout: whatever would not stop is asleep in the kernel.
+    # That text must come from the stop script they actually run.
     import shlex
     import sys
-    from timecapsulesmb.services.deploy import _manager_stop_timed_out
+    from timecapsulesmb.device.processes import process_stop_failed
 
     tool = tmp_path / 'tool.py'
     tool.write_text(FAKE_PS + f'''
@@ -269,7 +270,7 @@ if sys.argv[1] == 'ps':
 
     assert result.returncode == 1
     assert f'process {expected_label} did not stop' in result.stderr
-    assert _manager_stop_timed_out(RuntimeError(result.stderr)) is manager_timeout
+    assert process_stop_failed(result.stderr) is True
 
 
 def _run_manager_stop(tmp_path, *, manager_scans, supervisor_seconds=None, extra_rows=()):
@@ -605,7 +606,7 @@ def _stop_with_fake_ps(tmp_path, processes, *, shell='/bin/sh', on_loop_sleep=la
 def test_stop_waits_for_an_unreadable_shell_or_service_but_never_signals_it(tmp_path, shell):
     # A process whose command line could not be read may be ours or someone
     # else's: the stop waits for it, then fails naming it, and leaves it alone.
-    from timecapsulesmb.services.deploy import _manager_stop_timed_out
+    from timecapsulesmb.device.processes import process_stop_failed
 
     result, fake = _stop_with_fake_ps(tmp_path, [
         process('20 S service /mnt/Flash/service run'),
@@ -620,13 +621,13 @@ def test_stop_waits_for_an_unreadable_shell_or_service_but_never_signals_it(tmp_
     assert 'process service did not show its command line (pid 41); retry after its active work finishes' in lines
     assert [pid for _signal, pid in fake.signals] == ['20']
     assert '40' not in fake.command_reads()
-    # A service asleep in the kernel throughout may be the manager: deploy
-    # gives the stuck-service advice.
-    assert _manager_stop_timed_out(RuntimeError(result.stderr))
+    # A service asleep in the kernel throughout may be the manager: the
+    # stuck-service advice.
+    assert process_stop_failed(result.stderr)
 
 
 def test_an_unreadable_shell_alone_is_not_a_stuck_manager(tmp_path):
-    from timecapsulesmb.services.deploy import _manager_stop_timed_out
+    from timecapsulesmb.device.processes import process_stop_failed
 
     result, _ = _stop_with_fake_ps(tmp_path, [process('40 D sh /bin/sh /mnt/Flash/boot.sh', stat_later='D')])
 
@@ -634,7 +635,7 @@ def test_an_unreadable_shell_alone_is_not_a_stuck_manager(tmp_path):
     assert result.stderr.splitlines()[0] == (
         'process sh did not show its command line (pid 40); retry after its active work finishes'
     )
-    assert not _manager_stop_timed_out(RuntimeError(result.stderr))
+    assert not process_stop_failed(result.stderr)
 
 
 @pytest.mark.parametrize('shell', SHELLS)
@@ -694,7 +695,7 @@ def test_idle_jobs_never_expand_a_shells_arguments(tmp_path, shell):
 
 @pytest.mark.parametrize('shell', SHELLS)
 def test_stop_idle_jobs_never_signals_an_unreadable_process(tmp_path, shell):
-    from timecapsulesmb.device.processes import render_stop_idle_jobs
+    from timecapsulesmb.device.processes import process_stop_failed, render_stop_idle_jobs
 
     fake = FakePs(tmp_path, [
         process('17 S sh /bin/sh /mnt/Flash/migrate.sh', argv='unreadable'),
@@ -707,6 +708,26 @@ def test_stop_idle_jobs_never_signals_an_unreadable_process(tmp_path, shell):
     assert result.stderr.splitlines() == ['process sh did not show its command line (pid 17)']
     assert fake.signals == [['-TERM', '18']]
     assert fake.pids == {'17'}
+    # It may be another program's shell, so it is no stuck service.
+    assert not process_stop_failed(result.stderr)
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_stop_idle_jobs_names_a_job_that_outlived_sigkill_as_stuck(tmp_path, shell):
+    # Uninstall stops a migrator instead of waiting; one still there after
+    # SIGKILL is asleep in the kernel, as a service that will not stop is.
+    from timecapsulesmb.device.processes import process_stop_failed, render_stop_idle_jobs
+
+    fake = FakePs(tmp_path, [
+        process('18 D tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate multi copy', survives=('TERM', 'KILL')),
+    ])
+    script = fake.install(render_stop_idle_jobs(attempts=1)).replace('sleep 1', ':')
+    result = subprocess.run([shell, '-c', script], capture_output=True, text=True)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == ['job tc-xattr-hfs-mi (pid 18) did not stop']
+    assert fake.signals == [['-TERM', '18'], ['-KILL', '18']]
+    assert process_stop_failed(result.stderr)
 
 
 def test_fsck_touches_nothing_while_an_earlier_fsck_hfs_still_runs(tmp_path):

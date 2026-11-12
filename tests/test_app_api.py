@@ -6907,19 +6907,24 @@ MaSt = (
             True,
             "hfs",
         )
-        rc, collector = self.run_confirmed_deploy_with_mast(
-            MaStDiscoveryResult((volume,), 1, ""),
-            payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
-            run_remote_actions_side_effect=SshError("process manager did not stop"),
-        )
+        # Any process the stop could not stop: the manager, Samba, an old
+        # release's helper. Each is asleep in the kernel.
+        for name in ("manager", "smbd", "mdns-advertiser"):
+            with self.subTest(name=name):
+                rc, collector = self.run_confirmed_deploy_with_mast(
+                    MaStDiscoveryResult((volume,), 1, ""),
+                    payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
+                    run_remote_actions_side_effect=SshError(f"process {name} did not stop"),
+                )
 
-        self.assertEqual(rc, 1)
-        error = collector.events_of_type("error")[0]
-        self.assertEqual(error["code"], "manager_stop_timeout")
-        self.assertIn("A service on the device is stuck", error["message"])
-        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
-        self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["stage"], "pre_upload_actions")
+                self.assertEqual(rc, 1)
+                error = collector.events_of_type("error")[0]
+                self.assertEqual(error["code"], "manager_stop_timeout")
+                self.assertEqual(error["recovery"]["localization_key"], "deploy.manager_stop_timeout")
+                self.assertIn("A service on the device is stuck", error["message"])
+                finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                self.assertEqual(finished["result"], "failure")
+                self.assertEqual(finished["stage"], "pre_upload_actions")
 
     def test_deploy_reports_payload_upload_timeout_code(self) -> None:
         volume = MaStVolume(
@@ -7973,6 +7978,38 @@ MaSt = (
         self.assertEqual(payload["waited"], False)
         self.assertEqual(payload["verified"], False)
 
+    def test_uninstall_whose_process_will_not_stop_names_the_stuck_service(self) -> None:
+        # An old release's helper asleep on the disk: the uninstall card says
+        # to unplug the device and run Uninstall again, not to try again.
+        from timecapsulesmb.transport.errors import SshError
+
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        params: dict[str, object] = {"no_reboot": True}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "uninstall", params, {"host": "root@10.0.0.2", "requires_reboot": False, "no_reboot": True, "no_wait": False},
+        )
+
+        def run_ssh(_connection, command, **_kwargs):
+            if "pkill" in command and "mdns-advertiser" in command:
+                raise SshError("process mdns-advertiser did not stop")
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection), \
+                mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]), \
+                mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn",
+                           return_value=[SimpleNamespace(volume_root="/Volumes/dk2")]), \
+                mock.patch("timecapsulesmb.deploy.executor.run_ssh", side_effect=run_ssh):
+            rc = service.run_api_request({"operation": "uninstall", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "manager_stop_timeout")
+        self.assertEqual(error["recovery"]["localization_key"], "uninstall.manager_stop_timeout")
+        self.assertIn("“Uninstall” again", error["recovery"]["actions"][-1])
+        self.assertNotIn("traceback", error["debug"])
+
     def test_fsck_checks_the_password_then_asks_before_touching_the_disk(self) -> None:
         # The repair reboots through ACP, so the password is compared with the
         # device's before the confirmation; the disk waits for the answer.
@@ -8339,6 +8376,24 @@ MaSt = (
         self.assertEqual(error["recovery"]["suggested_operation"], "activate")
         self.assertEqual(error["recovery"]["action_ids"], ["start_smb", "run_checkup"])
 
+    def test_fsck_on_netbsd4_whose_start_meets_a_stuck_service_says_to_unplug_then_activate(self) -> None:
+        # The repair is done; a process that would not stop for the start
+        # after the restart needs an unplug, then Activate, as after a deploy.
+        rc, collector, _reboot = self._run_confirmed_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 0\n",
+            ssh_returncode=0,
+            probe_state=netbsd4_probed_state(),
+            runtime=FakeInstalledRuntime(stuck_stop=True),
+        )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "manager_stop_timeout")
+        self.assertTrue(error["message"].startswith("Disk repair completed."))
+        self.assertEqual(error["recovery"]["localization_key"], "deploy.manager_stop_timeout.post_reboot_activation")
+        self.assertIn("Unplug", error["recovery"]["actions"][0])
+        self.assertIn("“Activate”", error["recovery"]["actions"][-1])
+
     def test_fsck_on_netbsd4_whose_manager_reports_a_payload_verdict_offers_its_fix(self) -> None:
         # A reinstall for missing or damaged files; for a disk that could not
         # read them, the failing disk's guidance, which offers no Install.
@@ -8436,22 +8491,27 @@ MaSt = (
         self.assertFalse(result["payload"]["reboot_requested"])
 
     def test_fsck_that_never_ran_fails_without_waiting_for_a_reboot(self) -> None:
-        # A process that would not stop aborts the script before fsck, so no
-        # status line arrives and no reboot is requested, even when asked for.
+        # The script stopped before fsck, so no status line arrives and no
+        # reboot is requested, even when asked for. A process that would not
+        # stop is named, as deploy names it; anything else says fsck did not run.
+        cases = (
+            ("process smbd did not stop\n", "manager_stop_timeout", "fsck.manager_stop_timeout"),
+            ("stopping file sharing failed\n", "remote_error", None),
+        )
         for flags in ({}, {"no_wait": True}):
-            with self.subTest(flags=flags):
-                rc, collector, reboot = self._run_confirmed_fsck(
-                    "process smbd did not stop\n",
-                    ssh_returncode=1,
-                    **flags,
-                )
+            for stdout, code, key in cases:
+                with self.subTest(flags=flags, stdout=stdout):
+                    rc, collector, reboot = self._run_confirmed_fsck(stdout, ssh_returncode=1, **flags)
 
-                self.assertEqual(rc, 1)
-                self.assertNotIn("request", reboot.calls)
-                self.assertNotIn("read", reboot.calls)
-                error = self.assert_single_terminal_event(collector, "error")
-                self.assertEqual(error["code"], "remote_error")
-                self.assertIn("fsck did not run", error["message"])
+                    self.assertEqual(rc, 1)
+                    self.assertNotIn("request", reboot.calls)
+                    self.assertNotIn("read", reboot.calls)
+                    error = self.assert_single_terminal_event(collector, "error")
+                    self.assertEqual(error["code"], code)
+                    self.assertTrue(error["message"].startswith("fsck did not run"))
+                    if key is not None:
+                        self.assertEqual(error["recovery"]["localization_key"], key)
+                        self.assertEqual(error["recovery"]["action_ids"], ["disk_repair"])
 
     def test_fsck_without_reboot_refuses_a_stuck_disk_before_stopping_file_sharing(self) -> None:
         # Its only preflight is in run_fsck: smbd stuck on the disk would not

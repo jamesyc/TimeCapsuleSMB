@@ -45,7 +45,7 @@ from timecapsulesmb.device.disk_errors import (
     read_disk_failing_evidence_conn,
 )
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.processes import disk_io_stalls, is_disk_check
+from timecapsulesmb.device.processes import disk_io_stalls, is_disk_check, process_stop_failed
 from timecapsulesmb.device.storage import (
     MAST_ACP_COMMAND,
     MaStDiskSnapshot,
@@ -697,9 +697,11 @@ def run_wipe(
     if WIPE_LINE_PREFIX not in output:
         if timed_out:
             raise WipeDiskError(NO_RESPONSE_MESSAGE, code=ErrorCode.WIPE_DISK_NO_RESPONSE, reason="no_response")
-        # The managed stop failed before anything was written.
-        raise WipeDiskError(STOP_FAILED_MESSAGE, code=ErrorCode.WIPE_DISK_RESTART_NEEDED, reason="stop_failed",
-                            detail=output.strip()[-500:] or None)
+        # The managed stop failed before anything was written. A process
+        # still there after SIGKILL is asleep in the kernel, maybe on the disk,
+        # as deploy reports it: an unplug, not a restart, clears it.
+        code = ErrorCode.MANAGER_STOP_TIMEOUT if process_stop_failed(output) else ErrorCode.WIPE_DISK_RESTART_NEEDED
+        raise WipeDiskError(STOP_FAILED_MESSAGE, code=code, reason="stop_failed", detail=output.strip()[-500:] or None)
     report = check_wipe_output(output, plan.offsets)
     if not report.complete:
         if report.reason == "disk_changed":

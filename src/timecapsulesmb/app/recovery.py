@@ -1002,6 +1002,31 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         _STUCK_DEVICE_STEPS,
         retryable=True,
     ),
+    ("fsck", ErrorCode.MANAGER_STOP_TIMEOUT): RecoveryInfo(
+        "A service on the device is stuck",
+        "It did not stop for the disk repair. It may be waiting on the disk.",
+        (_STUCK_DEVICE_STEPS[0], "Wait 2 minutes for the device to start up, then run “Disk Repair” again."),
+        retryable=True,
+        action_ids=("disk_repair",),
+    ),
+    ("activate", ErrorCode.MANAGER_STOP_TIMEOUT): RecoveryInfo(
+        "A service on the device is stuck",
+        "It did not stop for Activate. It may be waiting on the disk.",
+        (_STUCK_DEVICE_STEPS[0], "Wait 2 minutes for the device to start up, then run “Activate” again."),
+        retryable=True,
+    ),
+    ("wipe-disk", ErrorCode.MANAGER_STOP_TIMEOUT): RecoveryInfo(
+        "A service on the device is stuck",
+        "It did not stop for the wipe. It may be waiting on the disk. Nothing on the disk was changed.",
+        (_STUCK_DEVICE_STEPS[0], "Wait 2 minutes for the device to start up, then run “Wipe Internal Disk” again."),
+        retryable=True,
+    ),
+    ("uninstall", ErrorCode.MANAGER_STOP_TIMEOUT): RecoveryInfo(
+        "A service on the device is stuck",
+        "It did not stop for the uninstall. It may be waiting on the disk.",
+        (_STUCK_DEVICE_STEPS[0], "Wait 2 minutes for the device to start up, then run “Uninstall” again."),
+        retryable=True,
+    ),
     ("deploy", ErrorCode.PREVIOUS_MIGRATION_STALLED): RecoveryInfo(
         "An earlier metadata migration is stuck",
         "A Samba metadata migration left running by an earlier install stopped making progress. "
@@ -1475,6 +1500,15 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
 
 
 _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
+    # After the restart, the start that runs file sharing on a device without
+    # the startup hook could not stop a service: the files are installed, and
+    # Activate starts them once the device is unplugged and back.
+    ("deploy", ErrorCode.MANAGER_STOP_TIMEOUT, "post_reboot_activation"): RecoveryInfo(
+        "A service on the device is stuck",
+        "It did not stop when the device started file sharing after the restart. It may be waiting on the disk.",
+        (_STUCK_DEVICE_STEPS[0], "Wait 2 minutes for the device to start up, then run “Activate”."),
+        retryable=True,
+    ),
     # The erase request got no answer and ACPd is silent (services.wipe_disk):
     # the table is already cleared, and only unplugging restarts the device.
     ("wipe-disk", ErrorCode.ACPD_BROKEN, "erase_disk"): RecoveryInfo(
@@ -1658,6 +1692,12 @@ _STAGE_RECOVERY = {
     (operation, code, stage): replace(info, localization_key=f"{operation}.{code}.{stage}")
     for (operation, code, stage), info in _STAGE_RECOVERY.items()
 }
+# fsck and Wipe Internal Disk start file sharing after their restart the way
+# deploy does (services.maintenance.reboot_and_restart_sharing): one card.
+_STAGE_RECOVERY.update(dict.fromkeys(
+    ((operation, ErrorCode.MANAGER_STOP_TIMEOUT, "post_reboot_activation") for operation in ("fsck", "wipe-disk")),
+    _STAGE_RECOVERY[("deploy", ErrorCode.MANAGER_STOP_TIMEOUT, "post_reboot_activation")],
+))
 # ACPd quit at the deploy's start after its restart, with the boot hook
 # (verify_runtime_reboot) or by NetBSD 4's activation (services.activation.
 # start_netbsd4_runtime_after_reboot): unlike the refusal before the upload,

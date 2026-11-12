@@ -50,6 +50,7 @@ from timecapsulesmb.deploy.executor import (
     flush_remote_filesystem_writes,
     migrate_xattr_tdb_to_hfs,
     run_remote_actions,
+    stuck_stop_as,
     upload_deployment_payload,
 )
 from timecapsulesmb.deploy.commands import EnsureVolumeMountedAction, InstallPermissionsAction, RemoteAction, RemotePermission, RemovePathsAction, StopProcessAction
@@ -118,7 +119,6 @@ from timecapsulesmb.services.activation import Netbsd4StartMessages, start_netbs
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import ACPD_STOPPED_MESSAGE, followed, reboot_device, restart_stuck_message
 from timecapsulesmb.device.probe import AirportAcpReading
-from timecapsulesmb.device.processes import UNREADABLE_SERVICE_STOP_MESSAGE
 from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error, require_acpd_ready
 from timecapsulesmb.services.runtime_verification import (
     RUNTIME_REBOOT_WAIT_SECONDS,
@@ -207,10 +207,6 @@ PREVIOUS_MIGRATION_STALLED_MESSAGE = (
     "A metadata migration left on the device by an earlier installation stopped making progress. "
     "It may be waiting on the disk."
 )
-MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
-# A service process the stop script waited for without reading its command
-# line (it stayed asleep in the kernel) may be the manager: the same advice.
-MANAGER_STOP_TIMEOUT_SENTINELS = (MANAGER_STOP_TIMEOUT_SENTINEL, UNREADABLE_SERVICE_STOP_MESSAGE)
 # A migrator left by an interrupted deploy is polled this often. It kills
 # itself after STALL_SECONDS without progress, so one that still runs a
 # minute past that is stuck in the kernel, maybe on the disk.
@@ -724,10 +720,6 @@ def _report_interrupted_install(connection: SshConnection) -> Iterator[None]:
         if is_ssh_timeout_error(exc) or ssh_master_alive(connection):
             raise
         raise DeployDeviceError(INSTALL_INTERRUPTED_MESSAGE, code=ErrorCode.INSTALL_INTERRUPTED) from exc
-
-
-def _manager_stop_timed_out(exc: BaseException) -> bool:
-    return any(sentinel in str(exc) for sentinel in MANAGER_STOP_TIMEOUT_SENTINELS)
 
 
 def _upload_timeout_sec(transfer: FileTransfer, sources: Mapping[str, Path]) -> int | None:
@@ -1400,12 +1392,8 @@ def upload_and_verify_deployment_payload(
         )
         callbacks.stage("pre_upload_actions")
         boot_assets.enter_context(_report_interrupted_install(connection))
-        try:
+        with stuck_stop_as(MANAGER_STOP_TIMEOUT_MESSAGE, error=DeployDeviceError):
             run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
-        except Exception as exc:
-            if _manager_stop_timed_out(exc):
-                raise DeployDeviceError(MANAGER_STOP_TIMEOUT_MESSAGE, code=ErrorCode.MANAGER_STOP_TIMEOUT) from exc
-            raise
         # rc.local is gone before any metadata conversion or removal of the
         # historical runtime. The synchronous Flash mount already wrote the
         # removal; the sync also writes out the new payload directories.

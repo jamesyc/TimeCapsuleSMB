@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import time
@@ -8,8 +10,10 @@ from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 from timecapsulesmb.deploy.commands import RemoteAction, RemovePathsAction, render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, FileTransfer, UninstallPlan
 from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.processes import process_stop_failed
 from timecapsulesmb.device.storage import MaStVolume, StorageDeviceError, VolumeClaims, ensure_volume_root_mounted_conn
-from timecapsulesmb.transport.errors import SshCommandTimeout
+from timecapsulesmb.transport.errors import SshCommandTimeout, SshError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, upload_file
 
 if TYPE_CHECKING:
@@ -28,6 +32,27 @@ REMOTE_ACTION_TIMEOUT_SECONDS = 120
 # One rm removes every listed path. NetBSD 4's synchronous flash frees the
 # 333 KB service in 28 s, and an older release left several binaries there.
 REMOVE_PATHS_TIMEOUT_SECONDS = 300
+# A process the uninstall's stop could not stop is asleep in the kernel, as
+# the install's stop reports it (services.deploy.MANAGER_STOP_TIMEOUT_MESSAGE).
+UNINSTALL_STOP_TIMEOUT_MESSAGE = (
+    "A service on the device is stuck and did not stop for the uninstall. It may be waiting on the disk."
+)
+
+
+@contextmanager
+def stuck_stop_as(message: str, *, error: Callable[..., DeviceError] = DeviceError) -> Iterator[None]:
+    """Raise a stop the device reported failing (processes.process_stop_failed)
+    as `error` with `message` and manager_stop_timeout: whatever would not stop
+    is asleep in the kernel, maybe on the disk, and an unplug clears it. Any
+    other SSH failure is raised as it is."""
+    try:
+        yield
+    except SshError as exc:
+        if process_stop_failed(str(exc)):
+            raise error(message, code=ErrorCode.MANAGER_STOP_TIMEOUT) from exc
+        raise
+
+
 @dataclass(frozen=True)
 class XattrMigrationResult:
     output: str
@@ -152,7 +177,8 @@ def remote_uninstall_payload(
 ) -> None:
     # One SSH command per action: the stop commands chained with rm in one
     # command failed with rc=255 on NetBSD 4 Time Capsules.
-    run_remote_actions(connection, plan.remote_actions)
+    with stuck_stop_as(UNINSTALL_STOP_TIMEOUT_MESSAGE):
+        run_remote_actions(connection, plan.remote_actions)
     # The sync is insurance for the removal on the HFS disks. Without a
     # restart, anything it fails to write out is inert payload with no boot
     # hook; ACPd's restart writes the disks out itself. So a sync that times
