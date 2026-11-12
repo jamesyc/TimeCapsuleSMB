@@ -1958,9 +1958,13 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertEqual(upload["error_type"], type(error).__name__)
                 self.assertEqual({key: upload[key] for key in upload if key == "bytes_on_device"}, expected_fields)
 
-    def deploy_whose_write_fails(self, error: BaseException, *, step: str, disk_errors=None) -> BaseException:
+    def deploy_whose_write_fails(
+        self, error: BaseException, *, step: str, disk_errors=None, disks=None, inventory: list | None = None,
+    ) -> BaseException:
         """The error a deploy raises when `step` fails with `error`, given
-        this boot's kernel disk errors (read_disk_errors_conn's answer). The
+        this boot's kernel disk errors (read_disk_errors_conn's answer) and
+        MaSt's disks (read_disk_inventory_conn's; None: MaSt unread, and
+        each read is appended to `inventory`). The
         steps: pre_upload, replace_software, upload (the payload and flash
         files), post_upload (their permissions), config (tcapsulesmb.conf)
         and boot (rc.local)."""
@@ -1991,7 +1995,13 @@ class DeployModuleTests(unittest.TestCase):
             if step == "post_upload" and actions == post_upload:
                 raise error
 
+        def read_inventory(connection):
+            if inventory is not None:
+                inventory.append(connection)
+            return disks
+
         with mock.patch("timecapsulesmb.services.deploy.read_disk_errors_conn", return_value=disk_errors), \
+                mock.patch("timecapsulesmb.services.deploy.read_disk_inventory_conn", read_inventory), \
                 self.assertRaises(Exception) as raised:
             upload_and_verify_deployment_payload(
                 AppConfig.from_values({}),
@@ -2050,6 +2060,58 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertEqual(raised.code, code)
                 self.assertIn(words, str(raised))
                 self.assertIs(raised.__cause__, error)
+
+    def test_an_io_error_counts_only_the_written_disks_kernel_lines(self) -> None:
+        # The I/O error names /Volumes/dk2; MaSt says which disk holds dk2.
+        # Another disk's errors (a failing USB disk's) do not make the disk
+        # written probably failing; its own do. MaSt unread, or a volume it
+        # does not list: every line counts, as before the volume was known.
+        from timecapsulesmb.device.storage import MaStDiskSnapshot, MaStPartitionSnapshot
+        from timecapsulesmb.services.deploy import DISK_IO_ERROR_MESSAGE
+
+        internal = MaStDiskSnapshot("wd0", "", 1907729, True, (MaStPartitionSnapshot("dk2", "Data", "hfs"),))
+        usb = MaStDiskSnapshot("sd0", "", 953869, False, (MaStPartitionSnapshot("dk5", "USB", "hfs"),))
+        usb_line = "sd0a: error writing fsbn 8 of 8-15 (sd0 bn 8; cn 0 tn 0 sn 8)"
+        own_line = "wd0c: error reading fsbn 123 of 123-130 (wd0 bn 123; cn 0 tn 2 sn 3)"
+        io = "dd: /Volumes/dk2/.samba4/smbd: Input/output error"
+        usb_io = "dd: /Volumes/dk5/.samba4/smbd: Input/output error"
+        cases = (
+            ("only a USB disk's lines", io, (usb_line,), (internal, usb), "deploy_disk_io_error", None),
+            ("the written disk's own lines", io, (own_line, usb_line), (internal, usb), "disk_failing", own_line),
+            ("MaSt unread", io, (usb_line,), None, "disk_failing", usb_line),
+            ("a volume MaSt does not list", io, (usb_line,), (usb,), "disk_failing", usb_line),
+            # The payload on the USB disk: the internal disk's lines are not its.
+            ("USB volume, internal disk's lines", usb_io, (own_line,), (internal, usb), "deploy_disk_io_error", None),
+            ("USB volume, its own lines", usb_io, (own_line, usb_line), (internal, usb), "disk_failing", usb_line),
+            # Two volumes failed: either disk's lines count.
+            ("both volumes", f"{io}\n{usb_io}", (usb_line,), (internal, usb), "disk_failing", usb_line),
+        )
+        for name, text, disk_errors, disks, code, detail in cases:
+            with self.subTest(name):
+                inventory: list = []
+                error = SshError(text)
+                raised = self.deploy_whose_write_fails(
+                    error, step="upload", disk_errors=disk_errors, disks=disks, inventory=inventory,
+                )
+                self.assertEqual(raised.code, code)
+                if detail is None:
+                    self.assertEqual(raised.message, DISK_IO_ERROR_MESSAGE)
+                else:
+                    self.assertIn("probably failing", str(raised))
+                    self.assertEqual(raised.detail, detail)
+                self.assertEqual(len(inventory), 1)
+
+    def test_an_io_error_reads_mast_only_when_the_kernel_logged_disk_errors(self) -> None:
+        # No lines, or a log that could not be read: nothing to tell apart.
+        for disk_errors in ((), None):
+            with self.subTest(disk_errors=disk_errors):
+                inventory: list = []
+                raised = self.deploy_whose_write_fails(
+                    SshError("dd: /Volumes/dk2/.samba4/smbd: Input/output error"), step="upload",
+                    disk_errors=disk_errors, inventory=inventory,
+                )
+                self.assertEqual(raised.code, "deploy_disk_io_error")
+                self.assertEqual(inventory, [])
 
     def test_a_full_flash_says_so_whatever_step_wrote_it(self) -> None:
         # The capacity check passed and the write still found the flash full:

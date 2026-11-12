@@ -46,6 +46,10 @@ KERNEL_DISK_MESSAGES_COMMAND = DISK_EVIDENCE_COMMANDS["remote_kernel_disk_messag
 _KERNEL_BANNER = re.compile(r"^NetBSD \d")
 _DISK_TRANSFER_ERROR = re.compile(r"^(?:wd|sd)\d+[a-p]?: (?:error|device timeout) (?:reading|writing) fsbn ")
 _MARVELL_DEVICE_ERROR = re.compile(r"^NetBSD IAL \(ERROR\).* device error")
+# Lines only an internal disk prints: NetBSD 6's internal SATA disk attaches
+# as wd (USB disks attach as sd), and the Marvell controller is NetBSD 4's
+# internal disk's.
+_INTERNAL_ONLY_LINE = re.compile(rf"^wd\d+[a-p]?: |{_MARVELL_DEVICE_ERROR.pattern}")
 
 
 def disk_errors_in(kernel_messages: str) -> tuple[str, ...]:
@@ -199,8 +203,9 @@ class DiskFailingEvidence:
 
     disk: whose kernel lines they are, from MaSt's built-in disk: the
     internal disk's (any line of it counts), only other disks' ("usb": a USB
-    disk, or an AirPort Extreme's only disk), or "unknown" (MaSt unread, or
-    the manager's verdict, which names no disk). wipeable: the internal disk
+    disk, or an AirPort Extreme's only disk), or "unknown" (MaSt unread, an
+    internal disk's lines where MaSt lists no built-in disk, or the
+    manager's verdict, which names no disk). wipeable: the internal disk
     is one Wipe Internal Disk accepts (storage.wipe_refusal), so the warning
     may suggest it."""
 
@@ -225,10 +230,13 @@ def kernel_evidence(errors: tuple[str, ...], *, disks: tuple[MaStDiskSnapshot, .
         return DiskFailingEvidence("disk_failing", _kernel_text(errors[-1]))
     builtin = next((disk for disk in disks if disk.builtin), None)
     if builtin is None:
-        # The Marvell controller is the internal disk's: a device that lists
-        # none has lost it, which this cannot tell from a USB disk's errors.
-        if any(_MARVELL_DEVICE_ERROR.match(line) for line in errors):
-            return DiskFailingEvidence("disk_failing", _kernel_text(errors[-1]))
+        # A wd or Marvell line is an internal disk's (_INTERNAL_ONLY_LINE): a
+        # device that lists none has lost it, which MaSt cannot confirm, so
+        # no disk is named and one of those lines is quoted. Only sd lines
+        # are a USB disk's, such as an AirPort Extreme's only disk.
+        internal = tuple(line for line in errors if _INTERNAL_ONLY_LINE.match(line))
+        if internal:
+            return DiskFailingEvidence("disk_failing", _kernel_text(internal[-1]))
         return DiskFailingEvidence("disk_failing", _kernel_text(errors[-1]), disk="usb")
     own = internal_disk_errors(errors, builtin.device)
     if not own:
@@ -261,6 +269,18 @@ def disk_of_volume(disks: tuple[MaStDiskSnapshot, ...], volume: str) -> MaStDisk
     """The disk holding the partition `volume` (`dk2` or `/dev/dk2`), or None."""
     partition = volume.strip().removeprefix("/dev/")
     return next((disk for disk in disks if any(part.device == partition for part in disk.partitions)), None)
+
+
+def disk_errors_of_volume(
+    errors: tuple[str, ...], disks: tuple[MaStDiskSnapshot, ...] | None, volume: str | None,
+) -> tuple[str, ...]:
+    """The lines of the disk holding the partition `volume` (disk_errors_for).
+    Every line when that disk is unknown: no volume, MaSt unread (`disks`
+    None), or a volume MaSt does not list."""
+    target = disk_of_volume(disks, volume) if volume and disks is not None else None
+    if target is None:
+        return errors
+    return disk_errors_for(errors, target.device, builtin=target.builtin)
 
 
 # MaSt for the warning's disk wording only: a normal read takes well under a
@@ -324,9 +344,7 @@ def read_disk_failing_evidence_conn(
             return DiskFailingEvidence("disk_failing", _kernel_text(errors[-1]), disk="internal", wipeable=True)
     if errors:
         disks = read_disk_inventory_conn(connection)
-        target = disk_of_volume(disks, volume) if volume and disks is not None else None
-        if target is not None:
-            errors = disk_errors_for(errors, target.device, builtin=target.builtin)
+        errors = disk_errors_of_volume(errors, disks, volume)
         if errors:
             return kernel_evidence(errors, disks=disks)
     if not holds_payload:

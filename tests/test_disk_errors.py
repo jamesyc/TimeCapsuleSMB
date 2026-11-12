@@ -217,6 +217,15 @@ class DiskFailingEvidenceTests(unittest.TestCase):
             # The Marvell lines are the internal disk's, but MaSt lists none:
             # it cannot tell, so it names no disk.
             ("Marvell, no built-in disk", (marvell,), (usb,), "unknown", False, marvell),
+            # A USB disk's line after it: the Marvell line is still quoted,
+            # as it is what says the internal disk may be gone.
+            ("Marvell then USB, no built-in disk", (marvell, sd1), (usb,), "unknown", False, marvell),
+            # wd is NetBSD 6's internal SATA disk, never a USB one (those
+            # attach as sd): its lines with no built-in disk listed are a lost
+            # internal disk's, not a USB disk's.
+            ("wd, no built-in disk", (FINAL,), (usb,), "unknown", False, FINAL),
+            ("wd then USB, no built-in disk", (FINAL, sd1), (usb,), "unknown", False, FINAL),
+            ("wd, no disk at all", (FINAL,), (), "unknown", False, FINAL),
             # MaSt did not answer.
             ("MaSt unread", (FINAL,), None, "unknown", False, FINAL),
         )

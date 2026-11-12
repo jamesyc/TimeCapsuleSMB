@@ -85,7 +85,13 @@ from timecapsulesmb.device.compat import (
     payload_family_description as payload_family_description,
     render_compatibility_message,
 )
-from timecapsulesmb.device.disk_errors import DiskFailingError, DiskNotRespondingError, read_disk_errors_conn
+from timecapsulesmb.device.disk_errors import (
+    DiskFailingError,
+    DiskNotRespondingError,
+    disk_errors_of_volume,
+    read_disk_errors_conn,
+    read_disk_inventory_conn,
+)
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.migration_jobs import (
     MigrationActivity,
@@ -760,10 +766,25 @@ FLASH_FULL_MESSAGE = "Not enough free space on /mnt/Flash for the installation f
 # A tool's error line about a path on an HFS disk or the flash; the same steps
 # write /mnt/Memory too, whose errors are neither's.
 _DEVICE_WRITE_ERROR_LINE = re.compile(
-    r"^(\S+): (/Volumes/|/mnt/Flash/)\S.*: "
+    r"^(\S+): (/Volumes/|/mnt/Flash/)(\S.*): "
     r"(No space left on device|Input/output error|Read-only file system|Invalid argument|Bad file descriptor)$",
     re.MULTILINE,
 )
+
+
+def _written_disk_errors(connection: SshConnection, volumes: set[str]) -> tuple[str, ...] | None:
+    """This boot's kernel disk errors of the disks holding `volumes` (the
+    `dkN` of each `/Volumes/dkN` an I/O error named): another disk's errors,
+    such as a failing USB disk's, do not make the disk written probably
+    failing. MaSt says which disk holds each volume, read only when there
+    are lines; when it does not answer, or does not list a volume, every
+    line counts. None when the kernel log could not be read."""
+    errors = read_disk_errors_conn(connection)
+    if not errors:
+        return errors
+    disks = read_disk_inventory_conn(connection)
+    own = {line for volume in volumes for line in disk_errors_of_volume(errors, disks, volume)}
+    return tuple(line for line in errors if line in own)
 
 
 def _device_write_error(exc: BaseException, connection: SshConnection) -> DeviceError | None:
@@ -774,8 +795,8 @@ def _device_write_error(exc: BaseException, connection: SshConnection) -> Device
     - the flash full: insufficient_flash_space
     - an HFS disk full: deploy_disk_not_writable, whose card says to check
       free space
-    - an I/O error: disk_failing with this boot's kernel disk errors, else
-      deploy_disk_io_error
+    - an I/O error: disk_failing with this boot's kernel disk errors of the
+      disk written (_written_disk_errors), else deploy_disk_io_error
     - a read-only volume, or a folder mkdir could not create:
       deploy_disk_refused_folder. Both are a mounted volume that refused the
       files, which Disk Repair may fix, so they share its card; each keeps
@@ -783,14 +804,16 @@ def _device_write_error(exc: BaseException, connection: SshConnection) -> Device
     """
     text = str(exc)
     lines = [match.groups() for match in _DEVICE_WRITE_ERROR_LINE.finditer(text)]
-    if any(root == "/mnt/Flash/" and error == "No space left on device" for _tool, root, error in lines):
+    if any(root == "/mnt/Flash/" and error == "No space left on device" for _tool, root, _path, error in lines):
         return DeployDeviceError(FLASH_FULL_MESSAGE, code=ErrorCode.INSUFFICIENT_FLASH_SPACE, detail=text)
-    found = {(tool, error) for tool, root, error in lines if root == "/Volumes/"}
+    found = {(tool, error) for tool, root, _path, error in lines if root == "/Volumes/"}
     errors_seen = {error for _tool, error in found}
     if "No space left on device" in errors_seen:
         return DeployDeviceError(DISK_FULL_MESSAGE, code=ErrorCode.DEPLOY_DISK_NOT_WRITABLE, detail=text)
     if "Input/output error" in errors_seen:
-        kernel_errors = read_disk_errors_conn(connection)
+        volumes = {path.split("/", 1)[0] for _tool, root, path, error in lines
+                   if root == "/Volumes/" and error == "Input/output error"}
+        kernel_errors = _written_disk_errors(connection, volumes)
         if kernel_errors:
             return DiskFailingError(kernel_errors)
         return DeployDeviceError(DISK_IO_ERROR_MESSAGE, code=ErrorCode.DEPLOY_DISK_IO_ERROR, detail=text)
