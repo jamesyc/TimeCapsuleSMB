@@ -922,6 +922,12 @@
 "backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Si cela échoue encore, redémarrez l’appareil et réessayez une fois que le disque tourne.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "S’il s’agit du disque interne et qu’il ne contient rien dont vous avez besoin, utilisez « Reformater le disque interne ». Cette opération efface tout le contenu du disque interne et le formate pour l’appareil.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "Relancez « Installer / mettre à jour Samba » après le reformatage.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.title" = "Le disque n’est pas prêt pour l’installation";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.message" = "Un disque a été trouvé, mais il ne possède aucune partition HFS utilisable par TimeCapsuleSMB. Le disque a peut-être besoin d’être formaté (par exemple s’il est formaté en APFS, exFAT, FAT32 ou NTFS), ses informations de partition sont peut-être endommagées ou le disque lui-même est peut-être défaillant.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.1" = "Essayez de relancer « Installer / mettre à jour Samba » dans quelques minutes.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.2" = "Si cela échoue encore, redémarrez l’appareil et réessayez une fois que le disque tourne.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.3" = "Si le disque USB ne contient rien dont vous avez besoin, effacez-le sur un Mac dans Utilitaire de disque au format « Mac OS étendu (journalisé) ». Cela efface tout son contenu.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.4" = "Branchez-le sur l’appareil, puis lancez « Installer / mettre à jour Samba ».";
 "backend.recovery.disk_volumes_in_memory.title" = "Les volumes du disque disparaîtront au prochain redémarrage";
 "backend.recovery.disk_volumes_in_memory.message" = "La commande « Effacer le disque » d’Utilitaire AirPort n’a pas pu remplacer la table de partitions du disque interne : ses volumes n’existent donc que jusqu’au prochain redémarrage. Tout ce qui y a été enregistré depuis cet effacement, sauvegardes Time Machine comprises, sera perdu au prochain redémarrage. Cette opération redémarre l’appareil : elle s’est donc arrêtée avant de modifier quoi que ce soit.";
 "backend.recovery.disk_volumes_in_memory.action.1" = "Copiez d’abord depuis le disque tout ce dont vous avez besoin.";
@@ -947,6 +953,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "Si le disque ne se monte toujours pas, essayez de redémarrer l’appareil.";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "S’il s’agit du disque interne et qu’il ne contient rien dont vous avez besoin, utilisez « Reformater le disque interne ». Cette opération efface tout le contenu du disque interne et le formate pour l’appareil.";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "Relancez « Installer / mettre à jour Samba » après le reformatage.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.title" = "Disque HFS non monté";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.message" = "Le disque contient un volume HFS, mais l’appareil ne l’a pas monté, même lorsqu’on le lui a demandé.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.1" = "Patientez une minute, puis relancez « Installer / mettre à jour Samba ».";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.2" = "Si le disque ne se monte toujours pas, essayez de redémarrer l’appareil.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.3" = "Si le disque USB ne contient rien dont vous avez besoin, effacez-le sur un Mac dans Utilitaire de disque au format « Mac OS étendu (journalisé) ». Cela efface tout son contenu.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.4" = "Branchez-le sur l’appareil, puis lancez « Installer / mettre à jour Samba ».";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Disque non maintenu monté";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Un volume HFS est monté, mais l’appareil a refusé de le garder monté pour TimeCapsuleSMB : il pourrait donc être démonté pendant l’installation.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Patientez une minute, puis relancez « Installer / mettre à jour Samba ».";

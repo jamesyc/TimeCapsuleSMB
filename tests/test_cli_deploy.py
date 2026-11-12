@@ -6,6 +6,7 @@ import json
 import plistlib
 import unittest
 from contextlib import ExitStack
+from dataclasses import replace
 from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 from unittest import mock
@@ -932,6 +933,50 @@ class CliDeployTests(CliTestCase):
         self.assertIn("format:msdos", telemetry_error)
         self.assertIn("name:PS3FAT", telemetry_error)
         self.assertIn("size:8000000000000", telemetry_error)
+
+    def test_deploy_on_a_device_without_an_internal_disk_says_to_erase_the_usb_disk_on_a_mac(self) -> None:
+        # An AirPort Extreme's USB disk with no usable volume: wipe-internal-disk
+        # refuses an Extreme, so the steps say to erase the disk on a Mac. The
+        # same disk on a Time Capsule keeps the wipe.
+        raw_mast_output = plistlib.dumps(
+            [{"deviceName": "sd0", "name": "USB HDD", "builtin": False, "partitions": []}],
+        ).decode()
+        supported = self.make_supported_compatibility()
+        extreme = replace(supported, syap_candidates=("120",), model_candidates=("AirPort7,120",))
+        extreme_values = self.make_valid_env(TC_AIRPORT_SYAP="120", TC_MDNS_DEVICE_MODEL="AirPort7,120")
+        cases = (
+            (GptVerdict("foreign", ("apfs",)),
+             "  1. Try running `tcapsule deploy` again in a few minutes.\n"
+             "  2. If it still fails, restart the device and try again after the disk spins up.\n"),
+            (GptVerdict("apple_hfs"),
+             "  1. Wait a minute, then run `tcapsule deploy` again.\n"
+             "  2. If the disk still does not mount, try restarting the device.\n"),
+        )
+        for verdict, first_steps in cases:
+            with self.subTest(verdict=verdict.kind):
+                with mock.patch("timecapsulesmb.services.deploy.read_gpt_verdict_conn", return_value=verdict):
+                    result = self.run_deploy_cli(
+                        ["--yes"], values=extreme_values, compatibility=extreme, mast_volumes=(),
+                        mast_discovery=MaStDiscoveryResult((), 1, raw_mast_output), patch_actions=True,
+                        patch_upload=True, raises=SystemExit,
+                    )
+                text = str(result.exception)
+                self.assertTrue(text.endswith(
+                    "Next steps:\n" + first_steps
+                    + "  3. If the USB disk holds nothing you need, erase it on a Mac in Disk Utility as "
+                    "Mac OS Extended (Journaled). This deletes everything on it.\n"
+                    "  4. Connect it to the device, then run `tcapsule deploy`."
+                ), text)
+                self.assertNotIn("wipe", text)
+                result.mocks.upload_deployment_payload.assert_not_called()
+
+                with mock.patch("timecapsulesmb.services.deploy.read_gpt_verdict_conn", return_value=verdict):
+                    result = self.run_deploy_cli(
+                        ["--yes"], mast_volumes=(), mast_discovery=MaStDiscoveryResult((), 1, raw_mast_output),
+                        patch_actions=True, patch_upload=True, raises=SystemExit,
+                    )
+                self.assertIn("`tcapsule wipe-internal-disk`", str(result.exception))
+                self.assertNotIn("erase it on a Mac", str(result.exception))
 
     def test_deploy_rejects_removed_no_reboot_before_remote_access(self) -> None:
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config") as config:

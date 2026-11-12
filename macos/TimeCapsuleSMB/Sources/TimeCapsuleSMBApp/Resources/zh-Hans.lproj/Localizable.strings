@@ -922,6 +922,12 @@
 "backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "如果仍然失败，请重启设备，等磁盘转动起来后重试。";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "如果它是内部磁盘且上面没有你需要的内容，请使用“重新格式化内部磁盘”。它会删除内部磁盘上的所有内容，并为设备格式化该磁盘。";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "重新格式化完成后，再次运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.title" = "磁盘尚未准备好用于安装";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.message" = "已找到磁盘，但其中没有 TimeCapsuleSMB 可用的 HFS 分区。磁盘可能需要格式化（例如已格式化为 APFS、exFAT、FAT32 或 NTFS），分区信息可能已损坏，或者磁盘本身可能出现故障。";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.1" = "几分钟后尝试重新运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.2" = "如果仍然失败，请重启设备，等磁盘转动起来后重试。";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.3" = "如果 USB 磁盘上没有你需要的内容，请在 Mac 上用磁盘工具将其抹掉为“Mac OS 扩展（日志式）”。这会删除该磁盘上的所有内容。";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.4" = "将其连接到设备，然后运行“安装 / 更新 Samba”。";
 "backend.recovery.disk_volumes_in_memory.title" = "磁盘上的卷会在下次重启时消失";
 "backend.recovery.disk_volumes_in_memory.message" = "AirPort 实用工具中的“抹掉磁盘”无法替换内部磁盘的分区表，因此其上的卷只会存在到下次重启。自那次抹掉以来保存在这些卷上的所有内容（包括时间机器备份）都会在下次重启时丢失。此操作会重启设备，因此已在做出任何更改前停止。";
 "backend.recovery.disk_volumes_in_memory.action.1" = "请先从磁盘拷贝出你需要的所有内容。";
@@ -947,6 +953,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "如果磁盘仍未挂载，请尝试重启设备。";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "如果它是内部磁盘且上面没有你需要的内容，请使用“重新格式化内部磁盘”。它会删除内部磁盘上的所有内容，并为设备格式化该磁盘。";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "重新格式化完成后，再次运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.title" = "HFS 磁盘未挂载";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.message" = "磁盘上有 HFS 卷，但设备尚未挂载它，请求挂载时也没有挂载。";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.1" = "等待一分钟，然后重新运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.2" = "如果磁盘仍未挂载，请尝试重启设备。";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.3" = "如果 USB 磁盘上没有你需要的内容，请在 Mac 上用磁盘工具将其抹掉为“Mac OS 扩展（日志式）”。这会删除该磁盘上的所有内容。";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.4" = "将其连接到设备，然后运行“安装 / 更新 Samba”。";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "磁盘未保持挂载";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "HFS 卷已挂载，但设备拒绝为 TimeCapsuleSMB 保持其挂载状态，因此它可能会在安装 / 更新过程中被卸载。";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "等待一分钟，然后重新运行“安装 / 更新 Samba”。";

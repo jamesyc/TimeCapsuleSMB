@@ -999,6 +999,12 @@
 "backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "If it still fails, restart the device and try again after the disk spins up.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything on the internal disk and formats it for the device.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "Run “Install / Update Samba” again after the wipe.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.title" = "The disk is not ready for installation";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.message" = "A disk was found, but it has no usable HFS partition for TimeCapsuleSMB. The disk may need formatting (for example, if it is formatted as APFS, exFAT, FAT32 or NTFS), its partition information may be damaged, or the disk itself may be failing.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.1" = "Try running “Install / Update Samba” again in a few minutes.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.2" = "If it still fails, restart the device and try again after the disk spins up.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.3" = "If the USB disk holds nothing you need, erase it on a Mac in Disk Utility as “Mac OS Extended (Journaled)”. This deletes everything on it.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.4" = "Connect it to the device, then run “Install / Update Samba”.";
 "backend.recovery.disk_volumes_in_memory.title" = "The disk's volumes vanish at the next restart";
 "backend.recovery.disk_volumes_in_memory.message" = "AirPort Utility's “Erase Disk” could not replace the internal disk's partition table, so its volumes exist only until the next restart. Anything saved on them since that erase, Time Machine backups included, is lost at the next restart. This restarts the device, so it stopped before changing anything.";
 "backend.recovery.disk_volumes_in_memory.action.1" = "Copy off anything you need from the disk first.";
@@ -1024,6 +1030,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "If the disk still does not mount, try restarting the device.";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything on the internal disk and formats it for the device.";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "Run “Install / Update Samba” again after the wipe.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.title" = "HFS disk not mounted";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.message" = "The disk has an HFS volume, but the device has not mounted it, and did not when asked.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.1" = "Wait a minute, then run “Install / Update Samba” again.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.2" = "If the disk still does not mount, try restarting the device.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.3" = "If the USB disk holds nothing you need, erase it on a Mac in Disk Utility as “Mac OS Extended (Journaled)”. This deletes everything on it.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.4" = "Connect it to the device, then run “Install / Update Samba”.";
 // deploy_disk_not_confirmed: “would not keep it mounted for TimeCapsuleSMB” means the device's
 // disk manager refused to hold the volume mounted for the install; it is not a mount failure.
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Disk not kept mounted";

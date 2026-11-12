@@ -4,7 +4,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
-from timecapsulesmb.core.config import AIRPORT_DEVICE_IDENTITIES, AIRPORT_SYAP_TO_MODEL, VALID_AIRPORT_SYAP_CODES
+from timecapsulesmb.core.config import (
+    AIRPORT_DEVICE_IDENTITIES,
+    AIRPORT_SYAP_TO_MODEL,
+    VALID_AIRPORT_SYAP_CODES,
+    airport_identity_from_model_or_syap,
+)
 
 
 def _syaps_for_group(group: str) -> tuple[str, ...]:
@@ -303,4 +308,19 @@ def compatibility_from_probe_result(result: ProbeFacts) -> DeviceCompatibility |
         result.elf_endianness,
         airport_model=result.airport_model,
         airport_syap=result.airport_syap,
+    )
+
+
+def device_has_no_internal_disk(compatibility: DeviceCompatibility | None) -> bool:
+    """True when every model the probe could be is an AirPort Extreme.
+
+    An Extreme has no internal disk, so an empty MaSt means no USB disk is
+    attached, not that an internal disk failed to appear."""
+    if compatibility is None:
+        return False
+    identities = [airport_identity_from_model_or_syap(syap=syap) for syap in compatibility.syap_candidates]
+    if not identities:
+        identities = [airport_identity_from_model_or_syap(model=model) for model in compatibility.model_candidates]
+    return bool(identities) and all(
+        identity is not None and identity.family == "airport_extreme" for identity in identities
     )

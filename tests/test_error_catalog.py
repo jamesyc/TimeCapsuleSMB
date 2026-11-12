@@ -46,7 +46,8 @@ def text(raw: str) -> str:
 
 
 def recovery_entries() -> list[recovery.RecoveryInfo]:
-    tables = (recovery._DEFAULTS, recovery._OPERATION_CODE_RECOVERY, recovery._STAGE_RECOVERY)
+    tables = (recovery._DEFAULTS, recovery._OPERATION_CODE_RECOVERY, recovery._STAGE_RECOVERY,
+              recovery._NO_INTERNAL_DISK_RECOVERY)
     # One entry can serve several stages.
     entries = {id(info): info for table in tables for info in table.values()}
     return [*entries.values(), recovery._SSH_TIMEOUT_SLOW_DEVICE_RECOVERY]

@@ -922,6 +922,12 @@
 "backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Если по-прежнему не удается, перезагрузите устройство и повторите попытку, когда диск раскрутится.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "Если это внутренний диск и на нем нет ничего нужного, используйте «Переформатировать внутренний диск». Эта операция стирает все на внутреннем диске и форматирует его для устройства.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "После переформатирования снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.title" = "Диск не готов к установке";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.message" = "Диск найден, но на нем нет пригодного для TimeCapsuleSMB раздела HFS. Возможно, диск нужно отформатировать (например, если он отформатирован в APFS, exFAT, FAT32 или NTFS), информация о его разделах повреждена или сам диск неисправен.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.1" = "Попробуйте снова запустить «Установить/обновить Samba» через несколько минут.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.2" = "Если по-прежнему не удается, перезагрузите устройство и повторите попытку, когда диск раскрутится.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.3" = "Если на USB-диске нет ничего нужного, сотрите его на Mac в Дисковой утилите в формате «Mac OS Extended (журналируемый)». Это стирает все на нем.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.4" = "Подключите его к устройству, затем запустите «Установить/обновить Samba».";
 "backend.recovery.disk_volumes_in_memory.title" = "Тома диска исчезнут при следующей перезагрузке";
 "backend.recovery.disk_volumes_in_memory.message" = "Команда «Стереть диск» в Утилите AirPort не смогла заменить таблицу разделов внутреннего диска, поэтому его тома существуют только до следующей перезагрузки. Все, что сохранено на них после этого стирания, включая резервные копии Time Machine, будет потеряно при следующей перезагрузке. Эта операция перезагружает устройство, поэтому она остановлена до каких-либо изменений.";
 "backend.recovery.disk_volumes_in_memory.action.1" = "Сначала скопируйте с диска все нужное.";
@@ -947,6 +953,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "Если диск по-прежнему не монтируется, попробуйте перезагрузить устройство.";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "Если это внутренний диск и на нем нет ничего нужного, используйте «Переформатировать внутренний диск». Эта операция стирает все на внутреннем диске и форматирует его для устройства.";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "После переформатирования снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.title" = "Диск HFS не смонтирован";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.message" = "На диске есть том HFS, но устройство его не смонтировало, даже когда его об этом попросили.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.1" = "Подождите минуту, затем снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.2" = "Если диск по-прежнему не монтируется, попробуйте перезагрузить устройство.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.3" = "Если на USB-диске нет ничего нужного, сотрите его на Mac в Дисковой утилите в формате «Mac OS Extended (журналируемый)». Это стирает все на нем.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.4" = "Подключите его к устройству, затем запустите «Установить/обновить Samba».";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Устройство не удерживает диск смонтированным";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Том HFS смонтирован, но устройство отказалось удерживать его смонтированным для TimeCapsuleSMB, поэтому во время установки он может быть размонтирован.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Подождите минуту, затем снова запустите «Установить/обновить Samba».";

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import unittest
 
 from timecapsulesmb.app import recovery
@@ -421,6 +422,65 @@ class AppRecoveryTests(unittest.TestCase):
                 self.assertFalse(any("Wipe" in step or "Disk Repair" in step for step in later["actions"]))
                 self.assertEqual(later["localization_key"], "deploy.deploy_disk_not_mounted")
 
+    def test_a_device_with_no_internal_disk_is_told_to_erase_its_usb_disk_on_a_mac(self) -> None:
+        # An AirPort Extreme's disk is a USB disk: Wipe Internal Disk refuses
+        # it, so its cards keep the retry and restart steps, then say to
+        # erase the disk on a Mac, with no wipe step or button.
+        cases = (
+            ("deploy_no_hfs_partition", None, "deploy.deploy_no_hfs_partition"),
+            ("deploy_disk_not_mounted", "read_mast", "deploy.deploy_disk_not_mounted.read_mast"),
+        )
+        for code, stage, key in cases:
+            with self.subTest(code=code):
+                internal = recovery_for("deploy", code, stage=stage)
+                extreme = recovery_for("deploy", code, stage=stage, no_internal_disk=True)
+                self.assertEqual(internal["action_ids"], ["wipe_disk"])
+                self.assertEqual(extreme["action_ids"], [])
+                self.assertEqual(extreme["localization_key"], f"{key}.no_internal_disk")
+                self.assertEqual((extreme["title"], extreme["message"]), (internal["title"], internal["message"]))
+                self.assertEqual(extreme["actions"][:2], internal["actions"][:2])
+                self.assertEqual(extreme["actions"][2:], [
+                    "If the USB disk holds nothing you need, erase it on a Mac in Disk Utility as "
+                    "“Mac OS Extended (Journaled)”. This deletes everything on it.",
+                    "Connect it to the device, then run “Install / Update Samba”.",
+                ])
+                self.assertFalse(any("Wipe" in step or "internal disk" in step for step in extreme["actions"]))
+                # The CLI prints the same choice in its words.
+                self.assertIn("`tcapsule wipe-internal-disk`", " ".join(cli_steps("deploy", code, stage=stage)))
+                cli = cli_steps("deploy", code, stage=stage, no_internal_disk=True)
+                self.assertFalse(any("wipe" in step for step in cli), cli)
+                self.assertEqual(cli[2:], (
+                    "If the USB disk holds nothing you need, erase it on a Mac in Disk Utility as "
+                    "Mac OS Extended (Journaled). This deletes everything on it.",
+                    "Connect it to the device, then run `tcapsule deploy`.",
+                ))
+        # A card with no wipe is the same card on either device.
+        for code, stage in (("deploy_disk_not_mounted", "select_payload_home"), ("deploy_no_usb_disk_detected", None),
+                            ("remote_error", "read_mast")):
+            with self.subTest(code=code, stage=stage):
+                self.assertEqual(recovery_for("deploy", code, stage=stage, no_internal_disk=True),
+                                 recovery_for("deploy", code, stage=stage))
+
+    def test_no_card_offers_a_device_with_no_internal_disk_the_wipe(self) -> None:
+        # disk_volumes_in_memory names a built-in disk (a USB disk gets
+        # usb_disk_volumes_in_memory), which a device without one never has.
+        internal_disk_only = {ErrorCode.DISK_VOLUMES_IN_MEMORY}
+        entries = (
+            [("doctor", code, None) for code in recovery._DEFAULTS]
+            + [(operation, code, None) for operation, code in recovery._OPERATION_CODE_RECOVERY]
+            + [(operation, code, stage) for operation, code, stage in recovery._STAGE_RECOVERY]
+        )
+        offering = [entry for entry in entries if "wipe_disk" in recovery_for(*entry[:2], stage=entry[2])["action_ids"]]
+        self.assertTrue(offering)
+        for operation, code, stage in offering:
+            with self.subTest(operation=operation, code=code, stage=stage):
+                card = recovery_for(operation, code, stage=stage, no_internal_disk=True)
+                if code in internal_disk_only:
+                    self.assertNotIn("no_internal_disk", card["localization_key"])
+                    continue
+                self.assertNotIn("wipe_disk", card["action_ids"])
+                self.assertFalse(any("“Wipe Internal Disk”" in step for step in card["actions"]), card["actions"])
+
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
         recovery = recovery_for("deploy", "reboot_not_finished", stage="wait_for_reboot_up")
 
@@ -535,9 +595,10 @@ class CliStepsTests(unittest.TestCase):
         self.assertNotIn("cli_extra", recovery_for("set-ssh", ErrorCode.DEVICE_UNREACHABLE))
 
     def test_every_entry_gives_the_cli_steps_in_its_own_words(self) -> None:
-        for operation, code, stage, info in self.entries():
-            with self.subTest(operation=operation, code=code, stage=stage):
-                steps = cli_steps(operation, code, stage=stage)
+        # A device with no internal disk gets cards of its own for some codes.
+        for (operation, code, stage, info), no_internal_disk in itertools.product(self.entries(), (False, True)):
+            with self.subTest(operation=operation, code=code, stage=stage, no_internal_disk=no_internal_disk):
+                steps = cli_steps(operation, code, stage=stage, no_internal_disk=no_internal_disk)
                 for step in steps:
                     # No app control is left unnamed for the CLI.
                     self.assertNotIn("“", step)

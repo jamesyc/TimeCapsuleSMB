@@ -922,6 +922,12 @@
 "backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Wenn es weiterhin fehlschlägt, starten Sie das Gerät neu und versuchen Sie es erneut, sobald die Festplatte angelaufen ist.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "Wenn es die interne Festplatte ist und sich darauf nichts befindet, was Sie brauchen, verwenden Sie „Interne Festplatte neu formatieren“. Damit wird alles auf der internen Festplatte gelöscht und sie wird für das Gerät formatiert.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "Führen Sie nach dem Neuformatieren „Samba installieren / aktualisieren“ erneut aus.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.title" = "Die Festplatte ist nicht bereit für die Installation";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.message" = "Eine Festplatte wurde gefunden, aber sie hat keine für TimeCapsuleSMB nutzbare HFS-Partition. Die Festplatte muss möglicherweise formatiert werden (zum Beispiel, wenn sie als APFS, exFAT, FAT32 oder NTFS formatiert ist), ihre Partitionsinformationen sind möglicherweise beschädigt oder die Festplatte selbst fällt möglicherweise aus.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.1" = "Versuchen Sie in einigen Minuten, „Samba installieren / aktualisieren“ erneut auszuführen.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.2" = "Wenn es weiterhin fehlschlägt, starten Sie das Gerät neu und versuchen Sie es erneut, sobald die Festplatte angelaufen ist.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.3" = "Wenn sich auf der USB-Festplatte nichts befindet, was Sie brauchen, löschen Sie sie an einem Mac im Festplattendienstprogramm als „Mac OS Extended (Journaled)“. Dabei wird alles auf ihr gelöscht.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.4" = "Schließen Sie sie an das Gerät an und führen Sie dann „Samba installieren / aktualisieren“ aus.";
 "backend.recovery.disk_volumes_in_memory.title" = "Die Datenträger der Festplatte verschwinden beim nächsten Neustart";
 "backend.recovery.disk_volumes_in_memory.message" = "„Festplatte löschen“ im AirPort-Dienstprogramm konnte die Partitionstabelle der internen Festplatte nicht ersetzen, daher bestehen ihre Datenträger nur bis zum nächsten Neustart. Alles, was seit diesem Löschen darauf gesichert wurde, auch Time Machine-Backups, geht beim nächsten Neustart verloren. Dieser Vorgang startet das Gerät neu, daher wurde er beendet, bevor etwas geändert wurde.";
 "backend.recovery.disk_volumes_in_memory.action.1" = "Kopieren Sie zuerst alles, was Sie brauchen, von der Festplatte.";
@@ -947,6 +953,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "Wenn der Datenträger weiterhin nicht eingebunden wird, versuchen Sie, das Gerät neu zu starten.";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "Wenn es die interne Festplatte ist und sich darauf nichts befindet, was Sie brauchen, verwenden Sie „Interne Festplatte neu formatieren“. Damit wird alles auf der internen Festplatte gelöscht und sie wird für das Gerät formatiert.";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "Führen Sie nach dem Neuformatieren „Samba installieren / aktualisieren“ erneut aus.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.title" = "HFS-Datenträger nicht eingebunden";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.message" = "Die Festplatte hat einen HFS-Datenträger, aber das Gerät hat ihn nicht eingebunden, auch nicht auf Anforderung.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.1" = "Warten Sie eine Minute und führen Sie dann „Samba installieren / aktualisieren“ erneut aus.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.2" = "Wenn der Datenträger weiterhin nicht eingebunden wird, versuchen Sie, das Gerät neu zu starten.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.3" = "Wenn sich auf der USB-Festplatte nichts befindet, was Sie brauchen, löschen Sie sie an einem Mac im Festplattendienstprogramm als „Mac OS Extended (Journaled)“. Dabei wird alles auf ihr gelöscht.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.4" = "Schließen Sie sie an das Gerät an und führen Sie dann „Samba installieren / aktualisieren“ aus.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Datenträger nicht dauerhaft eingebunden";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Ein HFS-Volume ist eingebunden, aber das Gerät hat es abgelehnt, es für TimeCapsuleSMB eingebunden zu halten; es könnte daher während der Installation / Aktualisierung ausgehängt werden.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Warten Sie eine Minute und führen Sie dann „Samba installieren / aktualisieren“ erneut aus.";

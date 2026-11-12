@@ -6879,25 +6879,53 @@ MaSt = (
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["stage"], "read_mast")
 
-    def test_a_device_without_an_internal_disk_gets_no_wipe_button(self) -> None:
-        # An AirPort Extreme's APFS USB disk: Wipe Internal Disk would refuse
-        # it, so the card keeps its text and loses the button.
+    def test_a_device_without_an_internal_disk_is_told_to_erase_its_usb_disk_on_a_mac(self) -> None:
+        # An AirPort Extreme's USB disk with no usable volume: Wipe Internal
+        # Disk would refuse it, so the card says to erase it on a Mac and has
+        # no wipe button. A Time Capsule's internal disk keeps the wipe.
         import plistlib
 
         raw_mast_output = plistlib.dumps(
             [{"deviceName": "sd0", "name": "USB HDD", "builtin": False, "partitions": []}],
         ).decode()
-        with mock.patch("timecapsulesmb.services.deploy.read_gpt_verdict_conn",
-                        return_value=GptVerdict("foreign", ("apfs",))):
-            rc, collector = self.run_confirmed_deploy_with_mast(
-                MaStDiscoveryResult((), 1, raw_mast_output), probe_state=self.airport_extreme_probed_state(),
-            )
+        erase_on_a_mac = [
+            "If the USB disk holds nothing you need, erase it on a Mac in Disk Utility as "
+            "“Mac OS Extended (Journaled)”. This deletes everything on it.",
+            "Connect it to the device, then run “Install / Update Samba”.",
+        ]
+        cases = (
+            # An APFS disk: no HFS partition.
+            (GptVerdict("foreign", ("apfs",)), "deploy_no_hfs_partition", "deploy.deploy_no_hfs_partition"),
+            # Apple's HFS layout that Apple's disk service lists no volume of.
+            (GptVerdict("apple_hfs"), "deploy_disk_not_mounted", "deploy.deploy_disk_not_mounted.read_mast"),
+        )
+        for verdict, code, key in cases:
+            for name, probe_state in (("extreme", self.airport_extreme_probed_state()), ("time capsule", None)):
+                with self.subTest(code=code, device=name):
+                    self._telemetry_client.emit.reset_mock()
+                    with mock.patch("timecapsulesmb.services.deploy.read_gpt_verdict_conn", return_value=verdict):
+                        rc, collector = self.run_confirmed_deploy_with_mast(
+                            MaStDiscoveryResult((), 1, raw_mast_output), probe_state=probe_state,
+                        )
 
-        self.assertEqual(rc, 1)
-        error = collector.events_of_type("error")[0]
-        self.assertEqual(error["code"], "deploy_no_hfs_partition")
-        self.assertEqual(error["recovery"]["action_ids"], [])
-        self.assertIn("If it is the internal disk", " ".join(error["recovery"]["actions"]))
+                    self.assertEqual(rc, 1)
+                    error = collector.events_of_type("error")[0]
+                    self.assertEqual(error["code"], code)
+                    recovery = error["recovery"]
+                    steps = " ".join(recovery["actions"])
+                    if name == "extreme":
+                        self.assertEqual(recovery["localization_key"], f"{key}.no_internal_disk")
+                        self.assertEqual(recovery["action_ids"], [])
+                        self.assertEqual(recovery["actions"][-2:], erase_on_a_mac)
+                        self.assertNotIn("Wipe Internal Disk", steps)
+                        self.assertNotIn("internal disk", steps)
+                    else:
+                        self.assertEqual(recovery["localization_key"], key)
+                        self.assertEqual(recovery["action_ids"], ["wipe_disk"])
+                        self.assertIn("“Wipe Internal Disk”", steps)
+                        self.assertNotIn("erase it on a Mac", steps)
+                    finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                    self.assertEqual(finished["stage"], "read_mast")
 
     def test_deploy_reports_each_unusable_volume_cause_with_its_own_code(self) -> None:
         # The app shows its own text for each code, so the cause decides it:

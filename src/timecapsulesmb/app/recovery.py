@@ -1006,6 +1006,15 @@ _SLOW_LINK_OR_DISK_STEPS = (
     "If it times out again, run “Disk Repair”.",
 )
 _MIGRATION_DISK_STEPS = ("Run “Disk Repair”.", "Then run “Install / Update Samba” again.")
+# The way out for a disk with no usable volume that holds nothing needed: on
+# a Time Capsule, Wipe Internal Disk, whose button the card carries. A device
+# with no internal disk (an AirPort Extreme) gets the same card with these
+# steps replaced (_NO_INTERNAL_DISK_RECOVERY).
+_WIPE_INTERNAL_DISK_STEPS = (
+    "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything "
+    "on the internal disk and formats it for the device.",
+    "Run “Install / Update Samba” again after the wipe.",
+)
 _MIGRATION_RERUN_MESSAGE = (
     "What was already moved into the files' extended attributes is kept; the rest moves when the install runs again."
 )
@@ -1337,9 +1346,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         (
             "Try running “Install / Update Samba” again in a few minutes.",
             "If it still fails, restart the device and try again after the disk spins up.",
-            "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything "
-            "on the internal disk and formats it for the device.",
-            "Run “Install / Update Samba” again after the wipe.",
+            *_WIPE_INTERNAL_DISK_STEPS,
         ),
         retryable=True,
         suggested_operation="deploy",
@@ -1567,9 +1574,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         (
             "Wait a minute, then run “Install / Update Samba” again.",
             "If the disk still does not mount, try restarting the device.",
-            "If it is the internal disk and it holds nothing you need, use “Wipe Internal Disk”. It deletes everything "
-            "on the internal disk and formats it for the device.",
-            "Run “Install / Update Samba” again after the wipe.",
+            *_WIPE_INTERNAL_DISK_STEPS,
         ),
         retryable=True,
         suggested_operation="deploy",
@@ -1826,6 +1831,30 @@ _STAGE_RECOVERY[("wipe-disk", ErrorCode.WIPE_DISK_NO_RESPONSE, "check_wipe")] = 
     localization_key="wipe-disk.wipe_disk_no_response.check_wipe",
 )
 
+# A device with no internal disk (an AirPort Extreme,
+# device.compat.device_has_no_internal_disk) gets these cards in place of
+# the ones offering Wipe Internal Disk, which refuses it: its disk is a USB
+# disk, erased on a Mac instead. Keyed by the card each replaces; the app shows
+# each from "<that card's key>.no_internal_disk".
+_ERASE_USB_DISK_ON_A_MAC_STEPS = (
+    "If the USB disk holds nothing you need, erase it on a Mac in Disk Utility as “Mac OS Extended (Journaled)”. "
+    "This deletes everything on it.",
+    "Connect it to the device, then run “Install / Update Samba”.",
+)
+_NO_INTERNAL_DISK_RECOVERY: dict[str, RecoveryInfo] = {
+    card.localization_key: replace(
+        card,
+        actions=(*(step for step in card.actions if step not in _WIPE_INTERNAL_DISK_STEPS),
+                 *_ERASE_USB_DISK_ON_A_MAC_STEPS),
+        action_ids=tuple(action for action in card.action_ids if action != "wipe_disk"),
+        localization_key=f"{card.localization_key}.no_internal_disk",
+    )
+    for card in (
+        _OPERATION_CODE_RECOVERY[("deploy", ErrorCode.DEPLOY_NO_HFS_PARTITION)],
+        _STAGE_RECOVERY[("deploy", ErrorCode.DEPLOY_DISK_NOT_MOUNTED, "read_mast")],
+    )
+}
+
 
 # Any SSH timeout without a cause of its own. The reboot comes first: devices
 # up for years answer slowly until one. The timeout alone does not say the
@@ -1846,7 +1875,16 @@ _SSH_TIMEOUT_SLOW_DEVICE_RECOVERY = RecoveryInfo(
 )
 
 
-def _entry(operation: str, code: ErrorCode, stage: str | None) -> RecoveryInfo:
+def _entry(operation: str, code: ErrorCode, stage: str | None, *, no_internal_disk: bool = False) -> RecoveryInfo:
+    """The most specific card for the error; for a device with no internal
+    disk, its card that offers no Wipe Internal Disk where there is one."""
+    entry = _table_entry(operation, code, stage)
+    if no_internal_disk:
+        return _NO_INTERNAL_DISK_RECOVERY.get(entry.localization_key or "", entry)
+    return entry
+
+
+def _table_entry(operation: str, code: ErrorCode, stage: str | None) -> RecoveryInfo:
     if code == ErrorCode.ACP_NO_ROUTE:
         # No route while something showed the device is up is, on this Mac,
         # Local Network access (checks.network.local_network_block).
@@ -1863,8 +1901,9 @@ def recovery_for(
     code: ErrorCode,
     *,
     stage: str | None = None,
+    no_internal_disk: bool = False,
 ) -> dict[str, object]:
-    return _entry(operation, code, stage).to_jsonable()
+    return _entry(operation, code, stage, no_internal_disk=no_internal_disk).to_jsonable()
 
 
 # How the CLI says what a step tells the app's user to do. Each phrase must
@@ -1924,11 +1963,13 @@ _APP_ONLY_STEPS = frozenset({
 
 def cli_steps(
     operation: str, code: ErrorCode, *, stage: str | None = None, platform: str | None = None,
+    no_internal_disk: bool = False,
 ) -> tuple[str, ...]:
     """The next steps the CLI prints for an error: the app's, in the CLI's
     words, then the entry's CLI-only steps. A step about macOS is left out
-    on another `platform` (this computer's by default)."""
-    entry = _entry(operation, code, stage)
+    on another `platform` (this computer's by default). `no_internal_disk`
+    picks the card for a device with no internal disk, as in the app."""
+    entry = _entry(operation, code, stage, no_internal_disk=no_internal_disk)
     on_macos = (platform or sys.platform) == "darwin"
     steps = []
     for step in entry.actions:

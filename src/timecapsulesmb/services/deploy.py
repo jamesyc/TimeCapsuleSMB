@@ -14,7 +14,6 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     MANAGED_PAYLOAD_DIR_NAME,
     AppConfig,
-    airport_identity_from_model_or_syap,
     effective_smb_security,
     parse_bool,
     shell_quote,
@@ -79,6 +78,8 @@ from timecapsulesmb.deploy.planner import (
 )
 from timecapsulesmb.device.compat import (
     DeviceCompatibility,
+    # Re-exported for the callers that read it from here.
+    device_has_no_internal_disk as device_has_no_internal_disk,
     is_netbsd4_payload_family,
     # Re-exported: deploy adapters must not import device modules directly.
     payload_family_description as payload_family_description,
@@ -575,21 +576,6 @@ NO_USB_DISK_MESSAGE = (
 def mast_queries_detail(*, attempts: int, delay_seconds: int) -> str:
     """How long the device was asked for its disks."""
     return f"After {attempts} MaSt queries spaced {delay_seconds} seconds apart."
-
-
-def device_has_no_internal_disk(compatibility: DeviceCompatibility | None) -> bool:
-    """True when every model the probe could be is an AirPort Extreme.
-
-    An Extreme has no internal disk, so an empty MaSt means no USB disk is
-    attached, not that an internal disk failed to appear."""
-    if compatibility is None:
-        return False
-    identities = [airport_identity_from_model_or_syap(syap=syap) for syap in compatibility.syap_candidates]
-    if not identities:
-        identities = [airport_identity_from_model_or_syap(model=model) for model in compatibility.model_candidates]
-    return bool(identities) and all(
-        identity is not None and identity.family == "airport_extreme" for identity in identities
-    )
 
 
 def no_hfs_partition_message() -> str:

@@ -922,6 +922,12 @@
 "backend.recovery.deploy.deploy_no_hfs_partition.action.2" = "Als het nog steeds mislukt, herstart dan het apparaat en probeer het opnieuw zodra de schijf draait.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.3" = "Als het de interne schijf is en er niets op staat dat u nodig hebt, gebruik dan ‘Interne schijf opnieuw formatteren’. Daarmee wordt alles op de interne schijf gewist en wordt hij geformatteerd voor het apparaat.";
 "backend.recovery.deploy.deploy_no_hfs_partition.action.4" = "Voer na het formatteren ‘Samba installeren / bijwerken’ opnieuw uit.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.title" = "De schijf is niet klaar voor de installatie";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.message" = "Er is een schijf gevonden, maar deze heeft geen bruikbare HFS-partitie voor TimeCapsuleSMB. De schijf moet mogelijk worden geformatteerd (bijvoorbeeld wanneer deze als APFS, exFAT, FAT32 of NTFS is geformatteerd), de partitiegegevens zijn mogelijk beschadigd of de schijf zelf is mogelijk defect.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.1" = "Probeer over een paar minuten ‘Samba installeren / bijwerken’ opnieuw uit te voeren.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.2" = "Als het nog steeds mislukt, herstart dan het apparaat en probeer het opnieuw zodra de schijf draait.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.3" = "Als er niets op de USB-schijf staat dat u nodig hebt, wis hem dan op een Mac in Schijfhulpprogramma als ‘Mac OS uitgebreid (journaled)’. Daarmee wordt alles op de schijf gewist.";
+"backend.recovery.deploy.deploy_no_hfs_partition.no_internal_disk.action.4" = "Sluit hem aan op het apparaat en voer daarna ‘Samba installeren / bijwerken’ uit.";
 "backend.recovery.disk_volumes_in_memory.title" = "De volumes van de schijf verdwijnen bij de volgende herstart";
 "backend.recovery.disk_volumes_in_memory.message" = "‘Wis schijf’ in AirPort-configuratieprogramma kon de partitietabel van de interne schijf niet vervangen, dus de volumes ervan bestaan alleen tot de volgende herstart. Alles wat sinds dat wissen erop is bewaard, ook Time Machine-reservekopieën, gaat bij de volgende herstart verloren. Hierbij wordt het apparaat opnieuw opgestart, dus de bewerking is gestopt voordat er iets werd gewijzigd.";
 "backend.recovery.disk_volumes_in_memory.action.1" = "Kopieer eerst alles wat u nodig hebt van de schijf.";
@@ -947,6 +953,12 @@
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.2" = "Als de schijf nog steeds niet wordt gekoppeld, probeer het apparaat dan te herstarten.";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.3" = "Als het de interne schijf is en er niets op staat dat u nodig hebt, gebruik dan ‘Interne schijf opnieuw formatteren’. Daarmee wordt alles op de interne schijf gewist en wordt hij geformatteerd voor het apparaat.";
 "backend.recovery.deploy.deploy_disk_not_mounted.read_mast.action.4" = "Voer na het formatteren ‘Samba installeren / bijwerken’ opnieuw uit.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.title" = "HFS-schijf niet gekoppeld";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.message" = "De schijf heeft een HFS-volume, maar het apparaat heeft het niet gekoppeld, ook niet toen daarom werd gevraagd.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.1" = "Wacht een minuut en voer ‘Samba installeren / bijwerken’ daarna opnieuw uit.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.2" = "Als de schijf nog steeds niet wordt gekoppeld, probeer het apparaat dan te herstarten.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.3" = "Als er niets op de USB-schijf staat dat u nodig hebt, wis hem dan op een Mac in Schijfhulpprogramma als ‘Mac OS uitgebreid (journaled)’. Daarmee wordt alles op de schijf gewist.";
+"backend.recovery.deploy.deploy_disk_not_mounted.read_mast.no_internal_disk.action.4" = "Sluit hem aan op het apparaat en voer daarna ‘Samba installeren / bijwerken’ uit.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.title" = "Schijf blijft niet gekoppeld";
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Er is een HFS-volume gekoppeld, maar het apparaat wilde het niet gekoppeld houden voor TimeCapsuleSMB, waardoor het tijdens het installeren ontkoppeld zou kunnen worden.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Wacht een minuut en voer ‘Samba installeren / bijwerken’ daarna opnieuw uit.";

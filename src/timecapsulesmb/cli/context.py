@@ -22,6 +22,7 @@ from timecapsulesmb.services.context import (
     OperationContext,
 )
 from timecapsulesmb.services import runtime as service_runtime
+from timecapsulesmb.device.compat import device_has_no_internal_disk
 from timecapsulesmb.telemetry.operation import (
     OperationTelemetrySession,
     client_from_environment,
@@ -75,15 +76,18 @@ def error_with_next_steps(
     stage: str | None = None,
     config: AppConfig | None = None,
     code: ErrorCode | None = None,
+    no_internal_disk: bool = False,
 ) -> str:
     """The message, then the next steps for the code of the error behind it
     (app.recovery.cli_steps), as the app shows them for the same failure.
     `code` is the one the app reports when the command decides it, as
-    set-ssh's does (services.set_ssh.enable_failure_code), or an outcome's."""
+    set-ssh's does (services.set_ssh.enable_failure_code), or an outcome's.
+    `no_internal_disk` says the device has no internal disk (an AirPort
+    Extreme), so its steps never offer Wipe Internal Disk."""
     code = code or (cli_error_code(exc) if exc is not None else None)
     if code is None:
         return message
-    steps = list(cli_steps(command, code, stage=stage))
+    steps = list(cli_steps(command, code, stage=stage, no_internal_disk=no_internal_disk))
     if (
         code in (ErrorCode.DEVICE_UNREACHABLE, ErrorCode.DEVICE_SILENT)
         and config is not None and not config.get("TC_AIRPORT_MAC")
@@ -272,9 +276,13 @@ class CommandContext:
 
     def with_next_steps(self, message: str, exc: BaseException | None = None, *, code: ErrorCode | None = None) -> str:
         """The message, then the next steps for the code of the error behind it
-        (or `code`, error_with_next_steps)."""
+        (or `code`, error_with_next_steps), for the device the command probed:
+        a command that has not probed it gets the steps for a device with an
+        internal disk."""
+        state = self.probe_state
         return error_with_next_steps(
             message, exc, command=self.command_name, stage=self.debug_stage, config=self.config, code=code,
+            no_internal_disk=state is not None and device_has_no_internal_disk(state.compatibility),
         )
 
     def succeed(self) -> None:
