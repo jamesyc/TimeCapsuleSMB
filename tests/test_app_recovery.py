@@ -534,5 +534,144 @@ class CliStepsTests(unittest.TestCase):
         self.assertEqual(cli_steps("deploy", ErrorCode.INSTALL_INTERRUPTED), ("Run `tcapsule deploy` again to complete the install.",))
 
 
+class FieldSituationCardTests(unittest.TestCase):
+    """Each situation the field shows ends with the card written for it: its
+    own key, the buttons it offers and whether trying again can help. The
+    card's wording is free to change; the rows name the condition, not a
+    device, and tests in each area check that the condition reaches the code."""
+
+    # (situation, operation, code, stage, the card's localization key, action_ids, retryable)
+    ROWS = (
+        # Reaching the device.
+        ('nothing answers and this Mac is where it reached the device', 'deploy', 'device_silent', None,
+         'device_silent', ['run_checkup'], True),
+        ("this Mac is on another network than the device's", 'deploy', 'device_off_network', None,
+         'device_off_network', [], True),
+        ('nothing answers and nothing says where this Mac is', 'deploy', 'device_unreachable', None,
+         'device_unreachable', [], True),
+        ('a saved link-local address on an interface this Mac no longer has', 'deploy', 'link_local_interface_gone', None,
+         'link_local_interface_gone', [], True),
+        ("macOS refuses this app's connections while SSH reaches the device", 'deploy', 'acp_no_route', None,
+         'local_network_permission_denied', ['open_system_settings', 'retry'], True),
+        ('macOS blocks discovery', 'discover', 'local_network_permission_denied', None,
+         'discover.local_network_permission_denied', ['open_system_settings', 'retry'], True),
+        ("ACP blocked from this computer while the device's own ACP works", 'deploy', 'acp_unreachable', None,
+         'acp_unreachable', [], True),
+        ("ACP's port silent while SSH's answers", 'configure', 'acpd_broken', None,
+         'acpd_broken', ['run_checkup'], True),
+        ('nothing answers at an address being added', 'configure', 'remote_error', 'acp_port_probe',
+         'configure.remote_error.acp_port_probe', [], True),
+        ('another AirPort answers at the saved address', 'deploy', 'device_identity_mismatch', None,
+         'device_identity_mismatch', [], True),
+        ('the AirPort admin password is wrong', 'configure', 'auth_failed', None,
+         'configure.auth_failed', ['replace_password'], True),
+        ('SSH rejects the password the AirPort service accepts', 'deploy', 'ssh_password_not_applied', None,
+         'ssh_password_not_applied', [], True),
+        ('SSH turned off', 'deploy', 'ssh_disabled', None,
+         'ssh_disabled', ['open_ssh_access'], True),
+        ('the device drops the SSH connection before login', 'configure', 'ssh_transport_failed', None,
+         'ssh_transport_failed', [], True),
+        ('Add Device logs in but cannot read the device', 'configure', 'device_probe_failed', None,
+         'configure.device_probe_failed', [], True),
+        ('copying the installation files outlasts its timeout', 'deploy', 'payload_upload_timeout', None,
+         'deploy.payload_upload_timeout', ['disk_repair'], True),
+        # Restarts.
+        ('the restart went silent while this Mac stayed', 'deploy', 'restart_stuck', None,
+         'deploy.restart_stuck', ['run_checkup'], True),
+        ('the restart that turns SSH on went silent', 'configure', 'restart_stuck', None,
+         'configure.restart_stuck', [], True),
+        ("this Mac left the device's network during the restart", 'deploy', 'client_left_network', None,
+         'deploy.client_left_network', ['run_checkup'], True),
+        ('Apple ACPd stopped without restarting the device', 'deploy', 'acpd_broken', None,
+         'acpd_broken', ['run_checkup'], True),
+        ('the device did not answer just before the restart', 'deploy', 'reboot_not_requested', None,
+         'deploy.reboot_not_requested', ['run_checkup'], True),
+        ('the device did not restart when asked', 'configure', 'reboot_not_started', None,
+         'reboot_not_started', [], True),
+        ('no new start within the wait for SSH', 'configure', 'ssh_enable_timeout', None,
+         'ssh_enable_timeout', [], True),
+        ('SSH stayed off after the restart that turns it on', 'configure', 'ssh_closed_after_restart', None,
+         'ssh_closed_after_restart', [], True),
+        # Apple's services.
+        ('Apple ACPd does not answer the network', 'deploy', 'acpd_network_silent', None,
+         'acpd_network_silent', ['run_checkup'], True),
+        ('Apple ACPd quit', 'deploy', 'acpd_quit', None,
+         'acpd_quit', ['run_checkup'], False),
+        ("Apple's disk service is still handing over", 'deploy', 'diskd_handoff_pending', None,
+         'diskd_handoff_pending', ['run_checkup'], True),
+        # Disks.
+        ('MaSt lists no disk', 'deploy', 'deploy_no_disk_detected', None,
+         'deploy.deploy_no_disk_detected', [], True),
+        ('a process stuck on the disk', 'deploy', 'disk_not_responding', None,
+         'disk_not_responding', [], True),
+        ('a disk check stuck on the disk', 'deploy', 'disk_check_not_responding', None,
+         'disk_check_not_responding', [], True),
+        ('a disk reporting a few GB', 'deploy', 'disk_size_misreported', None,
+         'disk_size_misreported', [], True),
+        ('a failed Seagate disk', 'deploy', 'disk_seagate_failed', None,
+         'disk_seagate_failed', [], False),
+        ('an AirPort Extreme with no USB disk', 'deploy', 'deploy_no_usb_disk_detected', None,
+         'deploy.deploy_no_usb_disk_detected', [], True),
+        ('Wipe Internal Disk on a device with no internal disk', 'wipe-disk', 'wipe_disk_no_internal_disk', None,
+         'wipe_disk_no_internal_disk', [], False),
+        ('a disk with no HFS partition', 'deploy', 'deploy_no_hfs_partition', None,
+         'deploy.deploy_no_hfs_partition', ['wipe_disk'], True),
+        ('an HFS volume Apple will not mount', 'deploy', 'deploy_disk_not_mounted', None,
+         'deploy.deploy_disk_not_mounted', ['wipe_disk'], True),
+        ('a full, read-only or refusing volume', 'deploy', 'deploy_disk_not_writable', None,
+         'deploy.deploy_disk_not_writable', [], True),
+        ('kernel disk errors', 'deploy', 'disk_failing', None,
+         'disk_failing', [], False),
+        ('the test write does not finish', 'deploy', 'disk_write_test_unresponsive', None,
+         'disk_write_test_unresponsive', ['disk_repair'], True),
+        ('any process that will not stop for the install', 'deploy', 'manager_stop_timeout', None,
+         'deploy.manager_stop_timeout', [], True),
+        ('any process that will not stop for the uninstall', 'uninstall', 'manager_stop_timeout', None,
+         'uninstall.manager_stop_timeout', [], True),
+        ('any process that will not stop for a disk repair', 'fsck', 'manager_stop_timeout', None,
+         'fsck.manager_stop_timeout', ['disk_repair'], True),
+        ('any process that will not stop for Activate', 'activate', 'manager_stop_timeout', None,
+         'activate.manager_stop_timeout', [], True),
+        ("any process that will not stop for the start after the install's restart", 'deploy', 'manager_stop_timeout',
+         'post_reboot_activation', 'deploy.manager_stop_timeout.post_reboot_activation', [], True),
+        ('any process that will not stop for a wipe', 'wipe-disk', 'manager_stop_timeout', None,
+         'wipe-disk.manager_stop_timeout', [], True),
+        # fsck and Wipe Internal Disk start file sharing after their restart
+        # as deploy does: the same card.
+        ("any process that will not stop for the start after a disk repair's restart", 'fsck', 'manager_stop_timeout',
+         'post_reboot_activation', 'deploy.manager_stop_timeout.post_reboot_activation', [], True),
+        ("any process that will not stop for the start after a wipe's restart", 'wipe-disk', 'manager_stop_timeout',
+         'post_reboot_activation', 'deploy.manager_stop_timeout.post_reboot_activation', [], True),
+        ('the flash full when the install writes it', 'deploy', 'insufficient_flash_space', None,
+         'deploy.insufficient_flash_space', [], False),
+        ('the Samba files gone after an erase', 'deploy', 'payload_missing_from_disk', None,
+         'payload_missing_from_disk', [], False),
+        ('the Samba files damaged on the disk', 'deploy', 'payload_damaged_on_disk', None,
+         'payload_damaged_on_disk', [], False),
+        ('the session ends while fsck_hfs runs', 'fsck', 'fsck_session_dropped', None,
+         'fsck.fsck_session_dropped', ['disk_repair'], True),
+        ('the volume stays mounted for fsck', 'fsck', 'fsck_volume_not_unmounted', None,
+         'fsck.fsck_volume_not_unmounted', ['disk_repair'], True),
+        ('an earlier repair still runs', 'fsck', 'fsck_already_running', None,
+         'fsck.fsck_already_running', ['disk_repair'], True),
+        ("the wipe's format did not finish", 'wipe-disk', 'wipe_disk_erase_failed', None,
+         'wipe_disk_erase_failed', [], True),
+        ('a disk job runs when the wipe starts', 'wipe-disk', 'wipe_disk_job_running', None,
+         'wipe_disk_job_running', [], True),
+        ('the migration cannot read a folder', 'deploy', 'xattr_migration_unreadable_folder', None,
+         'deploy.xattr_migration_unreadable_folder', ['disk_repair', 'uninstall'], False),
+    )
+
+    def test_each_situation_gets_the_card_that_says_what_to_do(self) -> None:
+        for name, operation, code, stage, key, action_ids, retryable in self.ROWS:
+            with self.subTest(name):
+                card = recovery_for(operation, ErrorCode(code), stage=stage)
+                self.assertEqual(card["localization_key"], key)
+                self.assertEqual(card["action_ids"], action_ids)
+                self.assertIs(card["retryable"], retryable)
+                # Never the generic cards, which say only that something failed.
+                self.assertNotIn(key, ("remote_error", "operation_failed", "validation_failed"))
+
+
 if __name__ == "__main__":
     unittest.main()
