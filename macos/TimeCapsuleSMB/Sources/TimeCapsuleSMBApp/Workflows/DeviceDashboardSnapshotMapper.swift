@@ -140,6 +140,7 @@ enum DeviceDashboardSnapshotMapper {
         return !warnings.isEmpty && warnings.allSatisfy {
             $0.code == DoctorSummary.diskSmartFailingResultCode || $0.code == DoctorSummary.debugLoggingOnResultCode
                 || $0.code == DoctorSummary.diskSeagateFailedResultCode
+                || DoctorSummary.diskErrorsLoggedResultCodes.contains($0.code ?? "")
         }
     }
 

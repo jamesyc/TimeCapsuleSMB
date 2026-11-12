@@ -50,6 +50,9 @@ from timecapsulesmb.checks.doctor_steps import (
     DOCTOR_STARTUP_WINDOW_SECONDS,
     DISK_NOT_MOUNTING_MESSAGE,
     DOCTOR_CODE_DEBUG_LOGGING_ON,
+    DOCTOR_CODE_DISK_ERRORS_LOGGED,
+    DOCTOR_CODE_DISK_ERRORS_LOGGED_INTERNAL,
+    DOCTOR_CODE_DISK_ERRORS_LOGGED_USB,
     DOCTOR_CODE_DISK_INFO,
     DOCTOR_CODE_DISK_INFO_UNAVAILABLE,
     DOCTOR_CODE_DISK_NOT_MOUNTING,
@@ -3705,14 +3708,20 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.debug_fields["acpd_quit_smbd_running"])
         run.mocks.check_authenticated_smb_listing.assert_called()
 
-    def test_acpd_exit_while_samba_serves_does_not_blame_old_disk_errors(self) -> None:
+    def test_acpd_exit_while_samba_serves_only_warns_about_disk_errors(self) -> None:
+        # Samba serves, so the disk's errors are a warning, not why anything
+        # failed; without ACPd, MaSt is not asked whose lines they are.
         serving = f"{self.HEALTHY_SMBD_ROW}\n{self.QUIT_LISTING}"
         with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=serving), \
+                mock.patch("timecapsulesmb.checks.doctor_steps.read_disk_inventory_conn") as inventory, \
                 mock.patch("timecapsulesmb.checks.doctor_steps.read_disk_errors_conn", return_value=self.DISK_ERRORS) as read:
             run = self.run_doctor_with_process_snapshot(serving)
 
-        read.assert_not_called()
+        read.assert_called_once()
+        inventory.assert_not_called()
         self.assertNotIn("disk_failing", self.fail_codes(run))
+        self.assertIn("disk_errors_logged",
+                      [result.details.get("code") for result in run.results if result.status == "WARN"])
         run.mocks.check_authenticated_smb_listing.assert_called()
 
     # A finished listing with neither ACPd nor smbd: a restart tore ACPd down
@@ -4177,9 +4186,15 @@ class CheckTests(unittest.TestCase):
     SMBD_DOWN = mock.Mock(ready=False, detail="managed smbd parent process is not running",
                           lines=("FAIL:managed smbd parent process is not running",))
 
-    def run_doctor_with_disk_errors(self, manager, errors, *, smbd=None, debug_fields=None, extra=None):
+    def run_doctor_with_disk_errors(self, manager, errors, *, smbd=None, debug_fields=None, extra=None, inventory=None):
+        """`inventory`: read_disk_inventory_conn's mock; by default MaSt did
+        not answer (None)."""
         read = mock.Mock(return_value=errors)
-        patches = {"timecapsulesmb.checks.doctor_steps.read_disk_errors_conn": read, **(extra or {})}
+        patches = {
+            "timecapsulesmb.checks.doctor_steps.read_disk_errors_conn": read,
+            "timecapsulesmb.checks.doctor_steps.read_disk_inventory_conn": inventory or mock.Mock(return_value=None),
+            **(extra or {}),
+        }
         if smbd is not None:
             patches["timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn"] = mock.Mock(return_value=smbd)
         # A Samba that stays down is retried on the doctor's clock, which these
@@ -4251,31 +4266,155 @@ class CheckTests(unittest.TestCase):
     def test_a_run_that_failed_elsewhere_while_samba_serves_is_not_blamed_on_the_disk(self) -> None:
         # Something else failed (here diskd's RPC names) while smbd serves:
         # the disk's errors do not explain it, and "file sharing is off"
-        # would be false.
+        # would be false. They are still a warning.
         def diskd_fails(_target, _remote, sink):
             sink.add(CheckResult("FAIL", "diskd RPC names are missing"))
 
-        smbd_up = mock.Mock(ready=True, detail="managed smbd ready", lines=("PASS:managed smbd parent process is running",))
         run, read = self.run_doctor_with_disk_errors(
-            ManagerStartupAgeProbeResult(400.0, "manager started 400s ago"), self.DISK_ERRORS, smbd=smbd_up,
+            ManagerStartupAgeProbeResult(400.0, "manager started 400s ago"), self.DISK_ERRORS, smbd=self.SMBD_UP,
             extra={"timecapsulesmb.checks.doctor._doctor_check_diskd_rpc": diskd_fails},
         )
 
         self.assertTrue(run.fatal)
         self.assertIn("diskd RPC names are missing", self.fail_codes(run))
         self.assertNotIn("disk_failing", self.fail_codes(run))
+        self.assertEqual(self.warn_codes(run), [DOCTOR_CODE_DISK_ERRORS_LOGGED])
+        read.assert_called_once()
+
+    def test_disk_errors_fail_nothing_on_a_run_that_passed_or_could_not_read_them(self) -> None:
+        manager = ManagerStartupAgeProbeResult(400.0, "manager started 400s ago")
+        for errors, smbd in ((self.DISK_ERRORS, self.SMBD_UP), (None, self.SMBD_DOWN), ((), self.SMBD_DOWN)):
+            with self.subTest(errors=errors, failing=smbd is self.SMBD_DOWN):
+                run, _read = self.run_doctor_with_disk_errors(manager, errors, smbd=smbd)
+                self.assertNotIn("disk_failing", self.fail_codes(run))
+                if smbd is self.SMBD_UP:
+                    self.assertFalse(run.fatal)
+
+    # Samba serves while this boot's disk errors stand: a warning, naming the
+    # disk MaSt says the lines are about.
+    SMBD_UP = mock.Mock(ready=True, detail="managed smbd ready", lines=("PASS:managed smbd parent process is running",))
+    WD0_ERROR = "wd0a: error reading fsbn 1953525136 of 1953525136-1953525151 (wd0 bn 1953525136; cn 1938021 tn 4 sn 4)"
+    SD1_ERROR = "sd1a: error writing fsbn 8 of 8-15 (sd1 bn 8; cn 0 tn 0 sn 8)"
+
+    @staticmethod
+    def warn_codes(run) -> list[str]:
+        return [result.details.get("code") or result.message for result in run.results if result.status == "WARN"]
+
+    @staticmethod
+    def mast_disks(*builtin_and_device):
+        return tuple(
+            MaStDiskSnapshot(device, "", 1907729, builtin, (MaStPartitionSnapshot(f"dk{i}", "Data", "hfs"),))
+            for i, (builtin, device) in enumerate(builtin_and_device)
+        )
+
+    def serving_run_with_disk_errors(self, errors, disks, *, debug_fields=None):
+        inventory = mock.Mock(return_value=disks)
+        run, read = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(400.0, "manager started 400s ago"), errors, smbd=self.SMBD_UP,
+            debug_fields={} if debug_fields is None else debug_fields, inventory=inventory,
+        )
+        return run, read, inventory
+
+    def test_serving_samba_warns_about_the_internal_disks_errors_and_quotes_its_line(self) -> None:
+        # The internal disk's own line is quoted, not the USB disk's after it.
+        debug_fields: dict[str, object] = {}
+        run, read, inventory = self.serving_run_with_disk_errors(
+            (self.WD0_ERROR, self.SD1_ERROR), self.mast_disks((True, "wd0"), (False, "sd1")), debug_fields=debug_fields,
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(self.fail_codes(run), [])
+        [warning] = [result for result in run.results if result.status == "WARN"]
+        self.assertEqual(warning.details, {"code": DOCTOR_CODE_DISK_ERRORS_LOGGED_INTERNAL})
+        self.assertEqual(warning.domain, "device")
+        self.assertEqual(
+            warning.message,
+            f"The internal disk reported errors it could not recover from this boot ({self.WD0_ERROR}), so it may "
+            "be failing. File sharing still works for now. Copy off the files you need.",
+        )
+        read.assert_called_once()
+        inventory.assert_called_once()
+        self.assertEqual(debug_fields["disk_errors_logged_disk"], "internal")
+        self.assertEqual(debug_fields["disk_error_lines"], [self.WD0_ERROR, self.SD1_ERROR])
+
+    def test_serving_samba_warns_about_a_usb_disks_errors(self) -> None:
+        debug_fields: dict[str, object] = {}
+        run, _read, _inventory = self.serving_run_with_disk_errors(
+            (self.SD1_ERROR,), self.mast_disks((True, "wd0"), (False, "sd1")), debug_fields=debug_fields,
+        )
+
+        [warning] = [result for result in run.results if result.status == "WARN"]
+        self.assertEqual(warning.details["code"], DOCTOR_CODE_DISK_ERRORS_LOGGED_USB)
+        self.assertTrue(warning.message.startswith(
+            f"A USB disk on the device reported errors it could not recover from this boot ({self.SD1_ERROR}), "
+        ))
+        self.assertEqual(debug_fields["disk_errors_logged_disk"], "usb")
+
+    def test_serving_samba_names_no_disk_when_mast_did_not_answer(self) -> None:
+        debug_fields: dict[str, object] = {}
+        run, _read, inventory = self.serving_run_with_disk_errors(
+            (self.WD0_ERROR,), None, debug_fields=debug_fields,
+        )
+
+        [warning] = [result for result in run.results if result.status == "WARN"]
+        self.assertEqual(warning.details["code"], DOCTOR_CODE_DISK_ERRORS_LOGGED)
+        self.assertTrue(warning.message.startswith(
+            f"The device's disk reported errors it could not recover from this boot ({self.WD0_ERROR}), "
+        ))
+        inventory.assert_called_once()
+        self.assertEqual(debug_fields["disk_errors_logged_disk"], "unknown")
+
+    def test_serving_samba_without_disk_errors_warns_nothing_and_skips_mast(self) -> None:
+        for errors in ((), None):
+            with self.subTest(errors=errors):
+                debug_fields: dict[str, object] = {}
+                run, read, inventory = self.serving_run_with_disk_errors(
+                    errors, self.mast_disks((True, "wd0")), debug_fields=debug_fields,
+                )
+                self.assertFalse(run.fatal)
+                self.assertEqual(self.warn_codes(run), [])
+                read.assert_called_once()
+                inventory.assert_not_called()
+                self.assertNotIn("disk_errors_logged_disk", debug_fields)
+
+    def test_serving_samba_reuses_the_kernel_lines_a_disk_probe_already_read(self) -> None:
+        # Recovered retries do not count; the last unrecovered line is quoted.
+        kernel = "\n".join(("wd0a: error reading fsbn 64 of 64-79, retrying", self.WD0_ERROR))
+        run, read, _inventory = self.serving_run_with_disk_errors(
+            None, self.mast_disks((True, "wd0")), debug_fields={"remote_kernel_disk_messages": kernel},
+        )
+
+        [warning] = [result for result in run.results if result.status == "WARN"]
+        self.assertEqual(warning.details["code"], DOCTOR_CODE_DISK_ERRORS_LOGGED_INTERNAL)
+        self.assertIn(f"({self.WD0_ERROR})", warning.message)
         read.assert_not_called()
 
-    def test_disk_errors_say_nothing_on_a_run_that_passed_or_could_not_read_them(self) -> None:
-        manager = ManagerStartupAgeProbeResult(400.0, "manager started 400s ago")
-        smbd_up = mock.Mock(ready=True, detail="managed smbd ready", lines=("PASS:managed smbd parent process is running",))
-        for errors, smbd in ((self.DISK_ERRORS, smbd_up), (None, self.SMBD_DOWN), ((), self.SMBD_DOWN)):
-            with self.subTest(errors=errors, failing=smbd is self.SMBD_DOWN):
-                run, read = self.run_doctor_with_disk_errors(manager, errors, smbd=smbd)
-                self.assertNotIn("disk_failing", self.fail_codes(run))
-                if smbd is smbd_up:
-                    self.assertFalse(run.fatal)
-                    read.assert_not_called()
+    def test_samba_off_keeps_the_disk_failing_verdict_without_a_warning(self) -> None:
+        inventory = mock.Mock(return_value=self.mast_disks((True, "wd0")))
+        run, _read = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(400.0, "manager started 400s ago"), (self.WD0_ERROR,), smbd=self.SMBD_DOWN,
+            inventory=inventory,
+        )
+
+        self.assertEqual(self.fail_codes(run).count("disk_failing"), 1)
+        self.assertEqual([code for code in self.warn_codes(run) if str(code).startswith("disk_errors_logged")], [])
+        inventory.assert_not_called()
+
+    def test_a_disk_already_reported_failing_is_not_warned_about_again(self) -> None:
+        # A step earlier in the run reported the disk failing while Samba
+        # still came up: one line for the disk.
+        def disk_failing_reported(_target, _remote, sink):
+            sink.add(CheckResult("FAIL", "disk failing", details={"code": "disk_failing"}))
+
+        inventory = mock.Mock(return_value=self.mast_disks((True, "wd0")))
+        run, _read = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(400.0, "manager started 400s ago"), (self.WD0_ERROR,), smbd=self.SMBD_UP,
+            extra={"timecapsulesmb.checks.doctor._doctor_check_diskd_rpc": disk_failing_reported}, inventory=inventory,
+        )
+
+        self.assertEqual(self.fail_codes(run), ["disk_failing"])
+        self.assertEqual(self.warn_codes(run), [])
+        inventory.assert_not_called()
 
     def test_doctor_goes_on_to_the_samba_checks_when_the_payload_is_present(self) -> None:
         run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", self.MAPPED))

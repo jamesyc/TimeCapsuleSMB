@@ -37,6 +37,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_device_hostname,
     _doctor_check_disk_errors_after_failure,
     _doctor_check_disk_errors_under_verdict,
+    _doctor_check_disk_errors_while_serving,
     _doctor_check_disk_health,
     _doctor_check_disk_mounting,
     _doctor_check_disk_payload,
@@ -206,5 +207,6 @@ def run_doctor_checks(
             )
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
     _doctor_check_disk_errors_after_failure(target, remote, manager, sink, samba_serving=smbd_serving is True)
+    _doctor_check_disk_errors_while_serving(target, remote, sink, samba_serving=smbd_serving is True)
     _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
     return sink.results, sink.fatal()

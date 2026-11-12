@@ -472,6 +472,50 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(summary.checks.first?.localizedMessage(), L10n.string("doctor.check.debug_logging_on"))
     }
 
+    func testDiskErrorsWarningAloneKeepsTheRuntimeVerified() throws {
+        // Samba still serves beside this boot's disk errors: the warning says
+        // to copy the files off, but the runtime is what was installed.
+        for code in DoctorSummary.diskErrorsLoggedResultCodes.sorted() {
+            let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .warning,
+                summary: try makeDoctorSummary(checks: [
+                    testDoctorCheck(status: "WARN", message: "the disk may be failing", domain: "device", code: code)
+                ]))
+            XCTAssertEqual(runtimeState?.state, .installedVerified, code)
+        }
+    }
+
+    func testDiskErrorsWarningsShowTheirCatalogTextForEachDisk() throws {
+        // The helper's line quotes the kernel; the catalog's names the disk
+        // the code says, one sentence each.
+        let keys = ["disk_errors_logged", "disk_errors_logged_internal", "disk_errors_logged_usb"]
+        XCTAssertEqual(Set(keys), DoctorSummary.diskErrorsLoggedResultCodes)
+        var texts = Set<String>()
+        for code in keys {
+            let summary = try makeDoctorSummary(checks: [
+                testDoctorCheck(status: "WARN", message: "wd0a: error reading fsbn 8", domain: "device", code: code)
+            ])
+            let key = "doctor.check.\(code)"
+            XCTAssertNotEqual(L10n.string(key), key)
+            XCTAssertEqual(summary.checks.first?.localizedMessage(), L10n.string(key))
+            texts.insert(L10n.string(key))
+        }
+        XCTAssertEqual(texts.count, keys.count)
+    }
+
+    func testDiskErrorsWarningBesideAFailureLeavesTheRuntimeUnhealthy() throws {
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "WARN", message: "the disk may be failing", domain: "device",
+                            code: "disk_errors_logged_internal"),
+            testDoctorCheck(status: "FAIL", message: "diskd RPC names are missing", domain: "device")
+        ])
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .failed, summary: summary)
+
+        XCTAssertEqual(runtimeState?.state, .unhealthy)
+    }
+
     func testWifiClientNoteShowsItsCatalogText() throws {
         let summary = try makeDoctorSummary(checks: [
             testDoctorCheck(status: "INFO", message: "the device reaches its network over Wi-Fi", domain: "device",

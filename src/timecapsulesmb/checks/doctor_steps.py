@@ -110,7 +110,9 @@ from timecapsulesmb.device.disk_errors import (
     disk_check_running_message,
     disk_failing_message,
     disk_stall_code,
+    kernel_evidence,
     read_disk_errors_conn,
+    read_disk_inventory_conn,
 )
 from timecapsulesmb.device.wipe import (
     SEAGATE_FAILED_GUIDE_URL,
@@ -322,6 +324,15 @@ DOCTOR_CODE_DISK_SMART_FAILING = "disk_smart_failing"
 # Samba is writing a level 10 log to the data disk. It still serves, so the app
 # keeps the runtime verified, as for a failing SMART status.
 DOCTOR_CODE_DEBUG_LOGGING_ON = "debug_logging_on"
+# This boot's kernel disk errors (device.disk_errors) while Samba still
+# serves: the disk may be failing, but file sharing works, so a warning that
+# says to copy the files off. A restart clears the lines, and the failing-disk
+# preflight says to run Checkup afterwards to see whether they come back. One
+# code per disk MaSt names, as the app shows a fixed sentence for each.
+# Samba serves, so the app keeps the runtime verified, as for SMART.
+DOCTOR_CODE_DISK_ERRORS_LOGGED = "disk_errors_logged"
+DOCTOR_CODE_DISK_ERRORS_LOGGED_INTERNAL = "disk_errors_logged_internal"
+DOCTOR_CODE_DISK_ERRORS_LOGGED_USB = "disk_errors_logged_usb"
 # Any other disk: its SMART status, or that it reports none, and its space.
 DOCTOR_CODE_DISK_INFO = "disk_info"
 # INFO, not WARN: a WARN would mark the runtime unverified in the app.
@@ -2950,6 +2961,42 @@ def _doctor_check_disk_errors_after_failure(
     errors = disk_errors_in(read) if isinstance(read, str) else read_disk_errors_conn(target.connection)
     if disk_errors_explain(errors, manager.payload_problems if manager is not None else ()):
         _doctor_report_disk_errors(errors, sink)
+
+
+_DISK_ERRORS_LOGGED = {
+    "internal": (DOCTOR_CODE_DISK_ERRORS_LOGGED_INTERNAL, "The internal disk"),
+    "usb": (DOCTOR_CODE_DISK_ERRORS_LOGGED_USB, "A USB disk on the device"),
+    "unknown": (DOCTOR_CODE_DISK_ERRORS_LOGGED, "The device's disk"),
+}
+
+
+def _doctor_check_disk_errors_while_serving(
+    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink, *, samba_serving: bool,
+) -> None:
+    """Samba serves, yet the disk reported errors this boot that it could not
+    recover from: a warning naming the disk (MaSt's inventory says whose lines
+    they are; unread, it stays "the device's disk"). A disk already reported
+    as failing is not reported twice. The kernel lines a disk-failure probe
+    already read are reused; MaSt is read only when there are lines, and not
+    beside an ACPd already reported broken, which would only wait it out."""
+    if not samba_serving or not remote.remote_checks_enabled or _doctor_disk_failing_reported(sink):
+        return
+    read = (sink.debug_fields or {}).get("remote_kernel_disk_messages")
+    errors = disk_errors_in(read) if isinstance(read, str) else read_disk_errors_conn(target.connection)
+    if not errors:
+        return
+    acpd_broken = any(result.details.get("code") == acpd.APPLE_ACPD_BROKEN_CODE for result in sink.results)
+    evidence = kernel_evidence(errors, disks=None if acpd_broken else read_disk_inventory_conn(target.connection))
+    code, subject = _DISK_ERRORS_LOGGED[evidence.disk]
+    seen = evidence.text.replace("from (", "from this boot (", 1)
+    sink.add(CheckResult(
+        "WARN",
+        f"{subject} {seen}, so it may be failing. File sharing still works for now. Copy off the files you need.",
+        details={"code": code},
+    ))
+    if sink.debug_fields is not None:
+        sink.debug_fields["disk_errors_logged_disk"] = evidence.disk
+        sink.debug_fields["disk_error_lines"] = list(errors[-5:])
 
 
 def _doctor_check_disk_mounting(manager: ManagerStartupAgeProbeResult | None, sink: DoctorSink) -> StepDecision:

@@ -271,6 +271,14 @@ extension DoctorCheckPayload {
         // The helper's line quotes the kernel's; the catalog's says what it means.
         case "disk_failing":
             return L10n.string("doctor.check.disk_failing")
+        // The helper's line quotes the kernel's and names the disk; the
+        // catalog has one sentence per disk it could name.
+        case "disk_errors_logged":
+            return L10n.string("doctor.check.disk_errors_logged")
+        case "disk_errors_logged_internal":
+            return L10n.string("doctor.check.disk_errors_logged_internal")
+        case "disk_errors_logged_usb":
+            return L10n.string("doctor.check.disk_errors_logged_usb")
         case "debug_logging_on":
             return L10n.string("doctor.check.debug_logging_on")
         // The device joins or extends another Wi-Fi network (wpa_supplicant runs).

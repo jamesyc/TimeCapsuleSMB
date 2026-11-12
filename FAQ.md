@@ -322,7 +322,7 @@ Erasing the disk in AirPort Utility also removes TimeCapsuleSMB's files from it.
 
 #### The disk is failing
 
-Install / Update Samba, Uninstall, Disk Repair and Checkup read the device's kernel log for disk errors the disk could not recover from, and whether the device could read TimeCapsuleSMB's own files from the disk: a read error, or a read so slow that it ran out of time. When they find either, the disk is probably failing: reinstalling will not fix it, and file sharing and Time Machine will not work reliably on it. AirPort Utility may still show the disk as OK, because its own check does not catch these errors.
+Install / Update Samba, Uninstall, Disk Repair and Checkup read the device's kernel log for disk errors the disk could not recover from, and whether the device could read TimeCapsuleSMB's own files from the disk: a read error, or a read so slow that it ran out of time. When file sharing is off and Checkup finds either, it reports a failure: the disk is probably failing, reinstalling will not fix it, and file sharing and Time Machine will not work reliably on it. When file sharing still works, Checkup reports the kernel's errors since the device started as a warning that the disk may be failing, and names the disk as the internal disk or a USB disk when the device can tell which one. AirPort Utility may still show the disk as OK, because its own check does not catch these errors.
 
 1. Copy off the files you need. If file sharing still works, copy them over the network now. Otherwise take the disk out of the device and connect it to a Mac with a SATA-to-USB adapter; macOS reads the disk as it is.
 2. Replace the disk.

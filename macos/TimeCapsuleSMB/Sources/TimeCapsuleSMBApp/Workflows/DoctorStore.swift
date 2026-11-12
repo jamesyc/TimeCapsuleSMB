@@ -79,6 +79,12 @@ struct DoctorSummary: Equatable {
     static let diskSmartFailingResultCode = "disk_smart_failing"
     /// Debug logging is on, which slows the device; Samba still serves.
     static let debugLoggingOnResultCode = "debug_logging_on"
+    /// This boot's kernel disk errors while Samba still serves: the disk may
+    /// be failing. One code per disk the helper could name, each with its
+    /// own catalog sentence.
+    static let diskErrorsLoggedResultCodes: Set<String> = [
+        "disk_errors_logged", "disk_errors_logged_internal", "disk_errors_logged_usb",
+    ]
     static let acpdBrokenResultCode = "apple_acpd_broken"
     /// A restart TimeCapsuleSMB asked for, often from another operation, was
     /// under way: the Checkup stopped before checking the device.
