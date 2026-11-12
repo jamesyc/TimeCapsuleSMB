@@ -121,6 +121,31 @@ class CliWipeDiskTests(CliTestCase):
         self.assertIn("2. Then run `tcapsule wipe-internal-disk` again.", message)
         self.assertEqual(self.telemetry_payload("wipe_disk_finished")["wipe_reason"], "rpc_missing")
 
+    def test_a_restart_that_does_not_start_file_sharing_prints_its_next_steps(self) -> None:
+        # The app's card for each: Activate, or for a service that would not
+        # stop for the start, an unplug first. The stage is the start's.
+        from timecapsulesmb.app.recovery import cli_steps
+
+        cases = (
+            (None, cli_steps("wipe-disk", ErrorCode.RUNTIME_NOT_RESTARTED)),
+            (ErrorCode.MANAGER_STOP_TIMEOUT,
+             cli_steps("wipe-disk", ErrorCode.MANAGER_STOP_TIMEOUT, stage="post_reboot_activation")),
+        )
+        for code, steps in cases:
+            with self.subTest(code=code):
+                outcome = wipe_disk.WipeOutcome("uuid", "Data", True, "File sharing did not restart.", code)
+
+                def wiped(*_args, callbacks, **_kwargs):
+                    callbacks.stage("post_reboot_activation")
+                    return outcome
+
+                rc, text = self.run_cli(["--yes"], error=wiped)
+                self.assertEqual(rc, 1)
+                self.assertIn("File sharing did not restart.\n\nNext steps:", text)
+                for step in steps:
+                    self.assertIn(step, text)
+                self.assertNotIn("Nothing on the disk was changed", text)
+
     def test_a_disk_without_volumes_is_described_by_its_table_in_words(self) -> None:
         cases = {
             "foreign": (wipe.GptVerdict("foreign", ("efi", "basic_data")), "This disk is formatted as exFAT or NTFS."),

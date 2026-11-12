@@ -433,7 +433,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print_json(payload)
             else:
                 text = message if shown is None else shown
-                print(command_context.with_next_steps(text, exc) if exc is not None else text)
+                print(command_context.with_next_steps(text, exc))
             if code is not None:
                 command_context.add_debug_fields(configure_error_code=code)
             if debug:

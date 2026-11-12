@@ -17,6 +17,7 @@ from timecapsulesmb.app.ops.common import (
     load_request_config,
     require_request_acpd_ready,
     require_request_no_disk_check,
+    require_request_ssh_port,
     resolve_request_connection,
     resolve_request_target,
 )
@@ -136,8 +137,10 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     if not dry_run and not no_reboot:
         require_request_acpd_ready(context, connection)
     elif not dry_run:
-        # No restart, so ACPd is not asked; but a repair's volume is unmounted,
-        # and the uninstall would report success with its files still there.
+        # No restart, so no ACP step looks at port 22 first; then a repair's
+        # volume is unmounted, and the uninstall would report success with its
+        # files still there.
+        require_request_ssh_port(context, connection)
         require_request_no_disk_check(context, connection)
     if not dry_run:
         disk_failing = read_disk_failing_evidence_conn(connection)
@@ -233,6 +236,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         # The preflight reads the device before the confirmation.
         if connection is None:
             connection = _fsck_connection(params, context, rebooting=rebooting)
+            require_request_ssh_port(context, connection)
         disk_failing = read_disk_failing_evidence_conn(connection)
         presentation = {
             "title": "Confirm fsck",

@@ -21,7 +21,7 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.maintenance import prepare_uninstall, reboot_after_uninstall
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready, require_no_disk_check
+from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready, require_no_disk_check, require_ssh_port
 from timecapsulesmb.telemetry import TelemetryClient
 
 
@@ -75,7 +75,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                                reading=command_context.reading_at(connection),
                                router_mac=saved_router_mac(command_context.config))
         elif not args.dry_run:
-            # A repair's volume is unmounted: the uninstall would report success with its files still there.
+            # No ACP step looks at port 22 first; then a repair's volume is
+            # unmounted: the uninstall would report success with its files still there.
+            require_ssh_port(connection, router_mac=saved_router_mac(command_context.config))
             require_no_disk_check(connection, command_context.to_operation_callbacks())
 
         if not args.dry_run:

@@ -51,7 +51,7 @@ from timecapsulesmb.device.processes import (
 from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
-from timecapsulesmb.transport.local import connect_answered, tcp_connect_error, tcp_open
+from timecapsulesmb.transport.local import connect_answered, connect_unanswered, tcp_connect_error, tcp_open
 from timecapsulesmb.transport.errors import bare_timeout
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -358,6 +358,23 @@ SSH_PORT_LOOK_TIMEOUT_SECONDS = 10.0
 def ssh_port_error(host: str) -> str | None:
     """require_acpd_ready's look at port 22: tcp_connect_error, None when it connected."""
     return tcp_connect_error(host, SSH_PORT, SSH_PORT_LOOK_TIMEOUT_SECONDS)
+
+
+def require_ssh_port(connection: SshConnection, *, router_mac: str | None = None) -> None:
+    """Refuse, before anything changes, a device whose port 22 does not let
+    this computer in, for work with no ACP step whose preflight would look
+    (require_acpd_ready): the same verdicts, a link-local interface gone, SSH
+    off, or a silent device judged by where this computer is. A port that only
+    timed out while ACP's answers is let through, as require_acpd_ready lets
+    it: it may be a slow link or a full sshd queue, not SSH turned off, and
+    the work's own SSH waits it out."""
+    ssh_error = ssh_port_error(endpoint_host(connection.host))
+    if ssh_error is None:
+        return
+    error = closed_port_error(connection, router_mac=router_mac, ssh_error=ssh_error)
+    if connect_unanswered(ssh_error) and error.code == ErrorCode.SSH_DISABLED:
+        return
+    raise error
 
 
 def disk_stall_error(stalls: Iterable[StuckProcess]) -> DeviceAccessError:

@@ -5,6 +5,7 @@ from typing import Optional
 
 from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
@@ -127,7 +128,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
         print(f"The disk is formatted as \"{outcome.volume_name}\".")
         if outcome.runtime_restart_error is not None:
-            print(outcome.runtime_restart_error)
+            # The steps of the code the app reports for it.
+            print(command_context.with_next_steps(
+                outcome.runtime_restart_error, code=outcome.runtime_restart_code or ErrorCode.RUNTIME_NOT_RESTARTED,
+            ))
             command_context.fail_with_error(outcome.runtime_restart_error)
             return 1
         if outcome.offer_install:

@@ -9,6 +9,7 @@ from typing import Optional
 
 from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
@@ -33,7 +34,7 @@ from timecapsulesmb.services.maintenance import (
     select_fsck_target,
 )
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready
+from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready, require_ssh_port
 from timecapsulesmb.telemetry import TelemetryClient
 
 
@@ -152,6 +153,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             require_acpd_ready(connection, command_context.to_operation_callbacks(),
                                reading=command_context.reading_at(connection),
                                router_mac=saved_router_mac(command_context.config))
+        else:
+            require_ssh_port(connection, router_mac=saved_router_mac(command_context.config))
 
         mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
             connection,
@@ -226,7 +229,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.fail_with_error(str(exc))
             return 1
         if outcome.failure is not None:
-            print(outcome.failure)
+            # The steps of the code the app reports: a failed restart's own, or
+            # runtime_not_restarted; a plain fsck_hfs status has none.
+            restart_code = outcome.runtime_restart_code or (
+                ErrorCode.RUNTIME_NOT_RESTARTED if outcome.runtime_restart_error is not None else None
+            )
+            print(command_context.with_next_steps(outcome.failure, code=outcome.failure_code or restart_code))
             command_context.fail_with_error(outcome.failure)
             return 1
         command_context.succeed()

@@ -14,6 +14,7 @@ from timecapsulesmb.services.runtime import (
     resolve_env_connection,
     require_acpd_ready,
     require_no_disk_check,
+    require_ssh_port,
     resolve_validated_managed_target,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -110,6 +111,15 @@ def require_request_acpd_ready(
             connection, context.to_operation_callbacks(), reading=context.reading_at(connection), restarts=restarts,
             router_mac=saved_router_mac(context.config),
         )
+    except DeviceAccessError as exc:
+        raise AppOperationError(str(exc), code=exc.code) from exc
+
+
+def require_request_ssh_port(context: AppOperationContext, connection: SshConnection) -> None:
+    """services.runtime.require_ssh_port, for work without a restart, raising
+    its code as an AppOperationError."""
+    try:
+        require_ssh_port(connection, router_mac=saved_router_mac(context.config))
     except DeviceAccessError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc
 

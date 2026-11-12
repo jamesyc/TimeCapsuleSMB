@@ -7336,6 +7336,48 @@ MaSt = (
         self.assertEqual(error["recovery"]["suggested_operation"], "configure")
         self.assert_not_unsupported_model_guidance(error)
 
+    def test_work_without_a_restart_names_why_port_22_does_not_let_this_mac_in(self) -> None:
+        # Uninstall and Disk Repair without a restart have no ACP step whose
+        # preflight looks at port 22: the same look runs first, so a saved
+        # link-local address on a missing interface, SSH turned off or a silent
+        # device each get their own card, never ssh's raw "No route to host".
+        cases = (
+            ("link-local interface gone", "[Errno 65] No route to host", "en7", {}, "link_local_interface_gone"),
+            ("SSH off", "[Errno 61] Connection refused", None, {5009: None}, "ssh_disabled"),
+            ("nothing answers", "timed out", None, {5009: "timed out", 22: "timed out"}, "device_unreachable"),
+            # A timeout beside an answering ACP may be a slow link, not SSH
+            # off: the work goes on to its question.
+            ("port 22 only timed out while ACP answers", "timed out", None, {5009: None}, "confirmation_required"),
+        )
+        for operation in ("uninstall", "fsck"):
+            for name, port_error, interface, ports, code in cases:
+                with self.subTest(operation=operation, case=name):
+                    collector = CollectingSink()
+                    config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+                    connection = SshConnection("root@10.0.0.2", "pw", "")
+                    resolver = ("timecapsulesmb.app.ops.common.resolve_env_connection" if operation == "uninstall"
+                                else "timecapsulesmb.app.ops.maintenance.resolve_env_connection")
+                    with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                            mock.patch(resolver, return_value=connection), \
+                            mock.patch("timecapsulesmb.services.runtime.ssh_port_error", return_value=port_error), \
+                            mock.patch("timecapsulesmb.services.runtime.link_local_interface_gone", return_value=interface), \
+                            mock.patch("timecapsulesmb.checks.network.tcp_connect_error",
+                                       side_effect=lambda _host, port, *_args, **_kwargs: ports.get(port, "timed out")), \
+                            mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall, \
+                            mock.patch("timecapsulesmb.app.ops.maintenance.run_fsck") as fsck:
+                        rc = service.run_api_request(
+                            {"operation": operation, "params": {"no_reboot": True, "volume": "dk2"}
+                             if operation == "fsck" else {"no_reboot": True}},
+                            collector.sink,
+                        )
+
+                    self.assertEqual(rc, 1)
+                    error = self.assert_single_terminal_event(collector, "error")
+                    self.assertEqual(error["code"], code)
+                    self.assertNotIn("No route to host", error["message"].split("\n")[0])
+                    uninstall.assert_not_called()
+                    fsck.assert_not_called()
+
     def test_deploy_reports_a_stuck_acpd_when_acp_goes_unanswered_while_ssh_refuses(self) -> None:
         rc, collector, acp_probe = self.run_deploy_dry_run_against(
             failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet."),
@@ -7616,7 +7658,8 @@ MaSt = (
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection") as resolve_connection:
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection",
+                            return_value=SshConnection("root@10.0.0.2", "pw", "")) as resolve_connection:
                 with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
                     rc = service.run_api_request(
                         {"operation": "uninstall", "params": {"no_reboot": True}},
@@ -8144,7 +8187,8 @@ MaSt = (
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection") as resolve_connection:
+            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection",
+                            return_value=SshConnection("root@10.0.0.2", "pw", "")) as resolve_connection:
                 with mock.patch("timecapsulesmb.app.ops.maintenance.run_fsck") as run_fsck:
                     rc = service.run_api_request(
                         {"operation": "fsck", "params": {"no_reboot": True}},

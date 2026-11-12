@@ -531,6 +531,28 @@ class CliMaintenanceTests(CliTestCase):
         flow.mounted_mast_volumes_conn.assert_not_called()
         remove.assert_not_called()
 
+    def test_uninstall_without_a_reboot_names_a_link_local_interface_that_is_gone(self) -> None:
+        # No ACP step looks at port 22 first: the uninstall's own look gives
+        # the verdict deploy gives, not ssh's raw "No route to host".
+        values = {"TC_HOST": "root@fe80::6e70:9fff:fed0:5f7c%en7", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            flow = self._patch_mast_volume_flow(stack, "uninstall")
+            remove = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            stack.enter_context(mock.patch("timecapsulesmb.services.runtime.ssh_port_error",
+                                           return_value="[Errno 65] No route to host"))
+            stack.enter_context(mock.patch("timecapsulesmb.services.runtime.link_local_interface_gone", return_value="en7"))
+            # Run as on a Mac, whose messages name "this Mac".
+            stack.enter_context(mock.patch("timecapsulesmb.core.install.sys.platform", "darwin"))
+            with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                uninstall.main(["--yes", "--no-reboot"])
+
+        message = str(raised.exception.code)
+        self.assertIn("a network connection this Mac no longer has (en7)", message)
+        self.assertNotIn("ssh: connect to host", message)
+        flow.mounted_mast_volumes_conn.assert_not_called()
+        remove.assert_not_called()
+
     def test_uninstall_ignores_unsafe_legacy_payload_dir(self) -> None:
         output = io.StringIO()
         values = {
@@ -1291,6 +1313,67 @@ class CliMaintenanceTests(CliTestCase):
                 rc = fsck.main(argv)
         return rc, output.getvalue(), self.device
 
+    def test_fsck_whose_stop_fails_names_the_stuck_service_and_does_not_restart(self) -> None:
+        from timecapsulesmb.services.maintenance import FSCK_STOP_TIMEOUT_MESSAGE
+
+        from timecapsulesmb.app.recovery import cli_steps
+
+        rc, text, device = self._run_fsck_with_remote_output("process smbd did not stop\n", 1, ["--yes"])
+
+        self.assertEqual(rc, 1)
+        self.assertIn(FSCK_STOP_TIMEOUT_MESSAGE, text)
+        # The card's steps, as the app shows them.
+        self.assertIn("Next steps:", text)
+        self.assertIn(cli_steps("fsck", "manager_stop_timeout")[0], text)
+        self.assertNotIn("request", device.calls)
+
+    def test_fsck_prints_next_steps_only_for_a_failure_with_a_code(self) -> None:
+        # A session lost while fsck_hfs ran has a card; a plain fsck_hfs status
+        # does not, and prints as before.
+        from timecapsulesmb.app.recovery import cli_steps
+
+        _rc, dropped, _device = self._run_fsck_with_remote_output("--- fsck_hfs /dev/dk2 ---\n", 255, ["--yes"])
+        self.assertIn(cli_steps("fsck", "fsck_session_dropped")[0], dropped)
+        _rc, status, _device = self._run_fsck_with_remote_output(
+            "--- fsck_hfs /dev/dk2 ---\ntcapsule-fsck: fsck_hfs exit status 8\n", 8, ["--yes", "--no-reboot"])
+        self.assertIn("fsck_hfs exited with status 8", status)
+        self.assertNotIn("Next steps:", status)
+
+    def test_fsck_without_a_restart_refuses_a_stuck_disk_before_anything_stops(self) -> None:
+        from timecapsulesmb.app.recovery import cli_steps
+        from timecapsulesmb.device.processes import PS_LISTING_END
+
+        stuck = f"  8115 1 8115 D 127 biowait 0:04.00 smbd\n{PS_LISTING_END}"
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=stuck), \
+                self.assertRaises(SystemExit) as raised:
+            self._run_fsck_with_remote_output("tcapsule-fsck: fsck_hfs exit status 0\n", 0, ["--yes", "--no-reboot"])
+
+        message = str(raised.exception.code)
+        self.assertTrue(message.startswith("A disk on the device has stopped responding"))
+        self.assertIn("Nothing was changed.", message)
+        self.assertIn(cli_steps("fsck", "disk_not_responding")[0], message)
+
+    def test_uninstall_whose_stop_fails_names_the_stuck_service(self) -> None:
+        from timecapsulesmb.app.recovery import cli_steps
+        from timecapsulesmb.deploy.executor import UNINSTALL_STOP_TIMEOUT_MESSAGE
+        from timecapsulesmb.transport.errors import SshError
+
+        def run_ssh(_connection, command, **_kwargs):
+            if "pkill" in command and "mdns-advertiser" in command:
+                raise SshError("process mdns-advertiser did not stop")
+
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            stack.enter_context(mock.patch("timecapsulesmb.deploy.executor.run_ssh", side_effect=run_ssh))
+            with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                uninstall.main(["--yes", "--no-reboot"])
+
+        message = str(raised.exception.code)
+        self.assertTrue(message.startswith(UNINSTALL_STOP_TIMEOUT_MESSAGE))
+        self.assertIn(cli_steps("uninstall", "manager_stop_timeout")[-1], message)
+
     def test_fsck_failed_status_still_reboots_and_waits_then_fails(self) -> None:
         rc, text, device = self._run_fsck_with_remote_output(
             "--- fsck_hfs /dev/dk2 ---\n** The volume could not be repaired.\n"
@@ -1362,9 +1445,24 @@ class CliMaintenanceTests(CliTestCase):
 
         self.assertEqual(rc, 1)
         self.assertIn("Disk repair completed. File sharing did not restart after the reboot.", text)
+        # The app's runtime_not_restarted steps.
+        self.assertIn("Run `tcapsule activate`.", text)
         finished = self.telemetry_payload("fsck_finished")
         self.assertEqual(finished["result"], "failure")
         self.assertIn("stage=verify_runtime_activation", finished["error"])
+
+    def test_fsck_on_netbsd4_whose_start_meets_a_stuck_service_says_to_unplug_then_activate(self) -> None:
+        from timecapsulesmb.app.recovery import cli_steps
+
+        self.use_stock_netbsd4()
+        with FakeInstalledRuntime(stuck_stop=True).patched():
+            rc, text, _device = self._run_fsck_with_remote_output("tcapsule-fsck: fsck_hfs exit status 0\n", 0, ["--yes"])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("Disk repair completed.", text)
+        for step in cli_steps("fsck", "manager_stop_timeout", stage="post_reboot_activation"):
+            self.assertIn(step, text)
+        self.assertIn("`tcapsule activate`", text)
 
     def test_fsck_that_cannot_probe_the_device_stops_before_touching_the_disk(self) -> None:
         # Without the probe fsck cannot know whether file sharing must be

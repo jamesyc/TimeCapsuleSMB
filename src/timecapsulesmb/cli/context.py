@@ -69,7 +69,7 @@ def cli_error_code(exc: BaseException) -> ErrorCode | None:
 
 def error_with_next_steps(
     message: str,
-    exc: BaseException,
+    exc: BaseException | None = None,
     *,
     command: str,
     stage: str | None = None,
@@ -79,8 +79,8 @@ def error_with_next_steps(
     """The message, then the next steps for the code of the error behind it
     (app.recovery.cli_steps), as the app shows them for the same failure.
     `code` is the one the app reports when the command decides it, as
-    set-ssh's does (services.set_ssh.enable_failure_code)."""
-    code = code or cli_error_code(exc)
+    set-ssh's does (services.set_ssh.enable_failure_code), or an outcome's."""
+    code = code or (cli_error_code(exc) if exc is not None else None)
     if code is None:
         return message
     steps = list(cli_steps(command, code, stage=stage))
@@ -268,7 +268,7 @@ class CommandContext:
         out and how far it got."""
         return f"{color_red(lead)}\n{message}" if message.strip() else color_red(lead)
 
-    def with_next_steps(self, message: str, exc: BaseException, *, code: ErrorCode | None = None) -> str:
+    def with_next_steps(self, message: str, exc: BaseException | None = None, *, code: ErrorCode | None = None) -> str:
         """The message, then the next steps for the code of the error behind it
         (or `code`, error_with_next_steps)."""
         return error_with_next_steps(
