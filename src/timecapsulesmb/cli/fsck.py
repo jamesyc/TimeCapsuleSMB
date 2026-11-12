@@ -35,7 +35,7 @@ from timecapsulesmb.services.maintenance import (
     select_fsck_target,
 )
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready, require_ssh_port
+from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready, require_ready_without_restart
 from timecapsulesmb.telemetry import TelemetryClient
 
 
@@ -155,7 +155,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                                reading=command_context.reading_at(connection),
                                router_mac=saved_router_mac(command_context.config))
         else:
-            require_ssh_port(connection, router_mac=saved_router_mac(command_context.config))
+            # Disk Repair checks for a running checker itself.
+            require_ready_without_restart(connection, command_context.to_operation_callbacks(),
+                                          router_mac=saved_router_mac(command_context.config), disk_check=False)
 
         mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
             connection,

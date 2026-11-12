@@ -7891,6 +7891,18 @@ MaSt = (
                                                              collector.sink)
         return collector, rc, prepare, uninstall
 
+    def test_uninstall_without_a_reboot_refuses_a_disk_that_stopped_responding(self) -> None:
+        # Before the confirmation: a repair stuck on the disk (which the disk
+        # check leaves out) refuses it, and nothing is planned or removed.
+        stuck = "  4211 4200 4200 D 127 biowait 1:12.04 fsck_hfs\ntcapsule-ps: end\n"
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=stuck):
+            collector, rc, prepare, uninstall = self.run_uninstall_with_disk_errors((), {"no_reboot": True})
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "disk_check_not_responding")
+        prepare.assert_not_called()
+        uninstall.assert_not_called()
+
     def test_uninstall_warns_from_the_managers_verdict_when_the_kernel_kept_no_line(self) -> None:
         # NetBSD 4's kernel log wraps during boot; the manager's title still
         # says the disk could not read its files. A damaged copy, which a

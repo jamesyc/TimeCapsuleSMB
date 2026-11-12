@@ -1989,3 +1989,61 @@ class SavedAirportMacTests(unittest.TestCase):
         self.assertEqual(overlaid.path, saved.path)
         with self.assertRaises(ValueError):
             overlay_request_airport_mac(saved, {"airport_mac": "not-a-mac"})
+
+
+class ReadyWithoutRestartTests(unittest.TestCase):
+    """The preflight of work that does not restart the device (uninstall and
+    Disk Repair without a restart): no ACP step looks first, so port 22, a
+    running disk checker and a process stuck on the disk are all its own."""
+
+    CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+    listing = staticmethod(RequireAcpdReadyDiskCheckTests.listing)
+    STUCK_REPAIR_ROW = RequireAcpdReadyDiskCheckTests.STUCK_REPAIR_ROW
+    STUCK_SMBD_ROW = "  700 1 700 D 130 biowait 0:10.00 smbd"
+    REPAIR_ROW = RequireAcpdReadyDiskCheckTests.REPAIR_ROW
+
+    def run_preflight(self, *listings: str, disk_check: bool = True, port_error: Exception | None = None):
+        self.debug: dict[str, object] = {}
+        callbacks = OperationCallbacks(add_debug_fields=self.debug.update)
+        with mock.patch.object(service_runtime, "require_ssh_port", side_effect=port_error) as port, \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", side_effect=list(listings)) as processes, \
+                mock.patch("timecapsulesmb.device.acpd.pause"):
+            try:
+                service_runtime.require_ready_without_restart(self.CONNECTION, callbacks, disk_check=disk_check)
+                error = None
+            except service_runtime.DeviceAccessError as exc:
+                error = exc
+        return error, port, processes
+
+    def test_a_checker_stuck_on_the_disk_is_reported_as_the_disk(self) -> None:
+        # The disk check leaves a stuck checker to its caller; this is it.
+        error, _port, processes = self.run_preflight(self.listing(self.STUCK_REPAIR_ROW))
+        self.assertEqual(error.code, ErrorCode.DISK_CHECK_NOT_RESPONDING)
+        self.assertIn("Nothing was changed.", str(error))
+        self.assertEqual(self.debug["disk_io_stalls"], ["fsck_hfs (pid 4211) waiting on biowait for 127+ s"])
+        # One listing: the stall look reuses the disk check's.
+        processes.assert_called_once()
+
+    def test_another_process_stuck_on_the_disk_refuses_too(self) -> None:
+        for disk_check in (True, False):
+            with self.subTest(disk_check=disk_check):
+                error, _port, _processes = self.run_preflight(self.listing(self.STUCK_SMBD_ROW), disk_check=disk_check)
+                self.assertEqual(error.code, ErrorCode.DISK_NOT_RESPONDING)
+
+    def test_a_running_checker_is_waited_for_unless_the_work_checks_for_its_own(self) -> None:
+        running = self.listing(self.REPAIR_ROW)
+        error, _port, _processes = self.run_preflight(*([running] * 10))
+        self.assertIsInstance(error, service_runtime.DiskCheckRunningError)
+        # Disk Repair finds a running repair itself: no wait here.
+        error, _port, processes = self.run_preflight(running, disk_check=False)
+        self.assertIsNone(error)
+        processes.assert_called_once()
+
+    def test_a_quiet_device_passes_and_port_22_comes_first(self) -> None:
+        error, port, _processes = self.run_preflight(self.listing("  1 0 1 S 0 - 0:01.00 init"))
+        self.assertIsNone(error)
+        port.assert_called_once()
+        refused = service_runtime.DeviceAccessError("SSH is turned off.", code=ErrorCode.SSH_DISABLED)
+        error, _port, processes = self.run_preflight(port_error=refused)
+        self.assertIs(error, refused)
+        processes.assert_not_called()

@@ -22,8 +22,7 @@ from timecapsulesmb.app.confirmations import (
 from timecapsulesmb.app.ops.common import (
     load_request_config,
     require_request_acpd_ready,
-    require_request_no_disk_check,
-    require_request_ssh_port,
+    require_request_ready_without_restart,
     resolve_request_connection,
     resolve_request_target,
 )
@@ -148,8 +147,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
         # No restart, so no ACP step looks at port 22 first; then a repair's
         # volume is unmounted, and the uninstall would report success with its
         # files still there.
-        require_request_ssh_port(context, connection)
-        require_request_no_disk_check(context, connection)
+        require_request_ready_without_restart(context, connection)
     if not dry_run:
         disk_failing = read_disk_failing_evidence_conn(connection, update_fields=context.update_fields)
         presentation = {
@@ -244,7 +242,8 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         # The preflight reads the device before the confirmation.
         if connection is None:
             connection = _fsck_connection(params, context, rebooting=rebooting)
-            require_request_ssh_port(context, connection)
+            # Disk Repair checks for a running checker itself.
+            require_request_ready_without_restart(context, connection, disk_check=False)
         # Only the errors of the disk being repaired count.
         disk_failing = read_disk_failing_evidence_conn(connection, volume=volume, update_fields=context.update_fields)
         presentation = {

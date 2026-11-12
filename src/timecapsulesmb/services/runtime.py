@@ -395,6 +395,48 @@ def disk_stall_error(stalls: Iterable[StuckProcess]) -> DeviceAccessError:
     )
 
 
+def require_no_disk_stall(listing: str, callbacks: OperationCallbacks) -> None:
+    """Refuse, before anything changes, work that would wait on a disk that
+    stopped responding (processes.disk_io_stalls in this process listing):
+    disk_stall_error, a stuck disk checker with its own code."""
+    stalls = disk_io_stalls(listing)
+    if stalls:
+        callbacks.debug(disk_io_stalls=[stall.describe() for stall in stalls])
+        raise disk_stall_error(stalls)
+
+
+def require_ready_without_restart(
+    connection: SshConnection,
+    callbacks: OperationCallbacks,
+    *,
+    router_mac: str | None = None,
+    disk_check: bool = True,
+) -> None:
+    """The preflight of work that does not restart the device, so has no ACP
+    step whose preflight (require_acpd_ready) would look: port 22 lets this
+    computer in (require_ssh_port), no disk checker runs (require_no_disk_check,
+    left out with `disk_check` False for Disk Repair, which checks for its
+    own), and no process is stuck on the disk (require_no_disk_stall), which
+    that check leaves for its caller to report.
+
+    Which preflight each command runs:
+
+    | Work                        | With a restart       | Without one                      |
+    |-----------------------------|----------------------|----------------------------------|
+    | Install / Update Samba      | require_acpd_ready   | (always restarts)                |
+    | Uninstall                   | require_acpd_ready   | this, disk_check=True            |
+    | Disk Repair                 | require_acpd_ready   | this, disk_check=False, and its  |
+    |                             |                      | own stall look after the         |
+    |                             |                      | confirmation (services.maintenance.run_fsck) |
+    | Wipe Internal Disk          | require_acpd_ready   | (always restarts)                |
+
+    require_acpd_ready covers the same three (and ACPd): a command added
+    without a restart takes this one."""
+    require_ssh_port(connection, router_mac=router_mac)
+    listing = require_no_disk_check(connection, callbacks) if disk_check else acpd.read_processes(connection)
+    require_no_disk_stall(listing, callbacks)
+
+
 def require_acpd_ready(
     connection: SshConnection,
     callbacks: OperationCallbacks,

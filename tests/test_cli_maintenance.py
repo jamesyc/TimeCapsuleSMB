@@ -531,6 +531,25 @@ class CliMaintenanceTests(CliTestCase):
         flow.mounted_mast_volumes_conn.assert_not_called()
         remove.assert_not_called()
 
+    def test_uninstall_without_a_reboot_refuses_a_disk_that_stopped_responding(self) -> None:
+        # A repair whose connection dropped, stuck on the disk: the disk check
+        # leaves it out, so without this look the uninstall would skip its
+        # unmounted volume and report success with the files still there.
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            flow = self._patch_mast_volume_flow(stack, "uninstall")
+            remove = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            stack.enter_context(mock.patch("timecapsulesmb.device.acpd.read_processes",
+                                           return_value="  4211 4200 4200 D 127 biowait 1:12.04 fsck_hfs\ntcapsule-ps: end\n"))
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                uninstall.main(["--yes", "--no-reboot"])
+
+        self.assertIn("A disk on the device has stopped responding", str(raised.exception.code))
+        self.assertIn("Nothing was changed.", str(raised.exception.code))
+        flow.mounted_mast_volumes_conn.assert_not_called()
+        remove.assert_not_called()
+
     def test_uninstall_without_a_reboot_names_a_link_local_interface_that_is_gone(self) -> None:
         # No ACP step looks at port 22 first: the uninstall's own look gives
         # the verdict deploy gives, not ssh's raw "No route to host".

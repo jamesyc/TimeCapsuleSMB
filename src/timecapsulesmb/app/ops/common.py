@@ -13,8 +13,7 @@ from timecapsulesmb.services.runtime import (
     load_optional_env_config,
     resolve_env_connection,
     require_acpd_ready,
-    require_no_disk_check,
-    require_ssh_port,
+    require_ready_without_restart,
     resolve_validated_managed_target,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -115,19 +114,15 @@ def require_request_acpd_ready(
         raise AppOperationError(str(exc), code=exc.code) from exc
 
 
-def require_request_ssh_port(context: AppOperationContext, connection: SshConnection) -> None:
-    """services.runtime.require_ssh_port, for work without a restart, raising
-    its code as an AppOperationError."""
+def require_request_ready_without_restart(
+    context: AppOperationContext, connection: SshConnection, *, disk_check: bool = True,
+) -> None:
+    """services.runtime.require_ready_without_restart, for work without a
+    restart, raising its code as an AppOperationError."""
     try:
-        require_ssh_port(connection, router_mac=saved_router_mac(context.config))
-    except DeviceAccessError as exc:
-        raise AppOperationError(str(exc), code=exc.code) from exc
-
-
-def require_request_no_disk_check(context: AppOperationContext, connection: SshConnection) -> None:
-    """services.runtime.require_no_disk_check, for work that writes the disk
-    without a restart, raising its code as an AppOperationError."""
-    try:
-        require_no_disk_check(connection, context.to_operation_callbacks())
+        require_ready_without_restart(
+            connection, context.to_operation_callbacks(), router_mac=saved_router_mac(context.config),
+            disk_check=disk_check,
+        )
     except DeviceAccessError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc

@@ -15,7 +15,7 @@ from timecapsulesmb.deploy.verify import render_post_uninstall_verification, ver
 from timecapsulesmb.device.disk_errors import PROCESS_LIST_UNREADABLE_MESSAGE, DiskFailingError, DiskNotRespondingError
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, DiskPayloadError, RsyncNotRunningError
 from timecapsulesmb.device import acpd
-from timecapsulesmb.device.processes import DISK_CHECK_UCOMM, disk_io_stalls, process_stop_failed, render_process_present
+from timecapsulesmb.device.processes import DISK_CHECK_UCOMM, process_stop_failed, render_process_present
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume, VolumeClaims
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import (
@@ -26,7 +26,7 @@ from timecapsulesmb.services.activation import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError, followed, reboot_device
-from timecapsulesmb.services.runtime import disk_stall_error
+from timecapsulesmb.services.runtime import require_no_disk_stall
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
@@ -522,10 +522,7 @@ def run_fsck(
     # The script stops file sharing first, and a process stuck on the disk
     # does not stop: refuse before anything is stopped. This look comes after
     # any confirmation, and a repair without a restart has no other.
-    stalls = disk_io_stalls(acpd.read_processes(connection))
-    if stalls:
-        callbacks.debug(disk_io_stalls=[stall.describe() for stall in stalls])
-        raise disk_stall_error(stalls)
+    require_no_disk_stall(acpd.read_processes(connection), callbacks)
     script = build_remote_fsck_script(target.device, target.mountpoint)
     log = FsckOutputLog(callbacks, now=now)
     status = None
