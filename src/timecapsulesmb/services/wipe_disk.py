@@ -198,7 +198,7 @@ def internal_disk(disks: tuple[MaStDiskSnapshot, ...]) -> MaStDiskSnapshot:
     """The internal disk, the only one Wipe Internal Disk wipes."""
     disk = next((disk for disk in disks if disk.builtin), None)
     if disk is None:
-        raise WipeDiskError(NO_INTERNAL_DISK_MESSAGE, code=ErrorCode.VALIDATION_FAILED, reason="no_internal_disk")
+        raise WipeDiskError(NO_INTERNAL_DISK_MESSAGE, code=ErrorCode.WIPE_DISK_NO_INTERNAL_DISK, reason="no_internal_disk")
     return disk
 
 

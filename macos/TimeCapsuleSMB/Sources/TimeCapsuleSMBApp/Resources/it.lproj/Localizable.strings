@@ -1199,6 +1199,10 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "Se il dispositivo sta ancora formattando il disco, attendi che finisca.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Scollega il dispositivo, attendi 10 secondi, quindi ricollegalo.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Attendi 2 minuti che il dispositivo si avvii, poi esegui di nuovo “Riformatta disco interno”.";
+"backend.recovery.wipe_disk_no_internal_disk.title" = "Questo dispositivo non ha un disco interno";
+"backend.recovery.wipe_disk_no_internal_disk.message" = "“Riformatta disco interno” formatta il disco interno di una Time Capsule, e questo dispositivo non ne ha.";
+"backend.recovery.wipe_disk_no_internal_disk.action.1" = "Per usare un disco USB, inizializzalo su un Mac con Utility Disco come “Mac OS esteso (journaled)”.";
+"backend.recovery.wipe_disk_no_internal_disk.action.2" = "Collegalo al dispositivo, poi esegui “Installa/aggiorna Samba”.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "Il disco ha smesso di rispondere durante la riformattazione";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "Il disco del dispositivo ha smesso di rispondere dopo che la sua tabella delle partizioni è stata cancellata. Anche il servizio AirPort di Apple attende il disco, quindi il dispositivo non può riavviarsi da solo.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "Se il dispositivo sta ancora formattando il disco, attendi che finisca.";

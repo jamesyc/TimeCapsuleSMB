@@ -1285,6 +1285,10 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "If the device is still formatting the disk, wait until it finishes.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Unplug the device, wait 10 seconds and plug it back in.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Wait 2 minutes for the device to start up, then run “Wipe Internal Disk” again.";
+"backend.recovery.wipe_disk_no_internal_disk.title" = "This device has no internal disk";
+"backend.recovery.wipe_disk_no_internal_disk.message" = "Wipe Internal Disk formats a Time Capsule's internal disk, and this device has none.";
+"backend.recovery.wipe_disk_no_internal_disk.action.1" = "To use a USB disk, erase it on a Mac in Disk Utility as “Mac OS Extended (Journaled)”.";
+"backend.recovery.wipe_disk_no_internal_disk.action.2" = "Connect it to the device, then run “Install / Update Samba”.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "The disk stopped responding during the wipe";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "The device's disk stopped responding after its partition table was cleared. Apple's AirPort service waits for the disk too, so the device cannot restart itself.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "If the device is still formatting the disk, wait until it finishes.";

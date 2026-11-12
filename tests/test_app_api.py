@@ -6872,6 +6872,26 @@ MaSt = (
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["stage"], "read_mast")
 
+    def test_a_device_without_an_internal_disk_gets_no_wipe_button(self) -> None:
+        # An AirPort Extreme's APFS USB disk: Wipe Internal Disk would refuse
+        # it, so the card keeps its text and loses the button.
+        import plistlib
+
+        raw_mast_output = plistlib.dumps(
+            [{"deviceName": "sd0", "name": "USB HDD", "builtin": False, "partitions": []}],
+        ).decode()
+        with mock.patch("timecapsulesmb.services.deploy.read_gpt_verdict_conn",
+                        return_value=GptVerdict("foreign", ("apfs",))):
+            rc, collector = self.run_confirmed_deploy_with_mast(
+                MaStDiscoveryResult((), 1, raw_mast_output), probe_state=self.airport_extreme_probed_state(),
+            )
+
+        self.assertEqual(rc, 1)
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "deploy_no_hfs_partition")
+        self.assertEqual(error["recovery"]["action_ids"], [])
+        self.assertIn("If it is the internal disk", " ".join(error["recovery"]["actions"]))
+
     def test_deploy_reports_each_unusable_volume_cause_with_its_own_code(self) -> None:
         # The app shows its own text for each code, so the cause decides it:
         # an unwritable volume, one the device would not keep mounted, and

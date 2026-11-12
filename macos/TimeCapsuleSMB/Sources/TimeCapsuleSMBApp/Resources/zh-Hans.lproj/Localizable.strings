@@ -1199,6 +1199,10 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "如果设备仍在格式化磁盘，请等待完成。";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "拔掉设备电源，等待 10 秒，然后重新插上。";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "等待 2 分钟让设备完成启动，然后再次运行“重新格式化内部磁盘”。";
+"backend.recovery.wipe_disk_no_internal_disk.title" = "此设备没有内部磁盘";
+"backend.recovery.wipe_disk_no_internal_disk.message" = "“重新格式化内部磁盘”用于格式化 Time Capsule 的内部磁盘，而此设备没有内部磁盘。";
+"backend.recovery.wipe_disk_no_internal_disk.action.1" = "要使用 USB 磁盘，请在 Mac 上用磁盘工具将其抹掉为“Mac OS 扩展（日志式）”。";
+"backend.recovery.wipe_disk_no_internal_disk.action.2" = "将其连接到设备，然后运行“安装 / 更新 Samba”。";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "重新格式化期间磁盘停止响应";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "清除分区表后，设备的磁盘停止响应。苹果 AirPort 服务也在等待该磁盘，因此设备无法自行重启。";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "如果设备仍在格式化磁盘，请等待完成。";

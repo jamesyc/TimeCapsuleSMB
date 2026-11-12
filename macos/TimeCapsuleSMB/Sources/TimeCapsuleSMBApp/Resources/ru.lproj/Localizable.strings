@@ -1199,6 +1199,10 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "Если устройство еще форматирует диск, подождите, пока оно закончит.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Отключите устройство, подождите 10 секунд, затем снова подключите его.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Подождите 2 минуты, пока устройство запустится, затем снова запустите «Переформатировать внутренний диск».";
+"backend.recovery.wipe_disk_no_internal_disk.title" = "У этого устройства нет внутреннего диска";
+"backend.recovery.wipe_disk_no_internal_disk.message" = "«Переформатировать внутренний диск» форматирует внутренний диск Time Capsule, а у этого устройства его нет.";
+"backend.recovery.wipe_disk_no_internal_disk.action.1" = "Чтобы использовать USB-диск, сотрите его на Mac в Дисковой утилите в формате «Mac OS Extended (журналируемый)».";
+"backend.recovery.wipe_disk_no_internal_disk.action.2" = "Подключите его к устройству, затем запустите «Установить/обновить Samba».";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "Диск перестал отвечать во время переформатирования";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "Диск устройства перестал отвечать после очистки таблицы разделов. Служба AirPort от Apple тоже ждет диск, поэтому устройство не может перезагрузиться само.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "Если устройство еще форматирует диск, подождите, пока оно закончит.";

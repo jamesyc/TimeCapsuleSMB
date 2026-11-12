@@ -23,11 +23,12 @@ def plan(**changes: object) -> wipe_disk.WipePlan:
 
 
 class CliWipeDiskTests(CliTestCase):
-    def run_cli(self, argv: list[str], *, answers: list[str] | None = None, outcome=None, error=None):
+    def run_cli(self, argv: list[str], *, answers: list[str] | None = None, outcome=None, error=None, prepare_error=None):
         output = io.StringIO()
         with ExitStack() as stack:
             stack.enter_context(mock.patch.object(cli, "load_env_config", return_value=self.make_app_config(self.make_valid_env())))
-            self.prepare = stack.enter_context(mock.patch.object(cli, "prepare_wipe", return_value=plan()))
+            self.prepare = stack.enter_context(mock.patch.object(cli, "prepare_wipe", return_value=plan(),
+                                                                 side_effect=prepare_error))
             self.run_wipe = stack.enter_context(mock.patch.object(
                 cli, "run_wipe",
                 side_effect=error, return_value=outcome or wipe_disk.WipeOutcome("uuid", "Data", True),
@@ -145,6 +146,15 @@ class CliWipeDiskTests(CliTestCase):
                 for step in steps:
                     self.assertIn(step, text)
                 self.assertNotIn("Nothing on the disk was changed", text)
+
+    def test_a_device_without_an_internal_disk_says_so_and_how_to_use_a_usb_disk(self) -> None:
+        error = wipe_disk.WipeDiskError(wipe_disk.NO_INTERNAL_DISK_MESSAGE, code=ErrorCode.WIPE_DISK_NO_INTERNAL_DISK,
+                                        reason="no_internal_disk")
+        rc, _text = self.run_cli(["--yes"], prepare_error=error)
+        message = str(rc.code)
+        self.assertTrue(message.startswith("This device has no internal disk."))
+        self.assertIn("erase it on a Mac in Disk Utility", message)
+        self.assertNotIn("wipe-internal-disk` again", message)
 
     def test_a_disk_without_volumes_is_described_by_its_table_in_words(self) -> None:
         cases = {

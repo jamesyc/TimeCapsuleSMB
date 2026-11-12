@@ -5,6 +5,7 @@ from contextlib import nullcontext
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.core.error_codes import CodedError, ErrorCode
+from timecapsulesmb.services.deploy import device_has_no_internal_disk
 from timecapsulesmb.services.context import DEVICE_UPDATE_FIELDS
 from timecapsulesmb.app.events import ClientDisconnected, EventSink
 from timecapsulesmb.app.ops import KEEP_AWAKE_OPERATIONS, OPERATION_PARAMS, OPERATIONS, TELEMETRY_OPERATIONS, unknown_params
@@ -310,7 +311,22 @@ def _failure_card(
         return ErrorCode.WIFI_LINK_SLOW, recovery_for(operation, ErrorCode.WIFI_LINK_SLOW, stage=context.current_stage)
     if recovery is None and bare_timeout(exc):
         return code, ssh_timeout_slow_device_recovery(device_name=context.known_airport_display_name())
-    return code, recovery or recovery_for(operation, code, stage=context.current_stage)
+    return code, _without_wipe_on_no_internal_disk(recovery or recovery_for(operation, code, stage=context.current_stage),
+                                                   context)
+
+
+def _without_wipe_on_no_internal_disk(card: object, context: AppOperationContext) -> object:
+    """A card for a device with no internal disk (an AirPort Extreme, which
+    services.deploy.device_has_no_internal_disk tells from its probe) offers
+    no Wipe Internal Disk: that wipe refuses it, and a USB disk is erased on a
+    Mac. The card's text already says the wipe is for the internal disk."""
+    state = context.probe_state
+    if (
+        isinstance(card, dict) and "wipe_disk" in card.get("action_ids", ())
+        and state is not None and device_has_no_internal_disk(state.compatibility)
+    ):
+        return {**card, "action_ids": [action for action in card["action_ids"] if action != "wipe_disk"]}
+    return card
 
 
 def _finish_api_telemetry(

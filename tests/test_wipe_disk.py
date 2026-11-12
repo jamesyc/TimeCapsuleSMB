@@ -1513,8 +1513,18 @@ class PrepareWipeTests(unittest.TestCase):
         # An AirPort Extreme has no internal disk to wipe.
         with self.assertRaises(wipe_disk.WipeDiskError) as raised:
             self.prepare(usb)
-        self.assertEqual((raised.exception.code, raised.exception.reason), (ErrorCode.VALIDATION_FAILED, "no_internal_disk"))
+        self.assertEqual((raised.exception.code, raised.exception.reason),
+                         (ErrorCode.WIPE_DISK_NO_INTERNAL_DISK, "no_internal_disk"))
         self.assertEqual(self.commands, [])
+        # Its own card, whatever the stage: no retry, no wipe, and a USB disk
+        # is erased on a Mac.
+        from timecapsulesmb.app.recovery import recovery_for
+
+        card = recovery_for("wipe-disk", raised.exception.code)
+        self.assertEqual(card["localization_key"], "wipe_disk_no_internal_disk")
+        self.assertFalse(card["retryable"])
+        self.assertEqual(card["action_ids"], [])
+        self.assertIn("erase it on a Mac in Disk Utility", card["actions"][0])
 
     def test_another_disk_with_apple_labels_refuses_the_wipe(self) -> None:
         # A USB disk with APconfig/APswap/APdata labels can hold those wedge

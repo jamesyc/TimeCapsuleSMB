@@ -1199,6 +1199,10 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "Si l’appareil est encore en train de formater le disque, attendez qu’il ait terminé.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Débranchez l’appareil, attendez 10 secondes, puis rebranchez-le.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Attendez 2 minutes que l’appareil démarre, puis relancez « Reformater le disque interne ».";
+"backend.recovery.wipe_disk_no_internal_disk.title" = "Cet appareil n’a pas de disque interne";
+"backend.recovery.wipe_disk_no_internal_disk.message" = "« Reformater le disque interne » formate le disque interne d’une Time Capsule, et cet appareil n’en a pas.";
+"backend.recovery.wipe_disk_no_internal_disk.action.1" = "Pour utiliser un disque USB, effacez-le sur un Mac dans Utilitaire de disque au format « Mac OS étendu (journalisé) ».";
+"backend.recovery.wipe_disk_no_internal_disk.action.2" = "Branchez-le sur l’appareil, puis lancez « Installer / mettre à jour Samba ».";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "Le disque a cessé de répondre pendant le reformatage";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "Le disque de l’appareil a cessé de répondre après l’effacement de sa table de partition. Le service AirPort d’Apple attend aussi le disque, donc l’appareil ne peut pas redémarrer de lui-même.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "Si l’appareil est encore en train de formater le disque, attendez qu’il ait terminé.";

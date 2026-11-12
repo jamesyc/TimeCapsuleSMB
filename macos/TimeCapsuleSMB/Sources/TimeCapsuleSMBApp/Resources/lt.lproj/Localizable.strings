@@ -1199,6 +1199,10 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "Jei įrenginys dar formatuoja diską, palaukite, kol baigs.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Palaukite 2 minutes, kol įrenginys pasileis, tada vėl paleiskite „Performatuoti vidinį diską“.";
+"backend.recovery.wipe_disk_no_internal_disk.title" = "Šis įrenginys neturi vidinio disko";
+"backend.recovery.wipe_disk_no_internal_disk.message" = "„Performatuoti vidinį diską“ formatuoja Time Capsule vidinį diską, o šis įrenginys jo neturi.";
+"backend.recovery.wipe_disk_no_internal_disk.action.1" = "Jei norite naudoti USB diską, ištrinkite jį Mac kompiuteryje su Disk Utility kaip „Mac OS Extended (Journaled)“.";
+"backend.recovery.wipe_disk_no_internal_disk.action.2" = "Įkiškite jį į įrenginį, tada paleiskite „Įdiegti / atnaujinti Samba“.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "Diskas nustojo atsakyti performatavimo metu";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "Įrenginio diskas nustojo atsakyti, kai buvo išvalyta jo skaidinių lentelė. Apple AirPort tarnyba taip pat laukia disko, todėl įrenginys negali pats pasileisti iš naujo.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "Jei įrenginys dar formatuoja diską, palaukite, kol baigs.";

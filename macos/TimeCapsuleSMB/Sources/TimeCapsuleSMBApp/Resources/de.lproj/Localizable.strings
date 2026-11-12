@@ -1199,6 +1199,10 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "Wenn das Gerät die Festplatte noch formatiert, warten Sie, bis es fertig ist.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Trennen Sie das Gerät, warten Sie 10 Sekunden und schließen Sie es dann wieder an.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Warten Sie 2 Minuten, bis das Gerät gestartet ist, und führen Sie dann „Interne Festplatte neu formatieren“ erneut aus.";
+"backend.recovery.wipe_disk_no_internal_disk.title" = "Dieses Gerät hat keine interne Festplatte";
+"backend.recovery.wipe_disk_no_internal_disk.message" = "„Interne Festplatte neu formatieren“ formatiert die interne Festplatte einer Time Capsule, und dieses Gerät hat keine.";
+"backend.recovery.wipe_disk_no_internal_disk.action.1" = "Um eine USB-Festplatte zu verwenden, löschen Sie sie an einem Mac im Festplattendienstprogramm als „Mac OS Extended (Journaled)“.";
+"backend.recovery.wipe_disk_no_internal_disk.action.2" = "Schließen Sie sie an das Gerät an und führen Sie dann „Samba installieren / aktualisieren“ aus.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "Die Festplatte hat beim Neuformatieren nicht mehr reagiert";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "Die Festplatte des Geräts hat nicht mehr reagiert, nachdem ihre Partitionstabelle gelöscht wurde. Der AirPort-Dienst von Apple wartet ebenfalls auf die Festplatte, daher kann das Gerät nicht selbst neu starten.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "Wenn das Gerät die Festplatte noch formatiert, warten Sie, bis es fertig ist.";

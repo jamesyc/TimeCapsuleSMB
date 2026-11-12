@@ -806,6 +806,17 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     # diskd is formatting a disk, or checking or mounting a volume, before the
     # wipe (services.wipe_disk.require_no_disk_jobs), or the process list did
     # not answer: diskd's jobs name no disk.
+    # prepare_wipe found no internal disk (an AirPort Extreme): retrying cannot
+    # help, and a USB disk is erased on a Mac instead.
+    ErrorCode.WIPE_DISK_NO_INTERNAL_DISK: RecoveryInfo(
+        "This device has no internal disk",
+        "Wipe Internal Disk formats a Time Capsule's internal disk, and this device has none.",
+        (
+            "To use a USB disk, erase it on a Mac in Disk Utility as “Mac OS Extended (Journaled)”.",
+            "Connect it to the device, then run “Install / Update Samba”.",
+        ),
+        retryable=False,
+    ),
     ErrorCode.WIPE_DISK_JOB_RUNNING: RecoveryInfo(
         "The device is busy with a disk",
         "The device is formatting a disk, or checking or mounting a volume. Wiping a disk now could interrupt it.",

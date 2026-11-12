@@ -127,6 +127,9 @@ class ErrorCode(str, Enum):
     WIPE_DISK_ERASE_RUNNING = "wipe_disk_erase_running"
     WIPE_DISK_JOB_RUNNING = "wipe_disk_job_running"
     WIPE_DISK_OTHER_DISK = "wipe_disk_other_disk"
+    # The device has no internal disk to wipe, as an AirPort Extreme
+    # (services.wipe_disk.internal_disk): a USB disk is erased on a Mac.
+    WIPE_DISK_NO_INTERNAL_DISK = "wipe_disk_no_internal_disk"
     WIPE_DISK_BUSY = "wipe_disk_busy"
     WIPE_DISK_CHANGED = "wipe_disk_changed"
     WIPE_DISK_ERASE_FAILED = "wipe_disk_erase_failed"

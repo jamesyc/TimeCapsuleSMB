@@ -1199,6 +1199,10 @@
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.1" = "Als het apparaat de schijf nog aan het formatteren is, wacht dan tot het klaar is.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.2" = "Koppel het apparaat los, wacht 10 seconden en sluit het vervolgens weer aan.";
 "backend.recovery.wipe-disk.acpd_broken.erase_disk.action.3" = "Wacht 2 minuten tot het apparaat is opgestart en voer daarna ‘Interne schijf opnieuw formatteren’ opnieuw uit.";
+"backend.recovery.wipe_disk_no_internal_disk.title" = "Dit apparaat heeft geen interne schijf";
+"backend.recovery.wipe_disk_no_internal_disk.message" = "‘Interne schijf opnieuw formatteren’ formatteert de interne schijf van een Time Capsule, en dit apparaat heeft er geen.";
+"backend.recovery.wipe_disk_no_internal_disk.action.1" = "Wis een USB-schijf die u wilt gebruiken op een Mac in Schijfhulpprogramma als ‘Mac OS uitgebreid (journaled)’.";
+"backend.recovery.wipe_disk_no_internal_disk.action.2" = "Sluit hem aan op het apparaat en voer daarna ‘Samba installeren / bijwerken’ uit.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.title" = "De schijf reageerde niet meer tijdens het formatteren";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.message" = "De schijf van het apparaat reageerde niet meer nadat de partitietabel was gewist. De AirPort-dienst van Apple wacht ook op de schijf, dus het apparaat kan niet zelf opnieuw opstarten.";
 "backend.recovery.wipe-disk.disk_not_responding.erase_disk.action.1" = "Als het apparaat de schijf nog aan het formatteren is, wacht dan tot het klaar is.";
