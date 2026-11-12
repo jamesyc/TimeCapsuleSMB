@@ -938,7 +938,7 @@ Run it after setup, after a deploy, and after a reboot.
 - checks the binaries against the artifact manifest
 - checks the device is compatible, before uploading anything
 - refuses a device whose ACPd is unhealthy or whose disk is not responding (see [Firmware problems](#firmware-problems))
-- reads Apple's `MaSt` disk list from the device
+- reads Apple's `MaSt` disk list from the device. When it lists no usable volume, deploy first reads the process list: Apple's disk service stuck on the disk lists nothing, or a disk with no partitions, and that gives `disk_not_responding` instead of a missing or unformatted disk
 - picks one writable HFS volume for the payload:
   - the first writable internal (`builtin=true`) HFS volume
   - else the first writable external HFS volume
@@ -946,7 +946,7 @@ Run it after setup, after a deploy, and after a reboot.
 - stops before changing anything while a volume exists only in memory (see [Volumes that exist only in memory](#volumes-that-exist-only-in-memory))
 - builds the plan and the configuration on this computer before stopping anything
 - asks before stopping or replacing anything, unless `--yes` is given; answering no leaves the device as it was
-- stops the current and older TimeCapsuleSMB processes and Apple's file servers, disables `rc.local`, deletes Samba's logs, and runs `sync`. A process still there after `SIGKILL` is asleep in the kernel, maybe waiting on the disk, and the deploy stops with `manager_stop_timeout`
+- stops the current and older TimeCapsuleSMB processes and Apple's file servers, disables `rc.local`, deletes Samba's logs, and runs `sync`. A process still there after `SIGKILL` is asleep in the kernel, maybe waiting on the disk, and the deploy stops with `manager_stop_timeout`. A `sync` that times out while a process is stuck on the disk gives `disk_not_responding`
 - migrates old metadata (see [Migrating older metadata](#migrating-older-metadata))
 - removes known obsolete programs, keeping data, metadata, quarantined databases, other logs, SSH keys and Apple's settings
 - checks the free space on flash, with a small margin

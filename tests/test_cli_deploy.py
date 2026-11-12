@@ -1269,6 +1269,60 @@ class CliDeployTests(CliTestCase):
         self.assertIn("Copying the SMB payload timed out. A slow connection between this computer and the device can cause this, and so can a disk that is slow to respond.", finished["error"])
         self.assertIn(f"Caused by: {timeout}", finished["error"])
 
+    def test_each_device_situation_prints_its_own_lead_and_next_steps(self) -> None:
+        # What a terminal user reads for each situation the app names: the
+        # error's own sentence, never the shell's, then the card's steps.
+        from timecapsulesmb.app.recovery import cli_steps
+        from timecapsulesmb.device.processes import PS_LISTING_END
+        from timecapsulesmb.transport.errors import SshError
+
+        def upload_failing(text):
+            def upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
+                if plan.uploads != [plan.migration_upload]:
+                    raise SshError(text)
+            return upload
+
+        stuck_smbd = f"  8115 1 8115 D 127 biowait 0:04.00 smbd\n{PS_LISTING_END}"
+        # The disk gets stuck during the sync, after the preflight looked.
+        synced: list[bool] = []
+
+        def sync_times_out(_connection):
+            synced.append(True)
+            raise SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/sync")
+
+        def stuck_once_synced(_connection):
+            return stuck_smbd if synced else PS_LISTING_END
+        stuck_diskd = f"  204 1 204 D 572 tstile 0:03.00 diskd\n{PS_LISTING_END}"
+        empty_mast = MaStDiscoveryResult((), 10, "MaSt=<plist><array/></plist>")
+        cases = (
+            ("a process that will not stop", "manager_stop_timeout", "A service on the device is stuck",
+             {"remote": SshError("process smbd did not stop")}),
+            ("a full disk", "deploy_disk_not_writable", "The disk has no free space left",
+             {"upload": upload_failing("dd: /Volumes/dk2/.samba4/smbd: No space left on device")}),
+            ("a full flash", "insufficient_flash_space", "Not enough free space on /mnt/Flash",
+             {"upload": upload_failing("dd: /mnt/Flash/service: No space left on device")}),
+            ("an empty MaSt behind a stuck diskd", "disk_not_responding", "A disk on the device has stopped responding",
+             {"mast": empty_mast, "ps": stuck_diskd}),
+            ("a sync timeout behind a stuck disk", "disk_not_responding", "The installation files could not be written out",
+             {"flush": sync_times_out, "ps": stuck_once_synced}),
+        )
+        for name, code, lead, setup in cases:
+            with self.subTest(name), ExitStack() as stack:
+                listing = setup.get("ps")
+                if listing is not None:
+                    stack.enter_context(mock.patch("timecapsulesmb.device.acpd.read_processes",
+                                                   **({"side_effect": listing} if callable(listing) else {"return_value": listing})))
+                stack.enter_context(mock.patch("timecapsulesmb.services.deploy.run_remote_actions",
+                                               side_effect=setup.get("remote")))
+                result = self.run_deploy_cli(
+                    ["--yes"], patch_upload=True, upload_side_effect=setup.get("upload"),
+                    mast_discovery=setup.get("mast"), flush_side_effect=setup.get("flush"), raises=SystemExit,
+                )
+                text = str(result.exception)
+                self.assertIn(lead, text)
+                self.assertNotIn("dd: ", text.split("\n")[0])
+                self.assertIn(cli_steps("deploy", code)[0], text)
+
     def test_deploy_upload_timeout_on_a_wifi_device_names_the_link(self) -> None:
         timeout = "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH"
 

@@ -5018,6 +5018,79 @@ class NoDiskErrorTests(unittest.TestCase):
 
         self.assertEqual(error.code, "deploy_no_hfs_partition")
 
+    def test_an_empty_mast_behind_a_stuck_diskd_is_a_disk_that_stopped_responding(self) -> None:
+        # Apple's diskd stuck on the disk lists nothing: that is not "no
+        # disk", whose card asks to reseat it. A stuck checker keeps its own code.
+        from timecapsulesmb.device.processes import PS_LISTING_END
+
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        cases = (
+            ("diskd on any wait channel", "  204 1 204 D 572 tstile 0:03.00 diskd", False, "disk_not_responding"),
+            ("diskd on an Extreme", "  204 1 204 D 572 xscmd 0:03.00 diskd", True, "disk_not_responding"),
+            ("a stuck disk checker", "  4211 4200 4200 D 127 biowait 1:12.04 fsck_hfs", False, "disk_check_not_responding"),
+            ("diskd waiting briefly", "  204 1 204 D 3 tstile 0:03.00 diskd", False, "deploy_no_disk_detected"),
+            ("no process list", None, False, "deploy_no_disk_detected"),
+        )
+        for name, row, no_internal_disk, code in cases:
+            with self.subTest(name):
+                listing = "" if row is None else f"{row}\n{PS_LISTING_END}"
+                with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing):
+                    error = mast_no_volume_error(self.EMPTY_MAST, no_internal_disk=no_internal_disk, connection=connection)
+                expected = "deploy_no_usb_disk_detected" if no_internal_disk and code == "deploy_no_disk_detected" else code
+                self.assertEqual(error.code, expected)
+                if code.endswith("not_responding"):
+                    self.assertTrue(str(error).startswith("A disk on the device has stopped responding"))
+
+    def test_a_stuck_diskd_is_read_before_any_verdict_that_could_offer_a_wipe(self) -> None:
+        # Stuck partway, diskd can list the disk with no partitions: "no HFS
+        # partition" would offer Wipe Internal Disk on a disk that stopped
+        # responding. A failed Seagate keeps its own verdict, which offers none.
+        from timecapsulesmb.device.processes import PS_LISTING_END
+
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        stuck = f"  204 1 204 D 572 tstile 0:03.00 diskd\n{PS_LISTING_END}"
+        partitionless = plistlib.dumps(
+            [{"deviceName": "wd0", "name": "Internal", "builtin": True, "size": 1907729, "partitions": []}],
+        ).decode()
+        seagate = plistlib.dumps(
+            [{"deviceName": "wd0", "name": "Internal", "builtin": True, "size": 3950, "partitions": [],
+              "model": "ST2000DM001"}],
+        ).decode()
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=stuck), \
+                mock.patch("timecapsulesmb.services.deploy.read_gpt_verdict_conn") as gpt:
+            error = mast_no_volume_error(MaStDiscoveryResult((), 1, partitionless), connection=connection)
+            self.assertEqual(error.code, "disk_not_responding")
+            gpt.assert_not_called()
+            error = mast_no_volume_error(MaStDiscoveryResult((), 1, seagate), connection=connection)
+            self.assertEqual(error.code, "disk_seagate_failed")
+
+    def test_a_sync_timeout_names_a_stuck_disk_and_keeps_any_other(self) -> None:
+        from timecapsulesmb.device.processes import PS_LISTING_END
+        from timecapsulesmb.services.deploy import SYNC_STUCK_DISK_PREFIX, _flush_naming_a_stuck_disk
+        from timecapsulesmb.transport.errors import SshCommandTimeout
+
+        timeout = SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/sync")
+        flushed = _flush_naming_a_stuck_disk(mock.Mock(side_effect=timeout))
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        stuck = f"  8115 1 8115 D 127 biowait 0:04.00 smbd\n{PS_LISTING_END}"
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=stuck), \
+                self.assertRaises(DeviceError) as raised:
+            flushed(connection)
+        self.assertEqual(raised.exception.code, "disk_not_responding")
+        self.assertTrue(str(raised.exception).startswith(SYNC_STUCK_DISK_PREFIX))
+        self.assertIs(raised.exception.__cause__, timeout)
+
+        # No stuck process: the timeout stays, with its own slow-device card.
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=PS_LISTING_END), \
+                self.assertRaises(SshCommandTimeout) as raised_timeout:
+            flushed(connection)
+        self.assertIs(raised_timeout.exception, timeout)
+        # Another failure is not looked behind.
+        other = _flush_naming_a_stuck_disk(mock.Mock(side_effect=SshError("sync: Read-only file system")))
+        with mock.patch("timecapsulesmb.device.acpd.read_processes") as listing, self.assertRaises(SshError):
+            other(connection)
+        listing.assert_not_called()
+
 
 
 if __name__ == "__main__":

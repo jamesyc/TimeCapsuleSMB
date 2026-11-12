@@ -84,7 +84,7 @@ from timecapsulesmb.device.compat import (
     payload_family_description as payload_family_description,
     render_compatibility_message,
 )
-from timecapsulesmb.device.disk_errors import DiskFailingError, read_disk_errors_conn
+from timecapsulesmb.device.disk_errors import DiskFailingError, DiskNotRespondingError, read_disk_errors_conn
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.migration_jobs import (
     MigrationActivity,
@@ -121,7 +121,9 @@ from timecapsulesmb.services.activation import Netbsd4StartMessages, start_netbs
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import ACPD_STOPPED_MESSAGE, followed, reboot_device, restart_stuck_message
 from timecapsulesmb.device.probe import AirportAcpReading
-from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error, require_acpd_ready
+from timecapsulesmb.device import acpd
+from timecapsulesmb.device.processes import disk_io_stalls
+from timecapsulesmb.services.runtime import ManagedTargetState, disk_stall_error, probe_failure_error, require_acpd_ready
 from timecapsulesmb.services.runtime_verification import (
     RUNTIME_REBOOT_WAIT_SECONDS,
     verify_managed_runtime_ready,
@@ -133,7 +135,9 @@ from timecapsulesmb.transport.ssh import (
     ssh_master_alive,
     upload_timeout_seconds,
 )
-from timecapsulesmb.transport.errors import SshError, SshUploadTimeout, TransportError, bare_timeout, is_ssh_timeout_error
+from timecapsulesmb.transport.errors import (
+    SshCommandTimeout, SshError, SshUploadTimeout, TransportError, bare_timeout, is_ssh_timeout_error,
+)
 
 
 DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
@@ -637,11 +641,15 @@ def mast_no_volume_error(
     no_internal_disk: bool = False,
     connection: SshConnection | None = None,
     callbacks: OperationCallbacks | None = None,
-) -> DeployDeviceError:
+) -> DeviceError:
     """Why MaSt lists no HFS volume, as the code whose guidance fits. With the
     SSH connection, `gpt show` (read-only) says what is on each disk itself:
     an Apple HFS partition means the disk has not mounted yet, which must not
-    be met with a Wipe Internal Disk button."""
+    be met with a Wipe Internal Disk button. Apple's diskd stuck on the disk
+    lists nothing, or a disk with no partitions; the process list shows it
+    (processes.disk_io_stalls), so it is read before any verdict whose card
+    could offer the wipe. A failed or misreported disk keeps its own verdict,
+    which offers none."""
     try:
         disks = parse_mast_inventory(mast_discovery.raw_output)
     except Exception:
@@ -661,6 +669,13 @@ def mast_no_volume_error(
                 size_misreported_message(misreported.size_mib), code=ErrorCode.DISK_SIZE_MISREPORTED,
                 detail=f"{misreported.device}: {misreported.model or 'unknown model'}, {misreported.size_mib} MiB",
             )
+    if connection is not None:
+        stalls = disk_io_stalls(acpd.read_processes(connection))
+        if stalls:
+            if callbacks is not None:
+                callbacks.debug(disk_io_stalls=[stall.describe() for stall in stalls])
+            return disk_stall_error(stalls)
+    if disks:
         verdicts = {disk.device: read_gpt_verdict_conn(connection, disk.device) for disk in disks} if connection else {}
         if callbacks is not None and verdicts:
             callbacks.debug(gpt_verdicts={device: {"kind": verdict.kind, "formats": list(verdict.formats)}
@@ -781,6 +796,28 @@ def _device_write_error(exc: BaseException, connection: SshConnection) -> Device
     if any(tool == "mkdir" and error in ("Invalid argument", "Bad file descriptor") for tool, error in found):
         return DeployDeviceError(DISK_REFUSED_FOLDER_MESSAGE, code=ErrorCode.DEPLOY_DISK_NOT_WRITABLE, detail=text)
     return None
+
+
+# A sync that outlived its timeout behind a process stuck on the disk: Samba
+# is already stopped for the install by then, so nothing is "unchanged".
+SYNC_STUCK_DISK_PREFIX = "The installation files could not be written out to the disk."
+
+
+def _flush_naming_a_stuck_disk(flush: Callable[[SshConnection], None]) -> Callable[[SshConnection], None]:
+    """`flush`, whose timeout names the disk when the process list shows a
+    process stuck on it (processes.disk_io_stalls), as MaSt's does
+    (storage.raise_if_acpd_silent); any other timeout is left as it is."""
+
+    def flushed(connection: SshConnection) -> None:
+        try:
+            flush(connection)
+        except SshCommandTimeout as exc:
+            stalls = disk_io_stalls(acpd.read_processes(connection))
+            if stalls:
+                raise DiskNotRespondingError(stalls, prefix=SYNC_STUCK_DISK_PREFIX) from exc
+            raise
+
+    return flushed
 
 
 def _payload_upload_timed_out(exc: BaseException, transfer: FileTransfer | None, plan: DeploymentPlan) -> bool:
@@ -1231,8 +1268,7 @@ def upload_and_verify_deployment_payload(
         run_remote_actions_func = run_remote_actions
     if upload_payload_func is None:
         upload_payload_func = upload_deployment_payload
-    if flush_remote_writes is None:
-        flush_remote_writes = flush_remote_filesystem_writes
+    flush_remote_writes = _flush_naming_a_stuck_disk(flush_remote_writes or flush_remote_filesystem_writes)
     if migrate_xattrs_func is None:
         migrate_xattrs_func = migrate_xattr_tdb_to_hfs
     if probe_flash_capacity_func is None:
