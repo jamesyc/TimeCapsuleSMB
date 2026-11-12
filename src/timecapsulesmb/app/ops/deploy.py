@@ -261,7 +261,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             no_wait=no_wait,
             device_name=device_name,
         )
-        disk_failing = read_disk_failing_evidence_conn(connection)
+        disk_failing = read_disk_failing_evidence_conn(connection, update_fields=context.update_fields)
         if disk_failing:
             context.update_fields(**disk_failing_telemetry_fields(operation, disk_failing))
             presentation = replace(presentation, **disk_failing_confirmation_fields(operation, disk_failing))

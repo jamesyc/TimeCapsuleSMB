@@ -174,4 +174,6 @@ class CliWipeDiskTests(CliTestCase):
         read_evidence = self.failing_preflight.call_args.kwargs["read_evidence"]
         with mock.patch.object(cli, "wipe_failing_evidence", return_value=None) as scoped:
             read_evidence("connection")
-        scoped.assert_called_once_with("connection", self.prepare.return_value)
+        scoped.assert_called_once_with("connection", self.prepare.return_value, update_fields=mock.ANY)
+        # It records an unread kernel log in the command's telemetry.
+        self.assertTrue(callable(scoped.call_args.kwargs["update_fields"]))

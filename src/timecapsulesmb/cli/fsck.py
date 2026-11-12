@@ -182,7 +182,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         proceed = confirm_despite_failing_disk(
             connection, "repair", yes=args.yes, command="fsck", update_fields=command_context.update_fields,
             # Only the errors of the disk being repaired count.
-            read_evidence=lambda conn: read_disk_failing_evidence_conn(conn, volume=target.device),
+            read_evidence=lambda conn: read_disk_failing_evidence_conn(
+                conn, volume=target.device, update_fields=command_context.update_fields,
+            ),
         )
         if proceed is False:
             print("fsck cancelled.")

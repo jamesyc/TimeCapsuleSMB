@@ -487,12 +487,15 @@ def prepare_wipe(connection: SshConnection, *, callbacks: OperationCallbacks) ->
     return WipePlan(disk, geometry, offsets, raw_partition, volume_name, verdict, offer_install)
 
 
-def wipe_failing_evidence(connection: SshConnection, plan: WipePlan) -> DiskFailingEvidence | None:
+def wipe_failing_evidence(
+    connection: SshConnection, plan: WipePlan, *, update_fields: Callable[..., None] | None = None,
+) -> DiskFailingEvidence | None:
     """What says the disk to be wiped is failing: its own kernel errors, or
     the Samba files unreadable when they may be on it. Another disk's
-    errors are no reason to warn about this one."""
+    errors are no reason to warn about this one. `update_fields`: as
+    read_disk_failing_evidence_conn's."""
     return read_disk_failing_evidence_conn(
-        connection, internal_device=plan.disk.device, holds_payload=plan.offer_install,
+        connection, internal_device=plan.disk.device, holds_payload=plan.offer_install, update_fields=update_fields,
     )
 
 

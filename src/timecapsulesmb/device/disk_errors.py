@@ -18,7 +18,7 @@ The lines come from doctor's kernel disk evidence
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -294,6 +294,7 @@ def read_disk_failing_evidence_conn(
     internal_device: str | None = None,
     holds_payload: bool = True,
     volume: str | None = None,
+    update_fields: Callable[..., None] | None = None,
 ) -> DiskFailingEvidence | None:
     """Why the disk may be failing: this boot's kernel disk errors, else
     the manager's title saying the disk could not read its files (NetBSD 4's
@@ -308,8 +309,15 @@ def read_disk_failing_evidence_conn(
     lines). With `volume` (Disk Repair's), only the lines of the disk that
     holds it: another disk's errors are no reason to warn about repairing
     this one. A volume MaSt does not list, or a MaSt that did not answer,
-    leaves every line in, as before the volume was known."""
+    leaves every line in, as before the volume was known.
+
+    `update_fields` records `disk_failing_kernel_log="unread"` for telemetry
+    when the kernel log could not be read: the warning then rests on the
+    manager's verdict alone, or is not shown, and how often that happens
+    before an operation is not known yet."""
     errors = read_disk_errors_conn(connection)
+    if errors is None and update_fields is not None:
+        update_fields(disk_failing_kernel_log="unread")
     if errors and internal_device is not None:
         errors = internal_disk_errors(errors, internal_device)
         if errors:

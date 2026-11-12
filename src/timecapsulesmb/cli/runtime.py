@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import getpass
 import io
 import json
@@ -274,7 +275,7 @@ def confirm_despite_failing_disk(
     unless the operation narrows it to one disk); else whether to go on, which
     --yes answers after printing the warning. update_fields records that it
     warned, and on what, for telemetry."""
-    evidence = (read_evidence or read_disk_failing_evidence_conn)(connection)
+    evidence = (read_evidence or functools.partial(read_disk_failing_evidence_conn, update_fields=update_fields))(connection)
     if not evidence:
         return None
     update_fields(**disk_failing_fields(evidence, operation))

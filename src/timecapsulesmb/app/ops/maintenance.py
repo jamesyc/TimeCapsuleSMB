@@ -151,7 +151,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
         require_request_ssh_port(context, connection)
         require_request_no_disk_check(context, connection)
     if not dry_run:
-        disk_failing = read_disk_failing_evidence_conn(connection)
+        disk_failing = read_disk_failing_evidence_conn(connection, update_fields=context.update_fields)
         presentation = {
             "title": "Confirm uninstall",
             "message": "Remove managed TimeCapsuleSMB files from the device" + (" and reboot it?" if not no_reboot else "?"),
@@ -246,7 +246,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
             connection = _fsck_connection(params, context, rebooting=rebooting)
             require_request_ssh_port(context, connection)
         # Only the errors of the disk being repaired count.
-        disk_failing = read_disk_failing_evidence_conn(connection, volume=volume)
+        disk_failing = read_disk_failing_evidence_conn(connection, volume=volume, update_fields=context.update_fields)
         presentation = {
             "title": "Confirm fsck",
             "message": "Run fsck on the selected HFS volume" + (" and reboot the device?" if not no_reboot else "?"),
@@ -397,7 +397,7 @@ def wipe_disk_operation(params: dict[str, object], context: AppOperationContext)
         # confirmation and before the disk is touched.
         require_request_acpd_ready(context, connection)
         plan = prepare_wipe(connection, callbacks=callbacks)
-        disk_failing = wipe_failing_evidence(connection, plan)
+        disk_failing = wipe_failing_evidence(connection, plan, update_fields=context.update_fields)
         message = (
             "Wipe Internal Disk deletes everything on this disk and formats it for the device, then restarts the device. "
             "Any backup in progress will be interrupted."

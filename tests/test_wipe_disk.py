@@ -1889,7 +1889,9 @@ class WipeDiskOperationTests(unittest.TestCase):
             disk_failing_warned=True, disk_failing_cause="disk_failing", disk_failing_disk="internal",
             disk_failing_wipe_suggested=False,
         )
-        self.mocks["failing_evidence"].assert_called_with(CONNECTION, self.mocks["prepare"].return_value)
+        self.mocks["failing_evidence"].assert_called_with(
+            CONNECTION, self.mocks["prepare"].return_value, update_fields=self.mocks["context"].update_fields,
+        )
 
     def test_a_wipe_error_keeps_its_code_and_reason(self) -> None:
         error = wipe_disk.WipeDiskError("x", code=ErrorCode.WIPE_DISK_CHANGED, reason="target_changed")

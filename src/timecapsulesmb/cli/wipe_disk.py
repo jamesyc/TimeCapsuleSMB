@@ -92,7 +92,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             # A failing disk's warning asks first; then the wipe's own question.
             proceed = confirm_despite_failing_disk(
                 connection, "wipe", yes=args.yes, command="wipe-internal-disk", update_fields=command_context.update_fields,
-                read_evidence=lambda conn: wipe_failing_evidence(conn, plan),
+                read_evidence=lambda conn: wipe_failing_evidence(conn, plan, update_fields=command_context.update_fields),
             )
             if proceed is False:
                 print("Wipe Internal Disk cancelled.")

@@ -245,6 +245,36 @@ def mast_disk(device: str, *, builtin: bool = True, size: int = 1907729, partiti
     return MaStDiskSnapshot(device, "", size, builtin, partitions, soft_disconnected=soft_disconnected)
 
 
+class UnreadKernelLogTests(unittest.TestCase):
+    """A kernel log that could not be read leaves the warning to the
+    manager's verdict, or shows none; telemetry records it, so how often a
+    warning goes missing this way can be counted."""
+
+    CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+
+    def evidence(self, errors, problems=()):
+        fields: dict[str, object] = {}
+        with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
+            with mock.patch("timecapsulesmb.device.disk_errors.manager_payload_problems", return_value=problems):
+                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_inventory_conn", return_value=None):
+                    found = read_disk_failing_evidence_conn(self.CONNECTION, update_fields=lambda **f: fields.update(f))
+        return found, fields
+
+    def test_an_unread_log_is_recorded_whatever_the_verdict(self) -> None:
+        for problems, expected in (((), None), ((probe.DISK_PAYLOAD_UNREADABLE,), UNREADABLE_EVIDENCE)):
+            with self.subTest(problems=problems):
+                found, fields = self.evidence(None, problems)
+                self.assertEqual(found, expected)
+                self.assertEqual(fields, {"disk_failing_kernel_log": "unread"})
+
+    def test_a_log_that_was_read_records_nothing(self) -> None:
+        # An empty log and one with errors were both read.
+        for errors in ((), (FINAL,)):
+            with self.subTest(errors=errors):
+                _found, fields = self.evidence(errors)
+                self.assertEqual(fields, {})
+
+
 class RepairTargetTests(unittest.TestCase):
     """Disk Repair warns only about the disk it repairs: a failing USB stick
     is no reason to warn before repairing the internal volume, nor the
@@ -759,11 +789,13 @@ class CommandLinePreflightTests(unittest.TestCase):
         return result, stderr.getvalue(), prompts, fields
 
     def test_a_healthy_disk_asks_nothing(self) -> None:
-        for errors, problems in ((None, ()), ((), ()), ((), (probe.DISK_PAYLOAD_DAMAGED,))):
+        # An unread kernel log asks nothing either, and telemetry says so.
+        for errors, problems, recorded in ((None, (), {"disk_failing_kernel_log": "unread"}), ((), (), {}),
+                                           ((), (probe.DISK_PAYLOAD_DAMAGED,), {})):
             with self.subTest(errors=errors, problems=problems):
                 result, warned, prompts, fields = self.preflight(errors, problems=problems)
                 self.assertIsNone(result)
-                self.assertEqual((warned, prompts, fields), ("", [], {}))
+                self.assertEqual((warned, prompts, fields), ("", [], recorded))
 
     def test_a_failing_disk_warns_and_defaults_to_no(self) -> None:
         # From the kernel's lines, or the manager's title where it kept none.
