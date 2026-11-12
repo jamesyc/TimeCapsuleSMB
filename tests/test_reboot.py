@@ -1312,7 +1312,8 @@ class RestartStuckTests(unittest.TestCase):
     def test_unclear_reads_in_a_row_take_the_unplug_request_back(self) -> None:
         # Reads that keep failing in a way that says nothing about the device
         # (a firewall that starts refusing) no longer show it silent: the
-        # request goes, and comes back once a read finds nothing again.
+        # request goes, and comes back once reads find nothing again, as many
+        # in a row as made it silent at first.
         down = "[Errno 64] Host is down"
         device = stuck_device(down_read_error=down, ssh_port_error=down, down_read_error_changes=(
             (STUCK_AFTER + 30.0, "[Errno 1] Operation not permitted"), (STUCK_AFTER + 45.0, down),
@@ -1694,11 +1695,31 @@ class DeviceSilenceTests(unittest.TestCase):
             ("a firewall on this computer", True, three("not_permitted"), False, False),
             ("an unknown failure", True, three("other"), False, False),
             ("an unknown failure where nothing holds it", False, three("other"), False, False),
-            ("one unknown failure leaves the count", True, [("timeout",), ("timeout",), ("other",), ("timeout",)], True, False),
+            # Silence takes STUCK_QUIET_READS unanswered reads in a row: an
+            # unknown failure before then starts the count again.
+            ("one unknown failure starts the count again", True,
+             [("timeout",), ("timeout",), ("other",), ("timeout",)], False, False),
+            ("then an unbroken run", True, [("timeout",), ("timeout",), ("other",), *three("timeout")], True, False),
             ("one unknown failure after silence", True, [*three("timeout"), ("other",)], True, False),
+            ("two after silence", True, [*three("timeout"), ("other",), ("other",)], True, False),
             ("unknown failures in a row end the silence", True, [*three("timeout"), *three("other")], False, False),
-            ("silent again after unknown failures, never answered", True,
-             [*three("timeout"), *three("other"), ("timeout",)], True, False),
+            # A run of unknown failures ended the silence, so one unanswered
+            # read after it is not silence again: it takes a new run.
+            ("one unanswered read after a run of unknown failures", True,
+             [*three("timeout"), *three("other"), ("timeout",)], False, False),
+            ("a long run of unknown failures, then one unanswered read", True,
+             [*three("timeout"), *[("other",)] * 20, ("timeout",)], False, False),
+            ("a new run after the unknown failures", True,
+             [*three("timeout"), *three("other"), *three("timeout")], True, False),
+            ("a held no route run, then one unanswered read", True,
+             [*three("timeout"), *[("no_route",)] * 10, ("timeout",)], False, False),
+            ("a held no route run, then a new run", True,
+             [*three("timeout"), *[("no_route",)] * 10, *three("timeout")], True, False),
+            ("a stray held no route inside the first run", True,
+             [("timeout",), ("no_route",), ("timeout",), ("timeout",)], False, False),
+            ("unclear reads that alternate with unanswered ones never make silence", True,
+             [("timeout",), ("other",)] * 10, False, False),
+            ("nor end a silence already seen", True, [*three("timeout"), *[("other",), ("timeout",)] * 10], True, False),
             ("silence after an unknown failure", True, [("other",), *three("timeout")], True, False),
             ("one address silent, one unknown", True, three("timeout+other"), False, False),
             ("one address refused", True, three("timeout+refused"), False, False),
@@ -1742,17 +1763,101 @@ class DeviceSilenceTests(unittest.TestCase):
         self.assertEqual(silence.no_route_errors, ["no route 197", "no route 198", "no route 199"])
 
 
+class FakeAcpSocket:
+    """A connected socket to ACP's port for integrations.acp, failing as told."""
+
+    def __init__(self, *, send_error: OSError | None = None, recv_error: OSError | None = None) -> None:
+        self.send_error = send_error
+        self.recv_error = recv_error
+
+    def settimeout(self, _timeout: float) -> None:
+        pass
+
+    def sendall(self, _data: bytes) -> None:
+        if self.send_error is not None:
+            raise self.send_error
+
+    def recv(self, _size: int) -> bytes:
+        if self.recv_error is not None:
+            raise self.recv_error
+        # The other end closed the connection in order.
+        return b""
+
+    def close(self) -> None:
+        pass
+
+
 class ReadErrorKindTests(unittest.TestCase):
-    def test_a_connection_the_other_end_reset_is_an_answer(self) -> None:
+    def read_kind(self, connect) -> str:
+        """The kind of the restart wait's uptime read, through integrations.acp
+        over a socket whose connect does `connect`."""
+        import socket
+
+        with mock.patch.object(socket, "create_connection", side_effect=connect):
+            uptime, _mac, error = reboot_service._read_uptime("10.0.0.2", "pw")
+        self.assertIsNone(uptime)
+        return reboot_service._read_error_kind(error)
+
+    def connected(self, **failures):
+        return lambda *_args, **_kwargs: FakeAcpSocket(**failures)
+
+    @staticmethod
+    def not_connected(error: OSError):
+        def connect(*_args, **_kwargs):
+            raise error
+        return connect
+
+    def test_a_connection_the_other_end_reset_or_closed_is_an_answer(self) -> None:
         # ACPd closing a connection it had taken, as it stops or starts: the
         # device is there, so it is not silence.
-        for text in ("ACP receive failed: [Errno 54] Connection reset by peer", "ACP send failed: [Errno 32] Broken pipe"):
-            with self.subTest(text):
-                kind = reboot_service._read_error_kind(ACPConnectionError(text))
-                self.assertEqual(kind, "reset")
+        for name, connect in (
+            ("reset", self.connected(recv_error=ConnectionResetError(54, "Connection reset by peer"))),
+            ("broken pipe", self.connected(send_error=BrokenPipeError(32, "Broken pipe"))),
+            ("closed in order", self.connected()),
+        ):
+            with self.subTest(name):
+                kind = self.read_kind(connect)
                 self.assertIn(kind, reboot_service._ANSWER_KINDS)
-        self.assertEqual(reboot_service._read_error_kind(ACPConnectionError("ACP connect failed: timed out")), "timeout")
-        self.assertEqual(reboot_service._read_error_kind(ACPConnectionError("something odd")), "other")
+                silence = reboot_service.DeviceSilence(held=False)
+                for _ in range(reboot_service.STUCK_QUIET_READS):
+                    silence.observe_read("timeout", "timed out")
+                silence.observe_read(kind, "")
+                self.assertFalse(silence.quiet)
+
+    def test_a_connection_made_that_gets_no_reply_is_not_silence(self) -> None:
+        # The device's TCP stack took the connection, so something is there,
+        # but nothing replied: unclear, neither silence nor an answer.
+        import socket
+
+        for name, connect in (
+            ("receive timed out", self.connected(recv_error=socket.timeout("timed out"))),
+            ("send timed out", self.connected(send_error=socket.timeout("timed out"))),
+            ("receive failed otherwise", self.connected(recv_error=OSError(64, "Host is down"))),
+        ):
+            with self.subTest(name):
+                kind = self.read_kind(connect)
+                self.assertEqual(kind, "no_reply")
+                self.assertNotIn(kind, reboot_service._ANSWER_KINDS)
+                self.assertNotIn(kind, reboot_service._SILENT_KINDS)
+                silence = reboot_service.DeviceSilence(held=False)
+                for _ in range(reboot_service.STUCK_QUIET_READS):
+                    silence.observe_read(kind, "")
+                self.assertFalse(silence.quiet)
+
+    def test_a_connect_that_fails_is_judged_by_how(self) -> None:
+        import socket
+
+        for error, kind in (
+            (socket.timeout("timed out"), "timeout"),
+            (OSError(64, "Host is down"), "host_down"),
+            (OSError(65, "No route to host"), "no_route"),
+            (ConnectionRefusedError(61, "Connection refused"), "refused"),
+            (ConnectionResetError(54, "Connection reset by peer"), "reset"),
+            (OSError(1, "Operation not permitted"), "not_permitted"),
+            (OSError(99, "something odd"), "other"),
+        ):
+            with self.subTest(kind):
+                self.assertEqual(self.read_kind(self.not_connected(error)), kind)
 
 
 class ClientAwayMessageTests(unittest.TestCase):

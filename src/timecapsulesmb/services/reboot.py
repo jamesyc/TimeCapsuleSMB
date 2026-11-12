@@ -105,21 +105,21 @@ RESTART_STUCK_AFTER_DOWN_SECONDS = 360
 # most this often (each read runs netstat and arp on macOS).
 PLACE_READ_INTERVAL_SECONDS = 15
 # Read failures that show something answers at the device's address: a
-# refused port, a connection the device reset, a rejected password (a device
-# reset to factory settings), a reply ACP could not use, or another AirPort
-# holding the address. Every other
-# failure is silence: a timeout, a host that is down, no route, a name that no
-# longer resolves (a saved .local name while the device is off), an address
-# this computer lost.
-_ANSWER_KINDS = frozenset({"refused", "reset", "auth", "property", "protocol", "other_device"})
-# Read errors that mean nothing at the address answered. Any other failure
-# ("operation not permitted" from a firewall such as LuLu, an address this
-# computer cannot use, an error with no known text) says nothing about the
-# device, so it is unclear: neither silence nor an answer. No route counts
-# here except for a process macOS may hold (DeviceSilence).
+# refused port, a connection the device reset or closed, a rejected password
+# (a device reset to factory settings), a reply ACP could not use, or another
+# AirPort holding the address.
+_ANSWER_KINDS = frozenset({"refused", "reset", "closed", "auth", "property", "protocol", "other_device"})
+# Read errors that mean nothing at the address answered: a connect that timed
+# out, a host that is down, no route, a name that no longer resolves (a saved
+# .local name while the device is off), an address this computer lost. Any
+# other failure ("operation not permitted" from a firewall such as LuLu, an
+# address this computer cannot use, a connection that was made but got no
+# reply, an error with no known text) says nothing either way, so it is
+# unclear: neither silence nor an answer. No route counts here except for a
+# process macOS may hold (DeviceSilence).
 _SILENT_KINDS = frozenset({"timeout", "host_down", "network_unreachable", "name_lookup_failed", "no_route"})
-# How many unanswered reads since the last answer make the device silent, and
-# how many unclear reads in a row end that.
+# How many unanswered reads in a row make the device silent, and how many
+# unclear reads in a row end that.
 STUCK_QUIET_READS = 3
 # iOS's Personal Hotspot gives its clients addresses in this network.
 PERSONAL_HOTSPOT_NETWORK = ipaddress.ip_network("172.20.10.0/28")
@@ -178,11 +178,13 @@ class DeviceSilence:
     restart wait's reads once the device went down.
 
     Each read, the SSH port's look included, is an answer, unanswered
-    (_SILENT_KINDS) or unclear. Silent (`quiet`): STUCK_QUIET_READS unanswered
-    reads since the last answer, and fewer than STUCK_QUIET_READS unclear ones
-    in a row since. One unclear read, such as a stray "No route to host" while
-    the device is down, leaves that as it was; a run of them means the reads
-    no longer show silence. Unclear: any failure that says nothing about the
+    (_SILENT_KINDS) or unclear. The device turns silent (`quiet`) after
+    STUCK_QUIET_READS unanswered reads in a row, and stays silent until
+    something answers or STUCK_QUIET_READS unclear reads come in a row. So one
+    unclear read, such as a stray "No route to host" while the device is
+    down, leaves a silent device silent, but delays one that is not silent
+    yet; and after a run of unclear reads, silence needs a new unbroken run of
+    unanswered ones. Unclear: any failure that says nothing about the
     device, and no route for a process macOS's Local Network access holds
     (`held`, the app or a terminal app other than Terminal:
     checks.network.macos_may_hold_this_process), which macOS gives for such a
@@ -192,32 +194,37 @@ class DeviceSilence:
     """
 
     held: bool
-    # Unanswered reads since the last answer.
+    # Unanswered reads in a row.
     quiet_reads: int = 0
     # Unclear reads in a row.
     unclear_reads: int = 0
+    quiet: bool = False
     no_route_errors: list[str] = field(default_factory=list)
 
     def observe_read(self, kind: str, error: str) -> None:
         """One failed read of the uptime, by _read_error_kind (or "other_device");
         a name's addresses give one kind each, joined by "+"."""
         kinds = set(kind.split("+"))
+        held_no_route = kinds == {"no_route"} and self.held
         if kinds & _ANSWER_KINDS:
+            self.quiet = False
             self.quiet_reads = 0
             self.unclear_reads = 0
             self.no_route_errors = []
-        elif kinds == {"no_route"} and self.held:
-            self.unclear_reads += 1
-            # maybe_blocked and the block check need only the last
-            # STUCK_QUIET_READS.
-            self.no_route_errors = [*self.no_route_errors[1 - STUCK_QUIET_READS:], error]
-        elif kinds <= _SILENT_KINDS:
+        elif kinds <= _SILENT_KINDS and not held_no_route:
             self.quiet_reads += 1
             self.unclear_reads = 0
             self.no_route_errors = []
+            if self.quiet_reads >= STUCK_QUIET_READS:
+                self.quiet = True
         else:
+            self.quiet_reads = 0
             self.unclear_reads += 1
-            self.no_route_errors = []
+            # maybe_blocked and the block check need only the last
+            # STUCK_QUIET_READS.
+            self.no_route_errors = [*self.no_route_errors[1 - STUCK_QUIET_READS:], error] if held_no_route else []
+            if self.unclear_reads >= STUCK_QUIET_READS:
+                self.quiet = False
 
     def observe_ssh_port(self, error: str | None) -> None:
         """A connect to port 22 (tcp_connect_error's result). A device back on
@@ -225,10 +232,6 @@ class DeviceSilence:
         takes connections, is up."""
         kind = "refused" if connect_answered(error) else connect_error_kind(error) or "other"
         self.observe_read(kind, str(error))
-
-    @property
-    def quiet(self) -> bool:
-        return self.quiet_reads >= STUCK_QUIET_READS and self.unclear_reads < STUCK_QUIET_READS
 
     @property
     def maybe_blocked(self) -> bool:
@@ -569,6 +572,10 @@ def _read_uptime(host: str, password: str) -> tuple[int | None, str | None, acp.
 
 
 _RESET_TEXTS = ("connection reset", "broken pipe")
+# How integrations.acp words a failure after the connection was made, and an
+# orderly close by the other end.
+_AFTER_CONNECT_PREFIXES = ("ACP receive failed:", "ACP send failed:")
+_CLOSED_PREFIX = "ACP connection closed while reading"
 
 
 def _read_error_kind(error: acp.ACPError) -> str:
@@ -579,12 +586,20 @@ def _read_error_kind(error: acp.ACPError) -> str:
         return "property"
     if isinstance(error, acp.ACPProtocolError):
         return "protocol"
-    kind = connect_error_kind(str(error)) or "other"
-    if kind == "other" and any(text in str(error).lower() for text in _RESET_TEXTS):
+    text = str(error)
+    if any(needle in text.lower() for needle in _RESET_TEXTS):
         # The connection was made and then dropped by the other end, such as
         # ACPd closing it as it stops or starts: something answered.
         return "reset"
-    return kind
+    if text.startswith(_CLOSED_PREFIX):
+        # The same, closed in order (ACPd exiting closes its sockets).
+        return "closed"
+    if text.startswith(_AFTER_CONNECT_PREFIXES):
+        # The device's TCP stack took the connection, so it is not silence,
+        # but no reply came (a busy or stopping ACPd, a link that broke): no
+        # answer either.
+        return "no_reply"
+    return connect_error_kind(text) or "other"
 
 
 def _network_context(host: str) -> dict[str, object]:
