@@ -50,7 +50,10 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(try draft.validatedSettings().ataIdleSeconds, 0)
         draft.ataIdleSeconds = "300"
         XCTAssertEqual(try draft.validatedSettings().ataIdleSeconds, 300)
-        for invalid in ["", "-1", "1.5", "abc"] {
+        draft.ataIdleSeconds = "86400"
+        XCTAssertEqual(try draft.validatedSettings().ataIdleSeconds, 86400)
+        // The device runs a longer idle time as 300 seconds.
+        for invalid in ["", "-1", "1.5", "abc", "86401"] {
             draft.ataIdleSeconds = invalid
             XCTAssertThrowsError(try draft.validatedSettings()) { error in
                 XCTAssertEqual(error as? DeviceProfileEditorValidationError, .ataIdleSecondsInvalid)
@@ -163,6 +166,50 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(call.params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(call.params["require_smb_signing"], .bool(true))
         XCTAssertTrue(try String(contentsOf: saved.configURL, encoding: .utf8).contains("TC_TEST_SETTINGS_SYNCED=1"))
+    }
+
+    func testASettingsChangeClearsTheSavedCheckupAndOtherEditsKeepIt() async throws {
+        // A Checkup compared the device with the settings it ran with.
+        for (name, edit, cleared) in [
+            ("advertise AFP", { (store: DeviceProfileEditorStore) in store.draft.mdnsAdvertiseAFP.toggle() }, true),
+            ("rsync", { (store: DeviceProfileEditorStore) in store.draft.rsyncEnabled.toggle() }, true),
+            ("ATA standby", { (store: DeviceProfileEditorStore) in store.draft.ataStandby = "120" }, true),
+            ("display name", { (store: DeviceProfileEditorStore) in store.draft.displayName = "Renamed" }, false),
+            ("mount wait", { (store: DeviceProfileEditorStore) in store.draft.mountWaitSeconds = "45" }, false),
+        ] {
+            let fixture = try await makeFixture(responses: [])
+            let profile = try await fixture.registry.storeTestProfile(
+                configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+                discoveredDevice: nil,
+                passwordState: .available,
+                preferredID: "device-one"
+            )
+            await fixture.registry.updateCheckup(DeviceCheckupSnapshot(
+                checkedAt: Date(timeIntervalSince1970: 200), state: .warning,
+                passCount: 1, warnCount: 1, failCount: 0, summary: ""
+            ), for: profile.id)
+            let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+            XCTAssertNotNil(checked.lastCheckup, name)
+            let store = DeviceProfileEditorStore(profile: checked, appStore: fixture.appStore)
+
+            edit(store)
+            await store.save(profile: checked)
+            try await waitUntilStoreState { store.state == .saved }
+
+            let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+            XCTAssertEqual(saved.lastCheckup == nil, cleared, name)
+        }
+    }
+
+    func testOnlyMountWaitIsOutsideTheInstalledSettings() {
+        let base = DeviceProfileSettings.default
+        var mountWait = base
+        mountWait.mountWaitSeconds += 15
+        XCTAssertFalse(mountWait.changesInstalledSettings(from: base))
+        var debug = base
+        debug.debugLogging.toggle()
+        XCTAssertTrue(debug.changesInstalledSettings(from: base))
+        XCTAssertFalse(base.changesInstalledSettings(from: base))
     }
 
     func testEquivalentHostEditDoesNotRunBackendConfigure() async throws {

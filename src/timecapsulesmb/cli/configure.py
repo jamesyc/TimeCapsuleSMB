@@ -9,6 +9,7 @@ from typing import Optional
 
 from timecapsulesmb.configure_defaults import validated_value_or_empty
 from timecapsulesmb.core.config import (
+    ATA_IDLE_MAX_SECONDS,
     AppConfig,
     CONFIG_VALIDATORS,
     ConfigError,
@@ -66,6 +67,13 @@ def non_negative_integer_arg(value: str) -> str:
     if not value.isdigit():
         raise argparse.ArgumentTypeError("must be a non-negative integer")
     return str(int(value))
+
+
+def ata_idle_seconds_arg(value: str) -> str:
+    text = non_negative_integer_arg(value)
+    if int(text) > ATA_IDLE_MAX_SECONDS:
+        raise argparse.ArgumentTypeError(f"must be no larger than {ATA_IDLE_MAX_SECONDS}")
+    return text
 
 
 CONFIGURE_NONINTERACTIVE_MESSAGE = (
@@ -364,7 +372,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         positive_flags=("--debug-logging",),
         negative_flags=("--no-debug-logging",),
     )
-    parser.add_argument("--ata-idle-seconds", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
+    parser.add_argument("--ata-idle-seconds", type=ata_idle_seconds_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     parser.add_argument("--ata-standby", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.json and not no_input_enabled(args):

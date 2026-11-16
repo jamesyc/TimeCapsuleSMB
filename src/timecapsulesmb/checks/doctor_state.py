@@ -5,10 +5,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from timecapsulesmb.checks.bonjour import BonjourServiceTarget
+from timecapsulesmb.checks.bonjour import AfpExpectation, BonjourServiceTarget
 from timecapsulesmb.checks.models import DOMAIN_COMPUTER, DOMAIN_DEVICE, CheckResult, is_fatal
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.device.probe import AirportAcpReading, ProbedDeviceState, RuntimeNamingIdentityProbeResult
+from timecapsulesmb.core.runtime_settings import SettingsSource
+from timecapsulesmb.device.probe import (
+    AirportAcpReading,
+    DeployedVersionProbeResult,
+    ProbedDeviceState,
+    RuntimeNamingIdentityProbeResult,
+)
 from timecapsulesmb.device.processes import StuckProcess
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -23,6 +29,9 @@ class DoctorBonjourResult:
     expected_debug: dict[str, str | None] | None
     discovery_debug: object | None
     addresses: tuple[str, ...] = ()
+    # What re-checking this Mac's cached _adisk record did; None when nothing
+    # differed from the installed AFP setting.
+    adisk_recheck: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +54,9 @@ class DoctorInputs:
     # The macOS app's Local Network permission preflight ("allowed", "denied"
     # or "unknown"); None from the CLI, which has no such permission to ask.
     local_network_permission: str | None = None
+    # Where this Mac's settings come from, which is where its deploy takes
+    # them from: the CLI's .env, or the app's device profile.
+    settings_source: SettingsSource = SettingsSource.env()
 
 
 @dataclass
@@ -166,3 +178,22 @@ class StepDecision:
     # The device is about to go down (a restart under way): a stop reads
     # nothing more from it.
     restarting: bool = False
+
+
+@dataclass(frozen=True)
+class DeployedVersionDecision(StepDecision):
+    # The device's installed version and settings; None when not read.
+    version: DeployedVersionProbeResult | None = None
+
+    @property
+    def installed(self) -> dict[str, str]:
+        return self.version.installed if self.version is not None else {}
+
+
+@dataclass(frozen=True)
+class DoctorSettingsState:
+    """What doctor concluded about this Mac's settings and the device's, for
+    the checks after it: what the device's _adisk record should say about
+    AFP (None: not judged). The settings that differ from the installed ones
+    are the step's warning and its settings_not_applied debug field."""
+    afp: AfpExpectation | None

@@ -59,7 +59,7 @@
 "app_readiness.recovery.version_metadata_unavailable" = "Compruebe la conexión de red o inténtelo más tarde.";
 "app_settings.appearance" = "Apariencia";
 "app_settings.default_bonjour_timeout" = "Tiempo de espera de descubrimiento (segundos)";
-"app_settings.error.ata_idle" = "El tiempo de inactividad ATA debe ser un número no negativo de segundos.";
+"app_settings.error.ata_idle" = "El tiempo de inactividad ATA debe ser un número no negativo de segundos, como máximo 86400.";
 "app_settings.error.ata_standby" = "El tiempo de espera ATA debe quedar en blanco o ser un número no negativo de segundos.";
 "app_settings.error.bonjour_timeout" = "El tiempo de espera de descubrimiento debe ser de al menos 5 segundos.";
 "app_settings.error.corrupt" = "No se pudo leer la configuración de la app: %@";
@@ -347,6 +347,7 @@
 "doctor.check.disk_size_misreported" = "El dispositivo indica que su disco interno es mucho más pequeño de lo que es, así que no se puede instalar nada en él. Reinicie el dispositivo; si sigue indicando un tamaño incorrecto, hay que sustituir el disco.";
 "doctor.check.disk_no_hfs_partition" = "Un disco del dispositivo no tiene ningún volumen HFS que TimeCapsuleSMB pueda usar. Si es el disco interno y no contiene nada que necesite, use «Reformatear disco interno» para formatearlo para el dispositivo.";
 "doctor.check.debug_logging_on" = "Los registros de depuración están activados y ralentizan el dispositivo. Desactívelos, salvo que esté diagnosticando un problema.";
+"doctor.check.settings_not_applied" = "La configuración de este Mac difiere de la instalada en el dispositivo: %@. El dispositivo mantiene la instalada hasta que ejecute «Instalar / actualizar Samba».";
 "doctor.check.wifi_client" = "El dispositivo se conecta a su red por Wi-Fi en lugar de con un cable Ethernet. Cuando ese enlace es débil, el uso compartido de archivos y estas comprobaciones se vuelven lentos o superan el tiempo de espera.";
 "doctor.check.process_listing_timed_out" = "La lista de procesos del dispositivo superó el tiempo de espera, aunque el inicio de sesión SSH funcionó. Puede deberse a un proceso bloqueado, a un dispositivo que se queda sin procesos o a una conexión lenta. No se vuelve a comprobar SMB y no se leen los registros del disco del dispositivo.";
 "doctor.check.process_listing_timed_out_wifi" = "La lista de procesos del dispositivo superó el tiempo de espera, aunque el inicio de sesión SSH funcionó. El dispositivo se conecta a su red por Wi-Fi en lugar de con un cable Ethernet, y puede deberse a un enlace lento. No se vuelve a comprobar SMB y no se leen los registros del disco del dispositivo.";
@@ -611,7 +612,7 @@
 "overview.discovery.unsaved" = "No guardado";
 "overview.discovery.waiting" = "El descubrimiento comienza cuando el entorno de ejecución de la app está preparado.";
 "operation.error.already_running" = "Ya se está ejecutando otra operación.";
-"workflow.error.ata_idle_seconds_invalid" = "El tiempo de inactividad ATA debe ser un número no negativo de segundos.";
+"workflow.error.ata_idle_seconds_invalid" = "El tiempo de inactividad ATA debe ser un número no negativo de segundos, como máximo 86400.";
 "workflow.error.ata_standby_invalid" = "El tiempo de espera ATA debe quedar en blanco o ser un número no negativo de segundos.";
 "workflow.error.deploy_options_invalid" = "Las opciones de instalación / actualización no son válidas.";
 "workflow.error.flash_backup_required" = "Haga una copia de seguridad y compruebe el firmware antes de planificar operaciones flash.";
@@ -669,7 +670,7 @@
 "profile_editor.display_name" = "Nombre para mostrar";
 "profile_editor.error.duplicate_host" = "Otro dispositivo guardado ya utiliza este host.";
 "profile_editor.error.host_required" = "Se requiere host.";
-"profile_editor.error.ata_idle_seconds_invalid" = "El tiempo de inactividad ATA debe ser un número no negativo de segundos.";
+"profile_editor.error.ata_idle_seconds_invalid" = "El tiempo de inactividad ATA debe ser un número no negativo de segundos, como máximo 86400.";
 "profile_editor.error.ata_standby_invalid" = "El tiempo de espera ATA debe quedar en blanco o ser un número no negativo de segundos.";
 "profile_editor.error.mount_wait_invalid" = "La espera de montaje debe ser un número entero no negativo.";
 "profile_editor.error.password_required" = "Se requiere una contraseña guardada para cambiar el host.";

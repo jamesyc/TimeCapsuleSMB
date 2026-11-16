@@ -1,7 +1,8 @@
 """Generate the helper request-param contract fixture shared with the macOS app.
 
 The app's request builders are checked against it, so a param the helper would
-reject fails the Swift tests instead of a run.
+reject fails the Swift tests instead of a run. It also lists the settings
+doctor's settings_not_applied warning can name, which the app labels.
 
     python -m tests.fixtures.operation_params --write
 """
@@ -13,6 +14,7 @@ import sys
 from pathlib import Path
 
 from timecapsulesmb.app.ops import COMMON_PARAMS, OPERATION_SPECS
+from timecapsulesmb.core.runtime_settings import COMPARED_SETTINGS
 
 
 FIXTURE_PATH = (
@@ -24,6 +26,7 @@ FIXTURE_PATH = (
 def build() -> dict[str, object]:
     return {
         "common": sorted(COMMON_PARAMS),
+        "doctor_compared_settings": sorted(setting.setting_id for setting in COMPARED_SETTINGS),
         "operations": {spec.name: sorted(spec.params) for spec in OPERATION_SPECS},
     }
 

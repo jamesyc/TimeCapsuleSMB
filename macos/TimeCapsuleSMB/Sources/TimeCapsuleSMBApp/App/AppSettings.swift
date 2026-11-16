@@ -451,7 +451,7 @@ struct AppSettingsDraft: Equatable {
         guard let mountWait = ValueParsers.nonNegativeInteger(mountWaitSeconds) else {
             throw AppSettingsValidationError.invalidMountWait
         }
-        guard let ataIdle = ValueParsers.nonNegativeInteger(ataIdleSeconds) else {
+        guard let ataIdle = ValueParsers.ataIdleSeconds(ataIdleSeconds) else {
             throw AppSettingsValidationError.invalidAtaIdleSeconds
         }
         let trimmedAtaStandby = ataStandby.trimmingCharacters(in: .whitespacesAndNewlines)

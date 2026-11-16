@@ -462,6 +462,24 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         }
     }
 
+    func testSettingsChangedSinceTheLastInstallKeepTheRuntimeVerified() throws {
+        // The device runs what was installed, and Samba serves: only the next
+        // install applies the change, so nothing is wrong with the device.
+        let changed = testDoctorCheck(status: "WARN", message: "this Mac's settings differ from the device's installed ones", domain: "device",
+                                      code: DoctorSummary.settingsNotAppliedResultCode,
+                                      extraDetails: ["settings": .array([.string("mdns_advertise_afp")])])
+        let other = testDoctorCheck(status: "WARN", message: "something else", domain: "device")
+
+        for (name, checks, expected) in [("alone", [changed], DeviceRuntimeState.installedVerified),
+                                         ("beside SMART", [changed, smartFailing()], .installedVerified),
+                                         ("beside another warning", [changed, other], .installedUnverified)] {
+            let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .warning,
+                summary: try makeDoctorSummary(checks: checks))
+            XCTAssertEqual(runtimeState?.state, expected, name)
+        }
+    }
+
     func testDebugLoggingWarningShowsItsCatalogText() throws {
         let summary = try makeDoctorSummary(checks: [
             testDoctorCheck(status: "WARN", message: "debug logging is on", domain: "device",

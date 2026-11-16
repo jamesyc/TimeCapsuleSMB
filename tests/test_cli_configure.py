@@ -646,6 +646,22 @@ class CliConfigureTests(CliTestCase):
         self.assertEqual(result.values["TC_ATA_IDLE_SECONDS"], "0")
         self.assertEqual(result.values["TC_ATA_STANDBY"], "0")
 
+    def test_configure_refuses_an_idle_time_the_device_would_run_as_300(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            result = self.run_configure_cli(["--ata-idle-seconds", "86401"], raises=SystemExit)
+        self.assertEqual(result.exception.code, 2)
+        self.assertIn("no larger than 86400", stderr.getvalue())
+        result = self.run_configure_cli(
+            ["--ata-idle-seconds", "86400"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_ATA_IDLE_SECONDS"], "86400")
+
     def test_configure_no_input_uses_explicit_host_and_password_env_without_prompts(self) -> None:
         with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": "pw"}):
             result = self.run_configure_cli(

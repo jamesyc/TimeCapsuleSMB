@@ -11,17 +11,19 @@ import tempfile
 import zlib
 
 from timecapsulesmb.core.config import (
-    DEFAULTS,
     MANAGED_PAYLOAD_DIR_NAME,
     AppConfig,
     effective_smb_security,
-    parse_bool,
     shell_quote,
-    vfs_aio_fork_enabled_in,
 )
 from timecapsulesmb.core.error_codes import ErrorCode, coded_error_in, exception_chain
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
+from timecapsulesmb.core.runtime_settings import (
+    ManagedSettings,
+    effective_internal_root as _effective_internal_root,
+    managed_flash_values,
+)
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.migration import (
     CRASH_SIGNALS,
@@ -238,13 +240,6 @@ def _counted(count: int, one: str, other: str) -> str:
     return (one if count == 1 else other).replace("%lld", str(count))
 
 
-def _effective_internal_root(config: AppConfig, override: bool | None) -> bool:
-    """Whether the internal disk's share is the whole disk, not ShareRoot."""
-    if override is not None:
-        return override
-    return parse_bool(config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"]))
-
-
 def _share_path(path: str, volumes: Sequence[MaStVolume], internal_root: bool) -> str:
     """A device path as a Mac sees it over SMB: the share's name, then the
     path inside the share. A share is named after its volume; the device adds
@@ -444,6 +439,25 @@ class DeployRuntimeConfig:
     vfs_aio_fork_enabled: bool | None = None
     ata_idle_seconds: str | int | None = None
     ata_standby: str | int | None = None
+
+    @classmethod
+    def from_settings(cls, settings: ManagedSettings, *, telemetry_enabled: bool) -> DeployRuntimeConfig:
+        return cls(
+            telemetry_enabled=telemetry_enabled,
+            rsync_enabled=bool(settings.rsync_enabled),
+            debug_logging=settings.debug_logging,
+            internal_share_use_disk_root=settings.internal_share_use_disk_root,
+            smb_browse_compatibility=settings.smb_browse_compatibility,
+            mdns_advertise_afp=settings.mdns_advertise_afp,
+            any_protocol=settings.any_protocol,
+            require_smb_signing=settings.require_smb_signing,
+            require_smb_encryption=settings.require_smb_encryption,
+            disable_smb_encryption=settings.disable_smb_encryption,
+            fruit_metadata_netatalk=settings.fruit_metadata_netatalk,
+            vfs_aio_fork_enabled=settings.vfs_aio_fork_enabled,
+            ata_idle_seconds=settings.ata_idle_seconds,
+            ata_standby=settings.ata_standby,
+        )
 
 
 @dataclass(frozen=True)
@@ -1886,30 +1900,6 @@ def _render_flash_config_assignment(key: str, value: str | int) -> str:
     return f"{key}={shell_quote(value)}"
 
 
-def _runtime_unsigned_config_value(config: AppConfig, key: str, default: str) -> str:
-    raw_value = config.get(key, default).strip()
-    if raw_value == "":
-        raw_value = default
-    if raw_value == "":
-        return ""
-    if not raw_value.isdigit():
-        raise ValueError(f"{key} must be a non-negative integer")
-    return str(int(raw_value))
-
-
-def _runtime_unsigned_override_value(value: str | int) -> str | int:
-    if isinstance(value, int):
-        if value < 0:
-            raise ValueError("runtime setting override must be a non-negative integer")
-        return value
-    raw_value = value.strip()
-    if raw_value == "":
-        return ""
-    if not raw_value.isdigit():
-        raise ValueError("runtime setting override must be a non-negative integer")
-    return str(int(raw_value))
-
-
 def render_payload_checksums(*, smbd_path: Path, rsync_path: Path) -> str:
     """The payload's own checksums: the manager copies each binary from the
     disk to RAM at every boot and runs a copy only when its CRC-32 matches.
@@ -1938,76 +1928,45 @@ def render_flash_runtime_config(
     ata_standby: str | int | None = None,
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
-    smb_browse_compatibility_default = config.get(
-        "TC_SMB_BROWSE_COMPATIBILITY",
-        DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"],
-    )
-    mdns_advertise_afp_default = config.get(
-        "TC_MDNS_ADVERTISE_AFP",
-        DEFAULTS["TC_MDNS_ADVERTISE_AFP"],
-    )
-    fruit_metadata_netatalk_default = config.get(
-        "TC_FRUIT_METADATA_NETATALK",
-        DEFAULTS["TC_FRUIT_METADATA_NETATALK"],
-    )
-    configured_debug_logging = config.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])
-    runtime_ata_idle_seconds = (
-        _runtime_unsigned_config_value(config, "TC_ATA_IDLE_SECONDS", DEFAULTS["TC_ATA_IDLE_SECONDS"])
-        if ata_idle_seconds is None
-        else _runtime_unsigned_override_value(ata_idle_seconds)
-    )
-    runtime_ata_standby = (
-        _runtime_unsigned_config_value(config, "TC_ATA_STANDBY", DEFAULTS["TC_ATA_STANDBY"])
-        if ata_standby is None
-        else _runtime_unsigned_override_value(ata_standby)
-    )
-    effective_internal_root = _effective_internal_root(config, internal_share_use_disk_root)
-    smb = effective_smb_security(
-        config,
+    """The device's /mnt/Flash/tcapsulesmb.conf. Each managed setting is the
+    one passed, else the .env's (managed_flash_values, which doctor compares
+    with the device's copy)."""
+    managed = managed_flash_values(config, ManagedSettings(
+        debug_logging=debug_logging,
+        internal_share_use_disk_root=internal_share_use_disk_root,
+        smb_browse_compatibility=smb_browse_compatibility,
+        mdns_advertise_afp=mdns_advertise_afp,
         any_protocol=any_protocol,
         require_smb_signing=require_smb_signing,
         require_smb_encryption=require_smb_encryption,
         disable_smb_encryption=disable_smb_encryption,
-    )
-    effective_smb_browse_compatibility = (
-        parse_bool(smb_browse_compatibility_default)
-        if smb_browse_compatibility is None
-        else smb_browse_compatibility
-    )
-    effective_mdns_advertise_afp = (
-        parse_bool(mdns_advertise_afp_default)
-        if mdns_advertise_afp is None
-        else mdns_advertise_afp
-    )
-    effective_fruit_metadata_netatalk = (
-        parse_bool(fruit_metadata_netatalk_default)
-        if fruit_metadata_netatalk is None
-        else fruit_metadata_netatalk
-    )
-    effective_vfs_aio_fork_enabled = (
-        vfs_aio_fork_enabled_in(config) if vfs_aio_fork_enabled is None else vfs_aio_fork_enabled
-    )
-    effective_debug_logging = parse_bool(configured_debug_logging) if debug_logging is None else debug_logging
-
+        fruit_metadata_netatalk=fruit_metadata_netatalk,
+        vfs_aio_fork_enabled=vfs_aio_fork_enabled,
+        ata_idle_seconds=ata_idle_seconds,
+        ata_standby=ata_standby,
+        rsync_enabled=rsync_enabled,
+    ))
     values: list[tuple[str, str | int]] = [
         ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
         ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
         ("TELEMETRY", "true" if telemetry_enabled else "false"),
-        ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if effective_internal_root else 0),
-        ("SMB_BROWSE_COMPATIBILITY", 1 if effective_smb_browse_compatibility else 0),
-        ("MDNS_ADVERTISE_AFP", 1 if effective_mdns_advertise_afp else 0),
-        ("ANY_PROTOCOL", 1 if smb.any_protocol else 0),
-        ("REQUIRE_SMB_SIGNING", 1 if smb.require_smb_signing else 0),
-        ("REQUIRE_SMB_ENCRYPTION", 1 if smb.require_smb_encryption else 0),
-        ("DISABLE_SMB_ENCRYPTION", 1 if smb.disable_smb_encryption else 0),
-        ("FRUIT_METADATA_NETATALK", 1 if effective_fruit_metadata_netatalk else 0),
-        ("VFS_AIO_FORK_ENABLED", 1 if effective_vfs_aio_fork_enabled else 0),
+        *((key, managed[key]) for key in (
+            "INTERNAL_SHARE_USE_DISK_ROOT",
+            "SMB_BROWSE_COMPATIBILITY",
+            "MDNS_ADVERTISE_AFP",
+            "ANY_PROTOCOL",
+            "REQUIRE_SMB_SIGNING",
+            "REQUIRE_SMB_ENCRYPTION",
+            "DISABLE_SMB_ENCRYPTION",
+            "FRUIT_METADATA_NETATALK",
+            "VFS_AIO_FORK_ENABLED",
+        )),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
-        ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),
-        ("ATA_STANDBY", runtime_ata_standby),
-        ("RSYNC_ENABLED", 1 if rsync_enabled else 0),
-        ("SMBD_DEBUG_LOGGING", 1 if effective_debug_logging else 0),
-        ("MDNS_DEBUG_LOGGING", 1 if effective_debug_logging else 0),
+        ("ATA_IDLE_SECONDS", managed["ATA_IDLE_SECONDS"]),
+        ("ATA_STANDBY", managed["ATA_STANDBY"]),
+        ("RSYNC_ENABLED", managed["RSYNC_ENABLED"]),
+        ("SMBD_DEBUG_LOGGING", managed["SMBD_DEBUG_LOGGING"]),
+        ("MDNS_DEBUG_LOGGING", managed["MDNS_DEBUG_LOGGING"]),
     ]
     return "\n".join(_render_flash_config_assignment(key, value) for key, value in values) + "\n"
 

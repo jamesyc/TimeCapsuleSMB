@@ -560,6 +560,130 @@ final class DashboardStoreTests: XCTestCase {
         try await waitUntilStoreState { !self.deviceLaneIsRunning(first, appStore: fixture.appStore) }
     }
 
+    func testASettingsSaveClearsTheCheckupTabAndTheNextCheckupSendsTheNewSettings() async throws {
+        let doctorResult = BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
+        ]))
+        let fixture = try await makeFixture(responses: [
+            .init(events: [doctorResult]),
+            .init(events: [BackendEvent(type: "result", operation: "update-config-settings", ok: true)]),
+            .init(events: [doctorResult]),
+        ])
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        fixture.appStore.select(profile)
+        let session = DashboardStore(appStore: fixture.appStore).session(for: profile)
+
+        session.runCheckup(profile: profile)
+        try await waitUntilStoreState {
+            session.doctorStore.state == .passed && fixture.registry.profile(id: profile.id)?.lastCheckup != nil
+                && !fixture.appStore.operationCoordinator.isDeviceBusy(profile)
+        }
+
+        session.profileEditorStore.draft.mdnsAdvertiseAFP = true
+        await session.profileEditorStore.save(profile: try XCTUnwrap(fixture.registry.profile(id: profile.id)))
+        try await waitUntilStoreState {
+            session.profileEditorStore.state == .saved && session.doctorStore.summary == nil
+                && fixture.registry.profile(id: profile.id)?.lastCheckup == nil
+        }
+        XCTAssertEqual(session.doctorStore.state, .idle)
+
+        // A button made before the save still holds the old profile.
+        session.runCheckup(profile: profile)
+        try await waitUntilStoreState { session.doctorStore.state == .passed }
+        let doctorCalls = fixture.runner.calls.filter { $0.operation == "doctor" }
+        XCTAssertEqual(doctorCalls.first?.params["mdns_advertise_afp"], .bool(false))
+        XCTAssertEqual(doctorCalls.last?.params["mdns_advertise_afp"], .bool(true))
+    }
+
+    func testSettingsSavedWhileACheckupRunsDropItsResultWhenItFinishes() async throws {
+        let doctorResult = BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
+        ]))
+        let fixture = try await makeFixture(responses: [
+            .init(events: [doctorResult], pauseBeforeEvents: true),
+            .init(events: [doctorResult]),
+        ])
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        fixture.appStore.select(profile)
+        let session = DashboardStore(appStore: fixture.appStore).session(for: profile)
+
+        session.runCheckup(profile: profile)
+        try await waitUntilStoreState { session.doctorStore.isRunning }
+        // The editor's profile write lands after the Checkup started.
+        var edited = profile.settings
+        edited.mdnsAdvertiseAFP.toggle()
+        try await fixture.registry.updateEditableFields(
+            DeviceProfileEditableFields(displayName: profile.displayName, settings: edited),
+            passwordState: nil, for: profile.id
+        )
+        XCTAssertTrue(session.doctorStore.isRunning, "a running Checkup is not interrupted")
+        fixture.runner.finishAll()
+
+        try await waitUntilStoreState {
+            !fixture.appStore.operationCoordinator.isDeviceBusy(profile)
+                && fixture.registry.profile(id: profile.id)?.runtimeState?.source == .doctor
+                && session.doctorStore.state == .idle
+        }
+        XCTAssertNil(fixture.registry.profile(id: profile.id)?.lastCheckup)
+        XCTAssertNil(session.doctorStore.summary)
+
+        // The next Checkup sends the new settings and keeps its result.
+        session.runCheckup(profile: profile)
+        try await waitUntilStoreState {
+            session.doctorStore.state == .passed && fixture.registry.profile(id: profile.id)?.lastCheckup != nil
+        }
+        XCTAssertEqual(fixture.runner.calls.last?.params["mdns_advertise_afp"], .bool(edited.mdnsAdvertiseAFP))
+    }
+
+    func testSettingsSavedWhileACheckupWaitsForLocalNetworkAreTheOnesItSends() async throws {
+        let checker = GatedLocalNetworkPreflightChecker()
+        let fixture = try await makeFixture(responses: [
+            // The editor's save writes the profile's .env first.
+            .init(events: [BackendEvent(type: "result", operation: "update-config-settings", ok: true)]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
+                ]))
+            ])
+        ], checker: checker)
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let session = DashboardStore(appStore: fixture.appStore).session(for: profile)
+
+        session.runCheckup(profile: profile)
+        try await waitUntilStoreState { checker.isWaiting }
+        let afp = !profile.settings.mdnsAdvertiseAFP
+        session.profileEditorStore.draft.mdnsAdvertiseAFP = afp
+        await session.profileEditorStore.save(profile: profile)
+        try await waitUntilStoreState { session.profileEditorStore.state == .saved }
+        XCTAssertEqual(session.doctorStore.state, .running, "the waiting Checkup stays in view")
+
+        checker.finish(.allowed)
+        try await waitUntilStoreState {
+            session.doctorStore.state == .passed && fixture.registry.profile(id: profile.id)?.lastCheckup != nil
+        }
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["update-config-settings", "doctor"])
+        XCTAssertEqual(fixture.runner.calls[1].params["mdns_advertise_afp"], .bool(afp))
+        XCTAssertNotNil(session.doctorStore.summary, "its result is kept")
+    }
+
     func testDashboardOperationsUpdateCheckupDeployAndRuntimeSnapshots() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [

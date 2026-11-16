@@ -174,6 +174,24 @@ final class DeviceRegistryStore: ObservableObject {
         }
     }
 
+    @discardableResult
+    func updateEditableFields(
+        _ fields: DeviceProfileEditableFields,
+        passwordState: DevicePasswordState?,
+        for profileID: DeviceProfile.ID
+    ) async throws -> DeviceProfile {
+        state = .saving
+        error = nil
+        do {
+            let result = try await repository.updateEditableFields(fields, passwordState: passwordState, for: profileID)
+            await refreshProfilesFromRepository()
+            return result.profile
+        } catch {
+            fail(error, clearProfiles: false)
+            throw error
+        }
+    }
+
     func delete(_ profile: DeviceProfile) async throws {
         state = .saving
         error = nil
@@ -200,14 +218,19 @@ final class DeviceRegistryStore: ObservableObject {
 
     /// Record a checkup. `observedMAC` is the MAC the checkup read over SSH:
     /// a checkup of another AirPort is not this profile's and is not kept.
+    /// `checkedSettings` are the settings it sent (DoctorStore.checkedSettings).
     func updateCheckup(
         _ snapshot: DeviceCheckupSnapshot,
         runtimeState: DeviceRuntimeStateSnapshot?,
         observedMAC: String? = nil,
+        checkedSettings: DeviceProfileSettings? = nil,
         for profileID: DeviceProfile.ID
     ) async {
         await applyBackgroundMutation {
-            try await repository.updateCheckup(snapshot, runtimeState: runtimeState, observedMAC: observedMAC, for: profileID)
+            try await repository.updateCheckup(
+                snapshot, runtimeState: runtimeState, observedMAC: observedMAC,
+                checkedSettings: checkedSettings, for: profileID
+            )
         }
     }
 
@@ -556,9 +579,18 @@ private actor DeviceRegistryRepository {
         _ snapshot: DeviceCheckupSnapshot,
         runtimeState: DeviceRuntimeStateSnapshot?,
         observedMAC: String? = nil,
+        checkedSettings: DeviceProfileSettings? = nil,
         for profileID: DeviceProfile.ID
     ) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
+            return nil
+        }
+        // A Checkup run with settings the profile no longer has compared the
+        // device with those: it is not kept, as a settings save clears a
+        // saved one (updateEditableFields), whichever finished first. What it
+        // saw of the runtime still is.
+        let keepCheckup = checkedSettings.map { !profiles[index].settings.changesInstalledSettings(from: $0) } ?? true
+        guard keepCheckup || runtimeState != nil else {
             return nil
         }
         // Another AirPort answered the checkup (one with the same password at
@@ -574,7 +606,9 @@ private actor DeviceRegistryRepository {
             // SSH-backed observation. Dashboard updates are enqueued in order.
             updatedProfiles[index] = profileWithInterruptedRuntimeState(updatedProfiles[index])
         }
-        updatedProfiles[index].lastCheckup = snapshot
+        if keepCheckup {
+            updatedProfiles[index].lastCheckup = snapshot
+        }
         if let runtimeState {
             updatedProfiles[index].runtimeState = runtimeState
         }
@@ -653,6 +687,36 @@ private actor DeviceRegistryRepository {
         try persist(updatedProfiles)
         profiles = updatedProfiles
         return updatedProfiles
+    }
+
+    /// Change only what the profile editor edits, on the profile as stored
+    /// now: results other operations saved while the editor's save ran stay.
+    /// A change to a setting deploy writes clears the saved Checkup, which
+    /// compared the device with the settings it ran with.
+    func updateEditableFields(
+        _ fields: DeviceProfileEditableFields,
+        passwordState: DevicePasswordState?,
+        for profileID: DeviceProfile.ID
+    ) throws -> DeviceRegistryMutationResult {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
+            throw DeviceRegistryError.profileNotFound(profileID)
+        }
+        var updated = profiles[index]
+        if fields.settings.changesInstalledSettings(from: updated.settings) {
+            updated.lastCheckup = nil
+        }
+        updated.displayName = fields.displayName
+        updated.settings = fields.settings
+        if let passwordState {
+            updated.passwordState = passwordState
+        }
+        updated.updatedAt = now()
+        var updatedProfiles = profiles
+        updatedProfiles[index] = updated
+        updatedProfiles = sorted(updatedProfiles)
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return DeviceRegistryMutationResult(profile: updated)
     }
 
     func clearCheckup(for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {

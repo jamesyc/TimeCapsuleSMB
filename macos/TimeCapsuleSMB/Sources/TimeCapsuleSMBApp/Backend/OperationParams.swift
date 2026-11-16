@@ -165,10 +165,13 @@ enum OperationParams {
     }
 
     enum Doctor {
+        /// `settings` are the device profile's, which deploy writes to the
+        /// device: Checkup compares the device with them, not with the .env.
         static func run(
             skipSSH: Bool = false,
             skipBonjour: Bool = false,
             skipSMB: Bool = false,
+            settings: DeviceProfileSettings? = nil,
             localNetworkPreflight: LocalNetworkPreflightResult? = nil
         ) -> [String: JSONValue] {
             var params: [String: JSONValue] = [
@@ -176,6 +179,11 @@ enum OperationParams {
                 "skip_bonjour": .bool(skipBonjour),
                 "skip_smb": .bool(skipSMB)
             ]
+            if let settings {
+                params.merge(Configure.updateSettings(settings)) { _, new in new }
+                // Deploy sends rsync apart from the saved settings; so does Checkup.
+                params["rsync_enabled"] = .bool(settings.rsyncEnabled)
+            }
             // Checkup reports the result in its This Mac section.
             params.merge(localNetworkPreflight?.telemetryFields ?? [:]) { _, new in new }
             return params

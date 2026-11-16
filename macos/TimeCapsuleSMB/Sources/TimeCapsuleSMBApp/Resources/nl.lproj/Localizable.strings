@@ -59,7 +59,7 @@
 "app_readiness.recovery.version_metadata_unavailable" = "Controleer uw netwerkverbinding of probeer het later opnieuw.";
 "app_settings.appearance" = "Uiterlijk";
 "app_settings.default_bonjour_timeout" = "Time-out voor apparaatdetectie (seconden)";
-"app_settings.error.ata_idle" = "De ATA-inactiviteitstijd moet een niet-negatief aantal seconden zijn.";
+"app_settings.error.ata_idle" = "De ATA-inactiviteitstijd moet een niet-negatief aantal seconden zijn, hoogstens 86400.";
 "app_settings.error.ata_standby" = "De ATA-stand-bytijd moet leeg zijn of een niet-negatief aantal seconden zijn.";
 "app_settings.error.bonjour_timeout" = "De time-out voor apparaatdetectie moet minstens 5 seconden zijn.";
 "app_settings.error.corrupt" = "App-instellingen konden niet worden gelezen: %@";
@@ -347,6 +347,7 @@
 "doctor.check.disk_size_misreported" = "Het apparaat meldt de interne schijf als veel kleiner dan hij is, dus er kan niets op worden geïnstalleerd. Herstart het apparaat; als de schijf een verkeerde grootte blijft melden, moet hij worden vervangen.";
 "doctor.check.disk_no_hfs_partition" = "Een schijf van het apparaat heeft geen HFS-volume dat TimeCapsuleSMB kan gebruiken. Als het de interne schijf is en er niets op staat dat u nodig hebt, gebruik dan ‘Interne schijf opnieuw formatteren’ om de schijf voor het apparaat te formatteren.";
 "doctor.check.debug_logging_on" = "Het debuglogboek staat aan en maakt het apparaat trager. Schakel het uit, tenzij u een probleem aan het oplossen bent.";
+"doctor.check.settings_not_applied" = "De instellingen van deze Mac wijken af van die op het apparaat zijn geïnstalleerd: %@. Het apparaat houdt de geïnstalleerde tot u ‘Samba installeren / bijwerken’ uitvoert.";
 "doctor.check.wifi_client" = "Het apparaat is via Wi-Fi in plaats van een Ethernet-kabel met zijn netwerk verbonden. Is die verbinding zwak, dan worden bestandsdeling en deze controles traag of duren ze te lang.";
 "doctor.check.process_listing_timed_out" = "Het weergeven van de processen van het apparaat duurde te lang, hoewel inloggen via SSH werkte. Een vastgelopen proces, een apparaat dat geen processen meer kan starten of een trage verbinding kan de oorzaak zijn. SMB wordt niet opnieuw gecontroleerd en logboeken op de schijf van het apparaat worden niet gelezen.";
 "doctor.check.process_listing_timed_out_wifi" = "Het weergeven van de processen van het apparaat duurde te lang, hoewel inloggen via SSH werkte. Het apparaat is via Wi-Fi in plaats van een Ethernet-kabel met zijn netwerk verbonden, en een trage verbinding kan de oorzaak zijn. SMB wordt niet opnieuw gecontroleerd en logboeken op de schijf van het apparaat worden niet gelezen.";
@@ -611,7 +612,7 @@
 "overview.discovery.unsaved" = "Niet opgeslagen";
 "overview.discovery.waiting" = "Apparaatdetectie begint zodra de app-runtime gereed is.";
 "operation.error.already_running" = "Er is al een andere bewerking actief.";
-"workflow.error.ata_idle_seconds_invalid" = "De ATA-inactiviteitstijd moet een niet-negatief aantal seconden zijn.";
+"workflow.error.ata_idle_seconds_invalid" = "De ATA-inactiviteitstijd moet een niet-negatief aantal seconden zijn, hoogstens 86400.";
 "workflow.error.ata_standby_invalid" = "De ATA-stand-bytijd moet leeg zijn of een niet-negatief aantal seconden zijn.";
 "workflow.error.deploy_options_invalid" = "De opties voor installeren / bijwerken zijn ongeldig.";
 "workflow.error.flash_backup_required" = "Maak een back-up en controleer de firmware voordat u flashbewerkingen plant.";
@@ -669,7 +670,7 @@
 "profile_editor.display_name" = "Weergavenaam";
 "profile_editor.error.duplicate_host" = "Een ander opgeslagen apparaat maakt al gebruik van deze host.";
 "profile_editor.error.host_required" = "Host is vereist.";
-"profile_editor.error.ata_idle_seconds_invalid" = "De ATA-inactiviteitstijd moet een niet-negatief aantal seconden zijn.";
+"profile_editor.error.ata_idle_seconds_invalid" = "De ATA-inactiviteitstijd moet een niet-negatief aantal seconden zijn, hoogstens 86400.";
 "profile_editor.error.ata_standby_invalid" = "De ATA-stand-bytijd moet leeg zijn of een niet-negatief aantal seconden zijn.";
 "profile_editor.error.mount_wait_invalid" = "De wachttijd voor koppelen moet een niet-negatief geheel getal zijn.";
 "profile_editor.error.password_required" = "Een opgeslagen wachtwoord is vereist om de host te wijzigen.";

@@ -566,6 +566,12 @@ class ConfigTests(unittest.TestCase):
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].kind, "invalid_value")
         self.assertEqual(errors[0].key, "TC_ATA_IDLE_SECONDS")
+        # An idle time past 86400, which older releases saved, is still a
+        # valid .env: deploy and doctor read it as the device does (300).
+        values["TC_ATA_IDLE_SECONDS"] = "100000"
+        config = AppConfig.from_values(values, file_values=values)
+        for profile in ("deploy", "doctor"):
+            self.assertEqual(validate_app_config(config, profile=profile), [], profile)
 
     def test_flash_profile_ignores_deploy_only_settings(self) -> None:
         values = dict(DEFAULTS)

@@ -169,7 +169,7 @@ struct DeviceProfileEditorDraft: Equatable {
         if mountWait == nil {
             errors.append(.mountWaitInvalid)
         }
-        let ataIdle = ValueParsers.nonNegativeInteger(ataIdleSeconds)
+        let ataIdle = ValueParsers.ataIdleSeconds(ataIdleSeconds)
         if ataIdle == nil {
             errors.append(.ataIdleSecondsInvalid)
         }

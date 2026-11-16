@@ -14,6 +14,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import timecapsulesmb.device.probe as probe
+from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.release import RELEASE_TAG
 from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.device.errors import DeviceError
@@ -82,6 +84,69 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("TC_DEPLOY_RELEASE_TAG", args[1])
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+
+    def run_deployed_version_script(self, config_text: str | None) -> probe.DeployedVersionProbeResult:
+        """Run the probe's shell against a Flash config the way the device
+        does, with the setting names also set in the environment."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "tcapsulesmb.conf"
+            if config_text is not None:
+                config.write_text(config_text)
+            script = probe.deployed_version_script().replace(probe.FLASH_RUNTIME_CONFIG, str(config))
+            env = {"PATH": "/usr/bin:/bin", "MDNS_ADVERTISE_AFP": "stale", "ATA_STANDBY": "stale"}
+            proc = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True, env=env, check=True)
+        return probe.parse_deployed_version(proc.stdout)
+
+    def test_deployed_version_script_reads_the_settings_deploy_wrote(self) -> None:
+        from timecapsulesmb.core.runtime_settings import COMPARED_FLASH_KEYS
+        from timecapsulesmb.services.deploy import render_flash_runtime_config
+
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_ATA_STANDBY": ""})
+        text = render_flash_runtime_config(config, None, mdns_advertise_afp=True, require_smb_signing=True)
+
+        result = self.run_deployed_version_script(text)
+
+        self.assertEqual(result.release_tag, RELEASE_TAG)
+        self.assertEqual(set(result.installed), set(COMPARED_FLASH_KEYS))
+        self.assertEqual(result.installed["MDNS_ADVERTISE_AFP"], "1")
+        self.assertEqual(result.installed["REQUIRE_SMB_SIGNING"], "1")
+        # Blank is a value (leave the disk's standby as it is), not a missing key.
+        self.assertEqual(result.installed["ATA_STANDBY"], "")
+        self.assertEqual(result.installed["ATA_IDLE_SECONDS"], "300")
+
+    def test_deployed_version_script_leaves_out_settings_the_config_lacks(self) -> None:
+        partial = "TC_DEPLOY_RELEASE_TAG=v3.0.0\nTC_DEPLOY_CLI_VERSION_CODE=30000\nMDNS_ADVERTISE_AFP=0\n"
+        for name, text, expected in (
+            ("partial_config", partial, {"MDNS_ADVERTISE_AFP": "0"}),
+            ("no_config", None, {}),
+        ):
+            with self.subTest(name):
+                self.assertEqual(self.run_deployed_version_script(text).installed, expected)
+
+    def test_installed_settings_read_as_the_device_reads_them(self) -> None:
+        # common/config.c config_bool_value and samba/config.c number().
+        cases = {
+            "MDNS_ADVERTISE_AFP": [("1", "1"), ("true", "1"), ("YES", "1"), ("0", "0"), ("False", "0"), ("no", "0"),
+                                   ("maybe", "maybe")],
+            # number() runs the disk with 300 for a value it ignores.
+            "ATA_IDLE_SECONDS": [("300", "300"), ("0300", "300"), ("0", "0"), ("86400", "86400"),
+                                 ("86401", "300"), ("", "300"), ("soon", "300")],
+            "ATA_STANDBY": [("", ""), ("0120", "120")],
+        }
+        for key, pairs in cases.items():
+            for written, read in pairs:
+                with self.subTest(key=key, written=written):
+                    result = probe.parse_deployed_version(f"release_tag=v1\ncli_version_code=1\nsetting.{key}={written}\n")
+                    self.assertEqual(result.installed[key], read)
+
+    def test_parse_deployed_version_keeps_only_compared_settings(self) -> None:
+        result = probe.parse_deployed_version(
+            "release_tag=v3.8.7\ncli_version_code=30807\nsetting.MDNS_ADVERTISE_AFP=1\n"
+            "setting.TELEMETRY=true\nsetting.ATA_STANDBY=\n"
+        )
+        self.assertEqual(result.installed, {"MDNS_ADVERTISE_AFP": "1", "ATA_STANDBY": ""})
+        # Hashable, as a frozen result should be.
+        self.assertIsInstance(hash(result), int)
 
     def test_flash_runtime_config_present_conn_returns_true_when_file_exists(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")

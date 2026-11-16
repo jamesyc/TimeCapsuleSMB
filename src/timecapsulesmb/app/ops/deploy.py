@@ -12,16 +12,14 @@ from timecapsulesmb.app.confirmations import (
     require_disk_failing_confirmation,
 )
 from timecapsulesmb.core.config import (
-    DEFAULTS,
     airport_family_display_name_from_identity,
-    effective_smb_security,
-    parse_bool,
-    vfs_aio_fork_enabled_in,
 )
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.app.ops.common import (
     load_request_config,
+    managed_setting_params,
+    resolve_managed_settings,
     resolve_request_target,
 )
 from timecapsulesmb.device.disk_errors import read_disk_failing_evidence_conn
@@ -33,7 +31,6 @@ from timecapsulesmb.services.app import (
     bool_param,
     config_path,
     int_param,
-    optional_bool_param,
 )
 from timecapsulesmb.services.context import exception_cause_detail, message_with_exception_cause
 from timecapsulesmb.services.deploy import (
@@ -63,15 +60,6 @@ class DeployConfirmationPresentation:
     risk: str
     summary: str
     presentation_id: str
-
-
-def optional_unsigned_int_override_param(params: dict[str, object], name: str) -> int | str | None:
-    if name not in params or params.get(name) is None:
-        return None
-    value = params.get(name)
-    if isinstance(value, str) and value.strip() == "":
-        return ""
-    return int_param(params, name, 0)
 
 
 def _device_error_code(exc: DeviceError) -> ErrorCode:
@@ -168,7 +156,8 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             code=ErrorCode.VALIDATION_FAILED,
         )
     no_wait = bool_param(params, "no_wait")
-    rsync_enabled = bool_param(params, "rsync_enabled")
+    sent_settings = managed_setting_params(params)
+    rsync_enabled = bool(sent_settings.rsync_enabled)
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     allow_unsupported = bool_param(params, "allow_unsupported")
     deploy_options = DeployOptions(
@@ -179,13 +168,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         allow_unsupported=allow_unsupported,
     )
     no_wait = deploy_options.no_wait
-    debug_logging = optional_bool_param(params, "debug_logging")
-    ata_idle_seconds = (
-        int_param(params, "ata_idle_seconds", int(DEFAULTS["TC_ATA_IDLE_SECONDS"]))
-        if "ata_idle_seconds" in params and params.get("ata_idle_seconds") is not None
-        else None
-    )
-    ata_standby = optional_unsigned_int_override_param(params, "ata_standby")
     context.update_fields(
         rsync_enabled=rsync_enabled,
         reboot_was_attempted=False,
@@ -197,41 +179,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     connection = target.connection
     app_paths = resolve_app_paths(config_path=config_path(params))
     telemetry_enabled = load_install_identity().telemetry_enabled
-    internal_share_use_disk_root = bool_param(
-        params,
-        "internal_share_use_disk_root",
-        parse_bool(config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])),
-    )
-    smb_browse_compatibility = bool_param(
-        params,
-        "smb_browse_compatibility",
-        parse_bool(config.get("TC_SMB_BROWSE_COMPATIBILITY", DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"])),
-    )
-    mdns_advertise_afp = bool_param(
-        params,
-        "mdns_advertise_afp",
-        parse_bool(config.get("TC_MDNS_ADVERTISE_AFP", DEFAULTS["TC_MDNS_ADVERTISE_AFP"])),
-    )
-    try:
-        smb = effective_smb_security(
-            config,
-            any_protocol=optional_bool_param(params, "any_protocol"),
-            require_smb_signing=optional_bool_param(params, "require_smb_signing"),
-            require_smb_encryption=optional_bool_param(params, "require_smb_encryption"),
-            disable_smb_encryption=optional_bool_param(params, "disable_smb_encryption"),
-        )
-    except ValueError as exc:
-        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
-    fruit_metadata_netatalk = bool_param(
-        params,
-        "fruit_metadata_netatalk",
-        parse_bool(config.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"])),
-    )
-    vfs_aio_fork_enabled = bool_param(
-        params,
-        "vfs_aio_fork_enabled",
-        vfs_aio_fork_enabled_in(config),
-    )
+    settings = resolve_managed_settings(sent_settings, config)
 
     try:
         preflight = prepare_deploy_preflight(
@@ -335,22 +283,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             config,
             connection=connection,
             prepared_plan=prepared_plan,
-            runtime_config=DeployRuntimeConfig(
-                telemetry_enabled=telemetry_enabled,
-                rsync_enabled=rsync_enabled,
-                debug_logging=debug_logging,
-                internal_share_use_disk_root=internal_share_use_disk_root,
-                smb_browse_compatibility=smb_browse_compatibility,
-                mdns_advertise_afp=mdns_advertise_afp,
-                any_protocol=smb.any_protocol,
-                require_smb_signing=smb.require_smb_signing,
-                require_smb_encryption=smb.require_smb_encryption,
-                disable_smb_encryption=smb.disable_smb_encryption,
-                fruit_metadata_netatalk=fruit_metadata_netatalk,
-                vfs_aio_fork_enabled=vfs_aio_fork_enabled,
-                ata_idle_seconds=ata_idle_seconds,
-                ata_standby=ata_standby,
-            ),
+            runtime_config=DeployRuntimeConfig.from_settings(settings, telemetry_enabled=telemetry_enabled),
             callbacks=context.to_operation_callbacks(),
             initial_upload_stage=None,
             on_uploading=stage_upload,

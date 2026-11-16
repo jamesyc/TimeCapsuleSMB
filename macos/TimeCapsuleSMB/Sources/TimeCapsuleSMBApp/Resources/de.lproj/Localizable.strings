@@ -59,7 +59,7 @@
 "app_readiness.recovery.version_metadata_unavailable" = "Überprüfen Sie Ihre Netzwerkverbindung oder versuchen Sie es später erneut.";
 "app_settings.appearance" = "Aussehen";
 "app_settings.default_bonjour_timeout" = "Zeitlimit für die Gerätesuche (Sekunden)";
-"app_settings.error.ata_idle" = "Die ATA-Leerlaufzeit muss eine nicht negative Zahl von Sekunden sein.";
+"app_settings.error.ata_idle" = "Die ATA-Leerlaufzeit muss eine nicht negative Zahl von Sekunden bis höchstens 86400 sein.";
 "app_settings.error.ata_standby" = "Die ATA-Standby-Zeit muss leer oder eine nicht negative Zahl von Sekunden sein.";
 "app_settings.error.bonjour_timeout" = "Das Zeitlimit für die Gerätesuche muss mindestens 5 Sekunden betragen.";
 "app_settings.error.corrupt" = "App-Einstellungen konnten nicht gelesen werden: %@";
@@ -347,6 +347,7 @@
 "doctor.check.disk_size_misreported" = "Das Gerät meldet seine interne Festplatte als viel kleiner, als sie ist, daher kann nichts darauf installiert werden. Starten Sie das Gerät neu; wenn sie weiterhin eine falsche Größe meldet, muss die Festplatte ersetzt werden.";
 "doctor.check.disk_no_hfs_partition" = "Eine Festplatte des Geräts hat keinen HFS-Datenträger, den TimeCapsuleSMB verwenden kann. Wenn es die interne Festplatte ist und sich darauf nichts befindet, was Sie brauchen, verwenden Sie „Interne Festplatte neu formatieren“, um sie für das Gerät zu formatieren.";
 "doctor.check.debug_logging_on" = "Die Debug-Protokollierung ist aktiv und verlangsamt das Gerät. Deaktivieren Sie sie, sofern Sie nicht gerade ein Problem untersuchen.";
+"doctor.check.settings_not_applied" = "Die Einstellungen dieses Mac weichen von den auf dem Gerät installierten ab: %@. Das Gerät behält die installierten, bis Sie „Samba installieren / aktualisieren“ ausführen.";
 "doctor.check.wifi_client" = "Das Gerät ist über Wi-Fi statt über ein Ethernet-Kabel mit seinem Netzwerk verbunden. Ist diese Verbindung schwach, werden die Dateifreigabe und diese Prüfungen langsam oder dauern zu lange.";
 "doctor.check.process_listing_timed_out" = "Das Auflisten der Prozesse des Geräts hat zu lange gedauert, obwohl die SSH-Anmeldung funktioniert hat. Ursache kann ein hängender Prozess sein, ein Gerät, dem die Prozesse ausgehen, oder eine langsame Verbindung. SMB wird nicht erneut geprüft, und Protokolle auf der Festplatte des Geräts werden nicht gelesen.";
 "doctor.check.process_listing_timed_out_wifi" = "Das Auflisten der Prozesse des Geräts hat zu lange gedauert, obwohl die SSH-Anmeldung funktioniert hat. Das Gerät ist über Wi-Fi statt über ein Ethernet-Kabel mit seinem Netzwerk verbunden, und eine langsame Verbindung kann die Ursache sein. SMB wird nicht erneut geprüft, und Protokolle auf der Festplatte des Geräts werden nicht gelesen.";
@@ -611,7 +612,7 @@
 "overview.discovery.unsaved" = "Nicht gespeichert";
 "overview.discovery.waiting" = "Die Gerätesuche beginnt, sobald die App-Laufzeitumgebung bereit ist.";
 "operation.error.already_running" = "Ein anderer Vorgang wird bereits ausgeführt.";
-"workflow.error.ata_idle_seconds_invalid" = "Die ATA-Leerlaufzeit muss eine nicht negative Zahl von Sekunden sein.";
+"workflow.error.ata_idle_seconds_invalid" = "Die ATA-Leerlaufzeit muss eine nicht negative Zahl von Sekunden bis höchstens 86400 sein.";
 "workflow.error.ata_standby_invalid" = "Die ATA-Standby-Zeit muss leer oder eine nicht negative Zahl von Sekunden sein.";
 "workflow.error.deploy_options_invalid" = "Die Optionen für Installation / Aktualisierung sind ungültig.";
 "workflow.error.flash_backup_required" = "Sichern und prüfen Sie die Firmware, bevor Sie Flash-Vorgänge planen.";
@@ -669,7 +670,7 @@
 "profile_editor.display_name" = "Anzeigename";
 "profile_editor.error.duplicate_host" = "Ein anderes gespeichertes Gerät verwendet diesen Host bereits.";
 "profile_editor.error.host_required" = "Host ist erforderlich.";
-"profile_editor.error.ata_idle_seconds_invalid" = "Die ATA-Leerlaufzeit muss eine nicht negative Zahl von Sekunden sein.";
+"profile_editor.error.ata_idle_seconds_invalid" = "Die ATA-Leerlaufzeit muss eine nicht negative Zahl von Sekunden bis höchstens 86400 sein.";
 "profile_editor.error.ata_standby_invalid" = "Die ATA-Standby-Zeit muss leer oder eine nicht negative Zahl von Sekunden sein.";
 "profile_editor.error.mount_wait_invalid" = "Die Wartezeit beim Einbinden muss eine nicht negative ganze Zahl sein.";
 "profile_editor.error.password_required" = "Zum Wechseln des Hosts ist ein gespeichertes Passwort erforderlich.";

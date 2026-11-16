@@ -157,7 +157,15 @@ final class DeployWorkflowStoreTests: XCTestCase {
 
         XCTAssertEqual(store.state, .deployFailed)
         XCTAssertEqual(store.error?.code, "ata_idle_seconds_invalid")
-        XCTAssertEqual(store.error?.message, "ATA idle time must be a non-negative number of seconds.")
+        XCTAssertEqual(store.error?.message, "ATA idle time must be a non-negative number of seconds, up to 86400.")
+        XCTAssertEqual(runner.calls, [])
+
+        // The device runs a longer idle time as 300 seconds.
+        store.ataIdleSeconds = "86401"
+        store.runDeploy(password: "pw")
+
+        XCTAssertEqual(store.state, .deployFailed)
+        XCTAssertEqual(store.error?.code, "ata_idle_seconds_invalid")
         XCTAssertEqual(runner.calls, [])
 
         store.ataIdleSeconds = "300"

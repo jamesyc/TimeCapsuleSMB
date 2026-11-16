@@ -571,6 +571,44 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertLessThan(waitFirst.lowerBound, unplug.lowerBound)
     }
 
+    func testCheckupNamesSettingsChangedSinceTheLastInstallByTheirLabels() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+
+        let changed = testDoctorCheck(
+            status: "WARN",
+            message: "this Mac's settings differ from the device's installed ones: the helper's line",
+            domain: "device",
+            code: "settings_not_applied",
+            extraDetails: ["settings": .array([.string("mdns_advertise_afp"), .string("ata_idle_seconds")])]
+        )
+        let summary = DoctorSummary(payload: try testDoctorPayload(checks: [changed]).decode(DoctorPayload.self))
+
+        L10n.apply(language: .english)
+        let english = try XCTUnwrap(CheckupPresentation(summary: summary, state: .passed).domains.first?.rows.first)
+        XCTAssertEqual(english.message, "This Mac's settings differ from the ones installed on the device: "
+                       + "Advertise AFP over Bonjour and ATA idle. "
+                       + "The device keeps the installed ones until you run “Install / Update Samba”.")
+        L10n.apply(language: .german)
+        let german = try XCTUnwrap(CheckupPresentation(summary: summary, state: .passed).domains.first?.rows.first)
+        XCTAssertTrue(german.message.contains("AFP über Bonjour ankündigen und ATA-Leerlauf"), german.message)
+
+        // A setting this app does not know: the helper's own line, which names it.
+        let unknown = testDoctorCheck(
+            status: "WARN", message: "the helper's line", domain: "device", code: "settings_not_applied",
+            extraDetails: ["settings": .array([.string("mdns_advertise_afp"), .string("future_setting")])]
+        )
+        let unknownSummary = DoctorSummary(payload: try testDoctorPayload(checks: [unknown]).decode(DoctorPayload.self))
+        XCTAssertEqual(CheckupPresentation(summary: unknownSummary, state: .passed).domains.first?.rows.first?.message,
+                       "the helper's line")
+    }
+
+    func testEverySettingTheHelperComparesHasALabel() {
+        for key in DoctorCheckPayload.settingLabelKeys.values {
+            XCTAssertNotEqual(L10n.string(key), key, key)
+        }
+    }
+
     func testCheckupPresentationNamesADiskCheckStillRunning() throws {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

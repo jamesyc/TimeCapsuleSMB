@@ -239,6 +239,24 @@ extension FlashWritePayload: BackendSummarized {}
 extension SSHAccessPayload: BackendSummarized {}
 
 extension DoctorCheckPayload {
+    /// The helper's setting names (core.runtime_settings.COMPARED_SETTINGS)
+    /// and the labels the device settings show for them.
+    static let settingLabelKeys: [String: String] = [
+        "mdns_advertise_afp": "toggle.mdns_advertise_afp",
+        "internal_share_use_disk_root": "toggle.internal_share_use_disk_root",
+        "smb_browse_compatibility": "toggle.smb_browse_compatibility",
+        "any_protocol": "toggle.any_protocol",
+        "require_smb_signing": "toggle.require_smb_signing",
+        "require_smb_encryption": "toggle.require_smb_encryption",
+        "disable_smb_encryption": "toggle.disable_smb_encryption",
+        "fruit_metadata_netatalk": "toggle.use_netatalk_metadata",
+        "vfs_aio_fork_enabled": "toggle.enable_vfs_aio_fork",
+        "ata_idle_seconds": "settings.idle",
+        "ata_standby": "settings.standby",
+        "rsync_enabled": "toggle.enable_rsync",
+        "debug_logging": "toggle.force_debug_logging",
+    ]
+
     /// `localNetworkFacts` is looked up only for the block line.
     func localizedMessage(localNetworkFacts: @autoclosure () -> LocalNetworkAppFacts = .empty) -> String {
         if let problem = DoctorSummary.payloadProblem(code: code) {
@@ -281,6 +299,19 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.disk_errors_logged_usb")
         case "debug_logging_on":
             return L10n.string("doctor.check.debug_logging_on")
+        // This Mac's settings differ from the device's installed ones: the helper's
+        // line gives both values of each; the catalog's names them by their
+        // labels in the device's settings.
+        case "settings_not_applied":
+            guard case .object(let values) = details, case .array(let ids)? = values["settings"] else { return message }
+            let labels = ids.compactMap { id -> String? in
+                guard case .string(let id) = id, let key = Self.settingLabelKeys[id] else { return nil }
+                return L10n.string(key)
+            }
+            guard !labels.isEmpty, labels.count == ids.count else { return message }
+            let formatter = ListFormatter()
+            formatter.locale = L10n.currentLanguage.locale
+            return L10n.format("doctor.check.settings_not_applied", formatter.string(from: labels) ?? labels.joined(separator: ", "))
         // The device joins or extends another Wi-Fi network (wpa_supplicant runs).
         case "wifi_client":
             return L10n.string("doctor.check.wifi_client")

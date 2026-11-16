@@ -116,6 +116,7 @@ from timecapsulesmb.transport.errors import (
 from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, SSH_PASSWORD_NOT_APPLIED_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.device.acpd import RestartVerdict
+from timecapsulesmb.core.runtime_settings import SettingsSource
 
 
 class SampleMode(Enum):
@@ -5449,6 +5450,87 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "PASS")
         self.assertEqual(checks[0]["details"], {"port": 445})
 
+    def run_doctor_with_params(self, params: dict[str, object], env: dict[str, str]) -> tuple[int, CollectingSink, dict]:
+        """Run the doctor operation and keep the arguments it gave run_doctor_checks."""
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", **env})
+        seen: dict[str, object] = {}
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            seen.update(kwargs)
+            return [CheckResult("PASS", "ok")], False
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config) as load_config, \
+             mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)), \
+             mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")), \
+             mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+            rc = service.run_api_request({"operation": "doctor", "params": params}, collector.sink)
+        seen["load_config_called"] = load_config.called
+        return rc, collector, seen
+
+    def test_doctor_compares_the_device_with_the_profile_settings_deploy_writes(self) -> None:
+        # The profile says AFP on and the .env says off. Doctor takes the
+        # profile's, as the app's deploy does.
+        rc, _collector, seen = self.run_doctor_with_params(
+            {"mdns_advertise_afp": True, "ata_standby": "", "ata_idle_seconds": 600},
+            {"TC_MDNS_ADVERTISE_AFP": "false", "TC_REQUIRE_SMB_SIGNING": "true"},
+        )
+        self.assertEqual(rc, 0)
+        source = seen["settings_source"]
+        self.assertEqual(source.kind, "app_profile")
+        settings = source.settings
+        self.assertIs(settings.mdns_advertise_afp, True)
+        self.assertEqual(settings.ata_idle_seconds, 600)
+        self.assertEqual(settings.ata_standby, "")
+        # A setting the app left out comes from the .env, as in deploy.
+        self.assertIs(settings.require_smb_signing, True)
+        # rsync is never in the .env: off unless the app sends it.
+        self.assertIs(settings.rsync_enabled, False)
+
+    def test_doctor_without_settings_params_compares_the_env_as_the_cli_does(self) -> None:
+        # Nothing from a profile: the .env, without rsync and debug logging,
+        # which it never holds (a profile filled in from it would say off).
+        rc, _collector, seen = self.run_doctor_with_params({}, {"TC_MDNS_ADVERTISE_AFP": "true"})
+        self.assertEqual(rc, 0)
+        source = seen["settings_source"]
+        self.assertEqual(source, SettingsSource.env())
+        compared = {setting.setting_id for setting in source.compared}
+        self.assertIn("mdns_advertise_afp", compared)
+        self.assertNotIn("rsync_enabled", compared)
+        self.assertNotIn("debug_logging", compared)
+
+    def test_doctor_with_one_setting_param_takes_the_profile_source(self) -> None:
+        rc, _collector, seen = self.run_doctor_with_params({"rsync_enabled": False}, {})
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["settings_source"].kind, "app_profile")
+
+    def test_doctor_refuses_an_idle_time_the_device_would_run_as_300(self) -> None:
+        rc, collector, seen = self.run_doctor_with_params({"ata_idle_seconds": 86401}, {})
+        self.assertEqual(rc, 1)
+        self.assertFalse(seen["load_config_called"])
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertIn("86400", error["message"])
+
+        rc, _collector, seen = self.run_doctor_with_params({"ata_idle_seconds": 86400}, {})
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["settings_source"].settings.ata_idle_seconds, 86400)
+
+    def test_doctor_rejects_a_mistyped_setting_before_reading_the_env(self) -> None:
+        rc, collector, seen = self.run_doctor_with_params({"mdns_advertise_afp": "maybe"}, {})
+        self.assertEqual(rc, 1)
+        self.assertFalse(seen["load_config_called"])
+        self.assertNotIn("settings_source", seen)
+        self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "validation_failed")
+
+    def test_doctor_runs_with_a_settings_combination_deploy_would_refuse(self) -> None:
+        # The checkup still runs, and compares nothing with the device's settings.
+        rc, _collector, seen = self.run_doctor_with_params(
+            {"any_protocol": True, "require_smb_encryption": True}, {},
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["settings_source"].kind, "app_refused")
+
     def test_doctor_tells_the_app_when_it_waits_for_device_startup(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
@@ -5790,6 +5872,59 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["payload"]["payload_family"], "netbsd6_samba4")
         self.assertEqual(result["payload"]["rsync_enabled"], True)
         self.assertEqual(result["payload"]["schema_version"], 1)
+
+    def test_deploy_accepts_an_idle_time_an_older_release_saved_in_the_env(self) -> None:
+        # Older releases saved any idle time in the profile's .env. The app's
+        # profile has since been migrated to 300, but deploy still validates
+        # the .env: the old value must not stop an install. A value the .env
+        # check refuses still does.
+        artifacts = {
+            "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
+            "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
+        }
+        for saved, params, error_code in (
+            ("100000", {"ata_idle_seconds": 300}, None),
+            ("100000", {}, None),
+            ("soon", {"ata_idle_seconds": 300}, "config_error"),
+        ):
+            with self.subTest(saved=saved, params=params):
+                collector = CollectingSink()
+                values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_ATA_IDLE_SECONDS": saved}
+                config = AppConfig.from_values(values, file_values=values)
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config))
+                    probe = stack.enter_context(mock.patch(
+                        "timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=probed_state(),
+                    ))
+                    stack.enter_context(mock.patch(
+                        "timecapsulesmb.app.ops.deploy.resolve_app_paths",
+                        return_value=SimpleNamespace(distribution_root=REPO_ROOT),
+                    ))
+                    stack.enter_context(mock.patch(
+                        "timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")],
+                    ))
+                    stack.enter_context(mock.patch(
+                        "timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts,
+                    ))
+                    stack.enter_context(mock.patch(
+                        "timecapsulesmb.services.deploy.run_remote_actions",
+                        side_effect=AssertionError("dry run should not run remote actions"),
+                    ))
+                    rc = service.run_api_request(
+                        {"operation": "deploy", "params": {"dry_run": True, **params}}, collector.sink,
+                    )
+                if error_code is None:
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(collector.events_of_type("error"), [])
+                    probe.assert_called_once()
+                else:
+                    self.assertEqual(rc, 1)
+                    error = self.assert_single_terminal_event(collector, "error")
+                    self.assertEqual(error["code"], error_code)
+                    self.assertIn("TC_ATA_IDLE_SECONDS", error["message"])
+                    probe.assert_not_called()
 
     def test_deploy_dry_run_no_wait_returns_request_only_plan(self) -> None:
         collector = CollectingSink()
@@ -6172,6 +6307,21 @@ class AppApiTests(unittest.TestCase):
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], "validation_failed")
                 self.assertIn(expected, error["message"])
+
+    def test_deploy_rejects_a_null_or_empty_setting_before_reading_the_config(self) -> None:
+        for value in (None, ""):
+            with self.subTest(value=value):
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.common.load_env_config") as load_config:
+                    rc = service.run_api_request(
+                        {"operation": "deploy", "params": {"dry_run": True, "mdns_advertise_afp": value}},
+                        collector.sink,
+                    )
+                self.assertEqual(rc, 1)
+                load_config.assert_not_called()
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "validation_failed")
+                self.assertIn("mdns_advertise_afp must be a boolean", error["message"])
 
     def test_deploy_uploads_and_reboots_with_runtime_settings(self) -> None:
         collector = CollectingSink()

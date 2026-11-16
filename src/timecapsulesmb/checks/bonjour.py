@@ -6,7 +6,7 @@ import time
 from typing import Literal
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.core.config import AppConfig, parse_bool
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, same_scoped_ip, is_link_local_ipv6
 from timecapsulesmb.core.net import resolve_host_ips
 from timecapsulesmb.discovery.bonjour import (
@@ -28,6 +28,16 @@ from timecapsulesmb.device.probe import RuntimeNamingIdentityProbeResult, apple_
 
 
 @dataclass(frozen=True)
+class AfpExpectation:
+    """Whether the device should advertise AFP in its _adisk record, and
+    where that comes from: "installed" is the device's own setting, read from
+    its Flash config; "settings" is this Mac's, used when the device's is
+    unknown."""
+    advertise: bool
+    source: Literal["installed", "settings"]
+
+
+@dataclass(frozen=True)
 class BonjourExpectedIdentity:
     # ACP's base name is a lookup hint. Apple's current service instance may
     # have a conflict suffix without any change to the configured device name.
@@ -35,8 +45,9 @@ class BonjourExpectedIdentity:
     host_label: str | None
     target_ip: str | None
     # v3.1.0: AFP is advertised only on request (macOS 26.x/27 hides
-    # AFP-advertising Time Capsules); the doctor fails when it shows up uninvited.
-    advertise_afp: bool = False
+    # AFP-advertising Time Capsules); the doctor fails when it shows up
+    # uninvited. None: AFP is not judged.
+    afp: AfpExpectation | None = None
 
 
 @dataclass(frozen=True)
@@ -77,7 +88,11 @@ class BonjourServiceTarget:
 def build_bonjour_expected_identity(
     config: AppConfig,
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None = None,
+    *,
+    afp: AfpExpectation | None,
 ) -> BonjourExpectedIdentity:
+    """`afp` is what the device should advertise (doctor's settings step,
+    _doctor_settings_state); None judges nothing."""
     target_ip = None
     candidate_ip = endpoint_host(config.get("TC_HOST")).strip()
     if candidate_ip and (ipv4_literal(candidate_ip) or ipv6_literal(candidate_ip)):
@@ -86,7 +101,7 @@ def build_bonjour_expected_identity(
         instance_name=runtime_naming_identity.mdns_instance_name if runtime_naming_identity is not None else None,
         host_label=runtime_naming_identity.mdns_host_label if runtime_naming_identity is not None else None,
         target_ip=target_ip,
-        advertise_afp=parse_bool(config.get("TC_MDNS_ADVERTISE_AFP", "false")),
+        afp=afp,
     )
 
 

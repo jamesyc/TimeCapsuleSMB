@@ -25,6 +25,8 @@ if str(SRC_ROOT) not in sys.path:
 import subprocess
 
 from timecapsulesmb.checks.bonjour import (
+    AfpExpectation,
+    BonjourExpectedIdentity,
     DOCTOR_SERVICE_TYPES,
     build_expected_smb_instance,
     build_bonjour_expected_identity,
@@ -43,6 +45,7 @@ from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.doctor_steps import _add_bonjour_results, _terminal_app_hint, check_xattr_tdb_persistence
 from timecapsulesmb.checks.doctor_debug import _data_disk_unresponsive_result
 from timecapsulesmb.checks.doctor_state import DoctorSink
+from timecapsulesmb.checks import doctor_steps as doctor_steps_module
 from timecapsulesmb.checks.doctor_steps import (
     _add_admin_password_result,
     DEVICE_SMB_PASSED,
@@ -96,6 +99,7 @@ from timecapsulesmb.checks.smb import (
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from tests.fixtures.smb_clients import SMBCLIENT_PATH, apple_client_here, smbclient_here
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.runtime_settings import COMPARED_FLASH_KEYS, ManagedSettings, SettingsSource, managed_flash_values
 from timecapsulesmb.core.install import APP_CLIENT
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
@@ -361,6 +365,8 @@ class CheckTests(unittest.TestCase):
         extra_patches: dict[str, object] | None = None,
         real_device_smb: bool = False,
         local_network_permission: str | None = None,
+        settings_source: SettingsSource = SettingsSource.env(),
+        recheck_cached_txt=None,
     ):
         resolved_values = values or self.valid_doctor_values()
         mocks = SimpleNamespace()
@@ -515,6 +521,11 @@ class CheckTests(unittest.TestCase):
                 mocks.resolve_network_host_ips = stack.enter_context(
                     mock.patch("timecapsulesmb.checks.network.resolve_host_ips", return_value=())
                 )
+            # Never ask the real mDNSResponder to re-check a record.
+            mocks.recheck_cached_txt = stack.enter_context(mock.patch(
+                "timecapsulesmb.checks.doctor_steps.BonjourQuery.recheck_cached_txt",
+                recheck_cached_txt or mock.Mock(return_value=None),
+            ))
             for index, (target, replacement) in enumerate((extra_patches or {}).items()):
                 setattr(mocks, f"extra_{index}", stack.enter_context(mock.patch(target, replacement, create=True)))
 
@@ -528,6 +539,7 @@ class CheckTests(unittest.TestCase):
                 skip_bonjour=skip_bonjour,
                 skip_smb=skip_smb,
                 local_network_permission=local_network_permission,
+                settings_source=settings_source,
                 on_result=on_result,
                 on_stage=on_stage,
                 debug_fields=debug_fields,
@@ -1219,13 +1231,15 @@ class CheckTests(unittest.TestCase):
                 "TC_MDNS_HOST_LABEL": "home",
                 "TC_NETBIOS_NAME": "Home",
             }),
+            afp=AfpExpectation(True, "installed"),
         )
         self.assertEqual(identity.instance_name, "Home")
         self.assertEqual(identity.host_label, "home")
         self.assertEqual(identity.target_ip, "10.0.1.1")
+        self.assertEqual(identity.afp, AfpExpectation(True, "installed"))
 
     def test_build_bonjour_expected_identity_keeps_a_link_local_zone(self) -> None:
-        identity = build_bonjour_expected_identity(AppConfig.from_values({"TC_HOST": "root@fe80::82ea:96ff:fee6:5868%en0"}))
+        identity = build_bonjour_expected_identity(AppConfig.from_values({"TC_HOST": "root@fe80::82ea:96ff:fee6:5868%en0"}), afp=None)
 
         self.assertEqual(identity.target_ip, "fe80::82ea:96ff:fee6:5868%en0")
 
@@ -1249,6 +1263,7 @@ class CheckTests(unittest.TestCase):
                 "TC_MDNS_HOST_LABEL": "home",
                 "TC_NETBIOS_NAME": "Home",
             }),
+            afp=None,
         )
         self.assertEqual(identity.instance_name, "Home")
         self.assertEqual(identity.host_label, "home")
@@ -1263,7 +1278,8 @@ class CheckTests(unittest.TestCase):
         ]
         return BonjourDiscoverySnapshot([BonjourServiceInstance(r.service_type, r.name, r.fullname) for r in records], records)
 
-    def run_selected_bonjour(self, snapshot, *, values=None, resolver=None, provider="dns-sd", discovery_error=None, local_networks=None, extra=None):
+    def run_selected_bonjour(self, snapshot, *, values=None, resolver=None, provider="dns-sd", discovery_error=None, local_networks=None, extra=None,
+                             deployed_version=None, settings_source=None, recheck_cached_txt=None):
         from timecapsulesmb.discovery.bonjour import BonjourQueryDiagnostics
         debug = {}
         diagnostics = BonjourQueryDiagnostics(provider, [r.service_type for r in snapshot.resolved], 6, 6,
@@ -1278,6 +1294,12 @@ class CheckTests(unittest.TestCase):
             patches["timecapsulesmb.checks.doctor_steps.resolve_smb_instance"] = resolver
         patches.update(extra or {})
         kwargs = {"local_networks": local_networks} if local_networks is not None else {}
+        if deployed_version is not None:
+            kwargs["deployed_version"] = deployed_version
+        if settings_source is not None:
+            kwargs["settings_source"] = settings_source
+        if recheck_cached_txt is not None:
+            kwargs["recheck_cached_txt"] = recheck_cached_txt
         run = self.run_doctor_with_mocks(
             values or self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home"),
             smb_port=CheckResult("PASS", "445 ok"), ssh_login=CheckResult("PASS", "ssh ok"),
@@ -1418,6 +1440,425 @@ class CheckTests(unittest.TestCase):
                     self.assertTrue(run.fatal)
                     self.assertTrue(any(failure in m for m in failures), failures)
                     self.assertIs(debug["bonjour_discovery"], diagnostics)
+
+    def installed_settings(self, values: dict[str, str], *, without: tuple[str, ...] = (), **changes: str) -> DeployedVersionProbeResult:
+        """The device's Flash config as a deploy from `values` wrote it, with
+        `changes`, and without the keys in `without`."""
+        written = {key: str(value) for key, value in managed_flash_values(AppConfig.from_values(values)).items()
+                   if key in COMPARED_FLASH_KEYS}
+        installed = {**written, **changes}
+        return DeployedVersionProbeResult(
+            RELEASE_TAG, CLI_VERSION_CODE, "ok", tuple((key, value) for key, value in installed.items() if key not in without),
+        )
+
+    def adisk_snapshot(self, advf: str):
+        snapshot = self.selected_snapshot()
+        adisk = next(r for r in snapshot.resolved if r.service_type.startswith("_adisk."))
+        adisk.properties["dk2"] = f"adVF={advf},adVN=Data,adVU=12345678-1234-1234-1234-123456789012"
+        return snapshot
+
+    def test_doctor_checks_afp_against_the_installed_setting(self) -> None:
+        # This Mac's setting is off in every case: the device does what its
+        # installed setting says, whatever this Mac now wants.
+        values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                          TC_MDNS_ADVERTISE_AFP="false")
+        for advf, installed, failure, passed in (
+            ("0x83", "1", None, "_adisk._tcp TXT advertises AFP and SMB as installed"),
+            ("0x82", "0", None, "_adisk._tcp TXT advertises SMB only as installed"),
+            ("0x83", "0", "advertises AFP (dk2 adVF=0x83) although the device's installed setting turns "
+                          "Advertise AFP over Bonjour off", None),
+            ("0x82", "1", "advertises SMB only (dk2 adVF=0x82) although the device's installed setting turns "
+                          "Advertise AFP over Bonjour on", None),
+        ):
+            with self.subTest(advf=advf, installed=installed):
+                run, _debug, _browse, _ = self.run_selected_bonjour(
+                    self.adisk_snapshot(advf), values=values,
+                    deployed_version=self.installed_settings(values, MDNS_ADVERTISE_AFP=installed),
+                )
+                failures = [r.message for r in run.results if r.status == "FAIL"]
+                if failure is None:
+                    self.assertFalse(run.fatal, failures)
+                    self.assertTrue(any(r.status == "PASS" and passed in r.message for r in run.results))
+                else:
+                    self.assertTrue(run.fatal)
+                    self.assertTrue(any(failure in m for m in failures), failures)
+                    code = "adisk_advertises_afp" if installed == "0" else "adisk_advertises_smb_only"
+                    report = doctor_report(run.results)
+                    self.assertTrue(any(code in section["fail_codes"] for section in report["sections"].values()),
+                                    report)
+
+    def test_doctor_warns_about_a_setting_changed_since_the_last_install(self) -> None:
+        # AFP turned on after the last install, before running doctor: the
+        # device still advertises SMB only, as installed, so nothing fails.
+        values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                          TC_MDNS_ADVERTISE_AFP="true")
+        debug: dict[str, object] = {}
+        run = self.run_doctor_with_mocks(
+            values, smb_port=CheckResult("PASS", "445 ok"), ssh_login=CheckResult("PASS", "ssh ok"), skip_smb=True,
+            debug_fields=debug,
+            deployed_version=self.installed_settings(values, MDNS_ADVERTISE_AFP="0"),
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed":
+                    mock.Mock(return_value=(self.adisk_snapshot("0x82"), None, None)),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.discovery.bonjour.command_exists": mock.Mock(return_value=True),
+            },
+        )
+        warnings = [r for r in run.results if r.status == "WARN" and (r.details or {}).get("code") == "settings_not_applied"]
+        self.assertFalse(run.fatal, [r.message for r in run.results if r.status == "FAIL"])
+        self.assertEqual(len(warnings), 1)
+        # The device may have been installed from another Mac or the command
+        # line, so the line does not say this Mac changed anything.
+        self.assertTrue(warnings[0].message.startswith("this Mac's settings differ from the device's installed ones: "),
+                        warnings[0].message)
+        self.assertIn("Advertise AFP over Bonjour (this Mac: on, device: off)", warnings[0].message)
+        self.assertIn('run "Install / Update Samba" in the macOS app or tcapsule deploy to install them', warnings[0].message)
+        self.assertIn("or save the device's values with tcapsule configure", warnings[0].message)
+        self.assertEqual(warnings[0].details["settings"], ["mdns_advertise_afp"])
+        self.assertEqual(debug["settings_not_applied"], ["mdns_advertise_afp"])
+        self.assertEqual(debug["installed_settings"]["MDNS_ADVERTISE_AFP"], "0")
+        self.assertTrue(any(r.status == "PASS" and "advertises SMB only as installed" in r.message for r in run.results))
+        # A warning run's event says which settings differ and where this
+        # Mac's came from; debug fields alone reach only fatal runs.
+        finished = doctor_finished_fields(run.results, run.fatal, debug)
+        self.assertEqual(finished["settings_not_applied"], ["mdns_advertise_afp"])
+        self.assertEqual(finished["settings_source"], "env")
+        self.assertEqual(finished["doctor_status"], "warn")
+
+    def test_doctor_compares_the_device_with_the_settings_deploy_reads(self) -> None:
+        # The app's profile says AFP on and its deploy installed that; the
+        # .env says off. Doctor reads the profile, as the app's deploy does, so
+        # nothing is out of step; the CLI reads the .env and warns.
+        values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                          TC_MDNS_ADVERTISE_AFP="false")
+        installed = self.installed_settings(values, MDNS_ADVERTISE_AFP="1")
+        for source, warned in ((SettingsSource.app_profile(ManagedSettings(mdns_advertise_afp=True)), False),
+                               (SettingsSource.env(), True)):
+            with self.subTest(source=source.kind):
+                run, debug, _browse, _ = self.run_selected_bonjour(
+                    self.adisk_snapshot("0x83"), values=values, deployed_version=installed, settings_source=source,
+                )
+                self.assertFalse(run.fatal, [r.message for r in run.results if r.status == "FAIL"])
+                self.assertEqual(debug["settings_not_applied"], ["mdns_advertise_afp"] if warned else [])
+                self.assertEqual(
+                    any((r.details or {}).get("code") == "settings_not_applied" for r in run.results), warned,
+                )
+
+    def test_doctor_settings_warning_lists_every_changed_setting_and_skips_unknown_ones(self) -> None:
+        values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                          TC_ATA_IDLE_SECONDS="300", TC_ATA_STANDBY="")
+        # A Flash config edited by hand without ATA_STANDBY: that one is
+        # unknown, not changed.
+        installed = self.installed_settings(values, without=("ATA_STANDBY",), REQUIRE_SMB_SIGNING="1", ATA_IDLE_SECONDS="600")
+        run, debug, _browse, _ = self.run_selected_bonjour(
+            self.adisk_snapshot("0x82"), values=values, deployed_version=installed,
+            settings_source=SettingsSource.app_profile(ManagedSettings(ata_standby=120)),
+        )
+        warning = next(r for r in run.results if (r.details or {}).get("code") == "settings_not_applied")
+        self.assertEqual(warning.status, "WARN")
+        self.assertEqual(warning.details["settings"], ["require_smb_signing", "ata_idle_seconds"])
+        self.assertIn("Require SMB signing (this Mac: off, device: on)", warning.message)
+        self.assertIn("ATA idle (this Mac: 300 s, device: 600 s)", warning.message)
+        self.assertNotIn("ATA standby", warning.message)
+        self.assertFalse(run.fatal)
+
+    def test_doctor_compares_the_disk_timers_the_device_runs_with(self) -> None:
+        # The probe reads each timer as samba/config.c does: an idle value
+        # past 86400 (one this Mac can no longer save, written by hand or by
+        # an older release) runs the disk with 300. The same value saved in
+        # the .env by an older release is read the same way.
+        from timecapsulesmb.device.probe import parse_deployed_version
+
+        for wanted, written, listed in (
+            ("600", "100000", "ATA idle (this Mac: 600 s, device: 300 s)"),
+            ("300", "100000", None),
+            ("0", "600", "ATA idle (this Mac: off, device: 600 s)"),
+            ("300", "0300", None),
+            ("100000", "300", None),
+            ("100000", "100000", None),
+            ("100000", "600", "ATA idle (this Mac: 300 s, device: 600 s)"),
+        ):
+            with self.subTest(wanted=wanted, written=written):
+                values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                                  TC_ATA_IDLE_SECONDS=wanted, TC_ATA_STANDBY="")
+                stored = dict(self.installed_settings(values, ATA_IDLE_SECONDS=written).installed_settings)
+                probed = parse_deployed_version(
+                    f"release_tag={RELEASE_TAG}\ncli_version_code={CLI_VERSION_CODE}\n"
+                    + "".join(f"setting.{key}={value}\n" for key, value in stored.items())
+                )
+                run, debug, _browse, _ = self.run_selected_bonjour(
+                    self.adisk_snapshot("0x82"), values=values, deployed_version=probed,
+                )
+                warnings = [r for r in run.results if (r.details or {}).get("code") == "settings_not_applied"]
+                self.assertFalse(run.fatal, [r.message for r in run.results if r.status == "FAIL"])
+                if listed is None:
+                    self.assertEqual(warnings, [])
+                    self.assertEqual(debug["settings_not_applied"], [])
+                else:
+                    self.assertEqual(len(warnings), 1)
+                    self.assertIn(listed, warnings[0].message)
+                    self.assertEqual(warnings[0].details["settings"], ["ata_idle_seconds"])
+
+    def test_doctor_settings_check_stands_aside_without_the_installed_values(self) -> None:
+        values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                          TC_MDNS_ADVERTISE_AFP="true")
+        for name, run_values, kwargs in (
+            # A Flash config that sets none of the compared settings.
+            ("nothing_installed", values,
+             {"deployed_version": DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok")}),
+            # The app's settings were a combination deploy refuses.
+            ("app_settings_refused", values,
+             {"deployed_version": self.installed_settings(values, MDNS_ADVERTISE_AFP="0"),
+              "settings_source": SettingsSource.app_refused()}),
+        ):
+            with self.subTest(name):
+                debug: dict[str, object] = {}
+                run = self.run_doctor_with_mocks(
+                    run_values, smb_port=CheckResult("PASS", "445 ok"), ssh_login=CheckResult("PASS", "ssh ok"),
+                    skip_smb=True, skip_bonjour=True, debug_fields=debug, **kwargs,
+                )
+                # Doctor got as far as reading the device's settings.
+                self.assertIn("installed_settings", debug)
+                self.assertFalse(any((r.details or {}).get("code") == "settings_not_applied" for r in run.results))
+                self.assertNotIn("settings_not_applied", debug)
+                # Not compared, which telemetry tells apart from compared and equal ([]).
+                self.assertIsNone(doctor_finished_fields(run.results, run.fatal, debug)["settings_not_applied"])
+
+    def test_doctor_without_the_installed_afp_expects_this_macs_setting(self) -> None:
+        values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                          TC_MDNS_ADVERTISE_AFP="false")
+        installed = self.installed_settings(values, without=("MDNS_ADVERTISE_AFP",))
+        for source, failure in (
+            (SettingsSource.app_profile(ManagedSettings(mdns_advertise_afp=True)), None),
+            (SettingsSource.env(), "advertises AFP (dk2 adVF=0x83) although Advertise AFP over Bonjour is off"),
+        ):
+            with self.subTest(source=source.kind):
+                run, _debug, _browse, _ = self.run_selected_bonjour(
+                    self.adisk_snapshot("0x83"), values=values, deployed_version=installed, settings_source=source,
+                )
+                failures = [r.message for r in run.results if r.status == "FAIL"]
+                if failure is None:
+                    self.assertFalse(run.fatal, failures)
+                    self.assertTrue(any("advertises AFP and SMB as configured" in r.message for r in run.results))
+                else:
+                    self.assertTrue(any(failure in m for m in failures), failures)
+
+    def settings_state(self, values: dict[str, str], source: SettingsSource,
+                       installed: DeployedVersionProbeResult | None) -> tuple[object, DoctorSink]:
+        from timecapsulesmb.checks.doctor_state import DeployedVersionDecision, DoctorInputs, DoctorOptions
+
+        inputs = DoctorInputs(
+            config=AppConfig.from_values(values), repo_root=REPO_ROOT, connection=None, precomputed_probe_state=None,
+            options=DoctorOptions(skip_ssh=False, skip_bonjour=False, skip_smb=False), settings_source=source,
+        )
+        sink = DoctorSink(on_result=None, debug_fields={})
+        state = doctor_steps_module._doctor_settings_state(inputs, DeployedVersionDecision(version=installed), sink)
+        return state, sink
+
+    def test_doctor_settings_state_for_each_source(self) -> None:
+        from timecapsulesmb.checks.bonjour import AfpExpectation
+
+        values = self.valid_doctor_values(TC_MDNS_ADVERTISE_AFP="false")
+        installed_on = self.installed_settings(values, MDNS_ADVERTISE_AFP="1")
+        unknown = self.installed_settings(values, without=("MDNS_ADVERTISE_AFP",))
+        profile_on = SettingsSource.app_profile(ManagedSettings(mdns_advertise_afp=True))
+        for name, source, installed, afp, changed in (
+            ("env, installed known", SettingsSource.env(), installed_on, AfpExpectation(True, "installed"),
+             ["mdns_advertise_afp"]),
+            ("env, installed unknown", SettingsSource.env(), unknown, AfpExpectation(False, "settings"), []),
+            ("profile, installed known", profile_on, installed_on, AfpExpectation(True, "installed"), []),
+            ("profile, installed unknown", profile_on, unknown, AfpExpectation(True, "settings"), []),
+            ("refused, installed known", SettingsSource.app_refused(), installed_on, AfpExpectation(True, "installed"), []),
+            ("refused, installed unknown", SettingsSource.app_refused(), unknown, None, []),
+            ("nothing read", SettingsSource.env(), None, AfpExpectation(False, "settings"), []),
+        ):
+            with self.subTest(name):
+                state, sink = self.settings_state(values, source, installed)
+                self.assertEqual(state.afp, afp)
+                self.assertEqual(sink.debug_fields.get("settings_not_applied", []), changed)
+                self.assertEqual(sink.debug_fields["settings_source"], source.kind)
+                self.assertEqual(
+                    [r.details["settings"] for r in sink.results if (r.details or {}).get("code") == "settings_not_applied"],
+                    [changed] if changed else [],
+                )
+                # A refused source compares nothing, so it records nothing.
+                if source.kind == "app_refused":
+                    self.assertNotIn("settings_not_applied", sink.debug_fields)
+
+    def test_doctor_compares_rsync_and_debug_logging_only_with_the_app_profile(self) -> None:
+        values = self.valid_doctor_values(TC_DEBUG_LOGGING="false")
+        installed = self.installed_settings(values, RSYNC_ENABLED="0", SMBD_DEBUG_LOGGING="1", MDNS_DEBUG_LOGGING="1")
+        profile = SettingsSource.app_profile(ManagedSettings(rsync_enabled=True, debug_logging=False))
+        _state, sink = self.settings_state(values, profile, installed)
+        self.assertEqual(sink.debug_fields["settings_not_applied"], ["rsync_enabled", "debug_logging"])
+        warning = next(r for r in sink.results if r.status == "WARN")
+        self.assertIn("Enable rsync (this Mac: on, device: off)", warning.message)
+        self.assertIn("Enable debug logging (this Mac: off, device: on)", warning.message)
+        # The CLI's deploy sets both by flag only, so its doctor says nothing.
+        _state, sink = self.settings_state(values, SettingsSource.env(), installed)
+        self.assertEqual(sink.debug_fields["settings_not_applied"], [])
+        self.assertFalse([r for r in sink.results if r.status == "WARN"])
+
+    def test_doctor_with_app_params_compares_the_profile_end_to_end(self) -> None:
+        # What the app sends goes through the same helpers as the doctor
+        # operation, then into a full doctor run.
+        from timecapsulesmb.app.ops.common import managed_setting_params, resolve_managed_settings
+
+        values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                          TC_MDNS_ADVERTISE_AFP="false")
+        installed = self.installed_settings(values, MDNS_ADVERTISE_AFP="1")
+        for params, warned in (
+            ({"mdns_advertise_afp": True, "rsync_enabled": False}, []),
+            ({"mdns_advertise_afp": True, "rsync_enabled": True}, ["rsync_enabled"]),
+        ):
+            with self.subTest(params=params):
+                settings = resolve_managed_settings(managed_setting_params(params), AppConfig.from_values(values))
+                run, debug, _browse, _ = self.run_selected_bonjour(
+                    self.adisk_snapshot("0x83"), values=values, deployed_version=installed,
+                    settings_source=SettingsSource.app_profile(settings),
+                )
+                self.assertFalse(run.fatal, [r.message for r in run.results if r.status == "FAIL"])
+                self.assertEqual(debug["settings_not_applied"], warned)
+
+    def adisk_record(self, advf: str):
+        return next(r for r in self.adisk_snapshot(advf).resolved if r.service_type.startswith("_adisk."))
+
+    def run_rechecked_afp(self, resolves, recheck_counts=(1, 1), *, first: str = "0x83"):
+        """A doctor run whose browse shows `first` as dk2's adVF while the device
+        installed AFP off. `resolves` are what resolving the _adisk record again
+        returns, in order: an adVF, or None for no answer; a callable answers
+        every call. recheck_counts is what mDNSResponder says it re-checked,
+        or an exception it raises."""
+        values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                          TC_MDNS_ADVERTISE_AFP="false")
+        browse = mock.Mock(return_value=(self.adisk_snapshot(first), None, None))
+        recheck = mock.Mock(side_effect=recheck_counts) if isinstance(recheck_counts, Exception) \
+            else mock.Mock(return_value=recheck_counts)
+
+        def answer(advf):
+            return (None if advf is None else self.adisk_record(advf)), None
+
+        resolve = mock.Mock(side_effect=(lambda *_a, **_k: answer(resolves())) if callable(resolves)
+                            else [answer(advf) for advf in resolves])
+        clock = FakeClock()
+        debug: dict[str, object] = {}
+        run = self.run_doctor_with_mocks(
+            values, smb_port=CheckResult("PASS", "445 ok"), ssh_login=CheckResult("PASS", "ssh ok"), skip_smb=True,
+            clock=clock, deployed_version=self.installed_settings(values, MDNS_ADVERTISE_AFP="0"),
+            recheck_cached_txt=recheck, debug_fields=debug,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": browse,
+                "timecapsulesmb.checks.doctor_steps.BonjourQuery.resolve_detailed": resolve,
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.discovery.bonjour.command_exists": mock.Mock(return_value=True),
+            },
+        )
+        return SimpleNamespace(run=run, browse=browse, recheck=recheck, resolve=resolve, clock=clock,
+                               debug=debug, fails=[r.message for r in run.results if r.status == "FAIL"])
+
+    def test_doctor_rechecks_a_stale_cached_adisk_record_before_failing(self) -> None:
+        # The Mac's cached copy still says AFP; the device's record, read again
+        # on the first or third try, matches the installed setting.
+        for resolves in (["0x82"], ["0x83", None, "0x82"]):
+            with self.subTest(resolves=resolves):
+                out = self.run_rechecked_afp(resolves)
+                self.assertFalse(out.run.fatal, out.fails)
+                self.assertEqual(out.recheck.call_args.args[0].service_type, "_adisk._tcp.local.")
+                self.assertEqual(out.recheck.call_args.args[0].name, "Home")
+                # Only the _adisk record is read again, never the whole browse.
+                out.browse.assert_called_once()
+                self.assertEqual(out.resolve.call_count, len(resolves))
+                self.assertEqual(out.clock.sleeps, [doctor_steps_module.DOCTOR_ADISK_RECHECK_POLL_SECONDS] * len(resolves))
+                self.assertTrue(any(r.status == "INFO" and "was out of date" in r.message for r in out.run.results))
+                self.assertTrue(any(r.status == "PASS" and "advertises SMB only as installed" in r.message
+                                    for r in out.run.results))
+                self.assertEqual(out.debug["adisk_recheck"]["result"], "rechecked")
+                self.assertIs(out.debug["adisk_recheck"]["fixed"], True)
+                self.assertEqual(out.debug["adisk_recheck"]["waited_sec"], float(len(resolves)))
+                # The run passes, so only its event records the recheck.
+                finished = doctor_finished_fields(out.run.results, out.run.fatal, out.debug)
+                self.assertIs(finished["adisk_recheck"]["fixed"], True)
+                self.assertFalse(finished["fatal"])
+
+    def test_doctor_fails_an_adisk_record_that_stays_wrong_until_the_deadline(self) -> None:
+        out = self.run_rechecked_afp(lambda: "0x83")
+        self.assertTrue(out.run.fatal)
+        self.assertEqual(sum(out.clock.sleeps), doctor_steps_module.DOCTOR_ADISK_RECHECK_DEADLINE_SECONDS)
+        self.assertFalse(any("was out of date" in r.message for r in out.run.results))
+        self.assertTrue(any("although the device's installed setting turns" in m for m in out.fails), out.fails)
+        self.assertIs(out.debug["adisk_recheck"]["fixed"], False)
+
+    def test_doctor_keeps_the_first_browse_when_the_record_does_not_answer_again(self) -> None:
+        # No answer is no evidence: the browse's other records stand, and
+        # only the AFP flag it showed fails.
+        out = self.run_rechecked_afp(lambda: None)
+        self.assertTrue(out.run.fatal)
+        self.assertFalse(any("was out of date" in r.message for r in out.run.results))
+        self.assertEqual([m for m in out.fails if "Bonjour" in m and "advertises AFP" not in m], [])
+        self.assertTrue(any(r.status == "PASS" and "_adisk._tcp TXT includes Time Machine system flags" in r.message
+                            for r in out.run.results))
+
+    def test_doctor_recheck_stays_inside_its_deadline_with_several_stale_records(self) -> None:
+        # Two of the device's records still differ and never answer: each
+        # resolve gets only the time left, so the wait ends at the deadline.
+        snapshot = self.adisk_snapshot("0x83")
+        record = next(r for r in snapshot.resolved if r.service_type.startswith("_adisk."))
+        instance = next(i for i in snapshot.instances if i.service_type.startswith("_adisk."))
+        renamed = replace(record, name="Home (2)", properties=dict(record.properties))
+        snapshot = replace(
+            snapshot,
+            resolved=[*snapshot.resolved, renamed],
+            instances=[*snapshot.instances, replace(instance, name="Home (2)")],
+        )
+        expected = BonjourExpectedIdentity("Home", "home", None, AfpExpectation(False, "installed"))
+        clock = FakeClock()
+        timeouts: list[int] = []
+
+        def resolve(_instance, timeout_ms):
+            timeouts.append(timeout_ms)
+            clock.advance(timeout_ms / 1000)
+            return None, None
+
+        query = mock.Mock(recheck_cached_txt=mock.Mock(return_value=(1, 1)), resolve_detailed=mock.Mock(side_effect=resolve))
+        own_host = doctor_steps_module._canonical_bonjour_host(record.hostname)
+        with mock.patch("timecapsulesmb.checks.doctor_steps._clock", clock):
+            result, recheck = doctor_steps_module._recheck_stale_adisk(snapshot, expected, own_host, query)
+
+        self.assertEqual(recheck["instances"], 2)
+        self.assertIs(recheck["fixed"], False)
+        self.assertEqual(clock.now - clock.start, doctor_steps_module.DOCTOR_ADISK_RECHECK_DEADLINE_SECONDS)
+        self.assertLess(min(timeouts), doctor_steps_module.DOCTOR_ADISK_RECHECK_RESOLVE_MS, "the last resolve is cut short")
+        self.assertEqual(result.resolved, snapshot.resolved, "nothing answered, so the browse stands")
+
+    def test_doctor_does_not_wait_when_nothing_could_be_rechecked(self) -> None:
+        for counts, result in ((None, "unsupported"), ((0, 0), "nothing_cached"), ((1, 0), "refused"),
+                               (RuntimeError("dns-sd failed"), "error")):
+            with self.subTest(result=result):
+                out = self.run_rechecked_afp([], counts)
+                self.assertTrue(out.run.fatal)
+                out.recheck.assert_called_once()
+                out.resolve.assert_not_called()
+                self.assertEqual(out.clock.sleeps, [])
+                self.assertEqual(out.debug["adisk_recheck"]["result"], result)
+                if result == "error":
+                    self.assertEqual(out.debug["adisk_recheck"]["error"], "dns-sd failed")
+
+    def test_doctor_rechecks_nothing_when_the_record_matches_or_the_setting_is_unknown(self) -> None:
+        out = self.run_rechecked_afp([], first="0x82")
+        self.assertFalse(out.run.fatal, out.fails)
+        out.recheck.assert_not_called()
+        self.assertNotIn("adisk_recheck", out.debug)
+        # Without the installed setting, a mismatch may be a setting not yet
+        # installed: nothing to re-check against.
+        values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                          TC_MDNS_ADVERTISE_AFP="false")
+        recheck = mock.Mock(return_value=(1, 1))
+        run, _debug, _browse, _ = self.run_selected_bonjour(
+            self.adisk_snapshot("0x83"), values=values, recheck_cached_txt=recheck,
+            deployed_version=self.installed_settings(values, without=("MDNS_ADVERTISE_AFP",)),
+        )
+        self.assertTrue(run.fatal)
+        recheck.assert_not_called()
 
     def test_run_doctor_checks_resolves_expected_smb_when_browse_misses_instance(self) -> None:
         values = self.valid_doctor_values(

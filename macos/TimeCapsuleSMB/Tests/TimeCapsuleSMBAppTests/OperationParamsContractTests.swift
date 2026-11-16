@@ -8,6 +8,12 @@ final class OperationParamsContractTests: XCTestCase {
     private struct Contract: Decodable {
         let common: [String]
         let operations: [String: [String]]
+        let doctorComparedSettings: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case common, operations
+            case doctorComparedSettings = "doctor_compared_settings"
+        }
     }
 
     private func contract() throws -> Contract {
@@ -67,6 +73,7 @@ final class OperationParamsContractTests: XCTestCase {
             ("update-config-settings", OperationParams.Configure.updateSettings(settingsWithoutStandby)),
             ("doctor", OperationParams.Doctor.run(skipSSH: true, skipBonjour: true, skipSMB: true)),
             ("doctor", OperationParams.Doctor.run(localNetworkPreflight: preflight)),
+            ("doctor", OperationParams.Doctor.run(settings: settingsWithoutStandby, localNetworkPreflight: preflight)),
             ("deploy", OperationParams.Deploy.params(noWait: true, debugLogging: true, ataIdleSeconds: 600, ataStandby: 5, mountWait: 30)),
             ("deploy", OperationParams.Deploy.params(noWait: false, debugLogging: false, ataIdleSeconds: 600, ataStandby: nil, mountWait: 30)),
             ("activate", OperationParams.Activation.params()),
@@ -92,6 +99,13 @@ final class OperationParamsContractTests: XCTestCase {
         }
         let unknown = Set(params.keys).subtracting(accepted).subtracting(contract.common)
         return unknown.isEmpty ? .accepted : .unknownParams(unknown.sorted())
+    }
+
+    func testTheAppLabelsAndComparesEverySettingDoctorCanNameAndNoOther() throws {
+        let contract = try contract()
+        XCTAssertEqual(Set(DoctorCheckPayload.settingLabelKeys.keys), Set(contract.doctorComparedSettings))
+        // A save that changes one of these clears the saved Checkup.
+        XCTAssertEqual(Set(DeviceProfileSettings.default.installedValues.keys), Set(contract.doctorComparedSettings))
     }
 
     func testEveryRequestTheAppBuildsUsesOnlyParamsTheHelperAccepts() throws {

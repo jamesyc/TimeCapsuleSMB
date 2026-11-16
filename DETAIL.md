@@ -631,7 +631,7 @@ Hidden advanced arguments:
 - `--netatalk` / `--no-netatalk`: write `TC_FRUIT_METADATA_NETATALK=true|false`
 - `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: write `TC_VFS_AIO_FORK_DISABLED=false|true`
 - `--debug-logging` / `--no-debug-logging`: turn debug logging on or off
-- `--ata-idle-seconds SECONDS`: write `TC_ATA_IDLE_SECONDS`, a whole number; `0` turns the ATA idle timer off
+- `--ata-idle-seconds SECONDS`: write `TC_ATA_IDLE_SECONDS`, a whole number up to `86400`; `0` turns the ATA idle timer off
 - `--ata-standby SECONDS`: write `TC_ATA_STANDBY`, a whole number; `0` turns standby off, and a blank saved value leaves standby as it is
 
 `TC_ANY_PROTOCOL=true` and `TC_DISABLE_SMB_ENCRYPTION=true` each conflict with `TC_REQUIRE_SMB_ENCRYPTION=true`. Configure refuses either combination before writing `.env`.
@@ -672,12 +672,12 @@ Arguments:
 - `--dry-run`: print the plan without changing the device
 - `--json`: print the dry-run plan as JSON; requires `--dry-run`
 - `--allow-unsupported`: continue when the device is not a supported model
-- `--enable-rsync`: write `RSYNC_ENABLED=1` so the manager starts rsync; the rsync files are uploaded either way
+- `--enable-rsync`: write `RSYNC_ENABLED=1` so the manager starts rsync; the rsync files are uploaded either way. The `.env` has no rsync setting, so CLI doctor does not compare it
 - `--mount-wait SECONDS`: how long each volume mount may take, `30` by default
-- `--require-smb-signing`, `--require-smb-encryption` and `--disable-smb-encryption`, each with a `--no-` form: override the saved setting for this deploy only; `.env` is not changed
+- `--require-smb-signing`, `--require-smb-encryption` and `--disable-smb-encryption`, each with a `--no-` form: override the saved setting for this deploy only; `.env` is not changed, so doctor warns `settings_not_applied` until `tcapsule configure` saves the same value
 
 Hidden advanced arguments:
-- each other saved profile setting (internal-share root, SMB browsing, AFP advertising, Allow Any SMB Protocol, Netatalk metadata, debug logging, `vfs_aio_fork`) has an on/off override pair; without one, the saved `.env` value is used
+- each other saved profile setting (internal-share root, SMB browsing, AFP advertising, Allow Any SMB Protocol, Netatalk metadata, debug logging, `vfs_aio_fork`) has an on/off override pair; without one, the saved `.env` value is used. Doctor warns about an override as it does for the ones above, except for debug logging, which CLI doctor does not compare
 
 Plan modes:
 
@@ -857,7 +857,7 @@ Validation:
 - `TC_SSH_OPTS` is written by `configure` with the old SSH options AirPort firmware needs.
 - The share, browsing, AFP, protocol and security, Netatalk metadata, `vfs_aio_fork` and debug settings above must be `true` or `false`.
 - Required encryption cannot be combined with `TC_ANY_PROTOCOL=true` or `TC_DISABLE_SMB_ENCRYPTION=true`.
-- `TC_ATA_IDLE_SECONDS` is an optional whole number, `300` by default; `0` turns the ATA idle timer off with `atactl setidle 0`.
+- `TC_ATA_IDLE_SECONDS` is an optional whole number up to `86400` (one day), `300` by default; `0` turns the ATA idle timer off with `atactl setidle 0`. The device runs a larger value as `300`. configure and the app refuse one; deploy and doctor read one saved by an older release as `300`, and the next configure saves it that way.
 - `TC_ATA_STANDBY` is an optional whole number; blank leaves standby as it is, and `0` turns it off with `atactl setstandby 0`.
 - `TC_CONFIGURE_ID` is a local revision ID and is not checked.
 
@@ -901,6 +901,7 @@ Where to start:
 [src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py) checks:
 - `.env` values, the local tools, and the checksums of the checked-in binaries
 - SSH, device compatibility and payload family, and the installed release in `/mnt/Flash/tcapsulesmb.conf`
+- settings on this computer that differ from the device's installed ones, as a warning (`settings_not_applied`). They may have changed here, or the device may have been installed from another computer or the CLI. The device keeps the installed values until the next deploy. The app compares the device profile's settings, rsync and debug logging included. The CLI compares the `.env` and leaves out rsync, which the `.env` does not hold, and debug logging, which is usually set for one deploy with `--debug-logging` or changed on the device for a test. Each compares the values its own deploy writes. The device applies a change to `/mnt/Flash/tcapsulesmb.conf` without a restart: the manager rereads its Samba, rsync, disk and AFP settings every 30 seconds, and discovery rereads AFP and debug logging whenever it rebuilds its Bonjour plan, every 30 seconds or when a route changes.
 - the manager's verdicts (`payload=missing`, `damaged`, `unreadable`, `unmounted=`; see [Native manager](#native-manager)); any of them is doctor's whole result
 - this boot's kernel disk errors, reported as the cause (`disk_failing`) when Samba is off
 - each disk's SMART status and volume sizes as AirPort Utility shows them; a failing SMART status is a warning
@@ -914,6 +915,7 @@ Where to start:
 - the RAM copies of the binary, config and login files, the mounted share volumes, and the service sockets
 - the IPv4 and IPv6 SMB addresses and TCP 445 reachability
 - the device's own Bonjour records (found by its MAC), their names and hosts, the `_adisk` Time Machine flags and disk rows, and another device using the same name
+- that each `_adisk` disk's AFP flag matches the `MDNS_ADVERTISE_AFP` value installed in `/mnt/Flash/tcapsulesmb.conf`, or this computer's setting when that file does not set it. When a flag differs from the installed value, doctor on a Mac first asks mDNSResponder to recheck its cached copy of the record and looks again 7 seconds later, since a Mac that missed the device's announcements keeps an old copy for up to 75 minutes.
 - NBNS name lookup, when the device has an address NBNS answers on
 - a logged-in share listing (`smbutil view` on a Mac, `smbclient -L` elsewhere), at least one share in it, and temporary SMB file operations (on a Mac, through a mount hidden from Finder)
 - that the non-HFS `xattr_tdb:file` setting points at the disk, not the RAM disk

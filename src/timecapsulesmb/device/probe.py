@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Literal, Union
 
+from timecapsulesmb.core.runtime_settings import COMPARED_FLASH_KEYS
 from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.diskd import DiskdHandoff, parse_diskd_handoff
@@ -53,6 +54,7 @@ from timecapsulesmb.core.config import (
     AIRPORT_IDENTITIES_BY_SYAP,
     MAX_DNS_LABEL_BYTES,
     MAX_NETBIOS_NAME_BYTES,
+    device_ata_idle_seconds,
 )
 from timecapsulesmb.discovery.models import normalize_airport_mac
 
@@ -407,6 +409,14 @@ class DeployedVersionProbeResult:
     release_tag: str | None
     cli_version_code: int | None
     detail: str
+    # The compared settings (runtime_settings.COMPARED_FLASH_KEYS) the Flash
+    # config sets, as (key, value) pairs; a key it does not set is absent.
+    # A tuple keeps the result hashable; `installed` reads it by key.
+    installed_settings: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def installed(self) -> dict[str, str]:
+        return dict(self.installed_settings)
 
 
 # "info" reports an advisory finding that never blocks readiness.
@@ -2626,14 +2636,21 @@ def flash_runtime_config_present_conn(connection: SshConnection) -> bool:
 
 def deployed_version_script() -> str:
     """Shell that prints the installed release tag and version code from the
-    Flash config, each empty when the config or the key is missing."""
+    Flash config, each empty when the config or the key is missing, and a
+    `setting.KEY=value` line for each compared setting the config sets."""
+    settings = "".join(
+        f'[ "${{{key}+set}}" = set ] && printf "setting.{key}=%s\\n" "${key}"; '
+        for key in COMPARED_FLASH_KEYS
+    )
     return (
         f"config={shlex.quote(FLASH_RUNTIME_CONFIG)}; "
         "TC_DEPLOY_RELEASE_TAG=; "
         "TC_DEPLOY_CLI_VERSION_CODE=; "
+        f"unset {' '.join(COMPARED_FLASH_KEYS)}; "
         'if [ -f "$config" ]; then . "$config" >/dev/null 2>&1 || true; fi; '
         'printf "release_tag=%s\\n" "$TC_DEPLOY_RELEASE_TAG"; '
-        'printf "cli_version_code=%s\\n" "$TC_DEPLOY_CLI_VERSION_CODE"'
+        'printf "cli_version_code=%s\\n" "$TC_DEPLOY_CLI_VERSION_CODE"; '
+        f"{settings}true"
     )
 
 
@@ -2645,6 +2662,24 @@ def read_deployed_version_conn(connection: SshConnection) -> DeployedVersionProb
         timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
     )
     return parse_deployed_version(proc.stdout)
+
+
+def _installed_setting_value(key: str, value: str) -> str:
+    """A Flash config value as the device reads it, in the form deploy
+    writes: a boolean config_bool_value (common/config.c) accepts as 1 or 0,
+    a disk timer's digits without leading zeros, and the idle timer's
+    fallback for a value the device ignores. Anything the device would
+    refuse stays as written, so it differs from every setting."""
+    if key == "ATA_IDLE_SECONDS":
+        return device_ata_idle_seconds(value)
+    if key == "ATA_STANDBY":
+        return str(int(value)) if value.isdigit() else value
+    lowered = value.lower()
+    if lowered in ("1", "true", "yes"):
+        return "1"
+    if lowered in ("0", "false", "no"):
+        return "0"
+    return value
 
 
 def parse_deployed_version(stdout: str) -> DeployedVersionProbeResult:
@@ -2662,7 +2697,12 @@ def parse_deployed_version(stdout: str) -> DeployedVersionProbeResult:
         version_code = None
 
     detail = "ok" if release_tag is not None and version_code is not None else "missing version metadata"
-    return DeployedVersionProbeResult(release_tag, version_code, detail)
+    installed_settings = tuple(
+        (key.removeprefix("setting."), _installed_setting_value(key.removeprefix("setting."), value))
+        for key, value in values.items()
+        if key.startswith("setting.") and key.removeprefix("setting.") in COMPARED_FLASH_KEYS
+    )
+    return DeployedVersionProbeResult(release_tag, version_code, detail, installed_settings)
 
 
 def runtime_ram_root_present_conn(connection: SshConnection) -> bool:

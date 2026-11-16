@@ -59,7 +59,7 @@
 "app_readiness.recovery.version_metadata_unavailable" = "Check your network connection or try again later.";
 "app_settings.appearance" = "Appearance";
 "app_settings.default_bonjour_timeout" = "Discovery timeout (seconds)";
-"app_settings.error.ata_idle" = "ATA idle time must be a non-negative number of seconds.";
+"app_settings.error.ata_idle" = "ATA idle time must be a non-negative number of seconds, up to 86400.";
 "app_settings.error.ata_standby" = "ATA standby time must be blank or a non-negative number of seconds.";
 "app_settings.error.bonjour_timeout" = "Discovery timeout must be at least 5 seconds.";
 "app_settings.error.corrupt" = "App settings could not be read: %@";
@@ -374,6 +374,8 @@
 "doctor.check.disk_size_misreported" = "The device reports its internal disk as far smaller than it is, so nothing can be installed on it. Restart the device; if it keeps reporting the wrong size, the disk needs replacing.";
 "doctor.check.disk_no_hfs_partition" = "A disk on the device has no HFS volume TimeCapsuleSMB can use. If it is the internal disk and holds nothing you need, use “Wipe Internal Disk” to format it for the device.";
 "doctor.check.debug_logging_on" = "Debug logging is on, which slows the device down. Disable debug logging unless you are troubleshooting a problem.";
+// doctor.check.settings_not_applied: %@ is the settings that differ, each by its label in the device settings, joined as the language lists them. They may have changed on this Mac, or the device may have been installed from another Mac or the command line, so the line does not say which. A warning: nothing is broken until the next install.
+"doctor.check.settings_not_applied" = "This Mac's settings differ from the ones installed on the device: %@. The device keeps the installed ones until you run “Install / Update Samba”.";
 // doctor.check.wifi_client and process_listing_timed_out(_wifi): the words of
 // backend.recovery.wifi_link_slow for the device on Wi-Fi, and the same can/may for the link as a
 // cause; process_listing_timed_out lists its causes with the same may.
@@ -659,7 +661,7 @@
 "overview.discovery.unsaved" = "Not saved";
 "overview.discovery.waiting" = "Discovery starts after the app runtime is ready.";
 "operation.error.already_running" = "Another operation is already running.";
-"workflow.error.ata_idle_seconds_invalid" = "ATA idle time must be a non-negative number of seconds.";
+"workflow.error.ata_idle_seconds_invalid" = "ATA idle time must be a non-negative number of seconds, up to 86400.";
 "workflow.error.ata_standby_invalid" = "ATA standby time must be blank or a non-negative number of seconds.";
 "workflow.error.deploy_options_invalid" = "Install / Update options are invalid.";
 "workflow.error.flash_backup_required" = "Back up and inspect firmware before planning flash work.";
@@ -717,7 +719,7 @@
 "profile_editor.display_name" = "Display Name";
 "profile_editor.error.duplicate_host" = "Another saved device already uses this host.";
 "profile_editor.error.host_required" = "Host is required.";
-"profile_editor.error.ata_idle_seconds_invalid" = "ATA idle time must be a non-negative number of seconds.";
+"profile_editor.error.ata_idle_seconds_invalid" = "ATA idle time must be a non-negative number of seconds, up to 86400.";
 "profile_editor.error.ata_standby_invalid" = "ATA standby time must be blank or a non-negative number of seconds.";
 "profile_editor.error.mount_wait_invalid" = "Mount wait time must be a non-negative integer.";
 "profile_editor.error.password_required" = "A saved password is required to change the host.";

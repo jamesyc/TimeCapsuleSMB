@@ -459,6 +459,24 @@ def validate_unsigned_integer(value: str, field_name: str) -> Optional[str]:
     return None
 
 
+# samba/config.c reads ATA_IDLE_SECONDS with number(item, 300, 0, 86400): an
+# empty, non-numeric or out-of-range value runs the disk with 300. configure
+# and the app refuse a new value past the maximum; a larger one saved by an
+# older release still validates, and deploy and doctor read it as the device
+# does (device_ata_idle_seconds).
+ATA_IDLE_MAX_SECONDS = 86400
+DEVICE_ATA_IDLE_FALLBACK_SECONDS = 300
+
+
+def device_ata_idle_seconds(value: str) -> str:
+    """An idle timer as samba/config.c runs it: its digits without leading
+    zeros, or 300 for one the device does not accept."""
+    text = value.strip()
+    if text.isdigit() and int(text) <= ATA_IDLE_MAX_SECONDS:
+        return str(int(text))
+    return str(DEVICE_ATA_IDLE_FALLBACK_SECONDS)
+
+
 def validate_airport_syap(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."

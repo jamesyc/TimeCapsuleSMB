@@ -102,8 +102,11 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         "doctor",
         doctor_operation,
-        # bonjour_timeout is retired and accepted only to be ignored.
-        frozenset({"bonjour_timeout", "skip_bonjour", "skip_smb", "skip_ssh"})
+        # bonjour_timeout is retired and accepted only to be ignored. The
+        # managed settings and rsync are the device profile's, which deploy
+        # writes.
+        frozenset({"bonjour_timeout", "rsync_enabled", "skip_bonjour", "skip_smb", "skip_ssh"})
+        | MANAGED_SETTING_PARAMS
         | frozenset(LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS),
         telemetry=True,
         keep_awake=True,

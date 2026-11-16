@@ -156,10 +156,6 @@ final class DeviceProfilePersistenceService {
         replacementPassword: String? = nil,
         stagedConfigURL: URL? = nil
     ) async throws -> DeviceProfile {
-        var updated = profile
-        updated.displayName = fields.displayName
-        updated.settings = fields.settings
-
         let rollback: PasswordRollback?
         if let replacementPassword {
             do {
@@ -174,7 +170,6 @@ final class DeviceProfilePersistenceService {
                 discardStagedProfileConfig(at: stagedConfigURL)
                 throw error
             }
-            updated.passwordState = .available
         } else {
             rollback = nil
         }
@@ -193,7 +188,11 @@ final class DeviceProfilePersistenceService {
         }
 
         do {
-            let saved = try await registry.updateProfile(updated)
+            // Only the edited fields, on the profile as stored now
+            // (DeviceRegistryRepository.updateEditableFields).
+            let saved = try await registry.updateEditableFields(
+                fields, passwordState: replacementPassword == nil ? nil : .available, for: profile.id
+            )
             artifactRollback?.discardBackup()
             return saved
         } catch {

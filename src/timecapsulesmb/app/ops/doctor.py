@@ -2,18 +2,38 @@ from __future__ import annotations
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import doctor_payload
-from timecapsulesmb.app.ops.common import load_request_config, resolve_request_connection
+from timecapsulesmb.app.ops.common import (
+    load_request_config,
+    managed_setting_params,
+    resolve_managed_settings,
+    resolve_request_connection,
+)
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.doctor_steps import DOCTOR_STAGE_RUN_CHECKS
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.paths import resolve_app_paths
-from timecapsulesmb.services.app import OperationResult, bool_param, config_path
+from timecapsulesmb.core.runtime_settings import ManagedSettings, SettingsSource
+from timecapsulesmb.services.app import AppOperationError, OperationResult, bool_param, config_path
 from timecapsulesmb.services.doctor import build_doctor_error, doctor_finished_fields, doctor_result_details
 from timecapsulesmb.services.runtime import airport_identity_fields
 
 
 def doctor_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    sent_settings = managed_setting_params(params)
     config = load_request_config(params, context)
+    # This Mac's settings as the app's deploy reads them: the device
+    # profile's, which the app sends. A combination deploy would refuse does
+    # not stop the checkup; doctor then compares nothing with the device. A
+    # request that sends none of them compares the .env, as the CLI does:
+    # filling the profile's in from it would also compare rsync and debug
+    # logging, which the .env never holds.
+    if sent_settings == ManagedSettings():
+        settings_source = SettingsSource.env()
+    else:
+        try:
+            settings_source = SettingsSource.app_profile(resolve_managed_settings(sent_settings, config))
+        except AppOperationError:
+            settings_source = SettingsSource.app_refused()
     app_paths = resolve_app_paths(config_path=config_path(params))
     skip_ssh = bool_param(params, "skip_ssh")
     skip_bonjour = bool_param(params, "skip_bonjour")
@@ -42,6 +62,7 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
         skip_bonjour=skip_bonjour,
         skip_smb=skip_smb,
         local_network_permission=local_network_permission if isinstance(local_network_permission, str) else None,
+        settings_source=settings_source,
         on_result=on_result,
         on_stage=on_stage,
         debug_fields=debug_fields,

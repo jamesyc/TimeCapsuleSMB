@@ -47,6 +47,58 @@ final class DoctorStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.first?.params["credentials"], .object(["password": .string("pw")]))
     }
 
+    func testRunSendsTheProfileSettingsDeployWrites() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(
+                    fatal: false,
+                    checks: [check(status: "PASS", message: "runtime ok", domain: "device")]
+                ))
+            ])
+        ])
+        let store = DoctorStore(backend: BackendClient(runner: runner))
+        var settings = DeviceProfileSettings.default
+        settings.mdnsAdvertiseAFP = true
+        settings.rsyncEnabled = true
+        settings.ataStandby = nil
+        let profile = DeviceProfile(
+            id: "tc", displayName: "Time Capsule", host: "root@10.0.0.2", bonjourName: nil, bonjourFullname: nil,
+            hostname: nil, addresses: [], syap: nil, model: nil, osName: nil, osRelease: nil, arch: nil,
+            elfEndianness: nil, payloadFamily: nil, deviceGeneration: nil, configPath: "/tmp/profile/.env",
+            keychainAccount: "tc", createdAt: Date(timeIntervalSince1970: 10), updatedAt: Date(timeIntervalSince1970: 20),
+            lastCheckup: nil, lastDeployState: nil, settings: settings, passwordState: .unknown
+        )
+
+        store.runDoctor(password: "pw", profile: profile)
+
+        try await waitUntilStoreState { store.state == .passed }
+        // The same values deploy sends, so Checkup compares the device with them.
+        let params = try XCTUnwrap(runner.calls.first?.params)
+        XCTAssertEqual(params["mdns_advertise_afp"], .bool(true))
+        XCTAssertEqual(params["ata_standby"], .string(""))
+        XCTAssertEqual(params["ata_idle_seconds"], .number(Double(settings.ataIdleSeconds)))
+        XCTAssertEqual(params["require_smb_signing"], .bool(settings.requireSMBSigning))
+        // rsync is sent apart from the saved settings, as deploy sends it.
+        XCTAssertEqual(params["rsync_enabled"], .bool(settings.rsyncEnabled))
+    }
+
+    func testRunWithoutAProfileSendsNoSettings() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(
+                    fatal: false,
+                    checks: [check(status: "PASS", message: "runtime ok", domain: "device")]
+                ))
+            ])
+        ])
+        let store = DoctorStore(backend: BackendClient(runner: runner))
+
+        store.runDoctor(password: "pw")
+
+        try await waitUntilStoreState { store.state == .passed }
+        XCTAssertNil(runner.calls.first?.params["mdns_advertise_afp"])
+    }
+
     func testPublishesWhenBackendFinishesAfterTerminalResult() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [

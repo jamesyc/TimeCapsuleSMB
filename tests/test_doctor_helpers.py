@@ -30,7 +30,7 @@ from timecapsulesmb.checks.smb_targets import doctor_smb_servers  # noqa: E402
 from timecapsulesmb.core.config import AppConfig  # noqa: E402
 from timecapsulesmb.device.probe import AirportAcpReading, RuntimeNamingIdentityProbeResult  # noqa: E402
 from timecapsulesmb.checks import doctor_steps
-from timecapsulesmb.checks.bonjour import BonjourExpectedIdentity
+from timecapsulesmb.checks.bonjour import AfpExpectation, BonjourExpectedIdentity
 from timecapsulesmb.checks.doctor_state import DoctorSink
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.net import RouteSelection
@@ -66,7 +66,7 @@ def test_selected_record_validation_is_shared_by_name_and_ip_paths(hint, reverse
         [BonjourServiceInstance(r.service_type, r.name, r.fullname, r.interface_index) for r in evidence], evidence)
     with mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", return_value=()):
         outcome = doctor_steps._evaluate_bonjour_snapshot(snapshot,
-            BonjourExpectedIdentity(hint, "home", "192.0.2.10"), target_ip="192.0.2.10", family="ipv4",
+            BonjourExpectedIdentity(hint, "home", "192.0.2.10", afp=AfpExpectation(False, "settings")), target_ip="192.0.2.10", family="ipv4",
             interfaces=None, active_share_names=["Data"], resolver=mock.Mock(side_effect=AssertionError("already resolved")),
             browse_miss_message="browse miss", targeted_resolve_pass_message="targeted success")
     failures = [r.message for r in outcome.results if r.status == "FAIL"]
@@ -95,7 +95,7 @@ def test_adisk_afp_flag_must_match_the_setting_on_every_disk(disks, advertise_af
     results: list[CheckResult] = []
     failed = doctor_steps._add_time_machine_adisk_results(
         [adisk], instance_name="Home", smb_hostname="home.local", active_share_names=[f"Data{key}" for key in disks],
-        advertise_afp=advertise_afp, add_result=results.append)
+        afp=AfpExpectation(advertise_afp, "settings"), add_result=results.append)
     failures = [r.message for r in results if r.status == "FAIL"]
     passes = [r.message for r in results if r.status == "PASS"]
     assert failed is (failure is not None)
@@ -140,6 +140,19 @@ def test_file_ops_share_matches_the_listing_in_either_unicode_spelling(listed, a
     assert statuses == (["PASS"] if expected else ["FAIL"])
 
 
+def test_adisk_afp_flag_is_not_judged_without_an_expectation():
+    # The app's settings were refused and the device's are unknown: no AFP
+    # line at all, whatever the flags say.
+    properties = {"sys": "adVF=0x1010", "dk0": "adVF=0x83,adVN=Data,adVU=uuid-0"}
+    adisk = BonjourResolvedService("Home", "home.local", "_adisk._tcp.local.", port=9, properties=properties)
+    results: list[CheckResult] = []
+    failed = doctor_steps._add_time_machine_adisk_results(
+        [adisk], instance_name="Home", smb_hostname="home.local", active_share_names=["Data"],
+        afp=None, add_result=results.append)
+    assert not failed
+    assert not [r for r in results if "AFP" in r.message]
+
+
 @pytest.mark.parametrize("advertised, active, failure", [
     # The ADisk TXT keeps the disk's decomposed HFS name, as Apple's diskd does.
     ([NFD_SWEDISH, NFD_JAPANESE], [NFC_SWEDISH, NFC_JAPANESE], None),
@@ -154,7 +167,7 @@ def test_adisk_names_match_active_shares_in_either_unicode_spelling(advertised, 
     results: list[CheckResult] = []
     failed = doctor_steps._add_time_machine_adisk_results(
         [adisk], instance_name="Home", smb_hostname="home.local", active_share_names=active,
-        advertise_afp=False, add_result=results.append)
+        afp=AfpExpectation(False, "settings"), add_result=results.append)
     failures = [r.message for r in results if r.status == "FAIL"]
     assert failed is (failure is not None)
     if failure:
@@ -343,7 +356,7 @@ class DoctorHelperTests(unittest.TestCase):
         ):
             result = doctor_steps._add_bonjour_results(
                 AppConfig(values={"TC_HOST": "10.0.1.1"}), None,
-                skip_bonjour=False, add_result=results.append,
+                skip_bonjour=False, add_result=results.append, afp=None,
             )
         self.assertEqual(browse.call_count, 1)
         self.assertFalse(any(item.status == "FAIL" for item in results), results)

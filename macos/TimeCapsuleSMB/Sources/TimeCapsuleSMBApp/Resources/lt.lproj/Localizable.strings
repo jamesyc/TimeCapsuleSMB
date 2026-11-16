@@ -59,7 +59,7 @@
 "app_readiness.recovery.version_metadata_unavailable" = "Patikrinkite tinklo ryšį arba bandykite vėliau.";
 "app_settings.appearance" = "Išvaizda";
 "app_settings.default_bonjour_timeout" = "Paieškos skirtojo laiko sekundės";
-"app_settings.error.ata_idle" = "ATA neveiklos laikas turi būti neneigiamas sekundžių skaičius.";
+"app_settings.error.ata_idle" = "ATA neveiklos laikas turi būti neneigiamas sekundžių skaičius, ne didesnis kaip 86400.";
 "app_settings.error.ata_standby" = "ATA budėjimo laikas turi būti tuščias arba neneigiamas sekundžių skaičius.";
 "app_settings.error.bonjour_timeout" = "Paieškos skirtasis laikas turi būti bent 5 sekundės.";
 "app_settings.error.corrupt" = "Nepavyko nuskaityti programos nustatymų: %@";
@@ -347,6 +347,7 @@
 "doctor.check.disk_size_misreported" = "Įrenginys praneša, kad jo vidinis diskas daug mažesnis, nei yra iš tikrųjų, todėl į jį nieko negalima įdiegti. Paleiskite įrenginį iš naujo; jei diskas ir toliau praneša neteisingą dydį, jį reikia pakeisti.";
 "doctor.check.disk_no_hfs_partition" = "Viename įrenginio diske nėra HFS tomo, kurį galėtų naudoti TimeCapsuleSMB. Jei tai vidinis diskas ir jame nėra nieko, ko jums reikia, naudokite „Performatuoti vidinį diską“, kad suformatuotumėte jį įrenginiui.";
 "doctor.check.debug_logging_on" = "Derinimo žurnalas įjungtas ir lėtina įrenginį. Išjunkite jį, jei nesprendžiate problemos.";
+"doctor.check.settings_not_applied" = "Šio Mac nustatymai skiriasi nuo įdiegtų įrenginyje: %@. Įrenginys naudoja įdiegtus, kol paleisite „Įdiegti / atnaujinti Samba“.";
 "doctor.check.wifi_client" = "Įrenginys prie savo tinklo prijungtas per Wi-Fi, o ne Ethernet kabeliu. Kai šis ryšys silpnas, failų bendrinimas ir šie patikrinimai sulėtėja arba baigiasi jų laikas.";
 "doctor.check.process_listing_timed_out" = "Įrenginio procesų sąrašas laiku negautas, nors prisijungimas per SSH veikė. Priežastis gali būti užstrigęs procesas, įrenginiui pritrūkę procesų arba lėtas ryšys. SMB dar kartą netikrinamas, o įrenginio disko žurnalai neskaitomi.";
 "doctor.check.process_listing_timed_out_wifi" = "Įrenginio procesų sąrašas laiku negautas, nors prisijungimas per SSH veikė. Įrenginys prie savo tinklo prijungtas per Wi-Fi, o ne Ethernet kabeliu, ir priežastis gali būti lėtas ryšys. SMB dar kartą netikrinamas, o įrenginio disko žurnalai neskaitomi.";
@@ -611,7 +612,7 @@
 "overview.discovery.unsaved" = "Neišsaugota";
 "overview.discovery.waiting" = "Paieška prasideda, kai programos aplinka bus paruošta.";
 "operation.error.already_running" = "Kita operacija jau vykdoma.";
-"workflow.error.ata_idle_seconds_invalid" = "ATA neveiklos laikas turi būti neneigiamas sekundžių skaičius.";
+"workflow.error.ata_idle_seconds_invalid" = "ATA neveiklos laikas turi būti neneigiamas sekundžių skaičius, ne didesnis kaip 86400.";
 "workflow.error.ata_standby_invalid" = "ATA budėjimo laikas turi būti tuščias arba neneigiamas sekundžių skaičius.";
 "workflow.error.deploy_options_invalid" = "Diegimo parinktys yra netinkamos.";
 "workflow.error.flash_backup_required" = "Prieš planuodami flash darbus sukurkite atsarginę kopiją ir patikrinkite programinę įrangą.";
@@ -669,7 +670,7 @@
 "profile_editor.display_name" = "Rodomas pavadinimas";
 "profile_editor.error.duplicate_host" = "Kitas išsaugotas įrenginys jau naudoja šį kompiuterio pavadinimą.";
 "profile_editor.error.host_required" = "Kompiuterio pavadinimas būtinas.";
-"profile_editor.error.ata_idle_seconds_invalid" = "ATA neveiklos laikas turi būti neneigiamas sekundžių skaičius.";
+"profile_editor.error.ata_idle_seconds_invalid" = "ATA neveiklos laikas turi būti neneigiamas sekundžių skaičius, ne didesnis kaip 86400.";
 "profile_editor.error.ata_standby_invalid" = "ATA budėjimo laikas turi būti tuščias arba neneigiamas sekundžių skaičius.";
 "profile_editor.error.mount_wait_invalid" = "Prijungimo laukimo laikas turi būti neneigiamas sveikasis skaičius.";
 "profile_editor.error.password_required" = "Norint pakeisti kompiuterio pavadinimą, būtinas išsaugotas slaptažodis.";

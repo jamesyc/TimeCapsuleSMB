@@ -10,6 +10,21 @@
     "macos_app_other_copies",
     "password"
   ],
+  "doctor_compared_settings": [
+    "any_protocol",
+    "ata_idle_seconds",
+    "ata_standby",
+    "debug_logging",
+    "disable_smb_encryption",
+    "fruit_metadata_netatalk",
+    "internal_share_use_disk_root",
+    "mdns_advertise_afp",
+    "require_smb_encryption",
+    "require_smb_signing",
+    "rsync_enabled",
+    "smb_browse_compatibility",
+    "vfs_aio_fork_enabled"
+  ],
   "operations": {
     "activate": [
       "dry_run"
@@ -70,14 +85,27 @@
       "timeout"
     ],
     "doctor": [
+      "any_protocol",
+      "ata_idle_seconds",
+      "ata_standby",
       "bonjour_timeout",
+      "debug_logging",
+      "disable_smb_encryption",
+      "fruit_metadata_netatalk",
+      "internal_share_use_disk_root",
       "macos_local_network_preflight_duration_ms",
       "macos_local_network_preflight_error",
       "macos_local_network_preflight_result",
       "macos_local_network_preflight_service",
+      "mdns_advertise_afp",
+      "require_smb_encryption",
+      "require_smb_signing",
+      "rsync_enabled",
       "skip_bonjour",
       "skip_smb",
-      "skip_ssh"
+      "skip_ssh",
+      "smb_browse_compatibility",
+      "vfs_aio_fork_enabled"
     ],
     "flash": [
       "action",

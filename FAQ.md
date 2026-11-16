@@ -436,7 +436,7 @@ Yes! If you want to rebuild `smbd` yourself, run the scripts in `build/` on a Ne
 In the macOS app, each saved device has advanced settings for the managed SMB runtime. These settings are saved to the local device profile first. Run **Install / Update** afterward to push runtime-affecting changes to the Time Capsule.
 
 - **Mount wait**: default `30`. How long deploy, uninstall, fsck, and related operations wait for the AirPort disk to wake and mount.
-- **ATA idle**: default `300`. Sets the built-in ATA disk idle timer when the managed runtime starts. Use `0` to disable the idle timer.
+- **ATA idle**: default `300`, at most `86400` (one day). Sets the built-in ATA disk idle timer when the managed runtime starts. Use `0` to disable the idle timer.
 - **ATA standby**: default blank. Optionally sets the built-in ATA disk standby timer. Leave blank to avoid applying a standby timer; use `0` to disable the standby timer.
 - **NBNS**: always on. Apple's native NetBIOS name responder runs automatically so older SMB/Windows-style network browsing can find the device.
 - **Share internal disk root**: default off. When off, the internal disk share points at the managed `ShareRoot` folder. When on, it shares the whole internal disk root. External disks still share their mounted root.

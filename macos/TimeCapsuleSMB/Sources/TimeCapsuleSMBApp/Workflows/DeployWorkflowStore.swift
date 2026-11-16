@@ -288,7 +288,7 @@ final class DeployWorkflowStore: ObservableObject {
     }
 
     private var ataIdleSecondsValue: Int? {
-        ValueParsers.nonNegativeInteger(ataIdleSeconds)
+        ValueParsers.ataIdleSeconds(ataIdleSeconds)
     }
 
     private var ataStandbyValue: Int? {

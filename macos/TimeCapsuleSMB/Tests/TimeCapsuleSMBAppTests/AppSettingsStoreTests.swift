@@ -153,6 +153,14 @@ final class AppSettingsStoreTests: XCTestCase {
         }
 
         draft = AppSettingsDraft(settings: .default)
+        draft.ataIdleSeconds = "86401"
+        XCTAssertThrowsError(try draft.validatedSettings()) { error in
+            XCTAssertEqual(error as? AppSettingsValidationError, .invalidAtaIdleSeconds)
+        }
+        draft.ataIdleSeconds = "86400"
+        XCTAssertEqual(try draft.validatedSettings().defaultDeviceSettings.ataIdleSeconds, 86400)
+
+        draft = AppSettingsDraft(settings: .default)
         draft.ataStandby = "abc"
         XCTAssertThrowsError(try draft.validatedSettings()) { error in
             XCTAssertEqual(error as? AppSettingsValidationError, .invalidAtaStandby)

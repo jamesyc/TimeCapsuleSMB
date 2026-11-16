@@ -79,6 +79,9 @@ struct DoctorSummary: Equatable {
     static let diskSmartFailingResultCode = "disk_smart_failing"
     /// Debug logging is on, which slows the device; Samba still serves.
     static let debugLoggingOnResultCode = "debug_logging_on"
+    /// This Mac's settings differ from the device's installed ones: the
+    /// device keeps those until the next install, and Samba still serves.
+    static let settingsNotAppliedResultCode = "settings_not_applied"
     /// This boot's kernel disk errors while Samba still serves: the disk may
     /// be failing. One code per disk the helper could name, each with its
     /// own catalog sentence.
@@ -213,6 +216,9 @@ final class DoctorStore: ObservableObject {
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var currentStage: OperationStageState?
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
+    /// The profile settings the last Checkup sent, which its result compared
+    /// with the device; nil when it sent none.
+    private(set) var checkedSettings: DeviceProfileSettings?
 
     let backend: BackendClient
     private let coordinator: OperationCoordinator
@@ -264,6 +270,12 @@ final class DoctorStore: ObservableObject {
         backend.isRunning
     }
 
+    /// A Checkup is preparing (waiting for the Local Network check, which
+    /// shows as running before the helper starts) or running.
+    var isUnderway: Bool {
+        isRunning || state == .running
+    }
+
     var isBusy: Bool {
         backend.isRunning || backend.pendingConfirmation != nil
     }
@@ -289,6 +301,7 @@ final class DoctorStore: ObservableObject {
                 skipSSH: skipSSH,
                 skipBonjour: skipBonjour,
                 skipSMB: skipSMB,
+                settings: profile?.settings,
                 localNetworkPreflight: localNetworkPreflight
             ),
             context: profile?.runtimeContext,
@@ -306,6 +319,7 @@ final class DoctorStore: ObservableObject {
         }
         operationObserver.start(operation)
         resetForRun()
+        checkedSettings = profile?.settings
         passwordInvalidProfileID = nil
         process(backend.events)
         return start

@@ -198,6 +198,34 @@ struct DeviceProfileSettings: Codable, Equatable {
     }
 }
 
+extension DeviceProfileSettings {
+    /// The settings deploy writes to the device, which a Checkup compares
+    /// with it, by the helper's names (core.runtime_settings.COMPARED_SETTINGS).
+    /// Mount wait stays on this Mac, so it is not here.
+    var installedValues: [String: String] {
+        [
+            "mdns_advertise_afp": String(mdnsAdvertiseAFP),
+            "internal_share_use_disk_root": String(internalShareUseDiskRoot),
+            "smb_browse_compatibility": String(smbBrowseCompatibility),
+            "any_protocol": String(anyProtocol),
+            "require_smb_signing": String(requireSMBSigning),
+            "require_smb_encryption": String(requireSMBEncryption),
+            "disable_smb_encryption": String(disableSMBEncryption),
+            "fruit_metadata_netatalk": String(fruitMetadataNetatalk),
+            "vfs_aio_fork_enabled": String(vfsAIOForkEnabled),
+            "ata_idle_seconds": String(ataIdleSeconds),
+            "ata_standby": ataStandby.map(String.init) ?? "",
+            "rsync_enabled": String(rsyncEnabled),
+            "debug_logging": String(debugLogging),
+        ]
+    }
+
+    /// Whether `self` changes a setting deploy writes to the device.
+    func changesInstalledSettings(from other: DeviceProfileSettings) -> Bool {
+        installedValues != other.installedValues
+    }
+}
+
 struct DeviceCheckupSnapshot: Codable, Equatable {
     var checkedAt: Date
     var state: DoctorWorkflowState

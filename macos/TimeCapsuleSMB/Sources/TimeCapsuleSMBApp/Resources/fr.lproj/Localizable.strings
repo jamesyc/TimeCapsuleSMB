@@ -59,7 +59,7 @@
 "app_readiness.recovery.version_metadata_unavailable" = "Vérifiez votre connexion réseau ou réessayez plus tard.";
 "app_settings.appearance" = "Apparence";
 "app_settings.default_bonjour_timeout" = "Délai de détection (secondes)";
-"app_settings.error.ata_idle" = "Le délai d’inactivité ATA doit être un nombre de secondes positif ou nul.";
+"app_settings.error.ata_idle" = "Le délai d’inactivité ATA doit être un nombre de secondes positif ou nul, au plus 86400.";
 "app_settings.error.ata_standby" = "Le délai de veille ATA doit être vide ou un nombre de secondes positif ou nul.";
 "app_settings.error.bonjour_timeout" = "Le délai de découverte doit être d’au moins 5 secondes.";
 "app_settings.error.corrupt" = "Impossible de lire les paramètres de l’app : %@";
@@ -347,6 +347,7 @@
 "doctor.check.disk_size_misreported" = "L’appareil signale son disque interne comme beaucoup plus petit qu’il n’est, si bien que rien ne peut y être installé. Redémarrez l’appareil ; s’il continue de signaler une taille erronée, le disque doit être remplacé.";
 "doctor.check.disk_no_hfs_partition" = "Un disque de l’appareil ne contient aucun volume HFS utilisable par TimeCapsuleSMB. S’il s’agit du disque interne et qu’il ne contient rien dont vous avez besoin, utilisez « Reformater le disque interne » pour le formater pour l’appareil.";
 "doctor.check.debug_logging_on" = "Les journaux de débogage sont activés et ralentissent l’appareil. Désactivez-les, sauf si vous êtes en train de diagnostiquer un problème.";
+"doctor.check.settings_not_applied" = "Les paramètres de ce Mac diffèrent de ceux installés sur l’appareil : %@. L’appareil garde ceux qui sont installés jusqu’à ce que vous lanciez « Installer / mettre à jour Samba ».";
 "doctor.check.wifi_client" = "L’appareil est relié à son réseau en Wi-Fi plutôt que par un câble Ethernet. Quand cette liaison est faible, le partage de fichiers et ces vérifications ralentissent ou expirent.";
 "doctor.check.process_listing_timed_out" = "Le délai a expiré pendant la lecture de la liste des processus de l’appareil, bien que la connexion SSH ait fonctionné. Un processus bloqué, un appareil à court de processus ou une connexion lente peut en être la cause. SMB n’est pas vérifié à nouveau et les journaux sur le disque de l’appareil ne sont pas lus.";
 "doctor.check.process_listing_timed_out_wifi" = "Le délai a expiré pendant la lecture de la liste des processus de l’appareil, bien que la connexion SSH ait fonctionné. L’appareil est relié à son réseau en Wi-Fi plutôt que par un câble Ethernet, et une liaison lente peut en être la cause. SMB n’est pas vérifié à nouveau et les journaux sur le disque de l’appareil ne sont pas lus.";
@@ -611,7 +612,7 @@
 "overview.discovery.unsaved" = "Non enregistré";
 "overview.discovery.waiting" = "La découverte démarre lorsque l’environnement d’exécution de l’app est prêt.";
 "operation.error.already_running" = "Une autre opération est déjà en cours.";
-"workflow.error.ata_idle_seconds_invalid" = "Le délai d’inactivité ATA doit être un nombre de secondes positif ou nul.";
+"workflow.error.ata_idle_seconds_invalid" = "Le délai d’inactivité ATA doit être un nombre de secondes positif ou nul, au plus 86400.";
 "workflow.error.ata_standby_invalid" = "Le délai de veille ATA doit être vide ou un nombre de secondes positif ou nul.";
 "workflow.error.deploy_options_invalid" = "Les options d’installation / mise à jour ne sont pas valides.";
 "workflow.error.flash_backup_required" = "Sauvegardez et vérifiez le firmware avant de planifier des opérations flash.";
@@ -669,7 +670,7 @@
 "profile_editor.display_name" = "Nom d’affichage";
 "profile_editor.error.duplicate_host" = "Un autre appareil enregistré utilise déjà cet hôte.";
 "profile_editor.error.host_required" = "L’hôte est requis.";
-"profile_editor.error.ata_idle_seconds_invalid" = "Le délai d’inactivité ATA doit être un nombre de secondes positif ou nul.";
+"profile_editor.error.ata_idle_seconds_invalid" = "Le délai d’inactivité ATA doit être un nombre de secondes positif ou nul, au plus 86400.";
 "profile_editor.error.ata_standby_invalid" = "Le délai de veille ATA doit être vide ou un nombre de secondes positif ou nul.";
 "profile_editor.error.mount_wait_invalid" = "Le délai d’attente du montage doit être un entier positif ou nul.";
 "profile_editor.error.password_required" = "Un mot de passe enregistré est requis pour changer d’hôte.";

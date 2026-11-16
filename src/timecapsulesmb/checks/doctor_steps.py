@@ -12,6 +12,7 @@ from typing import TypeVar
 from xml.parsers.expat import ExpatError
 
 from timecapsulesmb.checks.bonjour import (
+    AfpExpectation,
     BONJOUR_INSTANCE_NOT_SEEN_CODE,
     BonjourExpectedIdentity,
     BonjourServiceTarget,
@@ -40,6 +41,8 @@ from timecapsulesmb.checks.doctor_state import (
     RuntimeNamingState,
     SmbConfigState,
     StepDecision,
+    DeployedVersionDecision,
+    DoctorSettingsState,
 )
 from timecapsulesmb.checks import smb as local_smb
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
@@ -91,6 +94,7 @@ from timecapsulesmb.core.smb_config import (
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, validate_app_config
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
+from timecapsulesmb.core.runtime_settings import managed_flash_values, settings_not_applied
 from timecapsulesmb.core.net import (
     endpoint_host,
     ipv6_scope_index,
@@ -206,7 +210,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.discovery.bonjour import (
     AIRPORT_SERVICE,
     BonjourQuery,
-    BonjourDiscoverySnapshot, BonjourResolvedService,
+    BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance,
 )
 from timecapsulesmb.discovery.devices import device_candidates_from_records
 from timecapsulesmb.discovery.models import normalize_airport_mac
@@ -325,6 +329,14 @@ DOCTOR_CODE_DISK_SMART_FAILING = "disk_smart_failing"
 # Samba is writing a level 10 log to the data disk. It still serves, so the app
 # keeps the runtime verified, as for a failing SMART status.
 DOCTOR_CODE_DEBUG_LOGGING_ON = "debug_logging_on"
+# This Mac's settings differ from the device's installed ones (changed here,
+# or installed from another Mac or the command line): the device keeps the
+# installed ones until the next install, so a warning, not a failure.
+DOCTOR_CODE_SETTINGS_NOT_APPLIED = "settings_not_applied"
+# The _adisk TXT's AFP flag differs from what the device should advertise, as
+# this Mac still sees it after asking for a recheck (_recheck_stale_adisk).
+DOCTOR_CODE_ADISK_ADVERTISES_AFP = "adisk_advertises_afp"
+DOCTOR_CODE_ADISK_ADVERTISES_SMB_ONLY = "adisk_advertises_smb_only"
 # This boot's kernel disk errors (device.disk_errors) while Samba still
 # serves: the disk may be failing, but file sharing works, so a warning that
 # says to copy the files off. A restart clears the lines, and the failing-disk
@@ -760,9 +772,13 @@ def _add_time_machine_adisk_results(
     instance_name: str | None,
     smb_hostname: str | None,
     active_share_names: list[str],
-    advertise_afp: bool,
+    afp: AfpExpectation | None,
     add_result: Callable[[CheckResult], None],
 ) -> bool:
+    """`afp` is what each disk's AFP flag should be; None judges nothing. A
+    flag that differs from the device's installed setting means the device is
+    not doing what that setting says, or this Mac holds a stale copy of the
+    record (_recheck_stale_adisk asks the Mac to check it first)."""
     if instance_name is None:
         return False
 
@@ -831,21 +847,29 @@ def _add_time_machine_adisk_results(
             failed = True
             add_result(CheckResult("FAIL", f"_adisk._tcp TXT disk {disk_key} adVF {fields['adVF']!r} is not hexadecimal"))
         else:
-            afp_checked = True
-            if disk_afp != advertise_afp:
+            afp_checked = afp is not None
+            if afp is not None and disk_afp != afp.advertise:
                 afp_mismatches.append(f"{disk_key} adVF={fields['adVF']}")
         share_name = fields["adVN"]
         if share_name not in advertised_shares:
             advertised_shares.append(share_name)
 
+    advertise_afp = afp is not None and afp.advertise
+    afp_installed = afp is not None and afp.source == "installed"
+    setting = (
+        "the device's installed setting turns Advertise AFP over Bonjour " + ("on" if advertise_afp else "off")
+        if afp_installed
+        else "Advertise AFP over Bonjour is " + ("on" if advertise_afp else "off")
+    )
     if afp_mismatches and not advertise_afp:
         failed = True
         add_result(
             CheckResult(
                 "FAIL",
-                f"_adisk._tcp TXT advertises AFP ({', '.join(afp_mismatches)}) although Advertise AFP over Bonjour is off; "
+                f"_adisk._tcp TXT advertises AFP ({', '.join(afp_mismatches)}) although {setting}; "
                 "macOS 26.x/27 hides Time Capsules that advertise AFP; run \"Install / Update Samba\" in the macOS app, "
                 "or tcapsule deploy from the command line",
+                details={"code": DOCTOR_CODE_ADISK_ADVERTISES_AFP},
             )
         )
     elif afp_mismatches:
@@ -853,13 +877,14 @@ def _add_time_machine_adisk_results(
         add_result(
             CheckResult(
                 "FAIL",
-                f"_adisk._tcp TXT advertises SMB only ({', '.join(afp_mismatches)}) although Advertise AFP over Bonjour is on; "
+                f"_adisk._tcp TXT advertises SMB only ({', '.join(afp_mismatches)}) although {setting}; "
                 "run \"Install / Update Samba\" in the macOS app, or tcapsule deploy from the command line",
+                details={"code": DOCTOR_CODE_ADISK_ADVERTISES_SMB_ONLY},
             )
         )
     elif afp_checked:
         mode = "AFP and SMB" if advertise_afp else "SMB only"
-        add_result(CheckResult("PASS", f"_adisk._tcp TXT advertises {mode} as configured"))
+        add_result(CheckResult("PASS", f"_adisk._tcp TXT advertises {mode} as {'installed' if afp_installed else 'configured'}"))
 
     if active_share_names:
         # The device serves share names precomposed while the ADisk TXT keeps
@@ -1327,7 +1352,7 @@ def _evaluate_bonjour_snapshot(
         instance_name=resolved_record.name,
         smb_hostname=target.hostname,
         active_share_names=active_share_names,
-        advertise_afp=bonjour_expected.advertise_afp,
+        afp=bonjour_expected.afp,
         add_result=add,
     ):
         outcome.debug_needed = True
@@ -1382,6 +1407,111 @@ def _evaluate_bonjour_attempt(
     )
 
 
+# mDNSResponder drops a cached record it was asked to re-check 2.6-6.3 s later
+# unless the device confirms it (discovery.native_dns_sd.recheck_cached_txt).
+DOCTOR_ADISK_RECHECK_DEADLINE_SECONDS = 7.0
+DOCTOR_ADISK_RECHECK_POLL_SECONDS = 1.0
+DOCTOR_ADISK_RECHECK_RESOLVE_MS = 1500
+
+
+def _adisk_record_differs(record: BonjourResolvedService, afp: AfpExpectation) -> bool:
+    """Whether any disk in an _adisk record has an AFP flag other than `afp`."""
+    for fields in _adisk_disk_fields(record).values():
+        try:
+            if bool(int(fields.get("adVF", ""), 16) & 0x01) != afp.advertise:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _stale_adisk_instances(
+    snapshot: BonjourDiscoverySnapshot | None,
+    expected: BonjourExpectedIdentity,
+    own_host: str | None,
+) -> list[BonjourServiceInstance]:
+    """The device's _adisk instances whose AFP flags differ from its
+    installed setting. Empty unless the installed setting is known."""
+    afp = expected.afp
+    if snapshot is None or afp is None or afp.source != "installed":
+        return []
+    names = {
+        record.name for record in snapshot.resolved
+        if record.service_type.startswith("_adisk.")
+        and ((own_host is not None and _canonical_bonjour_host(record.hostname) == own_host)
+             or (expected.instance_name is not None and record.name == expected.instance_name))
+        and _adisk_record_differs(record, afp)
+    }
+    return [instance for instance in snapshot.instances
+            if instance.service_type.startswith("_adisk.") and instance.name in names]
+
+
+def _recheck_stale_adisk(
+    snapshot: BonjourDiscoverySnapshot | None,
+    expected: BonjourExpectedIdentity,
+    own_host: str | None,
+    query: BonjourQuery,
+) -> tuple[BonjourDiscoverySnapshot | None, dict[str, object] | None]:
+    """Ask this Mac to re-check its cached copy of each _adisk record whose AFP
+    flags differ from the installed setting, then resolve that record again
+    until it matches or the deadline passes. A Mac that missed the device's
+    announcements keeps the old record for up to 75 minutes.
+
+    Returns the snapshot with each record that now matches swapped in (the
+    rest of the browse untouched), and what happened, for telemetry; None
+    when nothing differed."""
+    stale = _stale_adisk_instances(snapshot, expected, own_host)
+    if snapshot is None or not stale or expected.afp is None:
+        return snapshot, None
+    afp = expected.afp
+    record: dict[str, object] = {"instances": len(stale), "copies": 0, "rechecked": 0, "fixed": False}
+    supported = False
+    try:
+        for instance in stale:
+            counts = query.recheck_cached_txt(instance)
+            if counts is not None:
+                supported = True
+                record["copies"] = int(record["copies"]) + counts[0]
+                record["rechecked"] = int(record["rechecked"]) + counts[1]
+    except Exception as exc:
+        record.update(result="error", error=str(exc)[:200])
+        return snapshot, record
+    if not supported:
+        record["result"] = "unsupported"
+        return snapshot, record
+    if not record["rechecked"]:
+        record["result"] = "refused" if record["copies"] else "nothing_cached"
+        return snapshot, record
+    record["result"] = "rechecked"
+    started = _clock.monotonic()
+    deadline = started + DOCTOR_ADISK_RECHECK_DEADLINE_SECONDS
+    current: dict[str, BonjourResolvedService] = {}
+    pending = list(stale)
+    while pending and (left := deadline - _clock.monotonic()) > 0:
+        _clock.sleep(min(DOCTOR_ADISK_RECHECK_POLL_SECONDS, left))
+        for instance in list(pending):
+            # Each resolve gets only the time left, so several records that
+            # still differ cannot carry the wait past the deadline.
+            left_ms = int((deadline - _clock.monotonic()) * 1000)
+            if left_ms <= 0:
+                break
+            try:
+                resolved, _diagnostics = query.resolve_detailed(
+                    instance, min(DOCTOR_ADISK_RECHECK_RESOLVE_MS, left_ms),
+                )
+            except Exception:
+                resolved = None
+            if resolved is not None and _adisk_disk_fields(resolved) and not _adisk_record_differs(resolved, afp):
+                current[instance.name] = resolved
+                pending.remove(instance)
+    record.update(fixed=not pending, waited_sec=round(_clock.monotonic() - started, 1))
+    resolved_records = [
+        current[item.name] if item.service_type.startswith("_adisk.") and item.name in current else item
+        for item in snapshot.resolved
+    ]
+    return replace(snapshot, resolved=resolved_records), record
+
+
 def _add_bonjour_results(
     config: AppConfig,
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
@@ -1391,9 +1521,12 @@ def _add_bonjour_results(
     add_result: Callable[[CheckResult], None],
     network: DoctorNetworkProbe | None = None,
     airport_mac: str | None = None,
+    afp: AfpExpectation | None,
 ) -> DoctorBonjourResult:
     """`airport_mac` is the device's MAC, which finds its own records
-    (own_bonjour_host) whatever Apple renamed them to."""
+    (own_bonjour_host) whatever Apple renamed them to. `afp` is whether the
+    device should advertise AFP (DoctorSettingsState.afp); None judges
+    nothing."""
     bonjour_instance: str | None = None
     bonjour_target: BonjourServiceTarget | None = None
     bonjour_reason = "Bonjour check not run"
@@ -1403,10 +1536,11 @@ def _add_bonjour_results(
     bonjour_service_targets: dict[str, tuple[str, ...]] = {}
     bonjour_addresses: list[str] = []
     active_share_names = active_share_names or []
+    adisk_recheck: dict[str, object] | None = None
 
     if not skip_bonjour:
         try:
-            bonjour_expected = build_bonjour_expected_identity(config, runtime_naming_identity)
+            bonjour_expected = build_bonjour_expected_identity(config, runtime_naming_identity, afp=afp)
             bonjour_expected_debug = {
                 "instance_name": bonjour_expected.instance_name,
                 "host_label": bonjour_expected.host_label,
@@ -1432,10 +1566,17 @@ def _add_bonjour_results(
             smb_snapshot, discovery_error, bonjour_discovery_debug = discover_smb_services_detailed(
                 include_related=True, target_ip=bonjour_expected.target_ip, query=query,
             )
-            attempts = _bonjour_family_attempts(bonjour_expected.target_ip)
             own_host = (own_bonjour_host(smb_snapshot.resolved, airport_mac=airport_mac,
                                          target_ip=bonjour_expected.target_ip)
                         if smb_snapshot is not None else None)
+            smb_snapshot, adisk_recheck = _recheck_stale_adisk(smb_snapshot, bonjour_expected, own_host, query)
+            if adisk_recheck is not None and adisk_recheck.get("fixed"):
+                add_result(CheckResult(
+                    "INFO",
+                    "this Mac's copy of the device's _adisk._tcp record was out of date; checked again, it now "
+                    "matches the installed AFP setting",
+                ))
+            attempts = _bonjour_family_attempts(bonjour_expected.target_ip)
             outcomes: list[tuple[str, _BonjourAttemptOutcome]] = []
             bonjour_reason = ""
             for family, target_ip, interfaces in attempts:
@@ -1517,6 +1658,7 @@ def _add_bonjour_results(
         expected_debug=bonjour_expected_debug,
         discovery_debug=bonjour_discovery_debug,
         addresses=tuple(bonjour_addresses),
+        adisk_recheck=adisk_recheck,
     )
 
 
@@ -2750,19 +2892,20 @@ def _doctor_check_deployed_config(target: DoctorTarget, remote: RemoteAccess, si
     return StepDecision()
 
 
-def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
+def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> DeployedVersionDecision:
     if not remote.remote_checks_enabled:
-        return StepDecision()
+        return DeployedVersionDecision()
 
     try:
         deployed_version = read_deployed_version_conn(target.connection)
     except Exception as e:
         sink.add(CheckResult("FAIL", f"deployed payload version probe failed; reboot the device and rerun doctor: {e}"))
-        return StepDecision(stop=True)
+        return DeployedVersionDecision(stop=True)
 
     if sink.debug_fields is not None:
         sink.debug_fields["deployed_release_tag"] = deployed_version.release_tag
         sink.debug_fields["deployed_cli_version_code"] = deployed_version.cli_version_code
+        sink.debug_fields["installed_settings"] = deployed_version.installed
 
     deployed_release_tag = deployed_version.release_tag
     deployed_cli_version_code = deployed_version.cli_version_code
@@ -2774,7 +2917,7 @@ def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, s
                 "run \"Install / Update Samba\" in the macOS app, or run tcapsule deploy from the command line",
             )
         )
-        return StepDecision(stop=True)
+        return DeployedVersionDecision(stop=True)
 
     if deployed_cli_version_code < CLI_VERSION_CODE:
         sink.add(
@@ -2784,7 +2927,7 @@ def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, s
                 "run \"Install / Update Samba\" in the macOS app, or run tcapsule deploy from the command line",
             )
         )
-        return StepDecision(stop=True)
+        return DeployedVersionDecision(stop=True)
 
     if deployed_cli_version_code > CLI_VERSION_CODE:
         sink.add(
@@ -2793,10 +2936,64 @@ def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, s
                 f"deployed version {deployed_release_tag} is newer than this doctor {RELEASE_TAG}; please update before running doctor",
             )
         )
-        return StepDecision(stop=True)
+        return DeployedVersionDecision(stop=True)
 
     sink.add(CheckResult("PASS", f"deployed version matches current release {RELEASE_TAG}"))
-    return StepDecision()
+    return DeployedVersionDecision(version=deployed_version)
+
+
+def _setting_value_text(flash_key: str, value: str | int) -> str:
+    text = str(value)
+    if flash_key in ("ATA_IDLE_SECONDS", "ATA_STANDBY"):
+        # atactl setidle 0 / setstandby 0 turn the timer off; no standby value
+        # leaves the disk's own.
+        return "unchanged" if not text else "off" if text == "0" else f"{text} s"
+    return "on" if text == "1" else "off"
+
+
+def _doctor_settings_state(inputs: DoctorInputs, deployed: DeployedVersionDecision, sink: DoctorSink) -> DoctorSettingsState:
+    """Compare this Mac's settings, read where its deploy reads them, with the
+    device's installed ones, and warn about each one that differs: changed
+    here, or installed from another Mac or the command line. It takes effect
+    with the next install, so nothing is broken yet.
+
+    The AFP expectation: the device's installed setting when known; else this
+    Mac's; nothing when the app's settings were refused. Both sources are
+    valid here: the config check refuses a bad .env before doctor reaches the
+    device, and the app's settings are checked when they arrive."""
+    source = inputs.settings_source
+    installed = deployed.installed
+    if sink.debug_fields is not None:
+        sink.debug_fields["settings_source"] = source.kind
+    wanted = managed_flash_values(inputs.config, source.settings)
+    installed_afp = installed.get("MDNS_ADVERTISE_AFP")
+    if installed_afp in ("0", "1"):
+        afp: AfpExpectation | None = AfpExpectation(installed_afp == "1", "installed")
+    elif source.kind == "app_refused":
+        afp = None
+    else:
+        afp = AfpExpectation(wanted["MDNS_ADVERTISE_AFP"] == 1, "settings")
+    if not installed or not source.compared:
+        return DoctorSettingsState(afp=afp)
+    changed = tuple(settings_not_applied(wanted, installed, source.compared))
+    if sink.debug_fields is not None:
+        sink.debug_fields["settings_not_applied"] = [setting.setting_id for setting in changed]
+    if changed:
+        listed = ", ".join(
+            f"{setting.label} (this Mac: {_setting_value_text(setting.flash_key, wanted[setting.flash_key])}, "
+            f"device: {_setting_value_text(setting.flash_key, installed[setting.flash_key])})"
+            for setting in changed
+        )
+        sink.add(
+            CheckResult(
+                "WARN",
+                f"this Mac's settings differ from the device's installed ones: {listed}; "
+                "run \"Install / Update Samba\" in the macOS app "
+                "or tcapsule deploy to install them, or save the device's values with tcapsule configure",
+                details={"code": DOCTOR_CODE_SETTINGS_NOT_APPLIED, "settings": [setting.setting_id for setting in changed]},
+            )
+        )
+    return DoctorSettingsState(afp=afp)
 
 
 def _doctor_check_runtime_ram_root(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:

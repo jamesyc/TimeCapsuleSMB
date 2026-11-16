@@ -59,7 +59,7 @@
 "app_readiness.recovery.version_metadata_unavailable" = "请检查网络连接，或稍后重试。";
 "app_settings.appearance" = "外观";
 "app_settings.default_bonjour_timeout" = "发现超时（秒）";
-"app_settings.error.ata_idle" = "ATA 空闲时间必须为非负秒数。";
+"app_settings.error.ata_idle" = "ATA 空闲时间必须为不超过 86400 的非负秒数。";
 "app_settings.error.ata_standby" = "ATA 待机时间必须留空或为非负秒数。";
 "app_settings.error.bonjour_timeout" = "发现超时必须至少为 5 秒。";
 "app_settings.error.corrupt" = "无法读取应用设置：%@";
@@ -347,6 +347,7 @@
 "doctor.check.disk_size_misreported" = "设备报告的内部磁盘容量远小于实际容量，因此无法在上面安装任何内容。请重启设备；如果磁盘仍报告错误的容量，就需要更换磁盘。";
 "doctor.check.disk_no_hfs_partition" = "设备上的一个磁盘没有 TimeCapsuleSMB 可用的 HFS 卷。如果它是内部磁盘且上面没有你需要的内容，请使用“重新格式化内部磁盘”为设备格式化它。";
 "doctor.check.debug_logging_on" = "调试日志已开启，这会让设备变慢。除非你正在排查问题，否则请关闭调试日志。";
+"doctor.check.settings_not_applied" = "此 Mac 的设置与设备上已安装的设置不同：%@。在你运行“安装 / 更新 Samba”之前，设备会保留已安装的设置。";
 "doctor.check.wifi_client" = "设备通过 Wi-Fi 而不是以太网线接入网络。当这条连接信号弱时，文件共享和这些检查会变慢或超时。";
 "doctor.check.process_listing_timed_out" = "虽然 SSH 登录成功，但列出设备进程超时了。原因可能是某个进程卡住、设备的进程数用尽或连接缓慢。不会再次检查 SMB，也不会读取设备磁盘上的日志。";
 "doctor.check.process_listing_timed_out_wifi" = "虽然 SSH 登录成功，但列出设备进程超时了。设备通过 Wi-Fi 而不是以太网线接入网络，连接缓慢可能是原因。不会再次检查 SMB，也不会读取设备磁盘上的日志。";
@@ -611,7 +612,7 @@
 "overview.discovery.unsaved" = "未保存";
 "overview.discovery.waiting" = "应用运行环境就绪后将开始发现设备。";
 "operation.error.already_running" = "已有另一个操作正在运行。";
-"workflow.error.ata_idle_seconds_invalid" = "ATA 空闲时间必须为非负秒数。";
+"workflow.error.ata_idle_seconds_invalid" = "ATA 空闲时间必须为不超过 86400 的非负秒数。";
 "workflow.error.ata_standby_invalid" = "ATA 待机时间必须留空或为非负秒数。";
 "workflow.error.deploy_options_invalid" = "安装 / 更新选项无效。";
 "workflow.error.flash_backup_required" = "规划闪存工作前，请先备份并检查固件。";
@@ -669,7 +670,7 @@
 "profile_editor.display_name" = "显示名称";
 "profile_editor.error.duplicate_host" = "另一个保存的设备已使用此主机。";
 "profile_editor.error.host_required" = "主机为必填。";
-"profile_editor.error.ata_idle_seconds_invalid" = "ATA 空闲时间必须为非负秒数。";
+"profile_editor.error.ata_idle_seconds_invalid" = "ATA 空闲时间必须为不超过 86400 的非负秒数。";
 "profile_editor.error.ata_standby_invalid" = "ATA 待机时间必须留空或为非负秒数。";
 "profile_editor.error.mount_wait_invalid" = "挂载等待时间必须是非负整数。";
 "profile_editor.error.password_required" = "更改主机需要保存的密码。";

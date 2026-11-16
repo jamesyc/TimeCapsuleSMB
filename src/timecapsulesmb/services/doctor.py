@@ -90,6 +90,15 @@ def doctor_finished_fields(
         # Whether the device reaches its network over Wi-Fi (processes.wifi_client),
         # as the preflight of other commands records it.
         "wifi_client": debug_fields.get("wifi_client"),
+        # Where this Mac's settings came from (the .env, the app's profile, or
+        # an app request the device would refuse), and which of them differ
+        # from the device's installed ones (names only, never values).
+        "settings_source": debug_fields.get("settings_source"),
+        "settings_not_applied": debug_fields.get("settings_not_applied"),
+        # What asking this Mac to recheck a stale _adisk record found
+        # (_recheck_stale_adisk), on passing runs too: a recheck that fixed
+        # the record leaves nothing else behind.
+        "adisk_recheck": debug_fields.get("adisk_recheck"),
         "doctor_status": report["status"],
         "doctor_sections": report["sections"],
     }

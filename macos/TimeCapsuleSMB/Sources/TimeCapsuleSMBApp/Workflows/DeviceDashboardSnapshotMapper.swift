@@ -42,9 +42,9 @@ enum DeviceDashboardSnapshotMapper {
         )
         let payloadFamily = profile.runtimeState?.payloadFamily ?? profile.payloadFamily
         // A disk whose SMART check says it is failing, a failed Seagate beside
-        // a USB disk that serves, or debug logging left on, leaves Samba
-        // serving: the Checkup row shows the warning, the runtime stays
-        // verified.
+        // a USB disk that serves, debug logging left on, or a setting changed
+        // since the last install, leaves Samba serving: the Checkup row shows
+        // the warning, the runtime stays verified.
         let status = device.status == .warn && onlyWarningsThatLeaveSambaServing(summary) ? .pass : device.status
         switch status {
         case .notChecked:
@@ -140,6 +140,7 @@ enum DeviceDashboardSnapshotMapper {
         return !warnings.isEmpty && warnings.allSatisfy {
             $0.code == DoctorSummary.diskSmartFailingResultCode || $0.code == DoctorSummary.debugLoggingOnResultCode
                 || $0.code == DoctorSummary.diskSeagateFailedResultCode
+                || $0.code == DoctorSummary.settingsNotAppliedResultCode
                 || DoctorSummary.diskErrorsLoggedResultCodes.contains($0.code ?? "")
         }
     }

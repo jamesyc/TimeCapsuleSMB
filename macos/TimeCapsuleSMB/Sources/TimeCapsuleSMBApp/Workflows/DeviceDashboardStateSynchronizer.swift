@@ -123,6 +123,7 @@ final class DeviceDashboardStateSynchronizer {
         let observedAt = Date()
         let skipSSH = doctorStore.skipSSH
         let observedMAC = doctorStore.payload?.airportMAC
+        let checkedSettings = doctorStore.checkedSettings
         appStore.deviceRegistry.enqueueOperationUpdate { [self] in
             let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
                 profile: appStore.deviceRegistry.profile(id: profileID),
@@ -138,8 +139,19 @@ final class DeviceDashboardStateSynchronizer {
                 ),
                 runtimeState: runtimeState,
                 observedMAC: observedMAC,
+                checkedSettings: checkedSettings,
                 for: profileID
             )
+            // Settings saved while it ran: the Checkup tab drops the result
+            // too, as it does for a save after a Checkup
+            // (DeviceDashboardSession). A later Checkup, preparing, running
+            // or run with the new settings, keeps its own.
+            if let checkedSettings,
+               let current = appStore.deviceRegistry.profile(id: profileID),
+               current.settings.changesInstalledSettings(from: checkedSettings),
+               !doctorStore.isUnderway, doctorStore.checkedSettings == checkedSettings {
+                doctorStore.invalidateResult()
+            }
         }
     }
 

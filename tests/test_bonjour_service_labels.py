@@ -19,6 +19,7 @@ from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops.discovery import discover_operation
 from timecapsulesmb.checks import doctor_steps
 from timecapsulesmb.checks.bonjour import (
+    AfpExpectation,
     BonjourExpectedIdentity, build_expected_smb_instance, own_bonjour_host, resolve_expected_smb_record,
     resolve_smb_service_target,
 )
@@ -350,7 +351,7 @@ def test_doctor_blank_name_expects_apples_bonjour_host(radio_mac, host_failures)
     with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=[]):
         outcome = _evaluate_bonjour_snapshot(BonjourDiscoverySnapshot([instance(smb)], [smb]),
             BonjourExpectedIdentity(instance_name=identity.mdns_instance_name, host_label=identity.mdns_host_label,
-                                    target_ip="192.0.2.10", advertise_afp=False),
+                                    target_ip="192.0.2.10", afp=AfpExpectation(False, "settings")),
             target_ip="192.0.2.10", family="ipv4", interfaces=None, active_share_names=["Data"],
             resolver=mock.Mock(return_value=(None, CheckResult("FAIL", "no reply"))),
             browse_miss_message="browse missed", targeted_resolve_pass_message="resolved")
@@ -370,7 +371,7 @@ def test_doctor_expects_the_bonjour_host_acpd_takes_from_syDN(system_dns_name, h
     with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=[]):
         outcome = _evaluate_bonjour_snapshot(BonjourDiscoverySnapshot([instance(smb)], [smb]),
             BonjourExpectedIdentity(instance_name=identity.mdns_instance_name, host_label=identity.mdns_host_label,
-                                    target_ip="192.0.2.10", advertise_afp=False),
+                                    target_ip="192.0.2.10", afp=AfpExpectation(False, "settings")),
             target_ip="192.0.2.10", family="ipv4", interfaces=None, active_share_names=["Data"],
             resolver=mock.Mock(return_value=(None, CheckResult("FAIL", "no reply"))),
             browse_miss_message="browse missed", targeted_resolve_pass_message="resolved")
@@ -407,7 +408,7 @@ def test_doctor_whitespace_label_keeps_endpoint_and_adisk_validation(label, fami
         observed.append(airport)
     with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=[]):
         outcome = _evaluate_bonjour_snapshot(BonjourDiscoverySnapshot([instance(r) for r in observed], observed),
-            BonjourExpectedIdentity(instance_name=label, host_label="host", target_ip=address, advertise_afp=False),
+            BonjourExpectedIdentity(instance_name=label, host_label="host", target_ip=address, afp=AfpExpectation(False, "settings")),
             target_ip=address, family=family, interfaces=None, active_share_names=["Data"],
             resolver=mock.Mock(return_value=(None, CheckResult("FAIL", "no reply"))),
             browse_miss_message="browse missed", targeted_resolve_pass_message="resolved")
@@ -493,7 +494,7 @@ def evaluate(observed, *, host_label="home", instance_name="Home", resolved=None
             mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", side_effect=lookup):
         return _evaluate_bonjour_snapshot(BonjourDiscoverySnapshot([instance(r) for r in observed], observed),
             BonjourExpectedIdentity(instance_name=instance_name, host_label=host_label, target_ip=target_ip,
-                                    advertise_afp=False),
+                                    afp=AfpExpectation(False, "settings")),
             target_ip=target_ip, family="ipv4", interfaces=None, active_share_names=["Data"],
             resolver=mock.Mock(return_value=(None, CheckResult("FAIL", "no reply"))),
             browse_miss_message="browse missed", targeted_resolve_pass_message="resolved")
@@ -537,7 +538,7 @@ def doctor_bonjour(observed, *, mac=OUR_MAC, target_ip="192.0.2.10", instance_na
         return tuple((resolved or {}).get(host.rstrip(".").lower(), ()))
 
     snapshot = BonjourDiscoverySnapshot([instance(r) for r in observed], observed)
-    expected = BonjourExpectedIdentity(instance_name, host_label, target_ip, advertise_afp=False)
+    expected = BonjourExpectedIdentity(instance_name, host_label, target_ip, afp=AfpExpectation(False, "settings"))
     with mock.patch.object(doctor_steps, "build_bonjour_expected_identity", return_value=expected), \
             mock.patch.object(doctor_steps, "discover_smb_services_detailed", return_value=(snapshot, None, None)), \
             mock.patch.object(doctor_steps, "resolve_host_ips", side_effect=lookup), \
@@ -546,7 +547,7 @@ def doctor_bonjour(observed, *, mac=OUR_MAC, target_ip="192.0.2.10", instance_na
                               return_value=(None, CheckResult("FAIL", "no reply"))):
         result = doctor_steps._add_bonjour_results(
             AppConfig(values={"TC_HOST": target_ip or "capsule.example"}), naming, skip_bonjour=False,
-            active_share_names=["Data"], add_result=results.append, airport_mac=mac,
+            active_share_names=["Data"], add_result=results.append, airport_mac=mac, afp=None,
         )
     return SimpleNamespace(results=results, result=result, lookups=lookups)
 

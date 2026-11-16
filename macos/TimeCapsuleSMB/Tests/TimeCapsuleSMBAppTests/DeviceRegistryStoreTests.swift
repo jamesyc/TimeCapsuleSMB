@@ -55,6 +55,42 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(again.profile(id: profile.id)?.settings.disableSMBEncryption, true)
     }
 
+    func testAnEditableFieldsSaveKeepsResultsSavedMeanwhile() async throws {
+        // A settings save starts from the profile as the editor saw it; a
+        // Checkup result stored after that must survive it, unless the save
+        // changes a setting deploy writes.
+        for (name, change, kept) in [
+            ("display name", { (settings: inout DeviceProfileSettings) in }, true),
+            ("advertise AFP", { (settings: inout DeviceProfileSettings) in settings.mdnsAdvertiseAFP.toggle() }, false),
+        ] {
+            let temp = try TemporaryDirectory()
+            let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+            await store.load()
+            let stale = try await store.storeTestProfile(
+                configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+                discoveredDevice: nil,
+                passwordState: .available,
+                preferredID: "device-one"
+            )
+            await store.updateCheckup(DeviceCheckupSnapshot(
+                checkedAt: Date(timeIntervalSince1970: 200), state: .passed,
+                passCount: 1, warnCount: 0, failCount: 0, summary: ""
+            ), for: stale.id)
+            await store.updateDeployState(testDeployState(status: .succeeded), for: stale.id)
+            var settings = stale.settings
+            change(&settings)
+
+            let saved = try await store.updateEditableFields(
+                DeviceProfileEditableFields(displayName: "Renamed", settings: settings), passwordState: nil, for: stale.id
+            )
+
+            XCTAssertEqual(saved.displayName, "Renamed", name)
+            XCTAssertEqual(saved.lastCheckup != nil, kept, name)
+            XCTAssertEqual(saved.lastDeployState?.status, .succeeded, name)
+            XCTAssertEqual(store.profile(id: stale.id)?.lastDeployState?.status, .succeeded, name)
+        }
+    }
+
     func testFailedDeployDiagnosticTextSurvivesRegistryReload() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
@@ -656,6 +692,50 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(runtimeState.stage, "read_mast")
         XCTAssertEqual(runtimeState.errorCode, "operation_interrupted")
         XCTAssertEqual(runtimeState.localizedSummary, "The Samba installation or update was interrupted before it completed.")
+    }
+
+    func testACheckupRunWithSettingsSavedOverSinceIsNotKept() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        let profile = try await store.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let checked = profile.settings
+        let snapshot = DeviceCheckupSnapshot(
+            checkedAt: Date(timeIntervalSince1970: 100), state: .passed,
+            passCount: 3, warnCount: 0, failCount: 0, summary: "healthy"
+        )
+        let runtime = testRuntimeState(state: .installedVerified, source: .doctor, verified: true, summary: "running")
+
+        // Settings the device runs with changed while it ran.
+        var edited = checked
+        edited.mdnsAdvertiseAFP.toggle()
+        try await store.updateEditableFields(
+            DeviceProfileEditableFields(displayName: profile.displayName, settings: edited),
+            passwordState: nil, for: profile.id
+        )
+        await store.updateCheckup(snapshot, runtimeState: runtime, checkedSettings: checked, for: profile.id)
+        XCTAssertNil(store.profile(id: profile.id)?.lastCheckup)
+        XCTAssertEqual(store.profile(id: profile.id)?.runtimeState?.state, .installedVerified, "what it saw of the runtime is kept")
+
+        // Run with the profile's settings: kept.
+        await store.updateCheckup(snapshot, runtimeState: runtime, checkedSettings: edited, for: profile.id)
+        XCTAssertEqual(store.profile(id: profile.id)?.lastCheckup, snapshot)
+
+        // A change only to a setting this Mac keeps: still kept.
+        var mountWaitOnly = edited
+        mountWaitOnly.mountWaitSeconds += 30
+        try await store.updateEditableFields(
+            DeviceProfileEditableFields(displayName: profile.displayName, settings: mountWaitOnly),
+            passwordState: nil, for: profile.id
+        )
+        XCTAssertEqual(store.profile(id: profile.id)?.lastCheckup, snapshot)
+        await store.updateCheckup(snapshot, runtimeState: nil, checkedSettings: edited, for: profile.id)
+        XCTAssertEqual(store.profile(id: profile.id)?.lastCheckup, snapshot)
     }
 
     func testInterruptedRuntimeStateOverridesSuccessfulCheckupAfterReload() async throws {

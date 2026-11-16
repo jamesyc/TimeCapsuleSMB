@@ -9,9 +9,11 @@ from typing import Literal, Mapping
 from timecapsulesmb.checks.network import router_mac_toward
 from timecapsulesmb.configure_defaults import existing_config_value_or_default, validated_value_or_empty
 from timecapsulesmb.core.config import (
+    ATA_IDLE_MAX_SECONDS,
     AIRPORT_SYAP_TO_MODEL,
     DEFAULTS,
     CONFIG_VALIDATORS,
+    device_ata_idle_seconds,
     effective_smb_security,
     parse_bool,
     preserved_env_file_values,
@@ -559,6 +561,14 @@ def run_configure_flow(
     )
 
 
+def _ata_idle_config_value(value: object) -> str:
+    """The idle timer to save; refuses one the device would run as 300."""
+    text = _optional_unsigned_config_value(value, "TC_ATA_IDLE_SECONDS")
+    if text and int(text) > ATA_IDLE_MAX_SECONDS:
+        raise ValueError(f"TC_ATA_IDLE_SECONDS must be no larger than {ATA_IDLE_MAX_SECONDS}")
+    return text
+
+
 def _optional_unsigned_config_value(value: object, key: str) -> str:
     if value is None:
         return ""
@@ -684,9 +694,13 @@ def build_managed_config_env_values(
             else debug_logging
         ) else "false",
         "TC_ATA_IDLE_SECONDS": (
-            existing_config_value_or_default(existing, "TC_ATA_IDLE_SECONDS", "ATA idle seconds")
+            # One saved by an older release past ATA_IDLE_MAX_SECONDS is kept
+            # as the 300 the device runs it as.
+            device_ata_idle_seconds(
+                existing_config_value_or_default(existing, "TC_ATA_IDLE_SECONDS", "ATA idle seconds")
+            )
             if ata_idle_seconds is None
-            else _optional_unsigned_config_value(ata_idle_seconds, "TC_ATA_IDLE_SECONDS")
+            else _ata_idle_config_value(ata_idle_seconds)
         ),
         "TC_ATA_STANDBY": (
             existing_config_value_or_default(existing, "TC_ATA_STANDBY", "ATA standby timer")

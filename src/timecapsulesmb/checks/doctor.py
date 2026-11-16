@@ -25,6 +25,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_deployed_config,
     _doctor_check_running_migration,
     _doctor_check_deployed_version,
+    _doctor_settings_state,
     _doctor_device_blocks,
     _doctor_check_device_smb,
     _doctor_check_local_network_permission,
@@ -62,6 +63,7 @@ from timecapsulesmb.checks.doctor_steps import (
 from timecapsulesmb.checks.models import DOMAIN_COMPUTER, CheckResult
 from timecapsulesmb.core.smb_config import parse_active_share_names
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.runtime_settings import SettingsSource
 from timecapsulesmb.device.probe import AirportAcpReading, ManagerVerdicts, ProbedDeviceState
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -77,6 +79,7 @@ def run_doctor_checks(
     skip_bonjour: bool = False,
     skip_smb: bool = False,
     local_network_permission: str | None = None,
+    settings_source: SettingsSource = SettingsSource.env(),
     on_result: Optional[Callable[[CheckResult], None]] = None,
     on_stage: Optional[Callable[[str, str | None], None]] = None,
     debug_fields: dict[str, object] | None = None,
@@ -94,6 +97,7 @@ def run_doctor_checks(
         options=options,
         device_reading=device_reading,
         local_network_permission=local_network_permission,
+        settings_source=settings_source,
     )
     sink = DoctorSink(
         on_result=on_result,
@@ -136,8 +140,10 @@ def run_doctor_checks(
         return sink.results, sink.fatal()
     if _doctor_check_deployed_config(target, remote, sink).stop:
         return sink.results, sink.fatal()
-    if _doctor_check_deployed_version(target, remote, sink).stop:
+    deployed = _doctor_check_deployed_version(target, remote, sink)
+    if deployed.stop:
         return sink.results, sink.fatal()
+    settings_state = _doctor_settings_state(inputs, deployed, sink)
     if _doctor_check_runtime_ram_root(target, remote, sink).stop:
         return sink.results, sink.fatal()
 
@@ -191,6 +197,7 @@ def run_doctor_checks(
                 add_result=sink.add,
                 network=network,
                 airport_mac=_doctor_airport_mac(inputs, probed_mac),
+                afp=settings_state.afp,
             )
             direct_smb = _doctor_check_direct_smb_port(target, remote, bonjour_result.addresses, sink)
             _add_bonjour_debug_fields(
@@ -199,6 +206,8 @@ def run_doctor_checks(
                 bonjour_expected_debug=bonjour_result.expected_debug,
                 bonjour_discovery_debug=bonjour_result.discovery_debug,
             )
+            if bonjour_result.adisk_recheck is not None and sink.debug_fields is not None:
+                sink.debug_fields["adisk_recheck"] = bonjour_result.adisk_recheck
             _doctor_add_bonjour_naming_info(bonjour_result, sink)
             _doctor_check_usb_printer(target, remote, bonjour_result, sink, network)
             _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink, native_nbns, network)

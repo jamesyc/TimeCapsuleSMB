@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from timecapsulesmb.checks.network import saved_router_mac
 from timecapsulesmb.app.context import AppOperationContext
-from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.config import ATA_IDLE_MAX_SECONDS, DEFAULTS, AppConfig, effective_smb_security, parse_bool, vfs_aio_fork_enabled_in
 from timecapsulesmb.core.error_codes import ErrorCode
-from timecapsulesmb.services.app import AppOperationError, config_path
+from timecapsulesmb.core.runtime_settings import ManagedSettings
+from timecapsulesmb.services.app import AppOperationError, bool_param, config_path, int_param, optional_bool_param
 from timecapsulesmb.services.credentials import overlay_request_airport_mac, overlay_request_credentials
 from timecapsulesmb.services.runtime import (
     DeviceAccessError,
@@ -25,6 +28,94 @@ LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS = (
     "macos_local_network_preflight_service",
     "macos_local_network_preflight_error",
 )
+
+
+def optional_unsigned_int_override_param(params: dict[str, object], name: str) -> int | str | None:
+    if name not in params or params.get(name) is None:
+        return None
+    value = params.get(name)
+    if isinstance(value, str) and value.strip() == "":
+        return ""
+    return int_param(params, name, 0)
+
+
+def _sent_bool_param(params: dict[str, object], name: str) -> bool | None:
+    """A boolean the request sends, or None when it leaves it out. A null or
+    empty value is refused, not taken as left out."""
+    return bool_param(params, name) if name in params else None
+
+
+def _ata_idle_seconds_param(params: dict[str, object]) -> int | None:
+    """The idle timer the request sends, or None. Refuses one the device
+    would run as 300 (config.ATA_IDLE_MAX_SECONDS)."""
+    if params.get("ata_idle_seconds") is None:
+        return None
+    value = int_param(params, "ata_idle_seconds", int(DEFAULTS["TC_ATA_IDLE_SECONDS"]))
+    if value > ATA_IDLE_MAX_SECONDS:
+        raise AppOperationError(
+            f"ata_idle_seconds must be {ATA_IDLE_MAX_SECONDS} or less", code=ErrorCode.VALIDATION_FAILED,
+        )
+    return value
+
+
+def managed_setting_params(params: dict[str, object]) -> ManagedSettings:
+    """The managed settings the request sends (the app sends the device
+    profile's); None for one it leaves out. Checks their types and ranges
+    before anything reads the .env or the device."""
+    return ManagedSettings(
+        # Debug logging has always taken null as left out.
+        debug_logging=optional_bool_param(params, "debug_logging"),
+        internal_share_use_disk_root=_sent_bool_param(params, "internal_share_use_disk_root"),
+        smb_browse_compatibility=_sent_bool_param(params, "smb_browse_compatibility"),
+        mdns_advertise_afp=_sent_bool_param(params, "mdns_advertise_afp"),
+        any_protocol=_sent_bool_param(params, "any_protocol"),
+        require_smb_signing=_sent_bool_param(params, "require_smb_signing"),
+        require_smb_encryption=_sent_bool_param(params, "require_smb_encryption"),
+        disable_smb_encryption=_sent_bool_param(params, "disable_smb_encryption"),
+        fruit_metadata_netatalk=_sent_bool_param(params, "fruit_metadata_netatalk"),
+        vfs_aio_fork_enabled=_sent_bool_param(params, "vfs_aio_fork_enabled"),
+        ata_idle_seconds=_ata_idle_seconds_param(params),
+        ata_standby=optional_unsigned_int_override_param(params, "ata_standby"),
+        rsync_enabled=_sent_bool_param(params, "rsync_enabled"),
+    )
+
+
+def resolve_managed_settings(sent: ManagedSettings, config: AppConfig) -> ManagedSettings:
+    """This Mac's managed settings as deploy writes them to the device and
+    doctor compares them with it: each one sent, else the value saved in the
+    .env. Debug logging and the disk timers stay None when not sent, which
+    managed_flash_values reads from the .env itself; rsync, which the .env
+    never holds, is off. Refuses a combination the device refuses."""
+
+    def pick(value: bool | None, saved: bool) -> bool:
+        return saved if value is None else value
+
+    def saved(key: str) -> bool:
+        return parse_bool(config.get(key, DEFAULTS[key]))
+
+    try:
+        smb = effective_smb_security(
+            config,
+            any_protocol=sent.any_protocol,
+            require_smb_signing=sent.require_smb_signing,
+            require_smb_encryption=sent.require_smb_encryption,
+            disable_smb_encryption=sent.disable_smb_encryption,
+        )
+    except ValueError as exc:
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
+    return replace(
+        sent,
+        internal_share_use_disk_root=pick(sent.internal_share_use_disk_root, saved("TC_INTERNAL_SHARE_USE_DISK_ROOT")),
+        smb_browse_compatibility=pick(sent.smb_browse_compatibility, saved("TC_SMB_BROWSE_COMPATIBILITY")),
+        mdns_advertise_afp=pick(sent.mdns_advertise_afp, saved("TC_MDNS_ADVERTISE_AFP")),
+        any_protocol=smb.any_protocol,
+        require_smb_signing=smb.require_smb_signing,
+        require_smb_encryption=smb.require_smb_encryption,
+        disable_smb_encryption=smb.disable_smb_encryption,
+        fruit_metadata_netatalk=pick(sent.fruit_metadata_netatalk, saved("TC_FRUIT_METADATA_NETATALK")),
+        vfs_aio_fork_enabled=pick(sent.vfs_aio_fork_enabled, vfs_aio_fork_enabled_in(config)),
+        rsync_enabled=bool(sent.rsync_enabled),
+    )
 
 
 def refuse_if_local_network_denied(params: dict[str, object], context: AppOperationContext) -> None:

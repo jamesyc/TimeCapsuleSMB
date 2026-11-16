@@ -347,6 +347,9 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     }
 
     func runCheckup(profile: DeviceProfile) {
+        // A button made before a settings save holds the profile as it was;
+        // the Checkup compares the device with the saved settings.
+        let profile = latestProfile(for: profile)
         guard let password = appStore.password(for: profile) else {
             promptForPasswordReplacement(error: L10n.string("password.error.required"))
             return
@@ -377,6 +380,9 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     }
 
     private func startCheckup(password: String, profile: DeviceProfile, localNetworkPreflight: LocalNetworkPreflightResult?) {
+        // Settings saved during the Local Network check: the Checkup
+        // compares the device with them, not with the ones it was asked with.
+        let profile = latestProfile(for: profile)
         let start = doctorStore.runDoctor(password: password, profile: profile, localNetworkPreflight: localNetworkPreflight)
         if case .started(let operation) = start {
             stateSynchronizer.trackCheckupStart(operation)
@@ -469,7 +475,12 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         appStore.deviceRegistry.profile(id: profile.id) ?? profile
     }
 
+    /// The settings the stores below were last given, to tell whether a save
+    /// changed one deploy writes. Set only by applyProfileSettings.
+    private var appliedSettings: DeviceProfileSettings?
+
     func applyProfileSettings(_ settings: DeviceProfileSettings) {
+        appliedSettings = settings
         deployStore.rsyncEnabled = settings.rsyncEnabled
         deployStore.internalShareUseDiskRoot = settings.internalShareUseDiskRoot
         deployStore.smbBrowseCompatibility = settings.smbBrowseCompatibility
@@ -491,7 +502,18 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         profileEditorStore.$savedProfile
             .compactMap { $0 }
             .sink { [weak self] profile in
-                self?.applyProfileSettings(profile.settings)
+                guard let self else { return }
+                let changedInstalled = self.appliedSettings.map { profile.settings.changesInstalledSettings(from: $0) } ?? false
+                self.applyProfileSettings(profile.settings)
+                // The save cleared a Checkup made with other settings
+                // (DeviceRegistryRepository.updateEditableFields): so does
+                // the Checkup tab. A running one is dropped when it finishes
+                // (DeviceDashboardStateSynchronizer.updateCheckupSnapshot);
+                // a preparing one starts with the saved settings
+                // (startCheckup).
+                if changedInstalled && !self.doctorStore.isUnderway {
+                    self.doctorStore.invalidateResult()
+                }
             }
             .store(in: &cancellables)
     }

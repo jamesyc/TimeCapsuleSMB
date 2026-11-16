@@ -30,7 +30,8 @@ class DeployedVersionScriptTests(unittest.TestCase):
         self.assertEqual((result.release_tag, result.cli_version_code, result.detail), ("v9.1.0", 90100, "ok"))
 
     def test_a_config_without_version_keys_prints_empty_values(self) -> None:
-        output = run_version_script("SMBD_DEBUG_LOGGING=0\n")
+        # TELEMETRY is neither a version key nor a compared setting.
+        output = run_version_script("TELEMETRY=true\n")
 
         self.assertEqual(output, "release_tag=\ncli_version_code=\n")
         result = parse_deployed_version(output)
