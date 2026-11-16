@@ -83,19 +83,15 @@ struct BackendSummary: Codable, Equatable, Sendable {
         self = .backend(key: key, arguments: arguments, text: text ?? "")
     }
 
-    /// A summary saved in a device profile: its stored form, or, for
-    /// profiles saved before summary keys existed, the key its English text
-    /// maps to. Other old text (already translated when it was saved) is
-    /// shown as is; empty text means there is no summary.
+    /// A summary saved in a device profile: its stored form, else its text
+    /// as saved (DeviceProfileMigrations gave old English summaries their
+    /// keys); empty text means there is no summary.
     static func saved(_ summary: BackendSummary?, text: String) -> BackendSummary? {
         if let summary {
             return summary
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return nil
-        }
-        return LegacySummaryText.summary(for: trimmed) ?? BackendSummary(key: nil, text: trimmed)
+        return trimmed.isEmpty ? nil : BackendSummary(key: nil, text: trimmed)
     }
 
     var localized: String {
@@ -372,27 +368,3 @@ extension DoctorCheckPayload {
     }
 }
 
-/// Maps the English summaries that profiles saved before summary keys existed
-/// to their keys, so an old "last install" line still follows the app
-/// language. New snapshots store a `BackendSummary` instead.
-enum LegacySummaryText {
-    static func summary(for text: String) -> BackendSummary? {
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized.hasPrefix("netbsd4 activation complete.") {
-            return BackendSummary(key: "backend.summary.activation_completed_followup", text: text)
-        }
-        guard let key = keys[normalized] else {
-            return nil
-        }
-        return BackendSummary(key: "backend.summary.\(key)", text: text)
-    }
-
-    private static let keys: [String: String] = [
-        "deployment completed.": "deploy_completed",
-        "runtime activation complete.": "deploy_completed",
-        "netbsd4 payload was already active.": "activation_already_active",
-        "netbsd4 activation completed.": "activation_completed",
-        "doctor checks passed.": "doctor_checks_passed",
-        "doctor found one or more fatal problems.": "doctor_found_fatal",
-    ]
-}

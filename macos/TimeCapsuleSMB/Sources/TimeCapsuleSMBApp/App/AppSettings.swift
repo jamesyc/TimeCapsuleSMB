@@ -372,7 +372,16 @@ private actor AppSettingsRepository {
             return .default
         }
         do {
-            let data = try Data(contentsOf: settingsURL)
+            var data = try Data(contentsOf: settingsURL)
+            // The default device settings are saved like a profile's; bring
+            // older keys to the current ones in memory. Loading never writes:
+            // the next save writes the current keys.
+            if var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               var settings = object["defaultDeviceSettings"] as? [String: Any] {
+                DeviceProfileMigrations.migrateSettings(&settings)
+                object["defaultDeviceSettings"] = settings
+                data = (try? JSONSerialization.data(withJSONObject: object)) ?? data
+            }
             return try decoder.decode(AppSettings.self, from: data)
         } catch let decoding as DecodingError {
             throw AppSettingsStoreError.corruptSettings(String(describing: decoding))

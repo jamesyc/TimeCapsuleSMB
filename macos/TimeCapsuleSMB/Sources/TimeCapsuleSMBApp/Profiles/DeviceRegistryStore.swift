@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum DeviceRegistryState: String, CaseIterable, Equatable {
     case idle
@@ -400,6 +401,15 @@ private struct DeviceRegistryMutationResult: Sendable {
 }
 
 private actor DeviceRegistryRepository {
+    private static let log = Logger(subsystem: "com.timecapsulesmb.TimeCapsuleSMB", category: "profiles")
+
+    /// An error for the log: its domain and code, which say what failed,
+    /// without its description, which names paths under the user's home
+    /// folder (the unified log ends up in sysdiagnose archives).
+    private static func logged(_ error: Error) -> String {
+        let error = error as NSError
+        return "\(error.domain) \(error.code)"
+    }
     private let applicationSupportURL: URL
     private let registryURL: URL
     private let devicesDirectoryURL: URL
@@ -438,14 +448,15 @@ private actor DeviceRegistryRepository {
                 return profiles
             }
             let data = try Data(contentsOf: registryURL)
-            let loadedProfiles = try decoder.decode([DeviceProfile].self, from: data)
+            let migration = DeviceProfileMigrations.migrate(registryData: data)
+            let loadedProfiles = try decoder.decode([DeviceProfile].self, from: migration.data)
                 .map(profileWithStorageFields)
                 .sorted { $0.updatedAt > $1.updatedAt }
             profiles = loadedProfiles
                 .map(profileWithInterruptedRuntimeState)
                 .sorted { $0.updatedAt > $1.updatedAt }
-            if profiles != loadedProfiles {
-                try persist(profiles)
+            if migration.migrated || profiles != loadedProfiles {
+                saveLoadedProfiles(migrated: migration.migrated)
             }
             return profiles
         } catch let decoding as DecodingError {
@@ -553,6 +564,7 @@ private actor DeviceRegistryRepository {
         }
         profiles = updatedProfiles
         removeStagedConfigDirectory(stagedDirectory)
+        removeCopyBeforeMigrating()
         return updatedProfiles
     }
 
@@ -687,6 +699,53 @@ private actor DeviceRegistryRepository {
         try persist(updatedProfiles)
         profiles = updatedProfiles
         return updatedProfiles
+    }
+
+    /// Writes what `load()` changed: the migrated profiles
+    /// (DeviceProfileMigrations) and runtime states a crash left running.
+    /// A failure is logged, not thrown: the profiles stay in memory, the
+    /// next save writes them, and until then the next launch migrates the
+    /// file again. If only the copy fails, a later save writes the
+    /// migrated profiles without one; both need about the same free space.
+    private func saveLoadedProfiles(migrated: Bool) {
+        if migrated {
+            do {
+                try keepCopyBeforeMigrating()
+            } catch {
+                Self.log.error("Could not keep a copy of devices.json before migrating it: \(Self.logged(error), privacy: .public)")
+            }
+        }
+        do {
+            try persist(profiles)
+        } catch {
+            Self.log.error("Could not save the loaded device profiles: \(Self.logged(error), privacy: .public)")
+        }
+    }
+
+    /// The first migrating write keeps the file as it was beside it, once:
+    /// a later migration never replaces that copy.
+    private func keepCopyBeforeMigrating() throws {
+        guard !fileManager.fileExists(atPath: copyBeforeMigratingURL.path) else {
+            return
+        }
+        try fileManager.copyItem(at: registryURL, to: copyBeforeMigratingURL)
+    }
+
+    /// Forgetting a device removes the copy, which still holds that device's
+    /// address, MAC and name; the other devices lose their copy with it.
+    private func removeCopyBeforeMigrating() {
+        guard fileManager.fileExists(atPath: copyBeforeMigratingURL.path) else {
+            return
+        }
+        do {
+            try fileManager.removeItem(at: copyBeforeMigratingURL)
+        } catch {
+            Self.log.error("Could not remove the copy of devices.json kept before migrating it: \(Self.logged(error), privacy: .public)")
+        }
+    }
+
+    private var copyBeforeMigratingURL: URL {
+        applicationSupportURL.appendingPathComponent(DeviceProfileMigrations.backupFileName)
     }
 
     /// Change only what the profile editor edits, on the profile as stored

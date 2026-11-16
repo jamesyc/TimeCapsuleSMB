@@ -87,33 +87,32 @@ final class BackendSummaryTests: XCTestCase {
         XCTAssertEqual(decoded, summary)
     }
 
-    func testSavedSummaryPrefersTheStoredKeyThenLegacyEnglishText() {
+    func testSavedSummaryPrefersTheStoredKeyThenItsText() {
         L10n.apply(language: .simplifiedChinese)
         let stored = BackendSummary(key: "backend.summary.deploy_completed", text: "Deployment completed.")
 
         XCTAssertEqual(BackendSummary.saved(stored, text: "anything"), stored)
-        XCTAssertEqual(
-            BackendSummary.saved(nil, text: " Deployment completed. ")?.localized,
-            L10n.string("backend.summary.deploy_completed")
-        )
-        XCTAssertEqual(
-            BackendSummary.saved(nil, text: "NetBSD4 activation complete. Run `activate` after a reboot.")?.localized,
-            L10n.string("backend.summary.activation_completed_followup")
-        )
         XCTAssertEqual(BackendSummary.saved(nil, text: "PASS 3, WARN 1, FAIL 0")?.localized, "PASS 3, WARN 1, FAIL 0")
         XCTAssertNil(BackendSummary.saved(nil, text: "  "))
     }
 
     func testProfileSavedBeforeSummaryKeysStillLocalizesItsDeploySummary() throws {
-        let data = Data(#"""
-        {"startedAt": 0, "updatedAt": 0, "finishedAt": 0, "status": "succeeded",
-         "summary": "Deployment completed."}
-        """#.utf8)
+        // The migration gives the old English summary its key, once.
+        var profile: [String: Any] = [
+            "lastDeployState": ["startedAt": 0, "updatedAt": 0, "finishedAt": 0, "status": "succeeded",
+                                "summary": "Deployment completed."],
+            "runtimeState": ["summary": "NetBSD4 activation complete. Run `activate` after a reboot."],
+        ]
+        XCTAssertTrue(DeviceProfileMigrations.migrate(&profile))
+        let data = try JSONSerialization.data(withJSONObject: profile["lastDeployState"] as Any)
         let snapshot = try JSONDecoder().decode(DeviceDeployStateSnapshot.self, from: data)
 
-        XCTAssertNil(snapshot.summaryRef)
         L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(snapshot.summaryRef?.key, "backend.summary.deploy_completed")
         XCTAssertEqual(snapshot.localizedSummary, L10n.string("backend.summary.deploy_completed"))
+        let runtime = try XCTUnwrap(profile["runtimeState"] as? [String: Any])
+        XCTAssertEqual((runtime["summaryRef"] as? [String: Any])?["key"] as? String,
+                       "backend.summary.activation_completed_followup")
     }
 }
 

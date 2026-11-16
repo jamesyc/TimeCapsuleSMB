@@ -120,8 +120,8 @@ struct DeviceProfileSettings: Codable, Equatable {
         case requireSMBEncryption
         case disableSMBEncryption
         case fruitMetadataNetatalk
-        // A saved vfsAIOForkEnabled is ignored: it was written as false by
-        // default when aio_fork was opt-in.
+        // Not "vfsAIOForkEnabled": that key was written as false by default
+        // when aio_fork was opt-in (DeviceProfileMigrations drops it).
         case vfsAIOForkEnabled = "vfsAIOForkOn"
         case debugLogging
         case mountWaitSeconds
@@ -129,15 +129,10 @@ struct DeviceProfileSettings: Codable, Equatable {
         case ataStandby
     }
 
-    /// Keys saved under an older name. Decoding reads them; encoding writes only
-    /// the new names, so a file drops them at its next save.
-    private enum LegacyCodingKeys: String, CodingKey {
-        case disableSMBEncryption = "forceDisableSMBSigningAndEncryption"
-    }
-
     init(from decoder: Decoder) throws {
+        // DeviceProfileMigrations has already brought older settings to this
+        // format: old key names, and combinations the device refuses.
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
         rsyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .rsyncEnabled) ?? Self.default.rsyncEnabled
         internalShareUseDiskRoot = try container.decodeIfPresent(Bool.self, forKey: .internalShareUseDiskRoot) ?? Self.default.internalShareUseDiskRoot
         smbBrowseCompatibility = try container.decodeIfPresent(Bool.self, forKey: .smbBrowseCompatibility) ?? Self.default.smbBrowseCompatibility
@@ -145,14 +140,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         anyProtocol = try container.decodeIfPresent(Bool.self, forKey: .anyProtocol) ?? Self.default.anyProtocol
         requireSMBSigning = try container.decodeIfPresent(Bool.self, forKey: .requireSMBSigning) ?? Self.default.requireSMBSigning
         requireSMBEncryption = try container.decodeIfPresent(Bool.self, forKey: .requireSMBEncryption) ?? Self.default.requireSMBEncryption
-        if requireSMBEncryption {
-            anyProtocol = false
-        }
-        disableSMBEncryption = (
-            try container.decodeIfPresent(Bool.self, forKey: .disableSMBEncryption)
-            ?? legacy.decodeIfPresent(Bool.self, forKey: .disableSMBEncryption)
-            ?? Self.default.disableSMBEncryption
-        ) && !requireSMBEncryption
+        disableSMBEncryption = try container.decodeIfPresent(Bool.self, forKey: .disableSMBEncryption) ?? Self.default.disableSMBEncryption
         fruitMetadataNetatalk = try container.decodeIfPresent(Bool.self, forKey: .fruitMetadataNetatalk) ?? Self.default.fruitMetadataNetatalk
         vfsAIOForkEnabled = try container.decodeIfPresent(Bool.self, forKey: .vfsAIOForkEnabled) ?? Self.default.vfsAIOForkEnabled
         debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? Self.default.debugLogging
@@ -366,8 +354,8 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
     var rebootRequested: Bool?
     var verified: Bool?
     var summary: String
-    /// The translatable form of `summary`; nil in profiles saved before
-    /// summary keys existed.
+    /// The translatable form of `summary`; nil for text without a key, such as
+    /// an old summary DeviceProfileMigrations had no key for.
     var summaryRef: BackendSummary? = nil
     var errorCode: String?
     var errorMessage: String?
@@ -434,8 +422,8 @@ struct DeviceRuntimeStateSnapshot: Codable, Equatable {
     var payloadFamily: String?
     var verified: Bool?
     var summary: String
-    /// The translatable form of `summary`; nil in profiles saved before
-    /// summary keys existed.
+    /// The translatable form of `summary`; nil for text without a key, such as
+    /// an old summary DeviceProfileMigrations had no key for.
     var summaryRef: BackendSummary? = nil
     var errorCode: String?
     var errorMessage: String?
@@ -502,6 +490,9 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
     /// it (the helper's lan_router_mac). Add Device saves its own in the .env,
     /// so a profile it makes starts without one.
     var lanRouterMAC: String? = nil
+    /// The profile's saved format (DeviceProfileMigrations). A profile saved
+    /// without one is version 0; one this app makes is current.
+    var formatVersion: Int = DeviceProfileMigrations.currentVersion
 
     var host: String {
         get { network.configuredSSHTarget }
@@ -643,6 +634,7 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         case settings
         case passwordState
         case lanRouterMAC
+        case formatVersion
     }
 
     init(from decoder: Decoder) throws {
@@ -668,6 +660,7 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         settings = try container.decodeIfPresent(DeviceProfileSettings.self, forKey: .settings) ?? .default
         passwordState = try container.decodeIfPresent(DevicePasswordState.self, forKey: .passwordState) ?? .unknown
         lanRouterMAC = try container.decodeIfPresent(String.self, forKey: .lanRouterMAC)
+        formatVersion = try container.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 0
     }
 
     func encode(to encoder: Encoder) throws {
@@ -691,6 +684,10 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         try container.encode(settings, forKey: .settings)
         try container.encode(passwordState, forKey: .passwordState)
         try container.encodeIfPresent(lanRouterMAC, forKey: .lanRouterMAC)
+        // Never newer than this app's format: this app drops keys it does not
+        // know, so a newer app must run its later steps again
+        // (DeviceProfileMigrations).
+        try container.encode(min(formatVersion, DeviceProfileMigrations.currentVersion), forKey: .formatVersion)
     }
 
     init(

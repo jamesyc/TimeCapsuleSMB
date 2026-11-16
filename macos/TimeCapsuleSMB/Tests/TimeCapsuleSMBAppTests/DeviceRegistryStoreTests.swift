@@ -18,7 +18,22 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.devicesDirectoryURL.path))
     }
 
-    func testOldDisableKeyLoadsUnchangedAndLeavesAtTheNextSave() async throws {
+    /// The registry as an app before format versions saved it: no
+    /// formatVersion, the old encryption key, and the opt-in aio_fork key.
+    private func writeOldRegistry(_ store: DeviceRegistryStore) throws -> Data {
+        var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.registryURL)) as? [[String: Any]])
+        raw[0].removeValue(forKey: "formatVersion")
+        var settings = try XCTUnwrap(raw[0]["settings"] as? [String: Any])
+        settings.removeValue(forKey: "disableSMBEncryption")
+        settings["forceDisableSMBSigningAndEncryption"] = true
+        settings["vfsAIOForkEnabled"] = false
+        raw[0]["settings"] = settings
+        let data = try JSONSerialization.data(withJSONObject: raw)
+        try data.write(to: store.registryURL)
+        return data
+    }
+
+    func testAnOldRegistryMigratesOnceAtLoadAndKeepsACopy() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
         await store.load()
@@ -28,31 +43,120 @@ final class DeviceRegistryStoreTests: XCTestCase {
             passwordState: .available,
             preferredID: "device-one"
         )
-        // Write the registry as an older app saved it.
-        var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.registryURL)) as? [[String: Any]])
-        var settings = try XCTUnwrap(raw[0]["settings"] as? [String: Any])
-        settings.removeValue(forKey: "disableSMBEncryption")
-        settings["forceDisableSMBSigningAndEncryption"] = true
-        raw[0]["settings"] = settings
-        let legacyData = try JSONSerialization.data(withJSONObject: raw)
-        try legacyData.write(to: store.registryURL)
+        let oldData = try writeOldRegistry(store)
+        let backupURL = temp.url.appendingPathComponent(DeviceProfileMigrations.backupFileName)
 
         let reloaded = DeviceRegistryStore(applicationSupportURL: temp.url)
         await reloaded.load()
 
         XCTAssertEqual(reloaded.state, .loaded)
-        XCTAssertEqual(reloaded.profile(id: profile.id)?.settings.disableSMBEncryption, true)
-        // Loading never writes.
-        XCTAssertEqual(try Data(contentsOf: store.registryURL), legacyData)
+        let migrated = try XCTUnwrap(reloaded.profile(id: profile.id))
+        XCTAssertEqual(migrated.settings.disableSMBEncryption, true)
+        XCTAssertEqual(migrated.formatVersion, DeviceProfileMigrations.currentVersion)
+        let written = String(decoding: try Data(contentsOf: store.registryURL), as: UTF8.self)
+        XCTAssertFalse(written.contains("forceDisableSMBSigningAndEncryption"))
+        XCTAssertFalse(written.contains("\"vfsAIOForkEnabled\""))
+        XCTAssertEqual(try Data(contentsOf: backupURL), oldData, "the copy is the file as it was")
 
-        // Any routine save writes the new name only.
-        await reloaded.updateDeployState(testDeployState(status: .succeeded), for: profile.id)
-        let saved = String(decoding: try Data(contentsOf: store.registryURL), as: UTF8.self)
-        XCTAssertFalse(saved.contains("forceDisableSMBSigningAndEncryption"))
-        XCTAssertTrue(saved.contains("disableSMBEncryption"))
+        // Loading a migrated file again writes nothing.
+        let migratedData = try Data(contentsOf: store.registryURL)
         let again = DeviceRegistryStore(applicationSupportURL: temp.url)
         await again.load()
-        XCTAssertEqual(again.profile(id: profile.id)?.settings.disableSMBEncryption, true)
+        XCTAssertEqual(try Data(contentsOf: store.registryURL), migratedData)
+
+        // An older app's save drops formatVersion: the next load migrates the
+        // profile again to the same result, and the first copy stays.
+        _ = try writeOldRegistry(store)
+        let afterDowngrade = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await afterDowngrade.load()
+        XCTAssertEqual(afterDowngrade.profile(id: profile.id)?.settings, migrated.settings)
+        XCTAssertEqual(try Data(contentsOf: backupURL), oldData)
+    }
+
+    func testAFailedWriteAtLoadStillShowsTheMigratedProfiles() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        let profile = try await store.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let oldData = try writeOldRegistry(store)
+        let backupURL = temp.url.appendingPathComponent(DeviceProfileMigrations.backupFileName)
+        // Neither the copy nor the migrated file can be written.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: temp.url.path)
+        var readOnly = true
+        defer {
+            if readOnly {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temp.url.path)
+            }
+        }
+
+        let failing = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await failing.load()
+
+        XCTAssertEqual(failing.state, .loaded)
+        XCTAssertNil(failing.error)
+        XCTAssertEqual(failing.profile(id: profile.id)?.settings.disableSMBEncryption, true)
+        XCTAssertEqual(try Data(contentsOf: store.registryURL), oldData, "the file stays as it was")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupURL.path))
+
+        // With room to write, the next launch migrates it and keeps the copy.
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temp.url.path)
+        readOnly = false
+        let next = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await next.load()
+        XCTAssertEqual(next.profile(id: profile.id)?.formatVersion, DeviceProfileMigrations.currentVersion)
+        XCTAssertEqual(try Data(contentsOf: backupURL), oldData)
+        XCTAssertFalse(String(decoding: try Data(contentsOf: store.registryURL), as: UTF8.self)
+            .contains("forceDisableSMBSigningAndEncryption"))
+    }
+
+    func testForgettingADeviceRemovesTheCopyKeptBeforeMigrating() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        let profile = try await store.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        _ = try writeOldRegistry(store)
+        let backupURL = temp.url.appendingPathComponent(DeviceProfileMigrations.backupFileName)
+        let reloaded = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await reloaded.load()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
+
+        // A forget that fails keeps the copy along with the device.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: temp.url.path)
+        do {
+            try await reloaded.delete(try XCTUnwrap(reloaded.profile(id: profile.id)))
+            XCTFail("the registry could not be written")
+        } catch {}
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temp.url.path)
+        XCTAssertNotNil(reloaded.profile(id: profile.id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
+
+        try await reloaded.delete(try XCTUnwrap(reloaded.profile(id: profile.id)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupURL.path))
+    }
+
+    func testANewProfileIsSavedAtTheCurrentFormat() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        let profile = try await store.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        XCTAssertEqual(profile.formatVersion, DeviceProfileMigrations.currentVersion)
+        let raw = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.registryURL)) as? [[String: Any]])
+        XCTAssertEqual(raw[0]["formatVersion"] as? Int, DeviceProfileMigrations.currentVersion)
     }
 
     func testAnEditableFieldsSaveKeepsResultsSavedMeanwhile() async throws {

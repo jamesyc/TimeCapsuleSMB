@@ -72,6 +72,18 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(reread.settings, store.settings)
     }
 
+    func testADefaultIdleTimeTheDeviceRunsAs300LoadsAs300() async throws {
+        let temp = try TemporaryDirectory()
+        let settingsURL = temp.url.appendingPathComponent("settings.json")
+        try #"{"defaultDeviceSettings":{"ataIdleSeconds":100000}}"#.write(to: settingsURL, atomically: true, encoding: .utf8)
+        let store = AppSettingsStore(settingsURL: settingsURL)
+
+        await store.load()
+
+        XCTAssertEqual(store.state, .loaded)
+        XCTAssertEqual(store.settings.defaultDeviceSettings.ataIdleSeconds, 300)
+    }
+
     func testLegacySettingsWithoutLanguageUseSystemDefault() async throws {
         let temp = try TemporaryDirectory()
         let settingsURL = temp.url.appendingPathComponent("settings.json")

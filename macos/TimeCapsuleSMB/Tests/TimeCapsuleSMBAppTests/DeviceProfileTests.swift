@@ -196,8 +196,15 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertNil(settings.ataStandby)
     }
 
-    func testProfileSettingsDecodeSmbEncryptionClearsAnyProtocol() throws {
-        let data = Data("""
+    /// Settings JSON as an older app saved it, after DeviceProfileMigrations.
+    private func migratedSettings(_ json: String) throws -> DeviceProfileSettings {
+        var settings = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        DeviceProfileMigrations.migrateSettings(&settings)
+        return try JSONDecoder().decode(DeviceProfileSettings.self, from: JSONSerialization.data(withJSONObject: settings))
+    }
+
+    func testProfileSettingsMigrationSmbEncryptionClearsAnyProtocol() throws {
+        let settings = try migratedSettings("""
         {
           "nbnsEnabled": true,
           "anyProtocol": true,
@@ -205,9 +212,7 @@ final class DeviceProfileTests: XCTestCase {
           "debugLogging": false,
           "mountWaitSeconds": 45
         }
-        """.utf8)
-
-        let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
+        """)
 
         XCTAssertEqual(settings.anyProtocol, false)
         XCTAssertEqual(settings.requireSMBEncryption, true)
@@ -259,13 +264,13 @@ final class DeviceProfileTests: XCTestCase {
         }
     }
 
-    func testProfileSettingsReadOldDisableKeyAndWriteOnlyTheNewOne() throws {
-        let legacy = try JSONDecoder().decode(DeviceProfileSettings.self, from: Data("""
+    func testProfileSettingsMigrationReadsOldDisableKeyAndWritesOnlyTheNewOne() throws {
+        let legacy = try migratedSettings("""
         {"forceDisableSMBSigningAndEncryption": true, "mountWaitSeconds": 45}
-        """.utf8))
-        let both = try JSONDecoder().decode(DeviceProfileSettings.self, from: Data("""
+        """)
+        let both = try migratedSettings("""
         {"disableSMBEncryption": false, "forceDisableSMBSigningAndEncryption": true, "mountWaitSeconds": 45}
-        """.utf8))
+        """)
 
         XCTAssertTrue(legacy.disableSMBEncryption)
         XCTAssertFalse(both.disableSMBEncryption, "a value saved under the new name wins")
@@ -274,8 +279,8 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertTrue(encoded.contains("\"disableSMBEncryption\":true"))
     }
 
-    func testProfileSettingsRequireEncryptionWinsOverForcedDisableDuringDecode() throws {
-        let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: Data("""
+    func testProfileSettingsRequireEncryptionWinsOverForcedDisableDuringMigration() throws {
+        let settings = try migratedSettings("""
         {
           "nbnsEnabled": true,
           "requireSMBEncryption": true,
@@ -283,7 +288,7 @@ final class DeviceProfileTests: XCTestCase {
           "debugLogging": false,
           "mountWaitSeconds": 45
         }
-        """.utf8))
+        """)
 
         XCTAssertTrue(settings.requireSMBEncryption)
         XCTAssertFalse(settings.disableSMBEncryption)
