@@ -40,6 +40,7 @@ REG_PENDING_TIMEOUT_MS = 2000
 REG_IPC_ALARM_SECONDS = 4
 # Three plan polls: a facts change has been read and acted on by then.
 QUIET = 3 * TC_PLAN_POLL_MS / 1000
+UNREACHABLE = "registrant: mDNSResponder unreachable"
 
 
 @pytest.fixture(scope="module")
@@ -78,6 +79,14 @@ class Advertiser:
                 self.proc.wait(timeout=5)
         self.log.seek(0)
         return self.log.read()
+
+    def wait_log(self, text, count=1, timeout=10):
+        # The registrant's own log says when it has acted; a sleep would race
+        # a loaded host.
+        deadline = time.monotonic() + timeout
+        while (log := Path(self.log.name).read_text()).count(text) < count:
+            assert time.monotonic() < deadline, f"no {count} x {text!r} in:\n{log}"
+            time.sleep(0.05)
 
 
 @pytest.fixture
@@ -578,7 +587,8 @@ def test_daemon_absent_is_degraded_and_recovers_when_it_returns(rig, daemon):
     daemon.go_away()
     adv = Advertiser(binary, root, NAT_DENIED)
     try:
-        time.sleep(QUIET)
+        # Bring the daemon back only once the registrant has found it absent.
+        adv.wait_log(UNREACHABLE)
         assert registered(daemon.transcript) == []
         assert adv.proc.poll() is None            # never exits, never spawns a daemon
         daemon.come_back()
@@ -586,13 +596,15 @@ def test_daemon_absent_is_degraded_and_recovers_when_it_returns(rig, daemon):
         assert daemon.registrations() == [(9, "_smb._tcp", "AirPort Time Capsule")]
         # The daemon dies underneath a live registration: reconnect on backoff.
         daemon.go_away()
-        time.sleep(0.5)
+        adv.wait_log("registrant: mDNSResponder connection lost on every registration")
         daemon.come_back()
         assert daemon.wait_for(lambda t: len(registered(t)) >= 2, timeout=6) is not None
         assert daemon.registrations() == [(9, "_smb._tcp", "AirPort Time Capsule")]
     finally:
         log = adv.stop()
-    assert "mDNSResponder unreachable" in log and "reachable again" in log
+    # The second "reachable again" can trail the daemon's record of the
+    # registration; the first was logged before the second outage began.
+    assert "mDNSResponder reachable again" in log
 
 
 def test_daemon_that_never_acknowledges_is_fenced_by_the_alarm(rig, daemon):

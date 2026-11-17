@@ -2,12 +2,12 @@
 processes, pipes, and process groups."""
 import os
 from pathlib import Path
-import signal
 import subprocess
 
 import pytest
 
 from tests.native.build import ROOT, compile_program, instrumentation_flags
+from tests.processes import kill_acp_fixture_groups, kill_group
 
 
 @pytest.fixture(scope='module')
@@ -54,11 +54,6 @@ def test_collector_syscall_failures_and_retries(device_driver, tmp_path, scenari
     finally:
         # Kill only groups created by this test if a regression interrupted its
         # own cleanup. ACP deliberately belongs to a separate process group.
-        if calls.exists():
-            for line in calls.read_text().splitlines():
-                if line.split()[2] != 'parent': continue
-                try: os.killpg(int(line.split()[1]), signal.SIGKILL)
-                except ProcessLookupError: pass
-        try: os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError: pass
+        kill_acp_fixture_groups(calls)
+        kill_group(process.pid)
         process.communicate(timeout=5)

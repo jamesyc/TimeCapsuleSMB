@@ -283,7 +283,9 @@ def run_tests(source: Path, cross_exec: str | None = None) -> None:
         finally:
             # Also collect descendants after an assertion failure in a driver.
             # Darwin can answer EPERM, not ESRCH, for a group with no live
-            # member, even just after its only process was reaped.
+            # member, even just after its only process was reaped. The same
+            # rule as tests/processes.py's kill_group, which a plain-script
+            # run of this file cannot import.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):

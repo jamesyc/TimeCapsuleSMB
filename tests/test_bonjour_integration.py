@@ -11,6 +11,7 @@ from unittest import mock
 import pytest
 
 from tests.fixtures.bonjour import install_native, install_zeroconf, records, cap_browse_window, info
+from tests.processes import signal_if_ours
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops.discovery import discover_operation
@@ -428,9 +429,8 @@ def test_real_helper_sigint_reaps_several_native_children_and_emits_one_terminal
     finally:
         if proc.poll() is None:
             proc.kill(); proc.wait()
-        for pid in child_pids:
-            try: os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError: pass
+        # The children were checked gone on success; their pids may be reused.
+        signal_if_ours(child_pids, tmp_path, signal.SIGKILL)
 
 
 def test_provider_to_swift_fixture_is_current_and_reviewed():

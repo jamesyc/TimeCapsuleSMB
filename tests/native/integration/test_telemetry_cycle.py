@@ -15,6 +15,7 @@ import pytest
 from Crypto.PublicKey import ECC
 from Crypto.Signature import eddsa
 from tests.native.build import ROOT, compile_program, compile_service
+from tests.processes import kill_acp_fixture_groups, kill_group
 
 # Hang guards only. Under ASan on shared hosted macOS runners, process startup
 # alone can take seconds; tests with real deadlines assert elapsed time
@@ -446,8 +447,7 @@ def test_inherited_owner_survives_parent_death_and_cleanup_waits(cycle, rig, tmp
         assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
     finally:
         finish.touch()
-        try: os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError: pass
+        kill_group(process.pid)
         process.communicate(timeout=HANG_TIMEOUT)
 
 
@@ -547,11 +547,7 @@ def acp_calls(tmp_path):
     yield calls
     # A failed assertion or outer subprocess timeout must not strand a fixture
     # that deliberately ignores TERM or leaves a descendant holding stdout.
-    if calls.exists():
-        for line in calls.read_text().splitlines():
-            if line.split()[2] != 'parent': continue
-            try: os.killpg(int(line.split()[1]), signal.SIGKILL)
-            except ProcessLookupError: pass
+    kill_acp_fixture_groups(calls)
 
 
 def recorded_collectors(calls):

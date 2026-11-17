@@ -1,9 +1,8 @@
 """No command group can escape the real C worker's stop/drain boundary."""
 import subprocess
-import os
-import signal
 import pytest
 from tests.native.build import ROOT, compile_modules
+from tests.processes import kill_group
 
 ACP_TIMEOUT_SECONDS = 3
 COMMAND_TIMEOUT_SECONDS = 3
@@ -56,8 +55,4 @@ def test_nested_command_cannot_outlive_drained_job(owner_driver, owner_hang_seco
         if path.exists():
             fields = path.read_text().split()
             if len(fields) == 3:
-                group = int(fields[2])
-                assert group != os.getpgrp()
-                try: os.killpg(group, signal.SIGKILL)
-                # macOS reports EPERM for a group left with only zombies.
-                except (ProcessLookupError, PermissionError): pass
+                kill_group(int(fields[2]))

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from tests.build_wrapper_harness import make_fake_elf_tools
 from tests.executables import write_executable
+from tests.processes import kill_group
 from tests.samba.run import GROWTH_CALLERS
 
 
@@ -1804,10 +1805,7 @@ class Samba4XAllLanesTests(unittest.TestCase):
                     self.assertLess(time.monotonic(), deadline, f"lane processes still running: {left}")
                     time.sleep(0.05)
             finally:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                kill_group(proc.pid)
 
     def test_a_lane_named_twice_is_refused(self) -> None:
         # Two builds of one lane would share its tree.
@@ -1845,10 +1843,7 @@ class Samba4XAllLanesTests(unittest.TestCase):
                     self.assertLess(time.monotonic(), deadline, "lane processes still running")
                     time.sleep(0.05)
             finally:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                kill_group(proc.pid)
 
     def test_an_unknown_lane_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -19,6 +19,7 @@ import zlib
 import pytest
 from tests.executables import write_executable
 from tests.native.build import compile_service, header_define
+from tests.processes import signal_if_ours
 from tests.timing import hang_guard
 from timecapsulesmb.device import probe
 from timecapsulesmb.services.deploy import render_payload_checksums
@@ -109,12 +110,14 @@ stuck=((role=='smbd' and (Path(os.environ['TC_TEST_ROOT'])/'smbd-ignore-term').e
        (role=='telemetry' and '--report' in sys.argv and (Path(os.environ['TC_TEST_ROOT'])/'telemetry-hang').exists()))
 if stuck:signal.signal(signal.SIGTERM,signal.SIG_IGN)
 signal.signal(signal.SIGHUP,lambda sig,frame:event('reload'))
-event('start')
 # Like the program exiting on its own with some status: the next start exits
-# with the status this file holds.
+# with the status this file holds. Read before the start event, so a start a
+# test has seen has already passed this check and a file the test writes
+# after it reaches the next start, not this one.
 own=Path(os.environ['TC_TEST_ROOT'])/f'{role}-exit-status'
 if own.exists():
-    status=int(own.read_text());own.unlink();sys.exit(status)
+    status=int(own.read_text());own.unlink();event('start');sys.exit(status)
+event('start')
 if role=='diskd':
     # The process table the manager reads in place of the kernel's
     # (proctable.h); dropped once this PID is gone.
@@ -343,15 +346,42 @@ def manager(manager_tools):
             time.sleep(.05)
         pytest.fail(f'manager deadline: {events()}\n{(root/"stderr").read_text()}\n{(root/"ram/var/runtime.log").read_text() if (root/"ram/var/runtime.log").exists() else ""}')
     yield root,start,events,wait,inventory,volumes
-    if process and process.poll() is None:
-        process.terminate()
-        try:process.wait(timeout=15)
-        except subprocess.TimeoutExpired:process.kill();process.wait();pytest.fail('manager did not stop')
-    # Cleanup only this fixture's recorded children if an assertion failed.
-    for item in events():
-        if item['kind']=='start':
-            try:os.kill(item['pid'],signal.SIGTERM)
-            except ProcessLookupError:pass
+    try:
+        if process and process.poll() is None:
+            process.terminate()
+            try:process.wait(timeout=15)
+            except subprocess.TimeoutExpired:process.kill();process.wait();pytest.fail('manager did not stop')
+    finally:
+        stop_recorded_children(events(),root)
+
+
+def stop_recorded_children(events,root):
+    # Kill the recorded children a failed test left running. SIGKILL: a stuck
+    # fake ignores TERM and its parent's exit, and nothing reads events after
+    # the test. A pid reaped long ago may now belong to an unrelated process.
+    signal_if_ours([e['pid'] for e in events if e['kind']=='start'],root,signal.SIGKILL)
+
+
+def test_teardown_kills_children_a_dead_manager_left_behind(manager):
+    root,start,events,wait,_,_=manager
+    # A stuck smbd outlives both SIGTERM and its manager's death.
+    (root/'smbd-ignore-term').touch()
+    process=start()
+    smbd=smbd_starts(wait(started('smbd')))[0]
+    process.kill();process.wait()
+    os.kill(smbd['pid'],0)
+    children=[e['pid'] for e in events() if e['kind']=='start']
+    stop_recorded_children(events(),root)
+    deadline=time.monotonic()+10
+    while left:=[pid for pid in children if alive(pid)]:
+        assert time.monotonic()<deadline,f'children survived teardown: {left}'
+        time.sleep(.05)
+
+
+def alive(pid):
+    # An orphan waits for init to reap it; a zombie no longer runs.
+    state=subprocess.run(['ps','-o','stat=','-p',str(pid)],capture_output=True,text=True).stdout.strip()
+    return bool(state) and not state.startswith('Z')
 
 
 def started(role):return lambda events:any(e['kind']=='start' and e['role']==role for e in events)
