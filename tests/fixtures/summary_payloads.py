@@ -52,6 +52,7 @@ from timecapsulesmb.services.deploy import (
     WAITING_FOR_PREVIOUS_MIGRATION,
     _oversized_summaries,
     _skipped_summaries,
+    disk_space_summary,
     unreadable_folder_summary,
 )
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult, disable_set_ssh, enable_set_ssh
@@ -439,6 +440,7 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
     rows.append(("log_waiting_for_previous_migration", "log", "deploy", True, WAITING_FOR_PREVIOUS_MIGRATION))
     rows.append(("log_unreadable_folder", "log", "deploy", True,
                  unreadable_folder_summary("Data/MacBook Pro.incomplete/bands")))
+    rows.append(("log_disk_space", "log", "deploy", True, disk_space_summary("Data", 0, 13)))
     return rows
 
 

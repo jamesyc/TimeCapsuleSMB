@@ -983,6 +983,63 @@ def volume_root_is_writable_conn(connection: SshConnection, volume_root: str) ->
     return proc.returncode == 0
 
 
+@dataclass(frozen=True)
+class VolumeSpace:
+    """A mounted HFS volume's free space, and the space deleting the given
+    files would free there."""
+
+    available_bytes: int
+    freed_bytes: int
+
+
+VOLUME_SPACE_TIMEOUT_SECONDS = 30
+_VOLUME_SPACE_DF = "df="
+_VOLUME_SPACE_FILE = "file="
+
+
+def read_volume_space_conn(
+    connection: SshConnection, volume_root: str, paths: Sequence[str],
+) -> VolumeSpace | str:
+    """df's free space on `volume_root` and what deleting `paths` there would
+    free, in one SSH call; a string naming why it could not be read otherwise.
+
+    df is read only from the volume's own line: an unmounted root reads the
+    RAM disk under it. MaSt's sizeFree is no substitute, since it reads a far
+    smaller size while a volume is not mounted. df's data line has six fields
+    on both kernels, free space fourth.
+
+    Each regular file the paths name counts its size (`ls -ln`'s fifth
+    field); a symlink adds nothing.
+
+    Only a transport failure is a reading it cannot take; anything else is a
+    bug, and propagates."""
+    quoted = " ".join(shlex.quote(path) for path in paths)
+    script = (
+        f"echo {_VOLUME_SPACE_DF}\"$(/bin/df -k {shlex.quote(volume_root)} 2>/dev/null | /usr/bin/tail -n +2)\"; "
+        f"for p in {quoted}; do "
+        f"[ -f \"$p\" ] && [ ! -h \"$p\" ] && echo {_VOLUME_SPACE_FILE}\"$(/bin/ls -ln \"$p\")\"; "
+        "done; true"
+    )
+    try:
+        output = run_ssh(
+            connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=VOLUME_SPACE_TIMEOUT_SECONDS,
+        ).stdout or ""
+    except TransportError as exc:
+        return f"ssh:{type(exc).__name__}"
+    lines = output.splitlines()
+    df_fields = next((line[len(_VOLUME_SPACE_DF):].split() for line in lines if line.startswith(_VOLUME_SPACE_DF)), [])
+    if len(df_fields) < 6 or df_fields[-1] != volume_root:
+        return "not_mounted" if df_fields else "no_df"
+    try:
+        available = int(df_fields[3]) * 1024
+        freed = sum(
+            int(line[len(_VOLUME_SPACE_FILE):].split()[4]) for line in lines if line.startswith(_VOLUME_SPACE_FILE)
+        )
+    except (ValueError, IndexError):
+        return "unparsed"
+    return VolumeSpace(available_bytes=available, freed_bytes=freed)
+
+
 def ordered_payload_candidate_volumes(
     volumes: tuple[MaStVolume, ...],
 ) -> tuple[MaStVolume, ...]:

@@ -117,6 +117,7 @@ from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESS
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.device.acpd import RestartVerdict
 from timecapsulesmb.core.runtime_settings import SettingsSource
+from timecapsulesmb.device.storage import VolumeSpace
 
 
 class SampleMode(Enum):
@@ -307,6 +308,13 @@ class AppApiTests(unittest.TestCase):
         )
         self._flash_capacity = self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.services.deploy._probe_flash_capacity", return_value=(1024 * 1024, 128 * 1024))
+        )
+        # A payload volume with room; tests about a full one set their own.
+        self._payload_disk = self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.services.deploy.read_volume_space_conn",
+                return_value=VolumeSpace(available_bytes=10**12, freed_bytes=0),
+            )
         )
         self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.services.deploy._flash_files_holding_new_bytes", return_value=set())
@@ -7177,7 +7185,10 @@ MaSt = (
                 self.assertEqual(finished["result"], "failure")
                 self.assertEqual(finished["stage"], "pre_upload_actions")
 
-    def test_deploy_onto_a_full_disk_says_so_instead_of_dd_output(self) -> None:
+    def test_deploy_onto_a_disk_that_fills_up_says_so_instead_of_dd_output(self) -> None:
+        # The room check passed (or could not tell), and the disk filled up
+        # during the upload: Samba is already stopped, so Uninstall is the
+        # way to free space.
         volume = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
 
         def full_upload(plan, *, connection, source_resolver, claims, on_uploading=None, on_uploaded=None):
@@ -7194,9 +7205,44 @@ MaSt = (
 
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
-        self.assertEqual(error["code"], "deploy_disk_not_writable")
-        self.assertTrue(error["message"].startswith("The disk has no free space left"))
-        self.assertIn("Check available free space.", error["recovery"]["actions"])
+        self.assertEqual(error["code"], "deploy_disk_filled_up")
+        self.assertTrue(error["message"].startswith("The disk filled up during the install. Samba is not running now."))
+        self.assertEqual(error["recovery"]["localization_key"], "deploy.deploy_disk_filled_up")
+        self.assertEqual(error["recovery"]["action_ids"], ["uninstall"])
+        self.assertIn("Samba was stopped", error["recovery"]["message"])
+
+    def test_deploy_onto_a_full_disk_stops_before_changing_anything(self) -> None:
+        # The room check finds too little space: no remote action runs, and
+        # the line naming the disk takes its name from the inventory's MaSt
+        # volumes.
+        from timecapsulesmb.deploy.migration import MigrationInventory
+
+        volume = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
+        self._payload_disk.return_value = VolumeSpace(available_bytes=0, freed_bytes=0)
+        remote_calls: list[object] = []
+        with mock.patch("timecapsulesmb.services.deploy.inventory_metadata",
+                        return_value=MigrationInventory((volume,), [], ["/Volumes/dk2/.samba4"], [], "")):
+            rc, collector = self.run_confirmed_deploy_with_mast(
+                MaStDiscoveryResult((volume,), 1, ""),
+                payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
+                run_remote_actions_side_effect=lambda *args, **kwargs: remote_calls.append(args),
+                upload_side_effect=lambda *args, **kwargs: None,
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(remote_calls, [])
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "deploy_disk_full")
+        self.assertEqual(error["message"],
+                         "The disk does not have enough free space for the installation files. Nothing was changed.")
+        self.assertEqual(error["recovery"]["localization_key"], "deploy.deploy_disk_full")
+        self.assertEqual(error["recovery"].get("action_ids", []), ["wipe_disk"])
+        # The numbers reach the app once, as a translatable log line.
+        lines = [event for event in collector.events_of_type("log")
+                 if event.get("message_key") == "deploy.disk_space"]
+        self.assertEqual([line["message_args"] for line in lines], [["Data", "0", "13"]])
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["stage"], "check_disk_space")
 
     def test_deploy_whose_write_the_disk_failed_or_refused_offers_disk_repair(self) -> None:
         # An I/O error with no kernel disk errors, and a volume mounted

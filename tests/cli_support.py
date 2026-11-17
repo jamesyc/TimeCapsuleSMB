@@ -28,6 +28,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.device.storage import MaStVolume
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.services.version_check import VersionCheckResult
+from timecapsulesmb.device.storage import VolumeSpace
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -248,6 +249,13 @@ class CliTestCase(unittest.TestCase):
         )
         self._flash_capacity = self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.services.deploy._probe_flash_capacity", return_value=(1024 * 1024, 128 * 1024))
+        )
+        # A payload volume with room; tests about a full one set their own.
+        self._payload_disk = self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.services.deploy.read_volume_space_conn",
+                return_value=VolumeSpace(available_bytes=10**12, freed_bytes=0),
+            )
         )
         self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.services.deploy._flash_files_holding_new_bytes", return_value=set())

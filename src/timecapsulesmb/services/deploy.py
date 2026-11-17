@@ -28,6 +28,7 @@ from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.migration import (
     CRASH_SIGNALS,
     MigrationExitError,
+    MigrationInventory,
     MigrationStalledError,
     NATIVE_TIMEOUT_SECONDS,
     NATIVE_XATTR_LIMIT,
@@ -111,10 +112,12 @@ from timecapsulesmb.device.storage import (
     PayloadHomeSelection,
     PayloadVerificationResult,
     VolumeClaims,
+    VolumeSpace,
     build_dry_run_payload_home,
     disk_size_misreported,
     payload_candidate_checks_debug_summary,
     parse_mast_inventory,
+    read_volume_space_conn,
     seagate_disk_failed,
     select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
@@ -551,6 +554,77 @@ def _probe_flash_capacity(
     return available, required
 
 
+# The payload volume must hold the new payload before anything is stopped:
+# a disk that fills during the upload leaves no runtime at all, and running
+# the install again fails the same way. The margin covers block rounding,
+# catalog growth and Samba's first log lines. It is not meant to cover a Time
+# Machine backup still writing until pre_upload_actions stops Samba: at link
+# speed that can outrun any margin worth having, and a disk it fills gets the
+# deploy_disk_filled_up card. A second check after the stop would come too
+# late to say nothing was changed.
+PAYLOAD_DISK_MARGIN_BYTES = 1024 * 1024
+# The card's own words; the numbers go in the deploy.disk_space line, and the
+# exact bytes in the payload_disk_* debug fields.
+DISK_FULL_PRECHECK_MESSAGE = (
+    "The disk does not have enough free space for the installation files. Nothing was changed."
+)
+
+
+def _check_payload_disk_capacity(
+    connection: SshConnection,
+    plan: DeploymentPlan,
+    source_resolver: Mapping[str, Path],
+    inventory: MigrationInventory,
+    callbacks: OperationCallbacks,
+    read_space: Callable[[SshConnection, str, Sequence[str]], VolumeSpace | str],
+) -> None:
+    """Refuse an install the payload volume has no room for, while nothing has
+    been stopped yet.
+
+    The room deploy makes first counts: the old software and Samba's logs in
+    every payload folder on this volume, a v2 `samba4` included. When the
+    volume's space cannot be read, the install goes on as before, and a disk
+    that fills up during the upload still stops it (deploy_disk_filled_up)."""
+    callbacks.stage("check_disk_space")
+    root = plan.volume_root.rstrip("/")
+    removed = [
+        path
+        for folder in inventory.payload_dirs if folder.startswith(root + "/")
+        for action in plan.payload_removals(folder)
+        for path in action.paths
+    ]
+    space = read_space(connection, plan.volume_root, removed)
+    if isinstance(space, str):
+        callbacks.debug(payload_disk_check=f"skipped:{space}")
+        return
+    new_bytes = sum(
+        source_resolver[transfer.source_id].stat().st_size
+        for transfer in plan.uploads
+        if _upload_destination_kind(transfer, plan) == "payload"
+    )
+    required = max(0, new_bytes + PAYLOAD_DISK_MARGIN_BYTES - space.freed_bytes)
+    callbacks.debug(
+        payload_disk_available_bytes=space.available_bytes,
+        payload_disk_required_bytes=required,
+    )
+    if space.available_bytes >= required:
+        return
+    disk = next((v.name for v in inventory.volumes if v.volume_root == plan.volume_root and v.name), plan.volume_root)
+    # Free space rounded down and the need rounded up, so the line never
+    # shows a disk with room.
+    callbacks.message(disk_space_summary(disk, space.available_bytes // 1_000_000, -(-required // 1_000_000)))
+    raise DeployDeviceError(DISK_FULL_PRECHECK_MESSAGE, code=ErrorCode.DEPLOY_DISK_FULL)
+
+
+def disk_space_summary(disk: str, free_mb: int, need_mb: int) -> Summary:
+    """The app's card is fixed text: this line gives the numbers."""
+    return Summary(
+        "deploy.disk_space",
+        f"“{disk}” has {free_mb} MB free, and the install needs about {need_mb} MB.",
+        (disk, str(free_mb), str(need_mb)),
+    )
+
+
 def _flash_files_holding_new_bytes(
     connection: SshConnection,
     transfers: list[FileTransfer],
@@ -770,7 +844,7 @@ def _upload_timeout_fields(exc: BaseException) -> dict[str, object]:
 # on: a full disk, an I/O error the kernel may also have logged, or a volume
 # that would not take the files (a folder HFS would not create, or a volume
 # mounted read-only).
-DISK_FULL_MESSAGE = "The disk has no free space left for the installation files."
+DISK_FULL_MESSAGE = "The disk filled up during the install. Samba is not running now."
 DISK_IO_ERROR_MESSAGE = "The disk reported an input/output error while the installation files were written. It may be failing."
 DISK_REFUSED_FOLDER_MESSAGE = "The disk would not create the installation folder. Its volume may be damaged or no longer mounted."
 DISK_READ_ONLY_MESSAGE = "The disk's volume is mounted read-only, so the installation files could not be written. It may be damaged."
@@ -807,8 +881,8 @@ def _device_write_error(exc: BaseException, connection: SshConnection) -> Device
     or an HFS disk counts.
 
     - the flash full: insufficient_flash_space
-    - an HFS disk full: deploy_disk_not_writable, whose card says to check
-      free space
+    - an HFS disk full: deploy_disk_filled_up (check_disk_space refuses a
+      volume without room before anything is stopped, when it can tell)
     - an I/O error: disk_failing with this boot's kernel disk errors of the
       disk written (_written_disk_errors), else deploy_disk_io_error
     - a read-only volume, or a folder mkdir could not create:
@@ -823,7 +897,7 @@ def _device_write_error(exc: BaseException, connection: SshConnection) -> Device
     found = {(tool, error) for tool, root, _path, error in lines if root == "/Volumes/"}
     errors_seen = {error for _tool, error in found}
     if "No space left on device" in errors_seen:
-        return DeployDeviceError(DISK_FULL_MESSAGE, code=ErrorCode.DEPLOY_DISK_NOT_WRITABLE, detail=text)
+        return DeployDeviceError(DISK_FULL_MESSAGE, code=ErrorCode.DEPLOY_DISK_FILLED_UP, detail=text)
     if "Input/output error" in errors_seen:
         volumes = {path.split("/", 1)[0] for _tool, root, path, error in lines
                    if root == "/Volumes/" and error == "Input/output error"}
@@ -1324,6 +1398,7 @@ def upload_and_verify_deployment_payload(
     flush_remote_writes=None,
     migrate_xattrs_func=None,
     probe_flash_capacity_func=None,
+    read_volume_space_func=None,
 ) -> None:
     callbacks = callbacks or OperationCallbacks()
     if run_remote_actions_func is None:
@@ -1340,6 +1415,8 @@ def upload_and_verify_deployment_payload(
         migrate_xattrs_func = migrate_xattr_tdb_to_hfs
     if probe_flash_capacity_func is None:
         probe_flash_capacity_func = _probe_flash_capacity
+    if read_volume_space_func is None:
+        read_volume_space_func = read_volume_space_conn
     plan = prepared_plan.plan
     payload_home = prepared_plan.payload_home
     claims = prepared_plan.volume_claims
@@ -1536,6 +1613,7 @@ def upload_and_verify_deployment_payload(
             Path(tmp),
             boot_assets,
         )
+        _check_payload_disk_capacity(connection, plan, upload_sources, inventory, callbacks, read_volume_space_func)
         callbacks.stage("pre_upload_actions")
         boot_assets.enter_context(_report_interrupted_install(connection))
         with _naming_device_write_errors(connection), \
@@ -1649,17 +1727,9 @@ def upload_and_verify_deployment_payload(
         config_uploads = [] if plan.config_upload.destination in kept else [plan.config_upload]
         with _naming_device_write_errors(connection):
             run_remote_actions_func(connection, plan.replace_software_actions)
-        # Apply the same explicit ownership list to other detected payloads,
-        # Samba's logs included. Their metadata, receipts, other logs and
-        # quarantines stay intact.
-        payload_removals = [
-            (paths, action.best_effort)
-            # Software first: its removal must not wait behind a slow log's,
-            # away from the mount check that comes just before it.
-            for action in (*plan.replace_software_actions, *plan.pre_upload_actions)
-            if isinstance(action, RemovePathsAction)
-            if (paths := [path for path in action.paths if path.startswith(plan.payload_dir + "/")])
-        ]
+        # Apply the same explicit ownership list to other detected payloads
+        # (DeploymentPlan.payload_removals), Samba's logs included. Their metadata,
+        # receipts, other logs and quarantines stay intact.
         for directory in inventory.payload_dirs:
             if directory == plan.payload_dir:
                 continue
@@ -1670,8 +1740,7 @@ def upload_and_verify_deployment_payload(
                     volume.volume_root, volume.device_path, plan.apple_mount_wait_seconds,
                     held=claims.holds(volume.volume_root),
                 ),
-                *(RemovePathsAction(tuple(directory + path[len(plan.payload_dir):] for path in paths), best_effort)
-                  for paths, best_effort in payload_removals),
+                *plan.payload_removals(directory),
             ])
         callbacks.stage("check_flash_capacity")
         try:

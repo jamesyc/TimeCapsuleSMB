@@ -1024,6 +1024,7 @@ _UNREADABLE_FOLDER_MESSAGE = (
     "Samba was stopped for the install and is not running now."
 )
 _UNREADABLE_FOLDER_REPAIR = "Run “Disk Repair” on the disk, then run “Install / Update Samba” again."
+_DISK_FULL_TITLE = "The disk is full"
 # A write the disk's volume refused or failed (deploy_disk_io_error,
 # deploy_disk_refused_folder).
 _DISK_WRITE_REFUSED_STEPS = (
@@ -1359,8 +1360,8 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         suggested_operation="deploy",
         action_ids=("wipe_disk",),
     ),
-    # No volume passed the test write, or the one chosen filled up during
-    # the install (services.deploy._device_write_error).
+    # No volume passed the test write (services.deploy
+    # select_deploy_payload_home).
     ("deploy", ErrorCode.DEPLOY_DISK_NOT_WRITABLE): RecoveryInfo(
         "No writable volume for the installation files",
         "The device found HFS volumes, but none accepted the TimeCapsuleSMB installation folder.",
@@ -1371,6 +1372,46 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ),
         retryable=True,
         suggested_operation="deploy",
+    ),
+    # Too little room, found before anything was stopped (services.deploy
+    # _check_payload_disk_capacity). Deleting files comes first: file sharing
+    # still runs on a volume with an earlier install. Uninstall is text only,
+    # since it also deletes Finder tags not migrated yet. The wipe is for a
+    # disk nothing can open; on a device with no internal disk, the USB
+    # disk's erase on a Mac instead (_NO_INTERNAL_DISK_RECOVERY).
+    ("deploy", ErrorCode.DEPLOY_DISK_FULL): RecoveryInfo(
+        _DISK_FULL_TITLE,
+        "The disk does not have enough free space for the installation files. Nothing was changed.",
+        (
+            "Delete files you no longer need from the disk, or older Time Machine backups, then run “Install / Update "
+            "Samba” again.",
+            "If file sharing does not work, run “Uninstall” first. It removes TimeCapsuleSMB's files from the disk, "
+            "including Samba metadata from an earlier version that is not migrated yet, such as Finder tags; your "
+            "files stay on the disk.",
+            *_WIPE_INTERNAL_DISK_STEPS,
+        ),
+        retryable=True,
+        suggested_operation="deploy",
+        action_ids=("wipe_disk",),
+    ),
+    # The disk filled up during the install, after Samba was stopped: a write
+    # that ran out of space (services.deploy._device_write_error). Running the
+    # install again comes first: it checks for room before changing anything
+    # (a backup that raced the install may have finished), and Uninstall,
+    # which also deletes Finder tags not migrated yet, only when that check
+    # says the disk is full.
+    ("deploy", ErrorCode.DEPLOY_DISK_FILLED_UP): RecoveryInfo(
+        _DISK_FULL_TITLE,
+        "The disk filled up during the install. Samba was stopped for the install and is not running now.",
+        (
+            "Run “Install / Update Samba” again. It checks the disk has room before it changes anything.",
+            "If it says the disk is full, run “Uninstall”, then “Install / Update Samba”. Uninstall also deletes "
+            "any Samba metadata from an earlier version that is not migrated yet, such as Finder tags; your files "
+            "stay on the disk.",
+        ),
+        retryable=True,
+        suggested_operation="deploy",
+        action_ids=("uninstall",),
     ),
     # A mounted volume answered a write of the install with an error of its
     # own (services.deploy._device_write_error); kernel disk errors beside an
@@ -1887,6 +1928,7 @@ _NO_INTERNAL_DISK_RECOVERY: dict[str, RecoveryInfo] = {
     for card in (
         _OPERATION_CODE_RECOVERY[("deploy", ErrorCode.DEPLOY_NO_HFS_PARTITION)],
         _STAGE_RECOVERY[("deploy", ErrorCode.DEPLOY_DISK_NOT_MOUNTED, "read_mast")],
+        _OPERATION_CODE_RECOVERY[("deploy", ErrorCode.DEPLOY_DISK_FULL)],
     )
 }
 

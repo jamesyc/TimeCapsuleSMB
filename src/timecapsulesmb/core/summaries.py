@@ -112,6 +112,10 @@ SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
     "migration.skipped_more": ("int",),
     # The folder the device could not list when that failed the migration.
     "migration.unreadable_folder": ("str",),
+    # The payload volume's name, its free space and what the install needs, in
+    # whole MB as text (a size, not a count), when deploy refuses an install it
+    # has no room for.
+    "deploy.disk_space": ("str", "str", "str"),
 }
 
 

@@ -69,6 +69,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("deploy", "select_payload_home"): StagePolicy(REMOTE_READ, True, "Select a writable HFS payload location."),
     ("deploy", "inventory_legacy_metadata"): StagePolicy(REMOTE_READ, True, "Find earlier installations and legacy Samba metadata on each disk."),
     ("deploy", "build_deployment_plan"): StagePolicy(LOCAL_READ, True, "Build the deployment action plan."),
+    ("deploy", "check_disk_space"): StagePolicy(REMOTE_READ, True, "Check the disk has room for the install before stopping anything."),
     ("deploy", "check_flash_capacity"): StagePolicy(REMOTE_READ, True, "Check free Flash space after removing old software."),
     ("deploy", "pre_upload_actions"): StagePolicy(REMOTE_WRITE, False, "Stop managed processes, delete Samba's logs and remove replaceable software."),
     ("deploy", "prepare_deployment_files"): StagePolicy(LOCAL_WRITE, True, "Generate temporary deployment config files."),

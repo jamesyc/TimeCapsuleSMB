@@ -107,6 +107,9 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append(f"  diskd.useVolume wait: {plan.apple_mount_wait_seconds}s per attempt")
     lines.append("  upload transport: SSH stdin pipe with remote size verification")
     lines.append("")
+    lines.append("Before stopping anything:")
+    lines.append("  check the payload volume has room, counting the old software and Samba logs deploy deletes")
+    lines.append("")
     lines.append("Remote actions (pre-upload):")
     for command in render_remote_actions(plan.pre_upload_actions):
         lines.append(f"  {command}")

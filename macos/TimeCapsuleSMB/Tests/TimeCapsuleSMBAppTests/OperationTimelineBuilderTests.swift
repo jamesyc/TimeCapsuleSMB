@@ -452,6 +452,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "wait_for_previous_migration",
             "inventory_legacy_metadata",
             "build_deployment_plan",
+            "check_disk_space",
             "check_flash_capacity",
             "pre_upload_actions",
             "prepare_deployment_files",

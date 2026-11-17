@@ -4577,5 +4577,22 @@
       "type": "log"
     },
     "name": "log_unreadable_folder"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "“Data” has 0 MB free, and the install needs about 13 MB.",
+      "message_args": [
+        "Data",
+        "0",
+        "13"
+      ],
+      "message_key": "deploy.disk_space",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_disk_space"
   }
 ]

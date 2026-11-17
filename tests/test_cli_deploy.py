@@ -1357,7 +1357,8 @@ class CliDeployTests(CliTestCase):
         cases = (
             ("a process that will not stop", "manager_stop_timeout", "A service on the device is stuck",
              {"remote": SshError(stuck_stop_output().strip())}),
-            ("a full disk", "deploy_disk_not_writable", "The disk has no free space left",
+            # The disk filled up during the upload, after Samba was stopped.
+            ("a full disk", "deploy_disk_filled_up", "The disk filled up during the install",
              {"upload": upload_failing("dd: /Volumes/dk2/.samba4/smbd: No space left on device")}),
             ("a full flash", "insufficient_flash_space", "Not enough free space on /mnt/Flash",
              {"upload": upload_failing("dd: /mnt/Flash/service: No space left on device")}),
@@ -1388,6 +1389,29 @@ class CliDeployTests(CliTestCase):
                 self.assertIn(lead, text)
                 self.assertNotIn("dd: ", text.split("\n")[0])
                 self.assertIn(cli_steps("deploy", code)[0], text)
+
+    def test_a_full_disk_is_refused_before_anything_changes_with_its_own_steps(self) -> None:
+        # The room check: the numbers once, the card's lead, then its steps.
+        from timecapsulesmb.app.recovery import cli_steps
+        from timecapsulesmb.deploy.migration import MigrationInventory
+        from timecapsulesmb.device.storage import VolumeSpace
+
+        with ExitStack() as stack:
+            self._payload_disk.return_value = VolumeSpace(available_bytes=0, freed_bytes=0)
+            stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inventory_metadata",
+                                           return_value=MigrationInventory((), [], ["/Volumes/dk2/.samba4"], [], "")))
+            remote = stack.enter_context(mock.patch("timecapsulesmb.services.deploy.run_remote_actions"))
+            result = self.run_deploy_cli(["--yes"], patch_upload=True, raises=SystemExit)
+        text = str(result.exception)
+        remote.assert_not_called()
+        self.assertIn("The disk does not have enough free space for the installation files. Nothing was changed.", text)
+        # The numbers once, in MB: the log line, not the error again, and no
+        # bytes (those are in the debug fields).
+        self.assertEqual((result.text + text).count("has 0 MB free, and the install needs about"), 1)
+        self.assertNotIn(" bytes", text)
+        for step in cli_steps("deploy", "deploy_disk_full"):
+            self.assertIn(step, text)
+        self.assertEqual(self.telemetry_payload("deploy_finished")["stage"], "check_disk_space")
 
     def test_deploy_upload_timeout_on_a_wifi_device_names_the_link(self) -> None:
         timeout = "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH"

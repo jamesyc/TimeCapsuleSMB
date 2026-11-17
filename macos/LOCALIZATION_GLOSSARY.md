@@ -268,6 +268,7 @@ Commands use the matching form everywhere (Spanish *ejecute*, *vuelva a intentar
 - Chinese ellipses follow the table, as Apple's own status lines do. While a step runs, the app ends its Chinese status line in one `…` in place of its `。` (`维护正在运行。` shows as `维护正在运行…`) and does not add the dots it cycles through in other languages.
 - Spanish questions open with `¿`.
 - Chinese uses full-width `，：；（）`, parentheses around Latin text included (`SMB 3（protocol_vers_map）`, `互联网（WAN）一侧`), and puts a space between Chinese and Latin text or numbers outside them (`Samba 元数据迁移`, `等待 10 秒`).
+- Sizes in megabytes write the unit `MB` in every locale except French, which writes `Mo` after a no-break space (`%2$@ Mo`), and Russian, which writes `МБ` (`%2$@ МБ`). The helper passes the number as text, already rounded.
 
 ## Language notes
 

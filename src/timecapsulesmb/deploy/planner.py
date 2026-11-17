@@ -88,6 +88,21 @@ class DeploymentPlan:
     post_deploy_checks: list[PlannedCheck]
     apple_mount_wait_seconds: int
 
+    def payload_removals(self, directory: str) -> list[RemovePathsAction]:
+        """What deploy deletes from a payload folder before it uploads: the
+        plan's own removals under its payload folder, mapped onto
+        `directory`. Software comes first, so its removal never waits behind
+        a slow log's."""
+        prefix = self.payload_dir + "/"
+        removals = []
+        for action in (*self.replace_software_actions, *self.pre_upload_actions):
+            if not isinstance(action, RemovePathsAction):
+                continue
+            paths = tuple(directory + path[len(self.payload_dir):] for path in action.paths if path.startswith(prefix))
+            if paths:
+                removals.append(RemovePathsAction(paths, action.best_effort))
+        return removals
+
 
 @dataclass(frozen=True)
 class ActivationPlan:

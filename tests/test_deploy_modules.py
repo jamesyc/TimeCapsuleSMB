@@ -137,7 +137,9 @@ from timecapsulesmb.device.storage import (
     PayloadVerificationResult,
     StorageDeviceError,
     VolumeClaims,
+    VolumeSpace,
     mounted_mast_volumes_conn,
+    read_volume_space_conn,
 )
 from tests.storage_fixtures import FakeDiskd
 from timecapsulesmb.services.activation import activate_runtime, decide_manual_activation
@@ -171,6 +173,11 @@ from timecapsulesmb.services.runtime_verification import (
 from timecapsulesmb.transport.errors import SshConnectTimeout, SshLocalNetworkFilteredError, SshUploadTimeout
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError, upload_timeout_seconds
 from timecapsulesmb.device.acpd import RestartVerdict
+
+
+def roomy_payload_disk(*_args) -> VolumeSpace:
+    """A payload volume with plenty of room, for tests about later steps."""
+    return VolumeSpace(available_bytes=10**12, freed_bytes=0)
 
 
 def manager_state(problems, *, acpd_running: bool | None = True, present: bool | None = True) -> ManagerState | None:
@@ -733,6 +740,7 @@ class DeployModuleTests(unittest.TestCase):
             upload_payload_func=fake_upload,
             migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
             probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            read_volume_space_func=roomy_payload_disk,
             flush_remote_writes=mock.Mock(),
             verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
         )
@@ -785,6 +793,7 @@ class DeployModuleTests(unittest.TestCase):
                 upload_payload_func=mock.Mock(),
                 migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                read_volume_space_func=roomy_payload_disk,
                 flush_remote_writes=mock.Mock(),
                 verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
             )
@@ -810,6 +819,7 @@ class DeployModuleTests(unittest.TestCase):
                     upload_payload_func=mock.Mock(),
                     migrate_xattrs_func=migrate,
                     probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                    read_volume_space_func=roomy_payload_disk,
                     flush_remote_writes=mock.Mock(),
                     verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
                 )
@@ -842,6 +852,7 @@ class DeployModuleTests(unittest.TestCase):
             upload_payload_func=mock.Mock(),
             migrate_xattrs_func=migrate,
             probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            read_volume_space_func=roomy_payload_disk,
             flush_remote_writes=mock.Mock(),
             verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
         )
@@ -864,6 +875,7 @@ class DeployModuleTests(unittest.TestCase):
             upload_payload_func=mock.Mock(),
             migrate_xattrs_func=migrate,
             probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            read_volume_space_func=roomy_payload_disk,
             flush_remote_writes=mock.Mock(),
             verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
         )
@@ -1151,6 +1163,7 @@ class DeployModuleTests(unittest.TestCase):
                         run_remote_actions_func=mock.Mock(), upload_payload_func=mock.Mock(),
                         migrate_xattrs_func=migrate,
                         probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                        read_volume_space_func=roomy_payload_disk,
                         flush_remote_writes=mock.Mock(),
                         verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
                     )
@@ -1205,6 +1218,7 @@ class DeployModuleTests(unittest.TestCase):
                         run_remote_actions_func=remote_actions, upload_payload_func=mock.Mock(),
                         migrate_xattrs_func=mock.Mock(side_effect=error),
                         probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                        read_volume_space_func=roomy_payload_disk,
                     )
                 message = str(caught.exception)
                 self.assertIn("phase=copy elapsed_seconds=", message)
@@ -1250,6 +1264,7 @@ class DeployModuleTests(unittest.TestCase):
                         run_remote_actions_func=mock.Mock(), upload_payload_func=mock.Mock(),
                         migrate_xattrs_func=mock.Mock(side_effect=error),
                         probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                        read_volume_space_func=roomy_payload_disk,
                     )
                 self.assertEqual(caught.exception.code, code)
                 message = str(caught.exception)
@@ -1273,6 +1288,7 @@ class DeployModuleTests(unittest.TestCase):
                 run_remote_actions_func=mock.Mock(), upload_payload_func=mock.Mock(),
                 migrate_xattrs_func=mock.Mock(side_effect=MigrationStalledError("no progress")),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                read_volume_space_func=roomy_payload_disk,
             )
         migration = next(fields for kind, fields in measurements if kind == "xattr_migration")
         self.assertEqual((migration["exit_status"], migration["exit_signal"]), (None, None))
@@ -1303,6 +1319,7 @@ class DeployModuleTests(unittest.TestCase):
                     run_remote_actions_func=mock.Mock(), upload_payload_func=mock.Mock(),
                     migrate_xattrs_func=migrate,
                     probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                    read_volume_space_func=roomy_payload_disk,
                     flush_remote_writes=mock.Mock(),
                     verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
                 )
@@ -1411,6 +1428,7 @@ class DeployModuleTests(unittest.TestCase):
                     upload_payload_func=mock.Mock(),
                     migrate_xattrs_func=migrate,
                     probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                    read_volume_space_func=roomy_payload_disk,
                 )
         self.assertEqual(caught.exception.code, "xattr_migration_stalled")
         self.assertIn("phase=inspect", str(caught.exception))
@@ -1451,6 +1469,7 @@ class DeployModuleTests(unittest.TestCase):
             run_remote_actions_func=remote_actions,
             migrate_xattrs_func=migrate,
             probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            read_volume_space_func=roomy_payload_disk,
             upload_payload_func=upload,
             flush_remote_writes=mock.Mock(),
             verify_payload_home=verify,
@@ -1497,6 +1516,7 @@ class DeployModuleTests(unittest.TestCase):
             upload_payload_func=mock.Mock(),
             migrate_xattrs_func=migrate,
             probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            read_volume_space_func=roomy_payload_disk,
             flush_remote_writes=mock.Mock(),
             verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
         )
@@ -1541,6 +1561,7 @@ class DeployModuleTests(unittest.TestCase):
                     ("upload", tuple(transfer.destination for transfer in plan.uploads))),
                 migrate_xattrs_func=migrate,
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                read_volume_space_func=roomy_payload_disk,
                 flush_remote_writes=lambda _connection: events.append(("sync",)),
                 verify_payload_home=verify,
             )
@@ -1664,6 +1685,7 @@ class DeployModuleTests(unittest.TestCase):
                 upload_payload_func=upload,
                 migrate_xattrs_func=migrate,
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                read_volume_space_func=roomy_payload_disk,
             )
 
         self.assertEqual(raised.exception.code, ErrorCode.MANAGER_STOP_TIMEOUT)
@@ -1700,6 +1722,7 @@ class DeployModuleTests(unittest.TestCase):
                 upload_payload_func=fails("upload"),
                 migrate_xattrs_func=migrate or mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                read_volume_space_func=roomy_payload_disk,
                 verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
             )
         return caught.exception, alive, stages[-1] if stages else None
@@ -1840,6 +1863,7 @@ class DeployModuleTests(unittest.TestCase):
                 upload_payload_func=mock.Mock(),
                 migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                read_volume_space_func=roomy_payload_disk,
             )
 
         # The inventory and every device change come after the earlier
@@ -1862,6 +1886,7 @@ class DeployModuleTests(unittest.TestCase):
                 upload_payload_func=upload,
                 migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                read_volume_space_func=roomy_payload_disk,
             )
         except Exception as exc:  # noqa: BLE001 - the error is what the test reads
             upload.assert_not_called()
@@ -1944,6 +1969,7 @@ class DeployModuleTests(unittest.TestCase):
                         upload_payload_func=timeout_upload,
                         migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                         probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                        read_volume_space_func=roomy_payload_disk,
                     )
 
                 self.assertEqual(raised.exception.code, "payload_upload_timeout")
@@ -2012,13 +2038,37 @@ class DeployModuleTests(unittest.TestCase):
                 upload_payload_func=upload,
                 migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                read_volume_space_func=roomy_payload_disk,
                 # The payload checks out, so the config and rc.local come next.
                 verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
             )
         return raised.exception
 
+    def test_deploy_refuses_a_full_volume_before_stopping_anything(self) -> None:
+        # The executor: a short volume raises before the first remote action
+        # (the pre-upload step stops Samba and removes rc.local).
+        prepared = self._prepared_deploy_plan()
+        remote = mock.Mock()
+        upload = mock.Mock()
+        stages: list[str] = []
+        with self.assertRaises(DeviceError) as raised:
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}), SshConnection("host", "pw", ""), prepared, DeployRuntimeConfig(),
+                callbacks=OperationCallbacks(set_stage=stages.append),
+                run_remote_actions_func=remote,
+                upload_payload_func=upload,
+                migrate_xattrs_func=mock.Mock(),
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                read_volume_space_func=lambda *_args: VolumeSpace(0, 0),
+            )
+        self.assertEqual(raised.exception.code, ErrorCode.DEPLOY_DISK_FULL)
+        self.assertEqual(stages[-1], "check_disk_space")
+        remote.assert_not_called()
+        upload.assert_not_called()
+
     def test_a_write_the_disk_refused_names_the_disk_whatever_step_wrote_it(self) -> None:
-        # The disk's own answer, wherever the install wrote: a full disk, an
+        # The disk's own answer, wherever the install wrote: a disk that filled
+        # up while it was written (deploy_disk_filled_up, Samba already stopped), an
         # I/O error (failing when the kernel logged disk errors too), or a
         # volume that refused the files (a folder HFS would not create, or a
         # read-only mount).
@@ -2030,7 +2080,7 @@ class DeployModuleTests(unittest.TestCase):
         io = "dd: /Volumes/dk2/.samba4/smbd: Input/output error"
         read_only = "mkdir: /Volumes/dk2/.samba4: Read-only file system"
         cases = (
-            ("upload", full, None, "deploy_disk_not_writable", DISK_FULL_MESSAGE),
+            ("upload", full, None, "deploy_disk_filled_up", DISK_FULL_MESSAGE),
             ("upload", io, (), "deploy_disk_io_error", DISK_IO_ERROR_MESSAGE),
             # The kernel's messages could not be read: nothing says failing.
             ("upload", io, None, "deploy_disk_io_error", DISK_IO_ERROR_MESSAGE),
@@ -2048,9 +2098,9 @@ class DeployModuleTests(unittest.TestCase):
             ("post_upload", "chmod: /Volumes/dk2/.samba4/smbd: Read-only file system", None,
              "deploy_disk_refused_folder", DISK_READ_ONLY_MESSAGE),
             # The disk's line among others in the same output.
-            ("pre_upload", f"cp: preparing\n{full}", None, "deploy_disk_not_writable", DISK_FULL_MESSAGE),
+            ("pre_upload", f"cp: preparing\n{full}", None, "deploy_disk_filled_up", DISK_FULL_MESSAGE),
             # A full disk is the cause to act on first, whatever else failed.
-            ("upload", f"{io}\n{full}", (), "deploy_disk_not_writable", DISK_FULL_MESSAGE),
+            ("upload", f"{io}\n{full}", (), "deploy_disk_filled_up", DISK_FULL_MESSAGE),
             ("upload", f"{read_only}\n{io}", (), "deploy_disk_io_error", DISK_IO_ERROR_MESSAGE),
         )
         for step, text, disk_errors, code, words in cases:
@@ -2174,6 +2224,7 @@ class DeployModuleTests(unittest.TestCase):
                 upload_payload_func=timeout_upload,
                 migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                read_volume_space_func=roomy_payload_disk,
             )
         # Deploy names the timeout; whether it is a Wi-Fi link is decided
         # where every error ends (services.runtime.wifi_link_error).
@@ -4755,6 +4806,14 @@ describe_managed_smbd_status "" ""
         # After the boot hook, as the last step before the reboot.
         self.assertGreater(syncs[2], at(f"upload {plan.boot_upload.description} -> {plan.boot_upload.destination}"))
 
+    def test_format_deployment_plan_checks_disk_room_before_stopping_anything(self) -> None:
+        paths = self._payload_home("/Volumes/dk2", ".samba4")
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
+        lines = [line.strip() for line in format_deployment_plan(plan).splitlines()]
+        check = lines.index("check the payload volume has room, counting the old software and Samba logs deploy deletes")
+        # Deploy reads the room before the remote actions that stop anything.
+        self.assertLess(check, lines.index("Remote actions (pre-upload):"))
+
     def test_reboot_then_activate_plan_contains_activation_actions(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
         plan = build_deployment_plan(
@@ -4952,6 +5011,25 @@ describe_managed_smbd_status "" ""
     def test_render_remote_action_rejects_unknown_action_object(self) -> None:
         with self.assertRaises(TypeError):
             render_remote_action(object())  # type: ignore[arg-type]
+
+    def test_payload_removals_map_onto_any_payload_folder_in_order(self) -> None:
+        # What deploy deletes from a payload folder before it uploads, for its
+        # own folder and for an older one it found on a disk.
+        paths = self._payload_home("/Volumes/dk2", ".samba4")
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
+        own = plan.payload_removals(plan.payload_dir)
+        legacy = plan.payload_removals("/Volumes/dk2/samba4")
+        self.assertEqual([action.best_effort for action in own], [action.best_effort for action in legacy])
+        self.assertEqual(
+            [tuple(path.replace("/Volumes/dk2/.samba4", "/Volumes/dk2/samba4") for path in action.paths) for action in own],
+            [action.paths for action in legacy],
+        )
+        flat = [path for action in own for path in action.paths]
+        # Software first, then Samba's logs (best effort); nothing off the folder.
+        self.assertLess(flat.index("/Volumes/dk2/.samba4/smbd"), flat.index("/Volumes/dk2/.samba4/logs/log.smbd"))
+        self.assertEqual(own[-1], RemovePathsAction(
+            ("/Volumes/dk2/.samba4/logs/log.smbd", "/Volumes/dk2/.samba4/logs/log.smbd.old"), best_effort=True))
+        self.assertTrue(all(path.startswith("/Volumes/dk2/.samba4/") for path in flat))
 
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "Time Capsule Samba 4")
@@ -5256,6 +5334,172 @@ class NoDiskErrorTests(unittest.TestCase):
             other(connection)
         listing.assert_not_called()
 
+
+
+class PayloadDiskCapacityTests(unittest.TestCase):
+    """Deploy refuses an install the payload volume has no room for before it
+    stops anything (services.deploy._check_payload_disk_capacity): a disk that
+    filled up during the upload left no runtime at all."""
+
+    MIB = 1024 * 1024
+
+    def _plan(self, volume_root: str = "/Volumes/dk2", *, smbd_bytes: int = 10_000_000, rsync_bytes: int = 900_000):
+        """A plan whose binaries have the given sizes, and its upload sources."""
+        binaries = tempfile.TemporaryDirectory()
+        self.addCleanup(binaries.cleanup)
+        smbd, rsync = Path(binaries.name) / "smbd", Path(binaries.name) / "rsync"
+        for path, size in ((smbd, smbd_bytes), (rsync, rsync_bytes)):
+            with open(path, "wb") as handle:
+                handle.truncate(size)
+        disk_key = volume_root.rstrip("/").rsplit("/", 1)[-1]
+        home = PayloadHome(volume_root, f"/dev/{disk_key}", ".samba4")
+        plan = build_deployment_plan("root@10.0.0.2", home, smbd, xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
+                                     rsync_path=rsync, service_path=Path("bin/service"))
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        sources = deploy_service._deployment_upload_sources(plan, "conf", "rsync conf", Path(binaries.name), stack)
+        return home, plan, sources
+
+    def _new_bytes(self, plan, sources) -> int:
+        """What the payload uploads add up to."""
+        return sum(
+            sources[t.source_id].stat().st_size
+            for t in plan.uploads if t.destination.startswith(plan.payload_dir + "/")
+        )
+
+    # The storage read (device.storage.read_volume_space_conn).
+
+    def _read(self, stdout: str = "", error: BaseException | None = None, root: str = "/Volumes/dk2", paths=()):
+        run = mock.Mock(side_effect=error) if error else mock.Mock(
+            return_value=subprocess.CompletedProcess(["ssh"], 0, stdout=stdout, stderr=""))
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", run):
+            space = read_volume_space_conn(SshConnection("host", "pw", ""), root, paths)
+        return space, run
+
+    def test_the_read_takes_df_from_the_volumes_own_line_on_both_kernels(self) -> None:
+        for line in ("/dev/dk2 1951417392 1433208680 518208712 73% /Volumes/dk2",
+                     "/dev/dk2    1951417392    323740 1951093652     0%    /Volumes/dk2"):
+            with self.subTest(line=line):
+                space, run = self._read(f"df={line}\n")
+                self.assertEqual(space, VolumeSpace(int(line.split()[3]) * 1024, 0))
+                # A slow link skips the check after the write test's 30 s, not 120.
+                self.assertEqual(run.call_args.kwargs["timeout"], 30)
+
+    def test_the_read_script_against_a_real_folder(self) -> None:
+        # The real script, run here on a temporary volume with df faked: each
+        # regular file counts its size, a symlink and a missing path add
+        # nothing, and an empty list still reads df.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "dk2"
+            payload = root / ".samba4"
+            (payload / "logs").mkdir(parents=True)
+            (payload / "smbd").write_bytes(b"x" * 1000)
+            (payload / "logs" / "log.smbd").write_bytes(b"y" * 300)
+            elsewhere = Path(tmp) / "big"
+            elsewhere.write_bytes(b"z" * 5000)
+            (payload / "rsync").symlink_to(elsewhere)
+            fake_df = Path(tmp) / "df"
+            fake_df.write_text(f"#!/bin/sh\necho 'Filesystem 1K-blocks Used Avail %Cap Mounted on'\n"
+                               f"echo '/dev/dk2 100 50 40 50% {root}'\n")
+            fake_df.chmod(0o755)
+
+            def run_here(_connection, command, **_kwargs):
+                local = command.replace("/bin/df", str(fake_df))
+                return subprocess.run(["/bin/sh", "-c", local], capture_output=True, text=True, check=False)
+
+            paths = [str(payload / name) for name in ("smbd", "rsync", "logs/log.smbd", "missing")]
+            with mock.patch("timecapsulesmb.device.storage.run_ssh", side_effect=run_here):
+                space = read_volume_space_conn(SshConnection("host", "pw", ""), str(root), paths)
+                empty = read_volume_space_conn(SshConnection("host", "pw", ""), str(root), [])
+        self.assertEqual(space, VolumeSpace(40 * 1024, 1300))
+        self.assertEqual(empty, VolumeSpace(40 * 1024, 0))
+
+    def test_a_reading_it_cannot_trust_says_why(self) -> None:
+        cases = (
+            # An unmounted root reads the RAM disk under it.
+            ("not_mounted", "df=/dev/md0a 9000 8000 1000 89% /\n"),
+            ("no_df", "df=\n"),
+            ("not_mounted", "df=/dev/dk2 1 2 3\n"),
+            ("unparsed", "df=/dev/dk2 1951417392 1433208680 lots 73% /Volumes/dk2\n"),
+            ("unparsed", "df=/dev/dk2 1 1 1 1% /Volumes/dk2\nfile=-rw-r--r-- 1 0 0 big Nov 1 /x\n"),
+            ("unparsed", "df=/dev/dk2 1 1 1 1% /Volumes/dk2\nfile=-rw-r--r-- 1\n"),
+        )
+        for reason, stdout in cases:
+            with self.subTest(stdout=stdout):
+                self.assertEqual(self._read(stdout)[0], reason)
+        for error in (SshCommandTimeout("timed out"), SshError("rc=255")):
+            with self.subTest(error=type(error).__name__):
+                self.assertEqual(self._read(error=error)[0], f"ssh:{type(error).__name__}")
+
+    # The decision (services.deploy._check_payload_disk_capacity).
+
+    def _check(self, space, *, payload_dirs=("/Volumes/dk2/.samba4",), volume_name: str = "Data"):
+        _home, plan, sources = self._plan()
+        volume = MaStVolume("wd0", "dk2", "/Volumes/dk2", volume_name, "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
+        inventory = deploy_service.MigrationInventory((volume,), [], list(payload_dirs), [], "")
+        stages, messages, debug, asked = [], [], {}, []
+        callbacks = OperationCallbacks(set_stage=stages.append, log_summary=messages.append,
+                                       add_debug_fields=lambda **fields: debug.update(fields))
+
+        def read_space(_connection, root, paths):
+            asked.append((root, list(paths)))
+            return space
+
+        raised = None
+        try:
+            deploy_service._check_payload_disk_capacity(
+                SshConnection("host", "pw", ""), plan, sources, inventory, callbacks, read_space)
+        except DeviceError as exc:
+            raised = exc
+        return raised, stages, messages, debug, asked, self._new_bytes(plan, sources)
+
+    def test_a_volume_with_room_passes_and_one_without_is_refused(self) -> None:
+        _r, _s, _m, _d, _a, new = self._check(VolumeSpace(0, 0))
+        need = new + self.MIB
+        for available, refused in ((need, False), (need - 1, True)):
+            with self.subTest(available=available):
+                raised, stages, _messages, debug, _asked, _new = self._check(VolumeSpace(available, 0))
+                self.assertEqual(stages, ["check_disk_space"])
+                self.assertEqual(raised is not None, refused)
+                self.assertEqual(debug["payload_disk_required_bytes"], need)
+
+    def test_old_payloads_on_the_same_volume_count_as_room(self) -> None:
+        # Deploy deletes the software in a v2 samba4 folder too: its old smbd
+        # is room. A folder on another volume is not read with this one.
+        raised, _stages, _messages, debug, asked, new = self._check(
+            VolumeSpace(0, 10_300_000 + 900_000 + 2 * self.MIB),
+            payload_dirs=("/Volumes/dk2/samba4", "/Volumes/dk3/.samba4"),
+        )
+        self.assertIsNone(raised)
+        root, paths = asked[0]
+        self.assertEqual(root, "/Volumes/dk2")
+        self.assertIn("/Volumes/dk2/samba4/smbd", paths)
+        self.assertFalse(any(path.startswith("/Volumes/dk3/") for path in paths))
+        self.assertEqual(debug["payload_disk_required_bytes"], 0)
+
+    def test_a_refusal_gives_the_numbers_once_and_the_cards_words(self) -> None:
+        raised, _stages, messages, debug, _asked, new = self._check(VolumeSpace(10_999_999, 0))
+        need = new + self.MIB
+        self.assertEqual(str(raised).splitlines()[0], deploy_service.DISK_FULL_PRECHECK_MESSAGE)
+        self.assertEqual(raised.code, ErrorCode.DEPLOY_DISK_FULL)
+        # The bytes are in the debug fields, not the error.
+        self.assertNotIn("bytes", str(raised))
+        self.assertEqual(debug["payload_disk_required_bytes"], need)
+        # Free space rounds down and the need up: the line never shows room.
+        self.assertEqual(messages, [deploy_service.disk_space_summary("Data", 10, -(-need // 1_000_000))])
+        self.assertEqual(debug["payload_disk_available_bytes"], 10_999_999)
+        # No MaSt name: the volume's root names it. A first install (no
+        # payload folder) gets the same card.
+        raised, _stages, messages, _debug, _asked, _new = self._check(VolumeSpace(0, 0), payload_dirs=(), volume_name="")
+        self.assertEqual(messages[0].args[0], "/Volumes/dk2")
+        self.assertEqual(raised.code, ErrorCode.DEPLOY_DISK_FULL)
+
+    def test_an_unread_volume_goes_on(self) -> None:
+        raised, stages, messages, debug, _asked, _new = self._check("not_mounted")
+        self.assertIsNone(raised)
+        self.assertEqual(stages, ["check_disk_space"])
+        self.assertEqual(messages, [])
+        self.assertEqual(debug, {"payload_disk_check": "skipped:not_mounted"})
 
 
 if __name__ == "__main__":

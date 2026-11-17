@@ -92,10 +92,43 @@ class AppRecoveryTests(unittest.TestCase):
         # Each cause has its own text, and neither is the full disk's card.
         cards = [recovery_for("deploy", code) for code in (
             ErrorCode.DEPLOY_DISK_IO_ERROR, ErrorCode.DEPLOY_DISK_REFUSED_FOLDER, ErrorCode.DEPLOY_DISK_NOT_WRITABLE,
+            ErrorCode.DEPLOY_DISK_FILLED_UP,
         )]
-        self.assertEqual(len({card["title"] for card in cards}), 3)
+        self.assertEqual(len({card["title"] for card in cards}), 4)
         self.assertIn("may be failing", cards[0]["message"])
         self.assertNotIn("disk_repair", cards[2].get("action_ids", []))
+
+    def test_a_full_disk_card_says_whether_anything_changed_and_what_frees_space(self) -> None:
+        before = recovery_for("deploy", ErrorCode.DEPLOY_DISK_FULL, stage="check_disk_space")
+        during = recovery_for("deploy", ErrorCode.DEPLOY_DISK_FILLED_UP, stage="upload_smbd")
+        extreme = recovery_for("deploy", ErrorCode.DEPLOY_DISK_FULL, no_internal_disk=True)
+        # Found before anything was stopped: nothing changed, whatever stage.
+        for card in (before, extreme, recovery_for("deploy", ErrorCode.DEPLOY_DISK_FULL, stage="select_payload_home")):
+            self.assertIn("Nothing was changed", card["message"])
+        self.assertIn("not running now", during["message"])
+        # Deleting files comes first, Uninstall is text only (it also deletes
+        # Finder tags), and the wipe last, with its button, for a disk
+        # nothing can open.
+        self.assertTrue(before["actions"][0].startswith("Delete files you no longer need"))
+        self.assertTrue(before["actions"][1].startswith("If file sharing does not work, run “Uninstall” first."))
+        self.assertIn("Wipe Internal Disk", before["actions"][2])
+        self.assertEqual(before["action_ids"], ["wipe_disk"])
+        # On an AirPort Extreme, the USB disk's erase on a Mac takes the
+        # wipe's place, and there is no button.
+        self.assertEqual(extreme["actions"][:2], before["actions"][:2])
+        self.assertNotIn("Wipe Internal Disk", " ".join(extreme["actions"]))
+        self.assertIn("Disk Utility", extreme["actions"][2])
+        self.assertEqual(extreme["action_ids"], [])
+        self.assertEqual(cli_steps("deploy", ErrorCode.DEPLOY_DISK_FULL)[2],
+                         "If it is the internal disk and it holds nothing you need, use `tcapsule wipe-internal-disk`. "
+                         "It deletes everything on the internal disk and formats it for the device.")
+        # Once Samba is stopped, the install runs again first (it checks for
+        # room before changing anything), then Uninstall, with its button,
+        # if the disk is full.
+        self.assertTrue(during["actions"][0].startswith("Run “Install / Update Samba” again"))
+        self.assertNotIn("Uninstall", during["actions"][0])
+        self.assertTrue(during["actions"][1].startswith("If it says the disk is full, run “Uninstall”"))
+        self.assertEqual(during["action_ids"], ["uninstall"])
 
     def test_an_unreadable_folder_uninstall_would_not_clear_offers_disk_repair_only(self) -> None:
         recovery = recovery_for("deploy", "xattr_migration_unreadable_folder_repair_only", stage="migrate_xattrs_copy")
@@ -817,8 +850,16 @@ class FieldSituationCardTests(unittest.TestCase):
          'read_mast', 'deploy.deploy_disk_not_mounted.read_mast.no_internal_disk', [], True, "airport_extreme"),
         ("an HFS volume that did not mount, on an AirPort Extreme's USB disk", 'deploy', 'deploy_disk_not_mounted',
          None, 'deploy.deploy_disk_not_mounted', [], True, "airport_extreme"),
-        ('no volume passes the test write, or the chosen one fills up', 'deploy', 'deploy_disk_not_writable', None,
+        ('no volume passes the test write', 'deploy', 'deploy_disk_not_writable', None,
          'deploy.deploy_disk_not_writable', [], True),
+        # A full payload volume: found before anything was stopped (on an
+        # AirPort Extreme, the USB disk's erase on a Mac in place of the
+        # wipe), or by a write that ran out of space after Samba was stopped.
+        ('too little room', 'deploy', 'deploy_disk_full', None, 'deploy.deploy_disk_full', ['wipe_disk'], True),
+        ("too little room on an AirPort Extreme's USB disk", 'deploy', 'deploy_disk_full', None,
+         'deploy.deploy_disk_full.no_internal_disk', [], True, "airport_extreme"),
+        ('a disk that filled up during the upload', 'deploy', 'deploy_disk_filled_up', 'upload_smbd',
+         'deploy.deploy_disk_filled_up', ['uninstall'], True),
         ('an input/output error while the install writes, with no kernel disk errors', 'deploy',
          'deploy_disk_io_error', None, 'deploy.deploy_disk_io_error', ['disk_repair'], True),
         ('a folder the volume would not create, or a read-only volume', 'deploy', 'deploy_disk_refused_folder', None,

@@ -155,6 +155,12 @@ class ErrorCode(str, Enum):
     DISK_VOLUMES_IN_MEMORY = "disk_volumes_in_memory"
     USB_DISK_VOLUMES_IN_MEMORY = "usb_disk_volumes_in_memory"
     DEPLOY_DISK_NOT_WRITABLE = "deploy_disk_not_writable"
+    # The payload volume has no room for the install, found before anything
+    # was stopped (services.deploy._check_payload_disk_capacity).
+    DEPLOY_DISK_FULL = "deploy_disk_full"
+    # A write of the install ran out of space on the payload volume, after
+    # Samba was stopped (services.deploy._device_write_error).
+    DEPLOY_DISK_FILLED_UP = "deploy_disk_filled_up"
     # A write of the install got an input/output error from an HFS disk, with
     # no kernel disk errors found this boot (services.deploy).
     DEPLOY_DISK_IO_ERROR = "deploy_disk_io_error"
