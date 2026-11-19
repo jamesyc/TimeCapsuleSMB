@@ -24,6 +24,7 @@ claiming only this much:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from timecapsulesmb.core.error_codes import ErrorCode
 
@@ -85,3 +86,30 @@ def parse_diskd_handoff(title: list[str] | tuple[str, ...]) -> DiskdHandoff | No
                 return DiskdHandoff(parts[0], int(parts[1]), parts[2])
             return None
     return None
+
+
+# The manager's lines on a stock diskd's TERM and the acpd reads after it
+# (build/native/README.md, "Disk owner handoff"), as the probe returns them:
+# "TERM diskd=... uptime=N" and "acpd reads ms=...".
+HANDOFF_LOG_CHARS = 400
+_UPTIME = re.compile(r" uptime=([0-9]+)$")
+
+
+def handoff_log_fields(log: tuple[str, ...], manager_started_s: int | None) -> dict[str, str]:
+    """The running manager's last TERM line (diskd_term) and the acpd reads
+    logged after it (acpd_reads), each cut to HANDOFF_LOG_CHARS. runtime.log
+    keeps earlier managers' lines until the device restarts, so a TERM counts
+    only when its uptime= (the manager's monotonic clock, as started= is) is
+    not before this manager started, and reads only after a TERM that counts.
+    A line without uptime=, or an unknown start, counts for nothing."""
+    fields: dict[str, str] = {}
+    for line in log:
+        if line.startswith("TERM "):
+            fields.pop("diskd_term", None)
+            fields.pop("acpd_reads", None)
+            uptime = _UPTIME.search(line)
+            if manager_started_s is not None and uptime and int(uptime[1]) >= manager_started_s:
+                fields["diskd_term"] = line[:HANDOFF_LOG_CHARS]
+        elif line.startswith("acpd reads") and "diskd_term" in fields:
+            fields["acpd_reads"] = line[:HANDOFF_LOG_CHARS]
+    return fields

@@ -249,33 +249,38 @@ int print_nt_hash_from_stdin(void) {
 
 /* Keep passwords inside this process. Raw capture preserves whitespace; the
  * final-LF/CR treatment matches the old shell substitution + stdin interface. */
-int device_nt_hash(char out[33]) {
-    char input[8193];
+int device_password(char *input, size_t capacity, size_t *length) {
     struct acp_request request;
-    uint8_t digest[16];
-    size_t len, i;
-    int rc = 1;
-    volatile char *wipe = input;
-    out[0] = 0;
+    size_t len;
+    *length = 0;
     memset(&request, 0, sizeof(request));
     request.key = "syPW";
     request.multiline = 1;
     request.output = input;
-    request.capacity = sizeof(input);
+    request.capacity = capacity;
     (void)acp_collect_run(&request, 1, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
                         (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
-    if (request.status != ACP_OK) {
-        if (request.status == ACP_UNAVAILABLE && request.exit_status > 0) rc = request.exit_status;
-        goto done;
-    }
+    if (request.status != ACP_OK)
+        return request.status == ACP_UNAVAILABLE && request.exit_status > 0 ? request.exit_status : 1;
     len = request.length;
     while (len && input[len - 1] == '\n') len--;
-    if (!len || len + 1 > NT_HASH_MAX_PASSWORD_BYTES) goto done;
+    if (!len || len + 1 > NT_HASH_MAX_PASSWORD_BYTES) return 1;
     if (input[len - 1] == '\r') len--;
-    if (!len || tc_nt_hash_utf8((const uint8_t *)input, len, digest) != 0) goto done;
-    for (i = 0; i < sizeof(digest); i++) snprintf(out + 2*i, 3, "%02X", digest[i]);
-    rc = 0;
-done:
+    if (!len) return 1;
+    *length = len;
+    return 0;
+}
+int device_nt_hash(char out[33]) {
+    char input[8193];
+    uint8_t digest[16];
+    size_t len, i;
+    int rc;
+    volatile char *wipe = input;
+    out[0] = 0;
+    rc = device_password(input, sizeof(input), &len);
+    if (!rc && tc_nt_hash_utf8((const uint8_t *)input, len, digest) != 0) rc = 1;
+    if (!rc)
+        for (i = 0; i < sizeof(digest); i++) snprintf(out + 2*i, 3, "%02X", digest[i]);
     for (i = 0; i < sizeof(input); i++) wipe[i] = 0;
     return rc;
 }

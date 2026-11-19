@@ -6,6 +6,7 @@
 #include "../samba/image.h"
 #include "../samba/staging.h"
 #include "../storage/settle.h"
+#include "acpd_reads.h"
 #include "bufstall.h"
 #include "diskd.h"
 #include "procfacts.h"
@@ -13,6 +14,7 @@
 #include "inspect.h"
 #include "proctable.h"
 #include "stuck.h"
+#include "service.h"
 #include <sys/file.h>
 #include <sys/stat.h>
 
@@ -102,8 +104,8 @@ typedef char stage_job_fits_two_payload_reads[2 * TC_PAYLOAD_READ_BUDGET_MS + 30
  * queue drops is queued again later (report_once). */
 #define REPORT_QUEUE 4
 /* Room for the once-reports a manager delivers: today unmounted:internal|usb,
- * payload: and rsync:, each missing|damaged|unreadable, and a slow_copy: for
- * each program, with room to spare. A full list sends no new one rather than one again and again. */
+ * payload: and rsync:, each missing|damaged|unreadable, a slow_copy: for
+ * each program, and a diskd:PHASE:REASON or two (tc_diskd_watch), with room to spare. A full list sends no new one rather than one again and again. */
 #ifndef ONCE_REPORTS
 #define ONCE_REPORTS 16
 #endif
@@ -243,6 +245,12 @@ struct manager {
     struct tc_process_table audited;
     unsigned long long owners_signature;
     int diskd_child_execd;
+    /* What the TERM and watch lines add to the table's rows
+     * (log_handoff_facts): the last sample that showed disk work, and the
+     * last that showed a foreign wcifsfs or wcifsnd (-1: none yet).
+     * acpd_reads times ACPd's listener after the TERM. Process-local. */
+    long long disk_work_at, netbios_at;
+    struct tc_child acpd_reads;
     enum tc_diskd_phase logged_phase;
     enum tc_diskd_reason logged_reason;
     struct tc_share_set discovery_shares;
@@ -317,6 +325,7 @@ struct manager {
     int once_full_logged;
 };
 
+static void report_once(struct manager *m, const char *reason);
 static void lower(long long *deadline, long long value) {
     if (value >= 0 && (*deadline < 0 || value < *deadline))
         *deadline = value;
@@ -919,6 +928,38 @@ static int diskd_probe_job(void *unused) {
     fprintf(stderr, "diskd readiness: no answer: %s\n", reply[0] ? reply : "no output");
     return tc_worker_finish(1);
 }
+/* Times ACPd's listener right after the TERM (acpd_reads.h) and logs one
+ * line. Only measured: the handoff never waits on it. */
+static int acpd_reads_job(void *unused) {
+    char password[NT_HASH_MAX_PASSWORD_BYTES + 2], result[160];
+    volatile char *wipe = password;
+    size_t length, i;
+    int rc;
+    (void)unused;
+    tc_worker_begin("acpd reads");
+    rc = device_password(password, sizeof(password), &length);
+    if (rc)
+        timestamped_fprintf(stderr, "manager: diskd: acpd reads not run: no password (status %d)\n", rc);
+    else
+        tc_acpd_reads(password, length, result, sizeof(result));
+    for (i = 0; i < sizeof(password); i++)
+        wipe[i] = 0;
+    if (!rc)
+        timestamped_fprintf(stderr, "manager: diskd: acpd reads %s\n", result);
+    return tc_worker_finish(rc != 0);
+}
+static long long ago(long long at, long long now) {
+    return at < 0 ? -1 : now - at;
+}
+/* The TERM and watch lines: the stock owner's and ACPd's rows from this
+ * pass's table (procfacts.h tc_proc_handoff_line), and the manager's own
+ * clocks. */
+static void log_handoff_facts(const struct manager *m, const char *what, long long now) {
+    char rows[320];
+    tc_proc_handoff_line(&m->procs, m->handoff.owner, m->acpd_reads.group, rows, sizeof(rows));
+    timestamped_fprintf(stderr, "manager: diskd: %s %s disk_work_ago=%lld netbios_ago=%lld uptime=%lld\n", what, rows,
+                        ago(m->disk_work_at, now), ago(m->netbios_at, now), now / 1000);
+}
 /* What the facts depend on, as the manager's state is now. */
 static struct tc_proc_context proc_context(const struct manager *m) {
     struct tc_proc_context c = {m->discovery.child.pid, m->diskd.child.group ? m->diskd.child.pid : 0, m->handoff.owner};
@@ -947,6 +988,10 @@ static void observe_diskd(struct manager *m, struct tc_diskd_observation *o, lon
     o->current_present = facts.current_present;
     o->disk_work = facts.disk_work;
     o->acp_clients = facts.acp_clients;
+    if (facts.disk_work)
+        m->disk_work_at = now;
+    if (facts.foreign_netbios)
+        m->netbios_at = now;
     /* Our launch child has exec'd once its row shows diskd: it is an owner
      * from then on, and its exit is reported by PID and start time. */
     if (facts.launch_execd.pid) {
@@ -1007,7 +1052,8 @@ static void report_handoff(struct manager *m) {
 static void pump_diskd(struct manager *m, long long now) {
     struct tc_diskd_observation o;
     enum tc_diskd_phase before = m->handoff.phase;
-    unsigned actions = 0;
+    unsigned actions = 0, watch;
+    char what[64];
     if (m->diskd.child.group && tc_child_poll(&m->diskd.child, now)) {
         if (!m->diskd_child_execd) {
             tc_diskd_launch_exited(&m->handoff, now);
@@ -1020,6 +1066,8 @@ static void pump_diskd(struct manager *m, long long now) {
         m->diskd_child_execd = 0;
         m->diskd_child_identity = (struct tc_proc_identity){0};
     }
+    if (m->acpd_reads.group && tc_child_poll(&m->acpd_reads, now))
+        tc_child_close(&m->acpd_reads);
     if (m->diskd_probe.group && tc_child_poll(&m->diskd_probe, now)) {
         tc_diskd_probed(&m->handoff, m->probe_token, tc_child_ok(&m->diskd_probe) && !m->diskd_probe.stopping, now);
         tc_child_close(&m->diskd_probe);
@@ -1051,8 +1099,20 @@ static void pump_diskd(struct manager *m, long long now) {
     }
     if (actions & TC_DISKD_TERM) {
         const struct tc_proc *p = tc_proctable_live(&m->procs, m->handoff.owner.pid);
-        if (p && p->born == m->handoff.owner.born && tc_proc_diskd(p) && kill(p->pid, SIGTERM) && errno != ESRCH)
+        int sent = p && p->born == m->handoff.owner.born && tc_proc_diskd(p) ? kill(p->pid, SIGTERM) : 1;
+        if (sent < 0 && errno != ESRCH)
             timestamped_fprintf(stderr, "manager: diskd: cannot stop pid %ld: %s\n", (long)p->pid, strerror(errno));
+        if (!sent) {
+            log_handoff_facts(m, "TERM", now);
+            /* The job's limit outlasts the password read's own budget and
+             * every read at its deadline, so a slow read is never cut short. */
+            if (m->acpd_reads.group)
+                timestamped_fprintf(stderr, "manager: diskd: acpd reads skipped: the last run has not ended\n");
+            else if (tc_child_fork(&m->acpd_reads, acpd_reads_job, NULL, MANAGER_LOG, NULL, 0,
+                                   now + (TC_ACP_COLLECTION_BUDGET_SECONDS + 15) * 1000LL +
+                                       TC_ACPD_READS * (long long)TC_ACPD_READ_MS))
+                timestamped_fprintf(stderr, "manager: diskd: acpd reads not started: %s\n", strerror(errno));
+        }
     }
     if ((actions & TC_DISKD_LAUNCH) && m->diskd.child.group) {
         tc_diskd_launch_exited(&m->handoff, now); /* the last child is not reaped yet */
@@ -1098,6 +1158,18 @@ static void pump_diskd(struct manager *m, long long now) {
     if (!tc_diskd_ready(&m->handoff))
         lower(&m->audit_at, now + 10000);
     report_handoff(m);
+    watch = tc_diskd_watch(&m->handoff, now, m->procs_valid && m->sample_at == now);
+    if (watch & TC_DISKD_WATCH_LINE) {
+        snprintf(what, sizeof(what), "%s for %lld s:",
+                 m->handoff.phase == TC_DISKD_STOPPING ? "stopping" : "busy",
+                 (now - m->handoff.watch_since) / 1000);
+        log_handoff_facts(m, what, now);
+    }
+    if (watch & TC_DISKD_WATCH_REPORT) {
+        snprintf(what, sizeof(what), "diskd:%s:%s", tc_diskd_phase_name(m->handoff.phase),
+                 tc_diskd_reason_name(m->handoff.watch_reason));
+        report_once(m, what);
+    }
 }
 /* Put Apple's low-water mark back when the manager exits. */
 static void bufstall_restore(void) {
@@ -1140,7 +1212,7 @@ static void pop_report(struct manager *m) {
  * not mount, a verdict the title carries), so one report says it, and the
  * heartbeat carries the uptime. A verdict that changes (damaged, then
  * unreadable) is a new report. A slow copy is reported for the first one. */
-static const char *const once_prefixes[] = {"unmounted:", "payload:", "rsync:", "slow_copy:"};
+static const char *const once_prefixes[] = {"unmounted:", "payload:", "rsync:", "slow_copy:", "diskd:"};
 static int is_once(const char *reason) {
     size_t i;
     for (i = 0; i < sizeof(once_prefixes) / sizeof(once_prefixes[0]); i++)
@@ -1823,11 +1895,12 @@ static void stopping(struct manager *m, long long now) {
     tc_child_stop(&m->audit_job, now, 1);
     tc_child_stop(&m->mast_job, now, 1);
     tc_child_stop(&m->diskd_probe, now, 1);
+    tc_child_stop(&m->acpd_reads, now, 1);
     tc_child_stop(&m->report_job, now, 1);
 }
 static int drained(struct manager *m, long long now) {
     struct tc_child *jobs[] = {&m->storage_job, &m->settings_job, &m->samba_unit.job, &m->rsync_unit.job,
-                               &m->audit_job, &m->mast_job, &m->diskd_probe, &m->report_job};
+                               &m->audit_job, &m->mast_job, &m->diskd_probe, &m->acpd_reads, &m->report_job};
     size_t i;
     for (i = 0; i < sizeof(jobs) / sizeof(jobs[0]); i++) {
         if (jobs[i]->group && tc_child_poll(jobs[i], now))
@@ -1880,6 +1953,7 @@ int tc_manager_main(int argc, char **argv) {
     }
     m->started_ms = m->hostname_wait_since = acp_monotonic_ms();
     tc_diskd_init(&m->handoff, m->started_ms);
+    m->disk_work_at = m->netbios_at = -1;
     m->unmounted_since = -1;
     set_manager_title(m);
     m->storage_dirty = 1;
@@ -1930,7 +2004,8 @@ int tc_manager_main(int argc, char **argv) {
         struct tc_child *children[] = {&m->smb.child,       &m->rsync.child,  &m->discovery.child,
                                        &m->telemetry.child, &m->settings_job, &m->storage_job,
                                        &m->samba_unit.job,  &m->rsync_unit.job, &m->audit_job,
-                                       &m->mast_job,        &m->diskd_probe,    &m->report_job};
+                                       &m->mast_job,        &m->diskd_probe,    &m->acpd_reads,
+                                       &m->report_job};
         size_t i;
         for (i = 0; i < sizeof(children) / sizeof(children[0]); i++)
             tc_child_prepare(children[i], &reads, &maxfd, &deadline);

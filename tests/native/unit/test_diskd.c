@@ -421,6 +421,119 @@ static void ready_survives_audit_failure_and_helpers(void) {
     assert(!tc_diskd_step(&s, &o, 12) && named(&s, "ready", "observation") && tc_diskd_ready(&s));
 }
 
+/* A stock owner TERMed at `at`: the handoff is in stopping. */
+static void stopping_at(struct tc_diskd *s, long long at) {
+    struct tc_diskd_observation o;
+    tc_diskd_init(s, 0);
+    o = one(STOCK, 0, s);
+    o.drained = 0;
+    assert(tc_diskd_step(s, &o, at - 1) == TC_DISKD_ENTER_QUIESCE && named(s, "quiesce", "none"));
+    o = idle_stock(s);
+    assert(tc_diskd_step(s, &o, at) == TC_DISKD_TERM && named(s, "stopping", "none"));
+}
+static void watch_cadence_and_report(void) {
+    struct tc_diskd s;
+    struct tc_diskd_observation o;
+    long long t0 = 1000, t, lines[16];
+    size_t count = 0;
+    char word[96];
+    stopping_at(&s, t0);
+    assert(s.watch_since == t0);
+    tc_diskd_word(&s, word, sizeof(word));
+    /* A line every TC_DISKD_WATCH_MS through the first TC_DISKD_WATCH_FAST_MS,
+     * then every TC_DISKD_WATCH_SLOW_MS; the report from
+     * TC_DISKD_WATCH_REPORT_MS on, on every call. */
+    for (t = t0; t <= t0 + 1000000; t += 500) {
+        unsigned w = tc_diskd_watch(&s, t, 1);
+        if (w & TC_DISKD_WATCH_LINE) {
+            assert(count < 16);
+            lines[count++] = t - t0;
+        }
+        assert(!!(w & TC_DISKD_WATCH_REPORT) == (t - t0 >= TC_DISKD_WATCH_REPORT_MS));
+    }
+    assert(count == 11);
+    for (size_t i = 0; i < 10; i++)
+        assert(lines[i] == (long long)(i + 1) * TC_DISKD_WATCH_MS);
+    assert(lines[10] == TC_DISKD_WATCH_FAST_MS + TC_DISKD_WATCH_SLOW_MS);
+    assert(s.watch_reason == TC_DISKD_NONE);
+    /* The watch never touches the title word. */
+    {
+        char after[96];
+        tc_diskd_word(&s, after, sizeof(after));
+        assert(!strcmp(word, after));
+    }
+    /* A reason change inside stopping keeps the episode. */
+    stopping_at(&s, t0);
+    o = idle_stock(&s);
+    o.disk_work = 1;
+    assert(!tc_diskd_step(&s, &o, t0 + 5000) && named(&s, "stopping", "maintenance") && s.watch_since == t0);
+    o.disk_work = 0;
+    assert(!tc_diskd_step(&s, &o, t0 + 6000) && named(&s, "stopping", "none") && s.watch_since == t0);
+    o.kernel_valid = 0;
+    assert(!tc_diskd_step(&s, &o, t0 + 7000) && named(&s, "stopping", "observation") && s.watch_since == t0);
+    /* Due while the pass could not tell: the report waits for a reason. */
+    assert(!(tc_diskd_watch(&s, t0 + TC_DISKD_WATCH_REPORT_MS, 0) & TC_DISKD_WATCH_REPORT));
+    o.kernel_valid = 1;
+    o.disk_work = 1;
+    assert(!tc_diskd_step(&s, &o, t0 + TC_DISKD_WATCH_REPORT_MS + 1));
+    assert(tc_diskd_watch(&s, t0 + TC_DISKD_WATCH_REPORT_MS + 1, 0) & TC_DISKD_WATCH_REPORT);
+    assert(s.watch_reason == TC_DISKD_MAINTENANCE);
+    /* The owner's exit ends it. */
+    o = none();
+    assert((tc_diskd_step(&s, &o, t0 + 100000) & TC_DISKD_RETIRE) && s.watch_since < 0);
+    assert(!tc_diskd_watch(&s, t0 + 200000, 1));
+}
+static void watch_episodes_while_busy(void) {
+    struct tc_diskd s;
+    struct tc_diskd_observation o;
+    tc_diskd_init(&s, 0);
+    /* A stock owner asleep in netio: its TERM waits, which is how a
+     * manager started after a deadlock finds it. */
+    o = one(STOCK, 0, &s);
+    assert(tc_diskd_step(&s, &o, 10) == TC_DISKD_ENTER_QUIESCE && named(&s, "quiesce", "busy"));
+    assert(s.watch_since == 10);
+    o = one(STOCK, 0, &s); /* the machine's owner now */
+    o.kernel_valid = 0; /* one pass that could not tell */
+    assert(!tc_diskd_step(&s, &o, 20) && named(&s, "quiesce", "observation") && s.watch_since == 10);
+    o.kernel_valid = 1;
+    assert(!tc_diskd_step(&s, &o, 30) && named(&s, "quiesce", "busy") && s.watch_since == 10);
+    o.disk_work = 1; /* a disk tool: not busy, so the episode ends */
+    assert(!tc_diskd_step(&s, &o, 40) && named(&s, "quiesce", "maintenance") && s.watch_since < 0);
+    assert(!tc_diskd_watch(&s, 100000, 1));
+    o.disk_work = 0;
+    assert(!tc_diskd_step(&s, &o, 50) && named(&s, "quiesce", "busy") && s.watch_since == 50);
+    assert(tc_diskd_watch(&s, 50 + TC_DISKD_WATCH_REPORT_MS, 1) & TC_DISKD_WATCH_REPORT);
+    assert(s.watch_reason == TC_DISKD_BUSY);
+    /* Not drained: reason none, not watched. */
+    o.drained = 0;
+    assert(!tc_diskd_step(&s, &o, 60) && named(&s, "quiesce", "none") && s.watch_since < 0);
+    o.drained = 1;
+    assert(!tc_diskd_step(&s, &o, 70) && s.watch_since == 70 && !s.watch_reported);
+    /* The TERM starts a new episode in stopping, not yet reported. */
+    o = idle_stock(&s);
+    assert(tc_diskd_step(&s, &o, 80) == TC_DISKD_TERM && s.watch_since == 80);
+    assert(!(tc_diskd_watch(&s, 81, 1) & TC_DISKD_WATCH_REPORT));
+    /* inspect, launching, starting and ready are never watched; a pass that
+     * could not tell starts nothing. */
+    ready(&s);
+    assert(s.watch_since < 0 && !tc_diskd_watch(&s, 10000000, 1));
+    tc_diskd_init(&s, 0);
+    o = none();
+    o.kernel_valid = 0;
+    assert(!tc_diskd_step(&s, &o, 1) && named(&s, "inspect", "observation") && s.watch_since < 0);
+}
+static void watch_line_waits_for_a_fresh_table(void) {
+    struct tc_diskd s;
+    long long t0 = 1000;
+    stopping_at(&s, t0);
+    /* Due, but this pass read no table: held, schedule unchanged. */
+    assert(!tc_diskd_watch(&s, t0 + TC_DISKD_WATCH_MS, 0));
+    assert(s.watch_at == t0 + TC_DISKD_WATCH_MS);
+    assert(tc_diskd_watch(&s, t0 + TC_DISKD_WATCH_MS + 700, 1) == TC_DISKD_WATCH_LINE);
+    assert(s.watch_at == t0 + 2 * TC_DISKD_WATCH_MS + 700);
+    /* The report needs no table. */
+    assert(tc_diskd_watch(&s, t0 + TC_DISKD_WATCH_REPORT_MS, 0) == TC_DISKD_WATCH_REPORT);
+}
 int main(void) {
     boot_takeover_from_stock();
     adopt_loopback_owner();
@@ -436,5 +549,8 @@ int main(void) {
     quiesce_is_entered_once();
     handoff_word();
     ready_survives_audit_failure_and_helpers();
+    watch_cadence_and_report();
+    watch_episodes_while_busy();
+    watch_line_waits_for_a_fresh_table();
     return 0;
 }

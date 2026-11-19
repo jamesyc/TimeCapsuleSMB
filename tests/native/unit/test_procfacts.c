@@ -3,6 +3,7 @@
 #include "service/procfacts.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static struct tc_proc row(pid_t pid, pid_t parent, const char *comm, const char *wmesg, unsigned slept) {
@@ -119,10 +120,80 @@ static void owner_idle_rule(void) {
     assert(facts(0, 0, who(229)).owner_idle);
 }
 
+static const char *line(struct tc_proc_identity owner, pid_t skip_group) {
+    static char out[512];
+    int n = tc_proc_handoff_line(&t, owner, skip_group, out, sizeof(out));
+    assert(n > 0 && (size_t)n < sizeof(out));
+    return out;
+}
+static struct tc_proc dead(pid_t pid, pid_t parent, const char *comm) {
+    struct tc_proc p = row(pid, parent, comm, "", 0);
+    p.stat = TC_LSZOMB;
+    return p;
+}
+static void handoff_line_rows(void) {
+    struct tc_proc diskd = row(229, 1, "diskd", "kqread", 4), acpd = row(190, 1, "ACPd", "netio", 48);
+    diskd.cpu_us = 23456;
+    acpd.cpu_us = 1111000;
+    struct tc_proc acp_ours = row(800, 700, "acp", "select", 0), acp_user = row(801, 1, "acp", "select", 0);
+    acp_ours.group = 700;
+    const struct tc_proc rows[] = {
+        diskd, acpd,
+        dead(367, 190, "wcifsfs"),      /* ACPd has not reaped it */
+        row(498, 190, "wcifsnd", "select", 2),
+        row(402, 190, "sshd", "select", 9), /* counted only */
+        row(403, 190, "sshd", "select", 9),
+        acp_ours, acp_user, dead(802, 1, "acp"),
+    };
+    set(rows, sizeof(rows) / sizeof(rows[0]));
+    /* The job's own acp (group 700) and a zombie acp are not clients. */
+    assert(!strcmp(line(who(229), 700),
+                   "diskd=229:3:kqread:4:23 acpd=190:3:netio:48:1111 "
+                   "acpd_children=wcifsfs:367:Z,wcifsnd:498,+2 acp=1"));
+    assert(strstr(line(who(229), 0), " acp=2"));
+    /* A reused PID is another process, and no PID is no owner. */
+    assert(!strncmp(line((struct tc_proc_identity){229, 1}, 0), "diskd=none ", 11));
+    assert(!strncmp(line((struct tc_proc_identity){0, 0}, 0), "diskd=none ", 11));
+}
+static void handoff_line_picks_the_main_acpd(void) {
+    /* The restart hang's child ACPd may come first in the table. */
+    const struct tc_proc rows[] = {
+        row(150, 190, "ACPd", "nanoslee", 30), row(190, 1, "ACPd", "netio", 5), row(229, 1, "diskd", "netio", 9),
+    };
+    set(rows, 3);
+    assert(!strcmp(line(who(229), 0), "diskd=229:3:netio:9:0 acpd=190:3:netio:5:0 acpd_children=ACPd:150 acp=0"));
+    /* No ACPd at all. */
+    set(rows + 2, 1);
+    assert(!strcmp(line(who(229), 0), "diskd=229:3:netio:9:0 acpd=none acpd_children=none acp=0"));
+}
+static void handoff_line_long_child_list(void) {
+    static struct tc_proc rows[64];
+    size_t i;
+    rows[0] = row(190, 1, "ACPd", "netio", 5);
+    for (i = 1; i < 64; i++)
+        rows[i] = dead((pid_t)(1000 + i), 190, "sh");
+    set(rows, 64);
+    const char *out = line(who(229), 0), *children = strstr(out, "acpd_children=");
+    const char *plus = strrchr(out, '+');
+    /* Whole entries only, then the count of the rest; the line goes on. */
+    assert(children && plus && strstr(out, " acp=0"));
+    int listed = 0;
+    for (const char *p = children; (p = strstr(p, "sh:")); p++)
+        listed++;
+    assert(listed > 0 && listed < 63 && listed + atoi(plus + 1) == 63);
+    assert(plus[-1] == ',' && strstr(plus - 6, ":Z,+"));
+    /* A buffer too small is cut like snprintf, and says how much it needed. */
+    char small[16];
+    assert(tc_proc_handoff_line(&t, who(229), 0, small, sizeof(small)) >= (int)sizeof(small));
+    assert(strlen(small) == sizeof(small) - 1);
+}
 int main(void) {
     owners_and_helpers();
     our_launch_child();
     foreign_netbios();
     owner_idle_rule();
+    handoff_line_rows();
+    handoff_line_picks_the_main_acpd();
+    handoff_line_long_child_list();
     return 0;
 }

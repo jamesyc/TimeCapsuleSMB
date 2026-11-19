@@ -18,3 +18,11 @@ def test_timestamped_logging_truncates_long_lines_without_heap():
     assert "A" * 5000 not in result.stderr
     assert 4000 <= result.stderr.count("A") < 5000
     assert result.stderr.endswith("\n")
+
+
+def test_lines_from_concurrent_writers_stay_whole(tmp_path):
+    binary = tmp_path / 'log-lines'
+    compile_modules(binary, ('native/common/log.c',),
+                    flags=('-I', str(ROOT / 'build/native')),
+                    extra_sources=(ROOT / 'tests/native/unit/test_log_lines.c',))
+    subprocess.run([str(binary)], cwd=tmp_path, check=True, timeout=20)

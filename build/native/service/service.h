@@ -22,6 +22,10 @@ int service_collect_plan(struct device_plan *plan, const char *facts_file);
 int print_nt_hash_from_stdin(void);
 int print_device_nt_hash(void);
 int device_nt_hash(char out[33]);
+/* The AirPort admin password (acp syPW) into input, without the final LF/CR;
+ * its length in *length. Returns 0, or acp's exit status (1 when it has none).
+ * The caller wipes input. */
+int device_password(char *input, size_t capacity, size_t *length);
 struct tc_samba_identity {
     char netbios[16], server[256], model[48];
     int name_observed;

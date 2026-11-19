@@ -7,13 +7,14 @@ from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
 from timecapsulesmb.device import acpd
+from timecapsulesmb.device.diskd import handoff_log_fields
 from timecapsulesmb.device.disk_errors import (
     DiskFailingError,
     DiskNotRespondingError,
     disk_errors_explain,
     read_disk_errors_conn,
 )
-from timecapsulesmb.device.processes import StuckProcess, disk_io_stalls
+from timecapsulesmb.device.processes import StuckProcess, disk_io_stalls, parse_ps_rows
 from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, RsyncNotRunningError
 from timecapsulesmb.device.probe import (
     ACPD_QUIT_STEP,
@@ -121,7 +122,8 @@ def verify_managed_runtime_ready(
         callbacks.debug(disk_error_lines=list(disk_errors[-5:]))
     # NetBSD 4's kernel log often keeps no line of a disk that stopped
     # answering; a process stuck on it says so instead.
-    disk_stalls = tuple(disk_io_stalls(read_processes(connection)))
+    listing = read_processes(connection)
+    disk_stalls = tuple(disk_io_stalls(listing))
     if disk_stalls:
         callbacks.debug(disk_io_stalls=[stall.describe() for stall in disk_stalls])
     manager = None
@@ -135,8 +137,40 @@ def verify_managed_runtime_ready(
             callbacks.debug(manager_after_wait_error=system_exit_message(exc)[:200])
         if manager is not None and manager.handoff is not None:
             callbacks.debug(diskd_handoff=manager.handoff.detail)
+            if not manager.handoff.ready:
+                callbacks.debug(**handoff_pending_details(connection, listing))
     raise runtime_failure_error(verification, failure_message, disk_errors=disk_errors, disk_stalls=disk_stalls,
                                 manager=manager)
+
+
+# The processes a pending handoff turns on: Apple's diskd and ACPd, ACPd's
+# wcifsfs and wcifsnd, and acp clients (build/native/README.md, F19).
+HANDOFF_PROCESSES = frozenset(("diskd", "ACPd", "acp", "wcifsfs", "wcifsnd"))
+
+
+def handoff_pending_details(connection: SshConnection, listing: str) -> dict[str, object]:
+    """What a failure with the disk handoff still pending records: the rows of
+    the processes it turns on and of ACPd's children ("PID PPID STAT SLEPT
+    WCHAN NAME"), ACPd's problems, and whether ACPd's own TCP listener
+    answers. A diskd that never exits after its TERM, beside an ACPd whose
+    listener is silent, is the deadlock only an unplug clears (F19). Best
+    effort: a read that fails is recorded as its error."""
+    rows = parse_ps_rows(listing)
+    acpd_pids = {row.pid for row in rows if row.ucomm == "ACPd"}
+    details: dict[str, object] = {"diskd_processes": [
+        f"{row.pid} {row.ppid} {row.stat} {row.sl} {row.wchan} {row.ucomm}"
+        for row in rows if row.ucomm in HANDOFF_PROCESSES or row.ppid in acpd_pids
+    ]}
+    try:
+        details["acpd_problems"] = [problem.code for problem in acpd.acpd_problems(connection, listing)]
+    except Exception as exc:
+        details["acpd_problems_error"] = system_exit_message(exc)[:200]
+    # Read whatever the problems' read gave: a silent listener is F19's sign.
+    try:
+        details["acpd_network_answers"] = acpd.acpd_answers_network(connection)
+    except Exception as exc:
+        details["acpd_network_error"] = system_exit_message(exc)[:200]
+    return details
 
 
 def acpd_after_start_measurement(
@@ -176,6 +210,9 @@ def acpd_after_start_measurement(
         # How long the manager's TERM waited for Apple's diskd to idle
         # (README F19): on successful starts too, which carry no log.
         fields["diskd_held_sec"] = state.handoff_held_s
+    # This manager's TERM of a stock diskd and the acpd reads after it: how
+    # far behind ACPd's main thread was then (README F19).
+    fields.update(handoff_log_fields(state.handoff_log, state.started_monotonic_s))
     return fields
 
 

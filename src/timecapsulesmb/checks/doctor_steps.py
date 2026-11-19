@@ -140,6 +140,7 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
 from timecapsulesmb.device import acpd
+from timecapsulesmb.device.diskd import handoff_log_fields
 from timecapsulesmb.device.errors import DeviceRestartingError
 from timecapsulesmb.device.processes import (
     LOCK_WAIT_READ_SECONDS,
@@ -3102,6 +3103,9 @@ def _doctor_check_diskd_handoff(
     handoff = fresh.handoff
     if sink.debug_fields is not None:
         sink.debug_fields["diskd_handoff"] = handoff.detail if handoff is not None else "no readable diskd= word"
+        # This manager's TERM of a stock diskd and the acpd reads after it
+        # (README F19): a device wedged by the TERM reaches Checkup first.
+        sink.debug_fields.update(handoff_log_fields(fresh.handoff_log, fresh.started_monotonic_s))
     verdict = handoff.verdict(fresh.now_monotonic_ms) if handoff is not None else None
     if verdict is None or any(
             result.details.get("code") in (ErrorCode.DISK_NOT_RESPONDING, ErrorCode.DISK_FAILING,

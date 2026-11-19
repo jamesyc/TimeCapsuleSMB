@@ -3,7 +3,21 @@
 #include <stdio.h>
 #include <string.h>
 
+static int watched(enum tc_diskd_phase phase, enum tc_diskd_reason reason) {
+    return phase == TC_DISKD_STOPPING || (phase == TC_DISKD_QUIESCE && reason == TC_DISKD_BUSY);
+}
+/* The only writer of phase and reason, so the watch's episode follows them
+ * here (diskd.h tc_diskd_watch). */
 static void set_state(struct tc_diskd *s, enum tc_diskd_phase phase, enum tc_diskd_reason reason, long long now) {
+    if (watched(phase, reason)) {
+        if (s->watch_since < 0 || s->phase != phase) {
+            s->watch_since = now;
+            s->watch_at = now + TC_DISKD_WATCH_MS;
+            s->watch_reported = 0;
+        }
+    } else if (!(s->watch_since >= 0 && s->phase == phase && reason == TC_DISKD_OBSERVATION)) {
+        s->watch_since = -1;
+    }
     if (s->phase != phase || s->reason != reason) {
         if (s->reason == TC_DISKD_BUSY)
             s->held_ms += now - s->since;
@@ -21,7 +35,7 @@ static long long backoff(unsigned *failures, long long now) {
     return due;
 }
 void tc_diskd_init(struct tc_diskd *s, long long now) {
-    *s = (struct tc_diskd){.phase = TC_DISKD_INSPECT, .since = now, .generation = 1};
+    *s = (struct tc_diskd){.phase = TC_DISKD_INSPECT, .since = now, .generation = 1, .watch_since = -1};
 }
 /* Apple keeps volume claims inside the diskd process: nothing the old owner
  * accepted carries over to the next one. Our loopback owner (starting or
@@ -152,6 +166,25 @@ void tc_diskd_probed(struct tc_diskd *s, unsigned token, int answered, long long
     /* The next step sets the reason: a disk tool explains the silence first. */
     s->no_answers++;
     s->probe_at = now + TC_STORAGE_RETRY_MS;
+}
+unsigned tc_diskd_watch(struct tc_diskd *s, long long now, int fresh) {
+    unsigned actions = 0;
+    long long held;
+    if (s->watch_since < 0)
+        return 0;
+    held = now - s->watch_since;
+    if (fresh && now >= s->watch_at) {
+        actions |= TC_DISKD_WATCH_LINE;
+        s->watch_at = now + (held < TC_DISKD_WATCH_FAST_MS ? TC_DISKD_WATCH_MS : TC_DISKD_WATCH_SLOW_MS);
+    }
+    /* A pass that could not tell names nothing: the next one does. */
+    if (!s->watch_reported && held >= TC_DISKD_WATCH_REPORT_MS && s->reason != TC_DISKD_OBSERVATION) {
+        s->watch_reported = 1;
+        s->watch_reason = s->reason;
+    }
+    if (s->watch_reported)
+        actions |= TC_DISKD_WATCH_REPORT;
+    return actions;
 }
 int tc_diskd_ready(const struct tc_diskd *s) {
     return s->phase == TC_DISKD_READY;

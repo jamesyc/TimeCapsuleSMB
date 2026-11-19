@@ -2994,10 +2994,18 @@ def probe_device_networks_conn(connection: SshConnection) -> DeviceNetworksProbe
 # from PROCESS_SNAPSHOT_COMMAND. The title's started= and this reading are the
 # same clock, the kernel's monotonic one, read in that order so the age cannot
 # come out negative.
+# The manager's lines on the stock diskd's TERM and the acpd reads after it
+# (build/native/service/acpd_reads.h), as term=LINE without the timestamp.
+# The device has no grep, and NetBSD 4's sed has no \|.
+HANDOFF_LOG_SED = (
+    "sed -n -e 's/.*manager: diskd: \\(TERM .*\\)/term=\\1/p' "
+    "-e 's/.*manager: diskd: \\(acpd reads .*\\)/term=\\1/p'"
+)
 MANAGER_STARTUP_AGE_COMMAND = (
     PROCESS_SNAPSHOT_COMMAND
     + ' 2>/dev/null | sed "s/^/ps=/"; '
-    'echo "now_ms=$("${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}" --print-monotonic-ms 2>/dev/null)"'
+    'echo "now_ms=$("${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}" --print-monotonic-ms 2>/dev/null)"; '
+    + HANDOFF_LOG_SED + " " + RUNTIME_RAM_ROOT + "/var/runtime.log 2>/dev/null; true"
 )
 _DECIMAL = re.compile(r"[0-9]+")
 
@@ -3029,6 +3037,10 @@ class ManagerStartupAgeProbeResult:
     # The title's held=: seconds the stock diskd's TERM waited for it to idle
     # (README F19), 0 without the word; None without a diskd= word.
     handoff_held_s: int | None = None
+    # The manager's log lines on the stock diskd's TERM and the acpd reads
+    # after it, oldest first, each without its timestamp and prefix
+    # ("TERM diskd=...", "acpd reads ms=..."); empty when it sent none.
+    handoff_log: tuple[str, ...] = ()
 
 
 def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupAgeProbeResult:
@@ -3048,6 +3060,7 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
     if proc.returncode != 0:
         return ManagerStartupAgeProbeResult(None, f"manager startup age probe failed (rc={proc.returncode})")
     ps_rows: list[str] = []
+    handoff_log: list[str] = []
     now_text = ""
     for line in (proc.stdout or "").splitlines():
         key, _, value = line.partition("=")
@@ -3055,6 +3068,8 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
             ps_rows.append(value)
         elif key == "now_ms":
             now_text = value.strip()
+        elif key == "term":
+            handoff_log.append(value.strip())
     # ps's status is lost in the pipe (NetBSD 4's sh has no pipefail); a
     # listing that always includes this shell's own processes came back empty.
     if not ps_rows:
@@ -3066,6 +3081,7 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
         "acpd_pids": tuple(p.pid for p in parse_ps_rows(listing) if p.ucomm == "ACPd" and not p.zombie)
         if running is not None else (),
         "now_monotonic_ms": int(now_text) if _DECIMAL.fullmatch(now_text) else None,
+        "handoff_log": tuple(handoff_log),
     }
     rows = service_role_processes(listing, "manager")
     if not rows and service_unreadable(listing):

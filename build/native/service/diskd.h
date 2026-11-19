@@ -80,6 +80,12 @@ struct tc_diskd {
     enum tc_diskd_reason reason;
     long long since; /* when the phase or the reason last changed */
     long long held_ms; /* how long `busy` held a TERM back, spells that ended */
+    /* The watch (tc_diskd_watch): since when the current episode began (-1:
+     * none), its next line, and the reason it is reported with once it has
+     * lasted TC_DISKD_WATCH_REPORT_MS (reported: that time has come). */
+    long long watch_since, watch_at;
+    enum tc_diskd_reason watch_reason;
+    int watch_reported;
     struct tc_proc_identity owner;
     unsigned generation; /* advances whenever an owner is retired */
     unsigned probe_token; /* a probe's reply counts only for this token */
@@ -87,7 +93,36 @@ struct tc_diskd {
     long long retry_at, probe_at;
     unsigned launch_failures, no_answers;
 };
+/* The watch: an episode lasts while the stock owner has not exited since
+ * its TERM (`stopping`, whatever the reason), or its TERM waits for it to
+ * idle (`quiesce`, reason `busy`; one pass that could not tell, reason
+ * `observation`, does not end it). A phase change starts a new one. A
+ * diskd deadlocked by its TERM stays in `stopping` until the device is
+ * unplugged; a manager started after that finds it asleep in netio and
+ * waits in `busy` (README F19). Host tests shorten these. */
+#ifndef TC_DISKD_WATCH_MS
+#define TC_DISKD_WATCH_MS 30000 /* a line this often... */
+#endif
+#ifndef TC_DISKD_WATCH_FAST_MS
+#define TC_DISKD_WATCH_FAST_MS 300000 /* ...for the episode's first 5 minutes, */
+#endif
+#ifndef TC_DISKD_WATCH_SLOW_MS
+#define TC_DISKD_WATCH_SLOW_MS 600000 /* then this often */
+#endif
+#ifndef TC_DISKD_WATCH_REPORT_MS
+#define TC_DISKD_WATCH_REPORT_MS 60000 /* a heartbeat once it has lasted this long */
+#endif
+enum tc_diskd_watch_action {
+    TC_DISKD_WATCH_LINE = 1,  /* log the facts line now */
+    TC_DISKD_WATCH_REPORT = 2 /* report diskd:PHASE:<watch_reason>, on every call from then on */
+};
 void tc_diskd_init(struct tc_diskd *, long long now);
+/* What the watch asks for at now. A line falls due on the schedule above,
+ * and is given only with `fresh` (this pass read the process table, which
+ * the line shows); a due line waits for a fresh pass without moving its
+ * schedule. The report is asked for on every call once due, so a report
+ * the queue dropped is queued again (manager.c report_once dedupes). */
+unsigned tc_diskd_watch(struct tc_diskd *, long long now, int fresh);
 unsigned tc_diskd_step(struct tc_diskd *, const struct tc_diskd_observation *, long long now);
 /* Our launch child exited before it became the owner. */
 void tc_diskd_launch_exited(struct tc_diskd *, long long now);

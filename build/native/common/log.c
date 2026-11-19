@@ -23,40 +23,56 @@ int tc_log_trim(const char *path) {
     close(fd);
     return result;
 }
-static void log_timestamp_prefix(FILE *stream);
-static int timestamped_write_message(FILE *stream, const char *message);
 static int timestamped_vfprintf(FILE *stream, const char *format, va_list ap);
 void timestamped_perror(const char *message);
-static void log_timestamp_prefix(FILE *stream) {
-    time_t now;
-    struct tm *tm_info;
-    char stamp[32];
 
-    now = time(NULL);
-    tm_info = localtime(&now);
-    if (tm_info != NULL && strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", tm_info) > 0) {
-        fputs(stamp, stream);
-        fputc(' ', stream);
-    }
-}
-
-static int timestamped_write_message(FILE *stream, const char *message) {
-    const char *cursor;
-
-    cursor = message;
-    while (*cursor != '\0') {
-        log_timestamp_prefix(stream);
-        while (*cursor != '\0') {
-            int ch = (unsigned char)*cursor++;
-            if (fputc(ch, stream) == EOF) {
-                return -1;
-            }
-            if (ch == '\n') {
-                break;
-            }
-        }
+/* Writes size bytes to fd, across short writes and EINTR. */
+static int write_all(int fd, const char *data, size_t size) {
+    while (size) {
+        ssize_t n = write(fd, data, size);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            return -1;
+        data += n;
+        size -= (size_t)n;
     }
     return 0;
+}
+
+/* Every line gets the timestamp. Lines are gathered into one buffer and go
+ * out with one write(2) per buffer-full, after anything stdio still holds:
+ * the manager and its jobs append to one runtime.log (O_APPEND), and writes
+ * of a byte at a time from two processes interleave into lines nothing can
+ * parse. stdio alone would not do: unbuffered streams write at most BUFSIZ
+ * (1 KiB on NetBSD) at a time. */
+static int timestamped_write_message(FILE *stream, const char *message) {
+    char stamp[32], out[4096];
+    size_t used = 0, stamp_length = 0;
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    int fd = fileno(stream), line_start = 1;
+
+    if (tm_info != NULL && (stamp_length = strftime(stamp, sizeof(stamp) - 1, "%Y-%m-%d %H:%M:%S", tm_info)) > 0)
+        stamp[stamp_length++] = ' ';
+    if (fflush(stream) != 0 || fd < 0)
+        return -1;
+    for (; *message != '\0'; message++) {
+        /* Room for a stamp and one byte: a line longer than the buffer goes
+         * out in pieces, each still whole. */
+        if (used + stamp_length + 1 > sizeof(out)) {
+            if (write_all(fd, out, used) != 0)
+                return -1;
+            used = 0;
+        }
+        if (line_start) {
+            memcpy(out + used, stamp, stamp_length);
+            used += stamp_length;
+        }
+        out[used++] = *message;
+        line_start = *message == '\n';
+    }
+    return write_all(fd, out, used);
 }
 
 static int timestamped_vfprintf(FILE *stream, const char *format, va_list ap) {

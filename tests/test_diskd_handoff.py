@@ -5,6 +5,7 @@ the end of a wait that failed, Activate's decisions, and Checkup's report."""
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -34,6 +35,7 @@ from timecapsulesmb.device.probe import (
     read_manager_state,
 )
 from timecapsulesmb.services.activation import decide_manual_activation
+from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime_verification import runtime_failure_error, verify_managed_runtime_ready
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -237,18 +239,66 @@ class RuntimeFailureTests(unittest.TestCase):
         self.assertNotIn("Activate", str(error))
 
 
+# A pending handoff's processes: Apple's diskd asleep in netio since its TERM,
+# ACPd with a wcifsfs it has not reaped, and an unrelated process.
+LISTING = ("  374 1 374 S 127 netio 0:01.00 diskd\n"
+           "  190 1 190 Is 2 netio 0:09.00 ACPd\n"
+           "  367 190 367 ZW 0 - 0:00.00 wcifsfs\n"
+           "  612 1 612 S 3 select 0:00.10 sshd\n")
+
+
 class VerifyAfterWaitTests(unittest.TestCase):
-    def verify(self, result: ManagedRuntimeProbeResult, start_states: list[ManagerStartupAgeProbeResult]):
+    def verify(self, result: ManagedRuntimeProbeResult, start_states: list[ManagerStartupAgeProbeResult],
+               *, problems: object = (), network: object = True):
         reads = mock.Mock(side_effect=start_states)
-        with mock.patch("timecapsulesmb.services.runtime_verification.recheck_cached_adisk"):
+        self.debug: dict[str, object] = {}
+        callbacks = OperationCallbacks(add_debug_fields=lambda **fields: self.debug.update(fields))
+        with (
+            mock.patch("timecapsulesmb.services.runtime_verification.recheck_cached_adisk"),
+            mock.patch("timecapsulesmb.device.acpd.acpd_problems",
+                       side_effect=problems if isinstance(problems, Exception) else None,
+                       return_value=list(problems) if not isinstance(problems, Exception) else None) as read_problems,
+            mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=network),
+        ):
             with self.assertRaises(DeviceError) as raised:
                 verify_managed_runtime_ready(
-                    CONNECTION, stage="s", timeout_seconds=1, heading="h", failure_message="Failed.",
+                    CONNECTION, callbacks=callbacks, stage="s", timeout_seconds=1, heading="h",
+                    failure_message="Failed.",
                     probe_runtime=lambda *_args, **_kwargs: result,
                     read_runtime_logs=lambda _c: {}, read_disk_errors=lambda _c: None,
-                    read_start_state=reads, read_processes=lambda _c: "",
+                    read_start_state=reads, read_processes=lambda _c: LISTING,
                 )
+        self.read_problems = read_problems
         return raised.exception, reads
+
+    def test_a_pending_handoff_records_its_processes_and_acpd(self) -> None:
+        stuck = DiskdHandoff("stopping", 5, "none")
+        problem = SimpleNamespace(code="network_silent")
+        error, _ = self.verify(RuntimeFailureTests.failed(),
+                               [manager_read(stuck, 10_000), manager_read(stuck, 10_000)],
+                               problems=[problem], network=False)
+        self.assertEqual(error.code, ErrorCode.DISKD_HANDOFF_PENDING)
+        # ACPd's children by parent, whatever their names; sshd left out.
+        self.assertEqual(self.debug["diskd_processes"], [
+            "374 1 S 127 netio diskd", "190 1 Is 2 netio ACPd", "367 190 ZW 0 - wcifsfs"])
+        self.assertEqual(self.debug["acpd_problems"], ["network_silent"])
+        self.assertIs(self.debug["acpd_network_answers"], False)
+        self.read_problems.assert_called_once_with(CONNECTION, LISTING)
+
+    def test_an_unreadable_acpd_is_recorded_beside_the_processes(self) -> None:
+        stuck = DiskdHandoff("stopping", 5, "none")
+        self.verify(RuntimeFailureTests.failed(), [manager_read(stuck), manager_read(stuck)],
+                    problems=OSError("ssh: connection reset"))
+        self.assertIn("connection reset", self.debug["acpd_problems_error"])
+        self.assertEqual(len(self.debug["diskd_processes"]), 3)
+        self.assertNotIn("acpd_problems", self.debug)
+        # The listener, F19's sign, is still read.
+        self.assertIs(self.debug["acpd_network_answers"], True)
+
+    def test_a_finished_handoff_reads_no_acpd(self) -> None:
+        self.verify(RuntimeFailureTests.failed(), [manager_read(READY), manager_read(READY)])
+        self.read_problems.assert_not_called()
+        self.assertNotIn("diskd_processes", self.debug)
 
     def test_a_failed_wait_reads_the_handoff_once_more_and_reports_it(self) -> None:
         stuck = DiskdHandoff("quiesce", 5, "maintenance")
@@ -279,6 +329,93 @@ class HeldTests(unittest.TestCase):
         self.assertEqual(self.read("role=manager started=5 diskd=ready:17:none").handoff_held_s, 0)
         # A manager before the handoff word says nothing about it.
         self.assertIsNone(self.read("role=manager started=5").handoff_held_s)
+
+    def test_reads_the_term_and_acpd_reads_lines_from_the_log(self) -> None:
+        from timecapsulesmb.device.probe import probe_manager_startup_age_conn
+        output = ("ps=  142 1 142 S 0 - 0:00.10 service service: role=manager started=5 diskd=ready:17:none\n"
+                  "now_ms=60000\n"
+                  "term=TERM diskd=374:3:kqread:4:120 acpd=190:3:netio:0:9000 acpd_children=none acp=0 "
+                  "disk_work_ago=3000 netbios_ago=-1 uptime=42\n"
+                  "term=acpd reads ms=4,3,3,5,4,3,3,4\n")
+        proc = subprocess.CompletedProcess(["ssh"], 0, stdout=output, stderr="")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe_manager_startup_age_conn(CONNECTION)
+        self.assertEqual(result.handoff_log, (
+            "TERM diskd=374:3:kqread:4:120 acpd=190:3:netio:0:9000 acpd_children=none acp=0 "
+            "disk_work_ago=3000 netbios_ago=-1 uptime=42",
+            "acpd reads ms=4,3,3,5,4,3,3,4"))
+        self.assertEqual(self.read("role=manager started=5 diskd=ready:17:none").handoff_log, ())
+
+    def test_the_log_sed_picks_out_only_the_term_and_reads_lines(self) -> None:
+        # The command the device runs, on a runtime.log as the manager and
+        # its jobs write it; this computer's sed stands in for the device's.
+        import tempfile
+        from timecapsulesmb.device.probe import HANDOFF_LOG_SED
+        log = ("2026-11-19 00:20:01 manager: diskd: quiesce reason=busy owner=374 generation=1\n"
+               "2026-11-19 00:20:04 manager: diskd: TERM diskd=374:3:kqread:4:120 acp=0 uptime=42\n"
+               "2026-11-19 00:20:04 manager: diskd: stopping reason=none owner=374 generation=1\n"
+               "2026-11-19 00:20:34 manager: diskd: stopping for 30 s: diskd=374:3:netio:30:120\n"
+               "2026-11-19 00:20:05 manager: diskd: acpd reads start=+310 ms=4,3 timeout=3\n"
+               "2026-11-19 00:20:05 manager: diskd: acpd reads not run: no password (status 1)\n"
+               "manager: diskd: TERM\n")
+        with tempfile.NamedTemporaryFile("w", suffix=".log") as file:
+            file.write(log)
+            file.flush()
+            out = subprocess.run(["sh", "-c", f"{HANDOFF_LOG_SED} {file.name}"], capture_output=True,
+                                 text=True, check=True).stdout
+        self.assertEqual(out.splitlines(), [
+            "term=TERM diskd=374:3:kqread:4:120 acp=0 uptime=42",
+            "term=acpd reads start=+310 ms=4,3 timeout=3",
+            "term=acpd reads not run: no password (status 1)",
+        ])
+
+    def test_every_start_sends_this_managers_term_and_reads(self) -> None:
+        from timecapsulesmb.services.runtime_verification import acpd_after_start_measurement
+        # This manager started at 50 s; runtime.log still has an earlier one's TERM.
+        log = ("TERM diskd=1:3:kqread:4:0 acp=0 uptime=30", "acpd reads ms=9 timeout=2",
+               "TERM diskd=2:3:kqread:5:0 acp=0 uptime=55", "acpd reads ms=4,3")
+        state = ManagerStartupAgeProbeResult(1.0, "m", 50, 60000, acpd_running=True, handoff=READY,
+                                             handoff_held_s=0, handoff_log=log)
+        fields = acpd_after_start_measurement(CONNECTION, "s", lambda _c: state, quit_confirmed=False)
+        self.assertEqual((fields["diskd_term"], fields["acpd_reads"]), (log[2], log[3]))
+        # A manager that TERMed nothing sends neither, whatever an earlier one did.
+        state = replace(state, handoff_log=log[:2])
+        fields = acpd_after_start_measurement(CONNECTION, "s", lambda _c: state, quit_confirmed=False)
+        self.assertNotIn("diskd_term", fields)
+        self.assertNotIn("acpd_reads", fields)
+
+
+class HandoffLogFieldsTests(unittest.TestCase):
+    """device.diskd.handoff_log_fields: the running manager's TERM line and
+    the acpd reads after it, from a runtime.log that outlives managers."""
+
+    def fields(self, *log: str, started: int | None = 50) -> dict[str, str]:
+        from timecapsulesmb.device.diskd import handoff_log_fields
+        return handoff_log_fields(log, started)
+
+    def test_takes_the_last_term_since_this_manager_started_and_its_reads(self) -> None:
+        self.assertEqual(self.fields("TERM a uptime=50", "acpd reads ms=1", "TERM b uptime=70", "acpd reads ms=2"),
+                         {"diskd_term": "TERM b uptime=70", "acpd_reads": "acpd reads ms=2"})
+
+    def test_an_earlier_managers_lines_count_for_nothing(self) -> None:
+        self.assertEqual(self.fields("TERM a uptime=49", "acpd reads ms=1"), {})
+        # Nor do its reads stand in for a TERM of ours that has none yet.
+        self.assertEqual(self.fields("TERM a uptime=60", "acpd reads ms=1", "TERM b uptime=70"),
+                         {"diskd_term": "TERM b uptime=70"})
+
+    def test_reads_before_any_term_and_lines_without_uptime_count_for_nothing(self) -> None:
+        self.assertEqual(self.fields("acpd reads ms=1"), {})
+        self.assertEqual(self.fields("TERM a", "acpd reads ms=1"), {})
+        self.assertEqual(self.fields("TERM a uptime=x", "acpd reads ms=1"), {})
+        self.assertEqual(self.fields("TERM a uptime=60", "acpd reads ms=1", started=None), {})
+
+    def test_cuts_long_lines(self) -> None:
+        from timecapsulesmb.device.diskd import HANDOFF_LOG_CHARS
+        term = "TERM " + "x" * 500 + " uptime=60"
+        fields = self.fields(term, "acpd reads " + "1," * 300)
+        self.assertEqual(len(fields["diskd_term"]), HANDOFF_LOG_CHARS)
+        self.assertEqual(len(fields["acpd_reads"]), HANDOFF_LOG_CHARS)
+
 
     def test_every_start_records_it(self) -> None:
         from timecapsulesmb.services.runtime_verification import acpd_after_start_measurement
@@ -331,6 +468,22 @@ class DoctorHandoffTests(unittest.TestCase):
         self.assertEqual((results[0].status, results[0].details["code"]), ("FAIL", ErrorCode.DISKD_HANDOFF_PENDING))
         self.assertEqual(results[0].message, PENDING_MESSAGE)
         self.assertEqual(debug["diskd_handoff"], STARTING.detail)
+
+    def test_a_pending_handoff_records_this_managers_term_and_reads(self) -> None:
+        sink = DoctorSink(on_result=None, debug_fields={})
+        manager = ManagerStartupAgeProbeResult(1.0, "m", now_monotonic_ms=10**6, handoff=STARTING)
+        fresh = ManagerStartupAgeProbeResult(1.0, "m", 50, 10**6, handoff=STARTING, handoff_log=(
+            "TERM old uptime=20", "acpd reads ms=1", "TERM new uptime=60", "acpd reads ms= timeout=1"))
+        with mock.patch("timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn", return_value=fresh):
+            _doctor_check_diskd_handoff(self.TARGET, self.REMOTE, manager, sink)
+        self.assertEqual(sink.debug_fields["diskd_term"], "TERM new uptime=60")
+        self.assertEqual(sink.debug_fields["acpd_reads"], "acpd reads ms= timeout=1")
+
+    def test_a_ready_handoff_reads_nothing_more(self) -> None:
+        results, read, debug = self.check(READY)
+        self.assertEqual(results, [])
+        read.assert_not_called()
+        self.assertNotIn("diskd_term", debug)
 
     def test_a_handoff_that_finished_during_the_wait_reports_nothing(self) -> None:
         results, _, _ = self.check(STARTING, READY)

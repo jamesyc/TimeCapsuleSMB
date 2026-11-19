@@ -48,6 +48,17 @@ struct tc_proc_facts {
     int foreign_netbios;
 };
 void tc_proc_facts(const struct tc_proctable *, const struct tc_proc_context *, struct tc_proc_facts *);
+/* The rows the handoff's TERM and watch lines show (README "Disk owner
+ * handoff"): "diskd=ROW acpd=ROW acpd_children=LIST acp=N". A ROW is
+ * PID:STAT:WMESG:SLEPT:CPU_MS, or "none" when the process is gone. The ACPd
+ * is the main one: a child ACPd under ACPd (the restart hang's) gives its
+ * parent. LIST names ACPd's children that matter here, NAME:PID with ":Z"
+ * for one ACPd has not reaped (exited ones, wcifsfs, wcifsnd, ACPd, diskd),
+ * then "+N" for the rest (sshd and other daemons), or is "none". acp counts
+ * live acp clients outside skip_group (the caller's own, 0 for none).
+ * Returns like snprintf. */
+int tc_proc_handoff_line(const struct tc_proctable *, struct tc_proc_identity owner, pid_t skip_group, char *out,
+                         size_t size);
 /* A row named diskd. */
 int tc_proc_diskd(const struct tc_proc *);
 #endif

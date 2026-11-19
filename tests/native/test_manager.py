@@ -63,6 +63,12 @@ TIMINGS=dict(
     TC_LOCKS_CHECK_MS=200,       # device 5 s
     # The refill test's quiet window lasts about 3 s; this leaves it 5x.
     TC_LOCKS_RESET_GAP_MS=15000, # device 10 min
+    # A fake ACPd listener answers at once; an unanswered read waits this out.
+    TC_ACPD_READ_MS=3000,        # device 15 s
+    TC_DISKD_WATCH_MS=500,       # device 30 s
+    TC_DISKD_WATCH_FAST_MS=2000, # device 5 min
+    TC_DISKD_WATCH_SLOW_MS=4000, # device 10 min
+    TC_DISKD_WATCH_REPORT_MS=3000, # device 60 s
 )
 
 CHILD = '''
@@ -331,7 +337,10 @@ def manager(manager_tools):
                  'TC_TEST_HOSTNAME':str(root/'hostname'),'TC_TEST_BUFCACHE':str(root/'bufcache'),
                  'TC_TEST_KERN':str(root/'kern'),
                  'TC_TEST_PROCS':str(root/'procs'),
-                 'TC_TEST_FORK_FAIL':str(root/'fork-fail')})
+                 'TC_TEST_FORK_FAIL':str(root/'fork-fail'),
+                 # ACPd's listener for the acpd reads after a TERM: port 1,
+                 # which nothing listens on, unless a test runs a fake.
+                 'TC_TEST_ACPD_PORT':os.environ.get('TC_TEST_ACPD_PORT','1')})
         log.close()
         return process
     def events():
@@ -2151,6 +2160,219 @@ def test_diskd_handoff_blocks_claims_and_samba_until_old_owner_exits(manager):
     finally:
         if child.poll() is None:child.kill()
         child.wait()
+
+
+class StockDiskd:
+    """Apple's diskd idle in its event loop (or asleep in `wmesg`): it notes
+    its TERM and exits only when release() says so, as its cleanup can wait
+    on ACPd for good."""
+    def __init__(self,root,wmesg='kqread'):
+        self.process=subprocess.Popen([sys.executable,'-c',
+            'import os,signal,sys\nfrom pathlib import Path\n'
+            'signal.signal(signal.SIGTERM,lambda s,f:print("term",flush=True))\n'
+            'print("ready",flush=True)\nos.read(0,1)\nPath(sys.argv[1]).write_text("")\n',str(root/'mounts')],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,start_new_session=True)
+        assert self.process.stdout.readline().strip()=='ready'
+        (root/'diskd-absent').touch()
+        (root/'mounts-after-diskd').write_text((root/'mounts').read_text())
+        external(root,f'{self.process.pid} 1 {self.process.pid} S diskd /sbin/diskd -i bridge0 -d local.\n',
+                 wmesg=wmesg,slept=5)
+    def termed(self,timeout=15):
+        import select
+        assert select.select([self.process.stdout],[],[],timeout)[0],'no TERM'
+        assert self.process.stdout.readline().strip()=='term'
+    def release(self):
+        self.process.stdin.write('x');self.process.stdin.flush();self.process.wait(timeout=5)
+    def close(self):
+        if self.process.poll() is None:self.process.kill()
+        self.process.wait()
+
+
+class FakeAcpd:
+    """ACPd's TCP listener on one loopback address. It keeps each request and
+    answers it with a header and one element in two writes, as a streamed
+    reply comes; connection N is handled as `behavior` says: 'silent' (held
+    open, never answered), 'reset' (closed with a reset), 'close' (closed
+    without a reply)."""
+    def __init__(self,host,behavior=None):
+        import socket,threading
+        self.requests=[];self.behavior=behavior or {};self.held=[]
+        self.server=socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET)
+        self.server.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        self.server.bind((host,0));self.server.listen(16)
+        self.port=self.server.getsockname()[1]
+        threading.Thread(target=self.serve,daemon=True).start()
+    def serve(self):
+        import socket,struct
+        from timecapsulesmb.integrations import acp
+        while True:
+            try:conn,_=self.server.accept()
+            except OSError:return
+            data=b''
+            while len(data)<144:
+                chunk=conn.recv(144-len(data))
+                if not chunk:break
+                data+=chunk
+            self.requests.append(data)
+            how=self.behavior.get(len(self.requests))
+            if how=='silent':
+                self.held.append(conn);continue
+            if how=='reset':
+                conn.setsockopt(socket.SOL_SOCKET,socket.SO_LINGER,struct.pack('ii',1,0));conn.close();continue
+            if how!='close':
+                # The client closes after the first byte, as ACPd's
+                # clients may: the second write can find it reset.
+                try:
+                    conn.sendall(acp._compose_header(command=acp.COMMAND_GETPROP))
+                    time.sleep(.05)
+                    conn.sendall(acp._compose_property_element('syUT',123))
+                except OSError:
+                    pass
+            conn.close()
+    def close(self):
+        self.server.close()
+        for conn in self.held:conn.close()
+
+
+def acpd_rows(root):
+    # ACPd, a wcifsfs it has not reaped, as in the field's wedged devices, and
+    # an sshd it started, which is only counted.
+    processes(root,'apple-acpd','190 1 190 S ACPd /sbin/ACPd\n367 190 367 Z wcifsfs wcifsfs\n'
+                                '402 190 402 S sshd /usr/sbin/sshd\n')
+
+
+def acpd_reads(root,timeout=15):
+    log=wait_log(root,'manager: diskd: acpd reads ',timeout)
+    return re.search(r'manager: diskd: acpd reads (.*)',log)[1]
+
+
+def ipv6_loopback():
+    import socket
+    try:
+        with socket.socket(socket.AF_INET6) as sock:sock.bind(('::1',0))
+    except OSError:return False
+    return True
+
+
+@pytest.mark.parametrize('host',['::1','127.0.0.1'])
+def test_term_logs_the_owner_and_acpd_then_times_acpd_reads(manager,monkeypatch,host):
+    # The reads go to whichever loopback address ACPd listens on, with the
+    # admin password keyed in exactly as integrations/acp.py sends it, and
+    # read each whole reply before closing.
+    from timecapsulesmb.integrations import acp
+    if ':' in host and not ipv6_loopback():pytest.skip('this computer has no IPv6 loopback')
+    root,start,events,wait,_,_=manager
+    listener=FakeAcpd(host);monkeypatch.setenv('TC_TEST_ACPD_PORT',str(listener.port))
+    stock=StockDiskd(root)
+    try:
+        acpd_rows(root)
+        start();stock.termed()
+        line=wait_log(root,'manager: diskd: TERM ')
+        term=re.search(r'manager: diskd: TERM (.*)',line)[1]
+        assert term.startswith(f'diskd={stock.process.pid}:3:kqread:5:')
+        assert ' acpd=190:3:-:0:0 acpd_children=wcifsfs:367:Z,+1 acp=0 ' in term
+        assert re.search(r' disk_work_ago=-1 netbios_ago=-1 uptime=\d+$',term)
+        assert re.fullmatch(r'ms=\d+(,\d+){7}',acpd_reads(root))
+        assert listener.requests==[acp._compose_message(acp.COMMAND_GETPROP,'password',
+            acp._compose_property_element('syUT',None),flags=4)]*8
+        stock.release();wait(started('smbd'),timeout=30)
+    finally:
+        stock.close();listener.close()
+
+
+@pytest.mark.parametrize('how,result',[('silent','timeout=3'),('reset','reset=3')])
+def test_acpd_reads_stop_at_the_first_unanswered_one_without_holding_the_handoff(manager,monkeypatch,how,result):
+    root,start,events,wait,_,_=manager
+    listener=FakeAcpd('127.0.0.1',{3:how,2:'close'});monkeypatch.setenv('TC_TEST_ACPD_PORT',str(listener.port))
+    stock=StockDiskd(root)
+    try:
+        start();stock.termed()
+        # The TERM went out first, and the handoff carries on past the read.
+        wait_log(root,'manager: diskd: TERM ')
+        stock.release();wait(started('smbd'),timeout=30)
+        # A close after the accept is an answer too; a reset is not.
+        assert re.fullmatch(rf'ms=\d+,\d+ {result}',acpd_reads(root))
+        assert len(listener.requests)==3
+    finally:
+        stock.close();listener.close()
+
+
+def test_acpd_reads_report_no_listener_on_either_address(manager):
+    # The fixture's port, which nothing listens on.
+    root,start,events,wait,_,_=manager
+    stock=StockDiskd(root)
+    try:
+        start();stock.termed()
+        assert acpd_reads(root)=='ms= refused=1'
+        stock.release();wait(started('smbd'),timeout=30)
+    finally:
+        stock.close()
+
+
+def test_acpd_reads_stopped_with_the_manager_are_not_a_timeout(manager,monkeypatch):
+    root,start,events,wait,_,_=manager
+    listener=FakeAcpd('127.0.0.1',{1:'silent'});monkeypatch.setenv('TC_TEST_ACPD_PORT',str(listener.port))
+    stock=StockDiskd(root)
+    try:
+        process=start();stock.termed()
+        deadline=time.monotonic()+15
+        while not listener.requests:
+            assert time.monotonic()<deadline,'no read';time.sleep(.05)
+        process.terminate();assert process.wait(timeout=20)==0
+        assert acpd_reads(root)=='ms= stopped=1'
+    finally:
+        stock.close();listener.close()
+
+
+def test_acpd_reads_without_the_password_are_not_run(manager):
+    root,start,events,wait,_,_=manager
+    (root/'bad-auth').touch()
+    stock=StockDiskd(root)
+    try:
+        start();stock.termed()
+        wait_log(root,'manager: diskd: acpd reads not run: no password (status 1)')
+        assert 'manager: diskd: acpd reads ms=' not in runtime_log(root)
+    finally:
+        stock.close()
+
+
+def watch_lines(root,what):
+    return [int(n) for n in re.findall(rf'manager: diskd: {what} for (\d+) s: diskd=',runtime_log(root))]
+
+
+def test_an_owner_that_never_exits_after_its_term_is_watched_and_reported_once(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    stock=StockDiskd(root)
+    try:
+        acpd_rows(root)
+        start();stock.termed()
+        # The cadence is tests/native/unit/test_diskd.c's; here the lines and
+        # the one report come out of the manager.
+        wait(lambda rows:reports(events)==['diskd:stopping:none'],timeout=60)
+        held=watch_lines(root,'stopping')
+        assert held and held==sorted(held)
+        assert 'acpd_children=wcifsfs:367:Z,+1' in runtime_log(root)
+        until(root,lambda:len(watch_lines(root,'stopping'))>len(held),timeout=60)
+        assert reports(events)==['diskd:stopping:none']
+        stock.release();wait(started('smbd'),timeout=30)
+    finally:
+        stock.close()
+
+
+def test_an_owner_already_wedged_when_the_manager_starts_is_watched_while_busy(manager):
+    # A manager started after the deadlock finds diskd asleep in netio: its
+    # TERM waits for good, and the watch says so.
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    stock=StockDiskd(root,wmesg='netio')
+    try:
+        start()
+        wait(lambda rows:reports(events)==['diskd:quiesce:busy'],timeout=60)
+        assert watch_lines(root,'busy')
+        assert 'manager: diskd: TERM ' not in runtime_log(root)
+    finally:
+        stock.close()
 
 
 def test_failed_diskd_restart_is_backed_off_without_holding_back_discovery(manager):

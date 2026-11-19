@@ -1,4 +1,5 @@
 #include "procfacts.h"
+#include <stdio.h>
 #include <string.h>
 
 /* diskd runs these through `sh -c`; the shell counts while it is diskd's child. */
@@ -51,4 +52,57 @@ void tc_proc_facts(const struct tc_proctable *t, const struct tc_proc_context *c
     }
     if (out->owners == 1 && (p = tc_proctable_live(t, out->owner.pid)) && kevent_idle(p))
         out->owner_idle = !has_child(t, out->owner.pid);
+}
+/* A row as PID:STAT:WMESG:SLEPT:CPU_MS, or "none". */
+static void row_word(const struct tc_proc *p, char *out, size_t size) {
+    if (!p)
+        snprintf(out, size, "none");
+    else
+        snprintf(out, size, "%ld:%d:%s:%u:%llu", (long)p->pid, p->stat, p->wmesg[0] ? p->wmesg : "-", p->slept,
+                 p->cpu_us / 1000);
+}
+int tc_proc_handoff_line(const struct tc_proctable *t, struct tc_proc_identity owner, pid_t skip_group, char *out,
+                         size_t size) {
+    const struct tc_proc *acpd = NULL, *p;
+    char diskd[64], apple[64], children[160];
+    size_t i, used = 0;
+    int acp = 0, others = 0;
+    for (i = 0; i < t->count; i++) {
+        p = &t->procs[i];
+        if (tc_proc_exited(p))
+            continue;
+        if (!strcmp(p->comm, "acp") && !(skip_group && p->group == skip_group))
+            acp++;
+        else if (!strcmp(p->comm, "ACPd") && !acpd)
+            acpd = p;
+    }
+    if (acpd && (p = tc_proctable_live(t, acpd->parent)) && !strcmp(p->comm, "ACPd"))
+        acpd = p;
+    children[0] = 0;
+    for (i = 0; acpd && i < t->count; i++) {
+        p = &t->procs[i];
+        if (p->parent != acpd->pid)
+            continue;
+        if (used < sizeof(children) && (tc_proc_exited(p) || !strncmp(p->comm, "wcifs", 5) ||
+                                        !strcmp(p->comm, "ACPd") || tc_proc_diskd(p))) {
+            int n = snprintf(children + used, sizeof(children) - used, "%s%s:%ld%s", used ? "," : "", p->comm,
+                             (long)p->pid, tc_proc_exited(p) ? ":Z" : "");
+            /* One that does not fit whole is counted instead. */
+            if (n > 0 && used + (size_t)n < sizeof(children) - 8)
+                used += (size_t)n;
+            else {
+                children[used] = 0;
+                others++;
+            }
+        } else
+            others++;
+    }
+    if (others)
+        snprintf(children + used, sizeof(children) - used, "%s+%d", used ? "," : "", others);
+    /* A reused PID is another process: the owner is gone. */
+    p = owner.pid ? tc_proctable_live(t, owner.pid) : NULL;
+    row_word(p && p->born == owner.born ? p : NULL, diskd, sizeof(diskd));
+    row_word(acpd, apple, sizeof(apple));
+    return snprintf(out, size, "diskd=%s acpd=%s acpd_children=%s acp=%d", diskd, apple,
+                    children[0] ? children : "none", acp);
 }

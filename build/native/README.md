@@ -466,6 +466,14 @@ unmounts the disks on every restart without a reboot.
   the spells that ended. Every Deploy and Activate wait, successful or not,
   sends it as `acpd_after_start.diskd_held_sec` (0 without the word, left
   out for a manager without `diskd=`); failures carry the whole log anyway.
+- The same waits send the running manager's TERM line and acpd reads
+  ("Watching the TERM") as `acpd_after_start.diskd_term` and `acpd_reads`.
+  `runtime.log` keeps earlier managers' lines until a restart, so a TERM line
+  counts only when its `uptime=` is not before the manager's `started=`, and
+  reads only after a TERM that counts. Checkup records them too while the
+  handoff is not `ready`. A wait that fails with the handoff pending also
+  records the rows of diskd, ACPd, its children, wcifsfs, wcifsnd and acp,
+  ACPd's problems, and whether ACPd's own TCP listener answers.
 
 ### Limits of the idle gate
 
@@ -484,14 +492,46 @@ says to restart. On a NetBSD 4 without the boot hook, Activate after that
 restart hands over from a fresh stock diskd again. Field process listings
 show idle stock diskd asleep in `kevent` for many seconds between wakeups.
 
+### Watching the TERM
+
+The idle gate cannot see a code 14 already queued for ACPd's main thread
+(F19), so the manager records what it can around the TERM. None of this
+changes when the TERM goes out or holds the handoff.
+
+- **TERM line**, as the TERM is sent: `manager: diskd: TERM diskd=ROW
+  acpd=ROW acpd_children=LIST acp=N disk_work_ago=MS netbios_ago=MS
+  uptime=S` (`procfacts.h` `tc_proc_handoff_line`). A ROW is
+  PID:STAT:WMESG:SLEPT:CPU_MS. ACPd's row is one thread under NetBSD 4's
+  scheduler activations, and a healthy ACPd shows `netio` and keeps an
+  unreaped `wcifsfs` for minutes, so neither is a wedge alone.
+  `netbios_ago` is the last sample that showed a foreign wcifsfs or wcifsnd.
+- **acpd reads**: a job reads the admin password, then up to eight syUT
+  reads of ACPd's 5009, each after the last one answered, on ::1 then
+  127.0.0.1 (ACPd's one listener is `*:5009` over IPv6, which serves both).
+  `manager: diskd: acpd reads ms=A,B,...` with, at the first unanswered one,
+  `timeout=K`, `refused=K`, `reset=K`, `stopped=K` or `error=K:ERRNO`
+  (`service/acpd_reads.h`). Each accept follows at most one queued code, so a
+  read slower than a lone one waited behind a code, and a code 14 diskd
+  never answers leaves the read unanswered. Each read is one more accept
+  between ACPd's codes, so the reads touch what they measure, a little.
+- **Watch** (`diskd.h` `tc_diskd_watch`): while the stock owner has not
+  exited since its TERM (`stopping`), or its TERM waits on it (`quiesce`,
+  reason `busy`, which is how a manager started after a deadlock finds it),
+  the same rows every 30 s for 5 minutes, then every 10 minutes, as
+  `stopping for N s:` or `busy for N s:`. A line is logged only from a table
+  read that pass. After a minute, one heartbeat `diskd:PHASE:REASON`, the
+  reason as it was then. A reason change inside `stopping`, or one pass that
+  could not tell (`observation`), keeps the episode; any other change ends it.
+
 ### Tests
 
 `tests/native/unit/test_diskd.c` drives every row of the phase table,
 `conflict` in each phase, generation retirement, the launch backoff and the
 probe outcomes, the `quiesce` entry action, a table from an earlier pass,
-and `held` and the title word. `tests/native/unit/test_procfacts.c` drives
-`tc_proc_facts`: owners and their helpers, disk work and repair, acp clients,
-our launch child before and after exec, foreign NetBIOS, and the idle rule. `tests/native/test_manager.py` covers the boot takeover
+`held` and the title word, and the watch's episodes, cadence and report.
+`tests/native/unit/test_procfacts.c` drives `tc_proc_facts`: owners and
+their helpers, disk work and repair, acp clients, our launch child before
+and after exec, foreign NetBIOS, and the idle rule; and the TERM line's rows. `tests/native/test_manager.py` covers the boot takeover
 (stock TERM, wait, launch), the stock TERM waiting for an idle owner and
 no acp client, adopting a loopback owner, disk work and a
 leftover mount holding launch, a foreign smbd, discovery or `wcifsfs`, and
@@ -652,7 +692,7 @@ cite them by number. ([DETAIL.md](../../DETAIL.md) has the user-facing side.)
 | F16 | ACPd keeps one table of `diskd.*` RPC names. A second diskd's duplicate registration is rejected, but when it exits ACPd deletes the names it tried, which are the first diskd's, in registration order (`getHomeVolumeInfo`, `getVolumeCounts`, `useVolume`, ...). `acp rpc` exits 22 on routing failure. A routed call can exit zero with a nonzero handler status in the reply. Stderr carries -6727 for a missing name. Measured on NetBSD 4 LE. |
 | F17 | Diskd processes SIGTERM through its event loop and unregisters RPCs before unmounting volumes. NetBSD 4 LE cleanup is at `0xed950`, volume removal at `0xe98c8`, and mount preparation at `0xe9a20`. A failed initial mount frees the volume record but retains the seen device name, so an unchanged device is not retried on the next scan. Local ARM emulation reproduced this failure path. Persistent filesystem damage on the affected device remains unproven. |
 | F18 | The initial scan precedes event-loop RPC dispatch in the saved NetBSD 4 LE, 4 BE and 6 firmware. Scan/dispatch call sites: LE `0xee17c`/`0xee160`, BE `0xcae74`/`0xcae58`, 6 `0x1040e8`/`0x1040cc`. The read-only getVolumeCounts handlers are LE `0xe8e94`, BE `0xc5de0`, 6 `0xfec74`. The inspected binaries' SHA-256 values are LE `16539fccbe32dae85bf4267e12fcc59d4599fbbf11f4e02c1b3ed790d7dbfde3`, BE `a446998662315592b61f8264d21438453e9234a0fa7ad567cd20fdff3abdd5c3`, 6 `7a1e5fae541f8fd112d98f261b18eb3ac3ac1c8be02e3223660d5b1b7cc2e05b`. |
-| F19 | A TERM that reaches diskd before it is back in its event loop can deadlock it with ACPd. Its cleanup sends 13 unregisters on its request socket, each a blocking `recv(MSG_WAITALL)` with no timeout (LE `0x4070b0`, `0x4074d4`): eraseDisk, cancelEraseDisk, archiveDisk, cancelArchiveDisk, MaSt, then the nine `diskd.*` RPC names, getVolumeCounts twelfth. ACPd answers an unregister only once no call to that name is in flight, waiting in an unbounded 100 ms loop (`0x261444`; properties `0x261af4`). A forwarded call stays in flight in `recv` on diskd's callback socket, which diskd reads only from its event loop. ACPd's main thread calls `diskd.getVolumeCounts` synchronously after diskd's `acpd.processDiskChanges` (`0x24bdf0`), and the same thread accepts TCP 5009 (`0x410338`). So diskd sleeps in `netio`, `acp -A MaSt` fails, and 5009 accepts but never answers, while local `acp` (one ACPd thread per Unix client) keeps working, until diskd is killed (5009 answers again within seconds) or the device is unplugged. In all three images the main loop's `kevent` is the only one diskd's own code waits in (LE `0xee0d4`, BE `0xcadcc`, NetBSD 6 `0x104060`); its other calls only change events, and the ACP client library's waiting thread is one diskd never starts. Startup scan, per volume: `sh -c /sbin/fsck -q`, a mount, `sh -c /sbin/umount`. On a NetBSD 4 LE, a hand-started stock diskd TERMed during that scan (wmesg `wait`) wedged every time, with r8 = "diskd.getVolumeCounts" in its trapframe; TERMed asleep in `kqread` it exited every time. BE (`0xca64c`, `0x239514`, `0x225250`) and NetBSD 6 (`0x1038b4`, `0x28ff0c`, `0x2790e4`) have the same cleanup order, drain and main-thread call. |
+| F19 | A TERM that reaches diskd before it is back in its event loop can deadlock it with ACPd. Its cleanup sends 13 unregisters on its request socket, each a blocking `recv(MSG_WAITALL)` with no timeout (LE `0x4070b0`, `0x4074d4`): eraseDisk, cancelEraseDisk, archiveDisk, cancelArchiveDisk, MaSt, then the nine `diskd.*` RPC names, getVolumeCounts twelfth. ACPd answers an unregister only once no call to that name is in flight, waiting in an unbounded 100 ms loop (`0x261444`; properties `0x261af4`). A forwarded call stays in flight in `recv` on diskd's callback socket, which diskd reads only from its event loop. ACPd's main thread calls `diskd.getVolumeCounts` synchronously after diskd's `acpd.processDiskChanges` (`0x24bdf0`), and the same thread accepts TCP 5009 (`0x410338`). So diskd sleeps in `netio`, `acp -A MaSt` fails, and 5009 accepts but never answers, while local `acp` (one ACPd thread per Unix client) keeps working, until diskd is killed (5009 answers again within seconds) or the device is unplugged. In all three images the main loop's `kevent` is the only one diskd's own code waits in (LE `0xee0d4`, BE `0xcadcc`, NetBSD 6 `0x104060`); its other calls only change events, and the ACP client library's waiting thread is one diskd never starts. Startup scan, per volume: `sh -c /sbin/fsck -q`, a mount, `sh -c /sbin/umount`. On a NetBSD 4 LE, a hand-started stock diskd TERMed during that scan (wmesg `wait`) wedged every time, with r8 = "diskd.getVolumeCounts" in its trapframe; TERMed asleep in `kqread` it exited every time. BE (`0xca64c`, `0x239514`, `0x225250`) and NetBSD 6 (`0x1038b4`, `0x28ff0c`, `0x2790e4`) have the same cleanup order, drain and main-thread call. ACPd's main thread gets its codes (code 14 among them) as bytes in a level-triggered pipe and takes one `kevent` event per wakeup (LE `0x410284`, BE `0x3c5bb0`, NetBSD 6 `0x4d2f88`), so the kernel serves the pipe and the listener in turn: each accepted 5009 connection follows at most one handled code. The idle gate cannot see a code still queued there ("Watching the TERM" under "Disk owner handoff"). All three images ignore SIGPIPE, set in that event constructor (LE `0x4106e4`, BE `0x3c601c`, NetBSD 6 `0x4d338c`): a client that closes mid-reply ends only its own session thread. |
 
 ### Apple ACPd
 
