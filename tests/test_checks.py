@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import signal
 import plistlib
 import re
 import sys
@@ -166,6 +167,7 @@ from timecapsulesmb.transport.errors import (
     SshAuthenticationError,
     SshClientConfigError,
     SshClientCrashedError,
+    SshClientError,
     SshLocalNetworkFilteredError,
     SshNetworkError,
 )
@@ -426,11 +428,10 @@ class CheckTests(unittest.TestCase):
                 ))
             if "timecapsulesmb.checks.doctor_steps.ssh_local_forward" not in (extra_patches or {}):
                 mocks.ssh_local_forward = stack.enter_context(
-                    mock.patch("timecapsulesmb.checks.doctor_steps.ssh_local_forward", return_value=nullcontext())
-                )
-            if "timecapsulesmb.checks.doctor_steps.find_free_local_port" not in (extra_patches or {}):
-                mocks.find_free_local_port = stack.enter_context(
-                    mock.patch("timecapsulesmb.checks.doctor_steps.find_free_local_port", return_value=2445)
+                    mock.patch(
+                        "timecapsulesmb.checks.doctor_steps.ssh_local_forward",
+                        return_value=nullcontext(("127.0.0.1", 2445)),
+                    )
                 )
             if run_ssh_side_effect is not None:
                 mocks.run_ssh = stack.enter_context(mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=run_ssh_side_effect))
@@ -4396,6 +4397,7 @@ class CheckTests(unittest.TestCase):
                     [r.details.get("code") for r in run.results if r.details.get("code") == "disk_not_responding"],
                     ["disk_not_responding"])
                 self.assertEqual(run.mocks.probe_managed_smbd_conn.called, not stops)
+                self.assertEqual(run.debug_fields["acpd_problems_error"], "SshError: ssh failed")
 
     def test_run_doctor_checks_stops_when_every_smbd_is_stuck_on_the_disk(self) -> None:
         # The parent and its only child both wait for the disk: nothing serves.
@@ -7575,7 +7577,7 @@ class CheckTests(unittest.TestCase):
             "admin", "pw", "127.0.0.1", "Data", port=2445,
         )
         run.mocks.ssh_local_forward.assert_called_once_with(
-            mock.ANY, local_port=2445, remote_host="127.0.0.1", remote_port=445,
+            mock.ANY, remote_host="127.0.0.1", remote_port=445,
         )
 
     def test_run_doctor_checks_emits_naming_diagnostics(self) -> None:
@@ -8671,7 +8673,7 @@ class CheckTests(unittest.TestCase):
             )
 
         self.assertFalse(run.fatal)
-        run.mocks.ssh_local_forward.assert_called_once_with(mock.ANY, local_port=2445, remote_host="127.0.0.1", remote_port=445)
+        run.mocks.ssh_local_forward.assert_called_once_with(mock.ANY, remote_host="127.0.0.1", remote_port=445)
         self.assertEqual(listing_mock.call_args_list[0], mock.call("admin", "pw", "127.0.0.1", port=2445))
         file_ops_mock.assert_called_once_with("admin", "pw", "127.0.0.1", "Data", port=2445)
         self.assertEqual(next(r for r in run.results if r.message == "file ops ok").domain, "device")
@@ -8680,6 +8682,28 @@ class CheckTests(unittest.TestCase):
         self.assertIn("Local Network permission", warning.message)
         self.assertEqual(debug_fields["authenticated_smb_listing_attempts"], direct_attempts)
         self.assertEqual(debug_fields["device_smb_listing_servers"], ["127.0.0.1"])
+
+    def test_run_doctor_checks_uses_the_loopback_address_the_tunnel_answers_on(self) -> None:
+        # A tunnel that could bind only ::1 on this computer: both checks go there.
+        debug_fields: dict[str, object] = {}
+        listing_mock = mock.Mock(return_value=self.smb_listing_result("::1"))
+        file_ops_mock = mock.Mock(return_value=[CheckResult("PASS", "file ops ok")])
+        run = self.run_doctor_with_mocks(
+            real_device_smb=True,
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.ssh_local_forward": mock.Mock(return_value=nullcontext(("::1", 2445))),
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
+            },
+        )
+
+        self.assertEqual(listing_mock.call_args_list[0], mock.call("admin", "pw", "::1", port=2445))
+        file_ops_mock.assert_called_once_with("admin", "pw", "::1", "Data", port=2445)
+        self.assertEqual(debug_fields["device_smb_listing_servers"], ["::1"])
+        self.assertIn("file ops ok", [result.message for result in run.results])
 
     def device_smb_run(self, listing, **kwargs):
         return self.run_doctor_with_mocks(
@@ -8962,9 +8986,49 @@ class CheckTests(unittest.TestCase):
 
         failure = next(result for result in run.results if result.details.get("code") == "device_smb_tunnel_failed")
         self.assertEqual((failure.status, failure.domain), ("FAIL", "device"))
+        self.assertEqual(failure.details["ssh_failure"], "remote_error")
         self.assertIn("tunnel refused", failure.message)
         # This computer's LAN listing still runs, without file operations.
         listing.assert_called_once()
+
+    def test_run_doctor_checks_blames_this_computer_when_its_ssh_cannot_open_the_tunnel(self) -> None:
+        # The tunnel failed on this computer (no address could listen, ssh would
+        # not run, ssh crashed, or a filter here dropped it): the device was
+        # never asked, so its Samba is not marked failed and the LAN checks do
+        # the file operations. The details say which kind of failure it was.
+        cases = {
+            "cannot listen": (SshClientError(
+                "This computer could not listen on local port 2445 for an SSH forward: bind [127.0.0.1]:2445: Permission denied"
+            ), "ssh_client_failed"),
+            "would not run": (SshClientConfigError("Could not start local SSH client: not found"), "ssh_client_failed"),
+            "crashed": (SshClientCrashedError(signal.SIGSEGV), "local_network_filtered"),
+            "filtered": (
+                SshLocalNetworkFilteredError("This computer dropped the connection before it reached the device."),
+                "local_network_filtered",
+            ),
+        }
+        for name, (error, ssh_failure) in cases.items():
+            with self.subTest(name):
+                listing = mock.Mock(return_value=self.smb_listing_result())
+                file_ops = mock.Mock(return_value=[CheckResult("PASS", "file ops ok")])
+                run = self.device_smb_run(
+                    listing,
+                    extra_patches={
+                        "timecapsulesmb.checks.doctor_steps.ssh_local_forward": mock.Mock(side_effect=error),
+                        "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops,
+                    },
+                )
+
+                failure = next(result for result in run.results if result.details.get("code") == "device_smb_tunnel_failed")
+                self.assertEqual((failure.status, failure.domain), ("FAIL", "computer"))
+                self.assertEqual(failure.message, f"authenticated SMB checks could not open an SSH tunnel: {error}")
+                self.assertEqual(failure.details["ssh_failure"], ssh_failure)
+                not_checked = next(result for result in run.results if result.details.get("code") == "device_smb_not_checked")
+                self.assertEqual((not_checked.status, not_checked.domain), ("WARN", "device"))
+                self.assertIn("the SSH tunnel did not open (see this computer's checks)", not_checked.message)
+                listing.assert_called_once()
+                file_ops.assert_called_once()
+                self.assertNotEqual(file_ops.call_args.kwargs.get("port"), 2445)
 
     def test_run_doctor_checks_fails_an_unreachable_lan_listing_when_nothing_checked_smb(self) -> None:
         # Without SSH, a refused LAN connection is all doctor knows about SMB.

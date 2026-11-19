@@ -19,11 +19,13 @@ import threading
 import time
 from pathlib import Path
 
+from timecapsulesmb.core.install import this_computer
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
     SshAuthenticationError,
     SshClientConfigError,
+    SshClientError,
     SshClientCrashedError as SshClientCrashedError,
     ssh_signal_error,
     SshCommandTimeout,
@@ -37,7 +39,7 @@ from timecapsulesmb.transport.errors import (
 
 from timecapsulesmb.core.process import popen_process, run_process
 
-from .local import tcp_open
+from .local import LOOPBACK_HOSTS, find_free_local_port, tcp_open
 from .openssl_sha1 import sha1_signature_env
 from .ssh_client import require_local_ssh
 
@@ -54,6 +56,8 @@ class SshClientDiagnostics:
     text: str
     authenticated: bool
     error: SshError | None
+    # (address, port) of each local forward address ssh could not listen on.
+    unbound_forward_addresses: frozenset[tuple[str, int]] = frozenset()
 
 
 # ssh's lines when its ConnectTimeout runs out: on the TCP connection (macOS
@@ -62,9 +66,15 @@ class SshClientDiagnostics:
 SSH_CONNECT_TIMEOUT_PATTERN = re.compile(
     r"ssh: connect to host .+ port \d+: (?:Operation|Connection) timed out|Connection timed out during banner exchange"
 )
+# A forward with no bind address listens on each loopback address the system
+# has (ssh asks getaddrinfo for no host, so ::1 and 127.0.0.1). ssh logs each
+# address whose socket(), bind() or listen() fails and carries on with the
+# rest; only when none of them listens does it log the listen failure, and
+# ExitOnForwardFailure then makes it exit. That happens on this computer
+# before the device is asked anything.
+SSH_FORWARD_ADDRESS_FAILURE_PATTERN = re.compile(r"(?:socket|bind|listen) \[(?P<address>[^\]]+)\]:(?P<port>\d+): ")
+SSH_FORWARD_LISTEN_FAILURE_PATTERN = re.compile(r"channel_setup_fwd_listener_tcpip: cannot listen to port: (?P<port>\d+)$")
 SSH_TRANSPORT_ERROR_PATTERNS = (
-    "bind [",
-    "channel_setup_fwd_listener_tcpip:",
     "could not resolve hostname",
     "connection refused",
     "connection timed out",
@@ -268,15 +278,21 @@ def _classify_ssh_client_error_line(line: str) -> SshError | None:
     return None
 
 
+# OpenSSH 8.7 and later (Apple's bundled SSH on macOS 13+) add the method:
+# 'Authenticated to device ([192.0.2.1]:22) using "password".'; 8.4 to 8.6
+# end at the address. ssh logs it before it sets up any forward.
+SSH_AUTHENTICATED_PATTERN = re.compile(r'Authenticated to .+ \((?:\[[^\]]+\]:\d+|via proxy)\)(?: using ".+")?\.')
+
+
 def _is_authenticated_log_line(line: str) -> bool:
-    # Apple's bundled SSH emits this text on macOS 13+, covering our macOS 14+ baseline.
-    return line.startswith("Authenticated to ") and ' using "' in line and line.endswith('".')
+    return SSH_AUTHENTICATED_PATTERN.fullmatch(line) is not None
 
 
 def parse_ssh_client_diagnostics(output: str) -> SshClientDiagnostics:
     authenticated = False
     auth_error: SshAuthenticationError | None = None
     other_error: SshError | None = None
+    address_failures: list[tuple[str, int, str]] = []
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if line.startswith("debug1:") and SSH_MUX_SESSION_MARKER in line:
@@ -287,7 +303,18 @@ def parse_ssh_client_diagnostics(output: str) -> SshClientDiagnostics:
             continue
         if _is_authenticated_log_line(line):
             authenticated = True
-        error = _classify_ssh_client_error_line(line)
+        if (failed := SSH_FORWARD_ADDRESS_FAILURE_PATTERN.match(line)) is not None:
+            address_failures.append((failed["address"], int(failed["port"]), line))
+            continue
+        if (listen := SSH_FORWARD_LISTEN_FAILURE_PATTERN.match(line)) is not None:
+            # No address of this forward could listen; its address lines say why.
+            reasons = "; ".join(text for _, port, text in address_failures if port == int(listen["port"]))
+            error: SshError | None = SshClientError(
+                f"{this_computer(capitalized=True)} could not listen on local port {listen['port']} for an SSH forward"
+                + (f": {reasons}" if reasons else "")
+            )
+        else:
+            error = _classify_ssh_client_error_line(line)
         if isinstance(error, SshAuthenticationError):
             auth_error = error
         elif error is not None and other_error is None:
@@ -296,6 +323,7 @@ def parse_ssh_client_diagnostics(output: str) -> SshClientDiagnostics:
         text=output,
         authenticated=authenticated,
         error=other_error or (None if authenticated else auth_error),
+        unbound_forward_addresses=frozenset((address, port) for address, port, _ in address_failures),
     )
 
 
@@ -984,11 +1012,16 @@ def run_ssh_capture_bytes(connection: SshConnection, remote_cmd: str, *, timeout
 def ssh_local_forward(
     connection: SshConnection,
     *,
-    local_port: int,
     remote_host: str,
     remote_port: int,
     ready_timeout: int = 20,
-):
+) -> Iterator[tuple[str, int]]:
+    """Forward a free port on this computer's loopback to remote_host:remote_port
+    as the device sees it; yields (loopback address, port) to connect to."""
+    try:
+        local_port = find_free_local_port()
+    except OSError as exc:
+        raise SshClientError(f"{this_computer(capitalized=True)} has no free local port for the SSH tunnel: {exc}") from exc
     with _ssh_client_log_path() as client_log:
         # A tunnel keeps its own connection: a forward opened through a
         # master belongs to the master and would outlive this tunnel.
@@ -1031,17 +1064,18 @@ def ssh_local_forward(
                         or startup_output.strip()
                         or "ssh tunnel exited before becoming ready"
                     )
-                if tcp_open("127.0.0.1", local_port, timeout=0.2):
+                listening = _forward_listening_address(diagnostics, local_port)
+                if listening is not None:
                     break
                 if time.monotonic() >= deadline:
                     # A timeout like a command's: the device did not answer the
                     # login in time, and gets the same guidance.
                     raise SshCommandTimeout(
                         "Timed out waiting for ssh tunnel to become ready: "
-                        f"127.0.0.1:{local_port} -> {remote_host}:{remote_port} via {connection.host}"
+                        f"localhost:{local_port} -> {remote_host}:{remote_port} via {connection.host}"
                     )
                 time.sleep(0.2)
-            yield
+            yield listening, local_port
         finally:
             child.terminate()
             try:
@@ -1051,6 +1085,26 @@ def ssh_local_forward(
                 child.wait()
             if child.stderr is not None:
                 child.stderr.close()
+
+
+def _forward_listening_address(diagnostics: SshClientDiagnostics, port: int) -> str | None:
+    """The loopback address on which ssh's forward of `port` answers, if any.
+
+    ssh binds its forwards only after it logs in, so a connection before then
+    reaches some other program, as does one to an address ssh logged it could
+    not listen on. ssh logs nothing when a bind succeeds, so a program that
+    takes the port in the moment between ssh's login and its bind would pass
+    for ssh's listener; find_free_local_port makes that unlikely.
+    """
+    if not diagnostics.authenticated:
+        return None
+    return next(
+        (
+            address for address in LOOPBACK_HOSTS
+            if (address, port) not in diagnostics.unbound_forward_addresses and tcp_open(address, port, timeout=0.2)
+        ),
+        None,
+    )
 
 
 def upload_timeout_seconds(size: int, timeout: int) -> int:

@@ -18,7 +18,7 @@ from tests.device_ps import FakePs, process
 from timecapsulesmb.device.acpd import RestartMarker, RestartVerdict, acpd_stuck_children
 from timecapsulesmb.device.errors import DeviceRestartingError
 from timecapsulesmb.device.processes import PS_LISTING_END, parse_ps_rows
-from timecapsulesmb.transport.errors import SshCommandTimeout, SshError
+from timecapsulesmb.transport.errors import SshClientError, SshCommandTimeout, SshError
 from timecapsulesmb.transport.ssh import SshConnection
 
 # tests/conftest.py replaces these on the module for every test; keep the real ones.
@@ -453,10 +453,9 @@ class AcpdAnswersNetworkTests(unittest.TestCase):
     """ACPd's TCP listener, read through an SSH forward to the device's own
     127.0.0.1:5009, so the network between here and the device plays no part."""
 
-    def read(self, outcome):
+    def read(self, outcome, *, local_host="127.0.0.1"):
         get = mock.Mock(side_effect=outcome) if isinstance(outcome, BaseException) else mock.Mock(return_value=outcome)
-        with mock.patch("timecapsulesmb.device.acpd.find_free_local_port", return_value=61234), \
-                mock.patch("timecapsulesmb.device.acpd.ssh_local_forward", return_value=nullcontext()) as forward, \
+        with mock.patch("timecapsulesmb.device.acpd.ssh_local_forward", return_value=nullcontext((local_host, 61234))) as forward, \
                 mock.patch("timecapsulesmb.device.acpd.acp.get_properties", get):
             answered = REAL_ACPD_ANSWERS_NETWORK(CONNECTION)
         return answered, forward, get
@@ -464,9 +463,15 @@ class AcpdAnswersNetworkTests(unittest.TestCase):
     def test_a_listener_that_answers_syut_answers(self) -> None:
         answered, forward, get = self.read({"syUT": b"\x00\x01\x3b\x2f"})
         self.assertTrue(answered)
-        forward.assert_called_once_with(CONNECTION, local_port=61234, remote_host="127.0.0.1", remote_port=acp.ACP_PORT)
+        forward.assert_called_once_with(CONNECTION, remote_host="127.0.0.1", remote_port=acp.ACP_PORT)
         # The local read's deadline: a busy ACPd answers within it.
         get.assert_called_once_with("127.0.0.1", "pw", ("syUT",), timeout=acpd.ACPD_READ_DEADLINE_SECONDS, port=61234)
+
+    def test_the_read_goes_to_the_loopback_address_the_forward_answers_on(self) -> None:
+        # A forward that could bind only ::1 on this computer.
+        answered, _forward, get = self.read({"syUT": b"\x00\x01\x3b\x2f"}, local_host="::1")
+        self.assertTrue(answered)
+        get.assert_called_once_with("::1", "pw", ("syUT",), timeout=acpd.ACPD_READ_DEADLINE_SECONDS, port=61234)
 
     def test_a_rejected_password_or_a_malformed_reply_is_an_answer(self) -> None:
         for reply in (
@@ -490,12 +495,22 @@ class AcpdAnswersNetworkTests(unittest.TestCase):
 
     def test_a_forward_that_fails_is_raised_not_blamed_on_acpd(self) -> None:
         failure = SshError("Timed out waiting for ssh tunnel to become ready")
-        with mock.patch("timecapsulesmb.device.acpd.find_free_local_port", return_value=61234), \
-                mock.patch("timecapsulesmb.device.acpd.ssh_local_forward", side_effect=failure), \
+        with mock.patch("timecapsulesmb.device.acpd.ssh_local_forward", side_effect=failure), \
                 mock.patch("timecapsulesmb.device.acpd.acp.get_properties") as get:
             with self.assertRaises(SshError) as raised:
                 REAL_ACPD_ANSWERS_NETWORK(CONNECTION)
         self.assertIs(raised.exception, failure)
+        get.assert_not_called()
+
+    def test_no_free_local_port_is_raised_as_this_computers_ssh_failure(self) -> None:
+        # The real forward: its port picker fails before ssh starts, and the
+        # caller gets a transport error naming this computer, not an OSError.
+        with mock.patch("timecapsulesmb.transport.ssh.find_free_local_port", side_effect=OSError(24, "Too many open files")), \
+                mock.patch("timecapsulesmb.transport.ssh.popen_process") as popen, \
+                mock.patch("timecapsulesmb.device.acpd.acp.get_properties") as get:
+            with self.assertRaisesRegex(SshClientError, "no free local port .*Too many open files"):
+                REAL_ACPD_ANSWERS_NETWORK(CONNECTION)
+        popen.assert_not_called()
         get.assert_not_called()
 
 

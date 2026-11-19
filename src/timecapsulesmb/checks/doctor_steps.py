@@ -215,9 +215,8 @@ from timecapsulesmb.discovery.bonjour import (
 from timecapsulesmb.discovery.devices import device_candidates_from_records
 from timecapsulesmb.discovery.models import normalize_airport_mac
 
-from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.local import scoped_tcp_connect_errors
-from timecapsulesmb.transport.errors import TransportError
+from timecapsulesmb.transport.errors import TransportError, transport_error_code
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_local_forward
 
 
@@ -2116,23 +2115,22 @@ def _add_tunneled_authenticated_smb_results(
     """List and change files on the device's own smbd through an SSH tunnel;
     return one of the DEVICE_SMB_* outcomes. password_matches: the saved
     password is known to be the AirPort admin password."""
-    local_port = find_free_local_port()
     if debug_fields is not None:
-        debug_fields["device_smb_listing_servers"] = ["127.0.0.1"]
         debug_fields["device_smb_listing_active_shares"] = active_share_names
     try:
         with ssh_local_forward(
             connection,
-            local_port=local_port,
             # The device resolves the forward's host: its own loopback, which
             # smbd's wildcard listener serves, works whatever address we used.
             remote_host="127.0.0.1",
             remote_port=445,
-        ):
+        ) as (local_host, local_port):
+            if debug_fields is not None:
+                debug_fields["device_smb_listing_servers"] = [local_host]
             listing_result = _authenticated_smb_listing_with_doctor_retries(
                 DEFAULT_SAMBA_AUTH_USER,
                 smb_password,
-                "127.0.0.1",
+                local_host,
                 port=local_port,
                 retry_delays=retry_delays,
             )
@@ -2174,7 +2172,7 @@ def _add_tunneled_authenticated_smb_results(
             for result in check_authenticated_smb_file_ops_detailed(
                 DEFAULT_SAMBA_AUTH_USER,
                 smb_password,
-                "127.0.0.1",
+                local_host,
                 share_name,
                 port=local_port,
             ):
@@ -2183,13 +2181,23 @@ def _add_tunneled_authenticated_smb_results(
                     file_ops_ok = False
             return DEVICE_SMB_PASSED if file_ops_ok else DEVICE_SMB_FAILED
     except TransportError as e:
-        # The tunnel did not open. SSH works (the device checks ran), so it is
-        # the device's: deploy needs SSH just as much.
-        add_result(CheckResult(
-            "FAIL",
-            f"authenticated SMB checks failed through SSH tunnel: {e}",
-            {"code": DOCTOR_CODE_DEVICE_SMB_TUNNEL_FAILED},
-        ))
+        # The tunnel did not open. transport_error_code says whose that is, as
+        # it does for the app and the CLI; the details keep its answer, which
+        # this check's code alone does not.
+        failure = transport_error_code(e)
+        details = {"code": DOCTOR_CODE_DEVICE_SMB_TUNNEL_FAILED, "ssh_failure": failure}
+        if failure != ErrorCode.REMOTE_ERROR:
+            # ssh failed on this computer: it could not run or listen, crashed,
+            # or a filter here dropped its connection. The device played no
+            # part, so the LAN checks do the file operations.
+            add_result(CheckResult(
+                "FAIL", f"authenticated SMB checks could not open an SSH tunnel: {e}", details, domain=DOMAIN_COMPUTER,
+            ))
+            add_result(_device_smb_not_checked("the SSH tunnel did not open (see this computer's checks)"))
+            return DEVICE_SMB_NOT_RUN
+        # SSH works (the device checks ran), so it is the device's: deploy
+        # needs SSH just as much.
+        add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}", details))
         return DEVICE_SMB_FAILED
     except Exception as e:
         add_result(CheckResult("FAIL", f"authenticated SMB checks on the device failed: {e}"))
@@ -2775,7 +2783,10 @@ def _doctor_check_apple_acpd(
     disk_stalls, listing = processes.disk_stalls, processes.snapshot
     try:
         problems = acpd.acpd_problems(target.connection, processes.snapshot, network_reading=network_reading)
-    except TransportError:
+    except TransportError as exc:
+        # No finding, but the debug log says why the ACPd checks did not finish.
+        if sink.debug_fields is not None:
+            sink.debug_fields["acpd_problems_error"] = f"{type(exc).__name__}: {exc}"
         return StepDecision(stop=_disk_stall_stops(disk_stalls, listing))
     except DeviceRestartingError as exc:
         return _add_restarting_result(sink, exc)

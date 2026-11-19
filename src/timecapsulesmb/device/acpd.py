@@ -33,7 +33,6 @@ from timecapsulesmb.device.processes import (
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH
 from timecapsulesmb.transport.errors import TransportError
-from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_local_forward
 
 # A healthy device answers in under 1 s; a hung ACPd does not answer for
@@ -226,11 +225,10 @@ def acpd_answers_network(connection: SshConnection) -> bool:
     the forward cannot be set up (SshCommandTimeout when it was not ready in
     time).
     """
-    port = find_free_local_port()
-    with ssh_local_forward(connection, local_port=port, remote_host="127.0.0.1", remote_port=ACP_PORT):
+    with ssh_local_forward(connection, remote_host="127.0.0.1", remote_port=ACP_PORT) as (local_host, local_port):
         try:
-            acp.get_properties("127.0.0.1", connection.password, ("syUT",),
-                               timeout=ACPD_READ_DEADLINE_SECONDS, port=port)
+            acp.get_properties(local_host, connection.password, ("syUT",),
+                               timeout=ACPD_READ_DEADLINE_SECONDS, port=local_port)
         except acp.ACPConnectionError:
             # No reply in time, or the device refused the connection and the forward reset it.
             return False

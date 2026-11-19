@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 import sys
 import unittest
 import errno
@@ -18,6 +19,8 @@ from timecapsulesmb.transport.local import (
     command_exists,
     connect_answered,
     connect_unanswered,
+    FREE_PORT_ATTEMPTS,
+    find_free_local_port,
     Router,
     lan_routers,
     mac_network_filters,
@@ -25,6 +28,100 @@ from timecapsulesmb.transport.local import (
     scoped_tcp_connect_errors,
     tcp_connect_error,
 )
+
+
+class FakeLoopback:
+    """socket.socket for find_free_local_port: IPv4 hands out `offers` for port
+    0 in turn; IPv6 refuses `taken` ports with EADDRINUSE, or every bind with
+    `ipv6_error`."""
+
+    def __init__(self, offers, *, taken=(), ipv6_error=None, ipv4_error=None):
+        self.offers, self.taken = list(offers), set(taken)
+        self.ipv6_error, self.ipv4_error = ipv6_error, ipv4_error
+        self.closed = 0
+
+    def __call__(self, family, kind):
+        loopback = self
+
+        class Sock:
+            port = 0
+
+            def bind(self, address):
+                host, port = address
+                error = loopback.ipv6_error if family == socket.AF_INET6 else loopback.ipv4_error
+                if error is not None:
+                    raise OSError(error, "refused")
+                if family == socket.AF_INET6 and port in loopback.taken:
+                    raise OSError(errno.EADDRINUSE, "Address already in use")
+                self.port = port or loopback.offers.pop(0)
+
+            def getsockname(self):
+                return ("host", self.port)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                loopback.closed += 1
+
+        return Sock()
+
+
+class FindFreeLocalPortTests(unittest.TestCase):
+    def pick(self, loopback):
+        with mock.patch("timecapsulesmb.transport.local.socket.socket", loopback):
+            return find_free_local_port()
+
+    def test_the_port_is_free_on_both_loopback_addresses(self) -> None:
+        port = find_free_local_port()
+        held = []
+        try:
+            for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+                sock = socket.socket(family)
+                held.append(sock)
+                try:
+                    sock.bind((host, port))
+                except OSError as exc:
+                    if family == socket.AF_INET6 and exc.errno != errno.EADDRINUSE:
+                        continue  # No IPv6 loopback on this computer.
+                    raise
+        finally:
+            for sock in held:
+                sock.close()
+
+    def test_a_port_another_program_holds_on_ipv6_loopback_is_skipped(self) -> None:
+        loopback = FakeLoopback([50001, 50002], taken={50001})
+        self.assertEqual(self.pick(loopback), 50002)
+        # All four probe sockets were closed, the refused one too.
+        self.assertEqual(loopback.closed, 4)
+
+    def test_a_computer_without_ipv6_loopback_gets_an_ipv4_port(self) -> None:
+        for error in (errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT):
+            with self.subTest(error=errno.errorcode[error]):
+                self.assertEqual(self.pick(FakeLoopback([50001], ipv6_error=error)), 50001)
+
+    def test_a_computer_without_ipv4_loopback_gets_an_ipv6_port(self) -> None:
+        # IPv6 asks for port 0 itself, since IPv4 picked none.
+        self.assertEqual(self.pick(FakeLoopback([50003], ipv4_error=errno.EADDRNOTAVAIL)), 50003)
+
+    def test_other_socket_errors_are_raised_not_taken_for_a_missing_loopback(self) -> None:
+        for kwargs in ({"ipv4_error": errno.EMFILE}, {"ipv6_error": errno.ENOBUFS}):
+            with self.subTest(**kwargs):
+                loopback = FakeLoopback([50001], **kwargs)
+                with self.assertRaises(OSError) as raised:
+                    self.pick(loopback)
+                self.assertEqual(raised.exception.errno, next(iter(kwargs.values())))
+
+    def test_gives_up_when_every_offered_port_is_taken(self) -> None:
+        offers = range(50001, 50001 + FREE_PORT_ATTEMPTS)
+        with self.assertRaises(OSError) as raised:
+            self.pick(FakeLoopback(offers, taken=set(offers)))
+        self.assertEqual(raised.exception.errno, errno.EADDRINUSE)
+
+    def test_a_computer_with_no_loopback_at_all_is_an_error(self) -> None:
+        with self.assertRaises(OSError) as raised:
+            self.pick(FakeLoopback([], ipv4_error=errno.EADDRNOTAVAIL, ipv6_error=errno.EADDRNOTAVAIL))
+        self.assertEqual(raised.exception.errno, errno.EADDRNOTAVAIL)
 
 
 class TcpConnectErrorTests(unittest.TestCase):

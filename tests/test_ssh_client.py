@@ -120,7 +120,7 @@ def test_transport_rejects_old_ssh_before_command_or_tunnel_start(tmp_path):
         with pytest.raises(SshClientConfigError, match="OpenSSH_8.0"):
             ssh.run_ssh(conn, "true")
         with pytest.raises(SshClientConfigError, match="OpenSSH_8.0"):
-            with ssh.ssh_local_forward(conn, local_port=12345, remote_host="127.0.0.1", remote_port=445):
+            with ssh.ssh_local_forward(conn, remote_host="127.0.0.1", remote_port=445):
                 pytest.fail("started tunnel")
         command.assert_not_called()
         tunnel.assert_not_called()

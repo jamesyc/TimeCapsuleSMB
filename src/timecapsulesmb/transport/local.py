@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import errno
 import ipaddress
 import os
@@ -162,11 +163,40 @@ def scoped_tcp_connect_errors(hosts: Sequence[str], port: int, *, timeout: float
     return results
 
 
-def find_free_local_port(host: str = "127.0.0.1") -> int:
-    # A concurrent spawn must not inherit this socket before close-on-exec is set.
-    with SPAWN_LOCK, socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind((host, 0))
-        return int(sock.getsockname()[1])
+# This computer's loopback addresses: an ssh forward with no bind address
+# listens on each one it has.
+LOOPBACK_HOSTS = ("127.0.0.1", "::1")
+FREE_PORT_ATTEMPTS = 20
+# What socket() or bind() says on a computer without that loopback address.
+LOOPBACK_MISSING_ERRNOS = frozenset({errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT})
+
+
+def find_free_local_port() -> int:
+    """A port free on every loopback address this computer has, so whichever
+    one a client reaches is the forward's and not another program's. Clients
+    that connect to `localhost` pick the address themselves: Apple's SMB
+    client does (checks/smb_macos.py's smb_url_host)."""
+    for _ in range(FREE_PORT_ATTEMPTS):
+        port = 0
+        # A concurrent spawn must not inherit these sockets before close-on-exec is set.
+        with SPAWN_LOCK, contextlib.ExitStack() as held:
+            for host in LOOPBACK_HOSTS:
+                family = socket.AF_INET6 if ":" in host else socket.AF_INET
+                try:
+                    sock = held.enter_context(socket.socket(family, socket.SOCK_STREAM))
+                    sock.bind((host, port))
+                except OSError as exc:
+                    if exc.errno == errno.EADDRINUSE:
+                        break  # Taken on this address: try another port.
+                    if exc.errno in LOOPBACK_MISSING_ERRNOS:
+                        continue  # This computer lacks this loopback; ssh skips it too.
+                    raise
+                port = int(sock.getsockname()[1])
+            else:
+                if port:
+                    return port
+                raise OSError(errno.EADDRNOTAVAIL, "this computer has no loopback address")
+    raise OSError(errno.EADDRINUSE, "no local port is free on every loopback address")
 
 
 def run_local_capture(

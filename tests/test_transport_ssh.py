@@ -4,10 +4,12 @@ import json
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import time
 import unittest
+from contextlib import contextmanager
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from pathlib import Path
 from unittest import mock
@@ -18,12 +20,14 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.core.install import this_computer
 from timecapsulesmb.transport import errors as transport_errors
 from timecapsulesmb.transport import ssh as ssh_transport
-from timecapsulesmb.transport.local import find_free_local_port
 
 
 AUTHENTICATED_LOG = 'Authenticated to device ([192.0.2.1]:22) using "password".\n'
+# How a local failure names this computer here: "This Mac" on macOS.
+COMPUTER = this_computer(capitalized=True)
 
 
 class DecodeTrapBytes(bytes):
@@ -33,6 +37,25 @@ class DecodeTrapBytes(bytes):
 
 # Patch the transport's time namespace, not time.sleep on the shared stdlib
 # module: subprocess.wait(timeout=...) also sleeps while reaping local probes.
+@contextmanager
+def listening_on(address: str):
+    """A listener on a free port of `address`; yields the port."""
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    with socket.socket(family) as listener:
+        listener.bind((address, 0))
+        listener.listen()
+        yield listener.getsockname()[1]
+
+
+def has_ipv6_loopback() -> bool:
+    try:
+        with socket.socket(socket.AF_INET6) as sock:
+            sock.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
+
+
 class SSHTransportTests(unittest.TestCase):
     def setUp(self) -> None:
         client = mock.patch.object(ssh_transport, "require_local_ssh", return_value="/tested/ssh")
@@ -375,7 +398,115 @@ class SSHTransportTests(unittest.TestCase):
             "NetBSD\n"
         )
         error = ssh_transport.parse_ssh_client_diagnostics(output).error
-        self.assertEqual(str(error), "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied")
+        self.assertIsInstance(error, ssh_transport.SshClientError)
+        self.assertEqual(
+            str(error), f"{COMPUTER} could not listen on local port 108 for an SSH forward: bind [127.0.0.1]:108: Permission denied",
+        )
+
+    def test_client_diagnostics_name_every_address_a_failed_forward_could_not_bind(self) -> None:
+        output = (
+            "bind [::1]:6000: Cannot assign requested address\n"
+            "bind [127.0.0.1]:6000: Address already in use\n"
+            "channel_setup_fwd_listener_tcpip: cannot listen to port: 6000\n"
+            "Could not request local forwarding.\n"
+        )
+        error = ssh_transport.parse_ssh_client_diagnostics(output).error
+        self.assertEqual(
+            str(error),
+            f"{COMPUTER} could not listen on local port 6000 for an SSH forward: "
+            "bind [::1]:6000: Cannot assign requested address; bind [127.0.0.1]:6000: Address already in use",
+        )
+
+    def test_client_diagnostics_accept_a_forward_that_binds_one_family(self) -> None:
+        # A computer without IPv6 loopback: the forward listens on 127.0.0.1 alone.
+        for missing in ("::1", "127.0.0.1"):
+            with self.subTest(missing=missing):
+                diagnostics = ssh_transport.parse_ssh_client_diagnostics(
+                    f"bind [{missing}]:6000: Cannot assign requested address\n"
+                    'Authenticated to device ([192.0.2.1]:22) using "password".\n'
+                )
+                self.assertIsNone(diagnostics.error)
+                self.assertTrue(diagnostics.authenticated)
+
+    def test_client_diagnostics_give_only_the_failed_forwards_bind_reasons(self) -> None:
+        # A second forward (6001) lost one address; the one that failed is 6000.
+        output = (
+            "bind [::1]:6001: Address already in use\n"
+            "bind [::1]:6000: Cannot assign requested address\n"
+            "bind [127.0.0.1]:6000: Permission denied\n"
+            "channel_setup_fwd_listener_tcpip: cannot listen to port: 6000\n"
+        )
+        diagnostics = ssh_transport.parse_ssh_client_diagnostics(output)
+        self.assertEqual(
+            str(diagnostics.error),
+            f"{COMPUTER} could not listen on local port 6000 for an SSH forward: "
+            "bind [::1]:6000: Cannot assign requested address; bind [127.0.0.1]:6000: Permission denied",
+        )
+        self.assertEqual(
+            diagnostics.unbound_forward_addresses,
+            {("::1", 6001), ("::1", 6000), ("127.0.0.1", 6000)},
+        )
+
+    def test_forward_address_is_not_trusted_before_ssh_logs_in(self) -> None:
+        # ssh binds forwards only after login: an early answer is another program's.
+        with listening_on("127.0.0.1") as port:
+            before = ssh_transport.SshClientDiagnostics(text="", authenticated=False, error=None)
+            after = ssh_transport.SshClientDiagnostics(text=AUTHENTICATED_LOG, authenticated=True, error=None)
+            self.assertIsNone(ssh_transport._forward_listening_address(before, port))
+            self.assertEqual(ssh_transport._forward_listening_address(after, port), "127.0.0.1")
+
+    def test_forward_address_skips_one_ssh_could_not_bind(self) -> None:
+        with listening_on("127.0.0.1") as port:
+            diagnostics = ssh_transport.SshClientDiagnostics(
+                text=AUTHENTICATED_LOG, authenticated=True, error=None,
+                unbound_forward_addresses=frozenset({("127.0.0.1", port)}),
+            )
+            # Another program holds 127.0.0.1, and nothing listens on ::1.
+            self.assertIsNone(ssh_transport._forward_listening_address(diagnostics, port))
+            # A bind failure for another port does not hide this one.
+            other = ssh_transport.SshClientDiagnostics(
+                text=AUTHENTICATED_LOG, authenticated=True, error=None,
+                unbound_forward_addresses=frozenset({("127.0.0.1", port + 1)}),
+            )
+            self.assertEqual(ssh_transport._forward_listening_address(other, port), "127.0.0.1")
+
+    def test_client_diagnostics_detect_every_openssh_login_line(self) -> None:
+        for line in (
+            'Authenticated to device ([192.0.2.1]:22) using "password".',  # OpenSSH 8.7 and later
+            'Authenticated to device (via proxy) using "publickey".',
+            "Authenticated to device ([192.0.2.1]:22).",  # OpenSSH 8.4 to 8.6
+            "Authenticated to device (via proxy).",
+            "Authenticated to fe80::1%en0 ([fe80::1%en0]:22).",
+        ):
+            with self.subTest(line=line):
+                self.assertTrue(ssh_transport.parse_ssh_client_diagnostics(line + "\n").authenticated)
+        for line in ("Authenticated to device", "Authenticated to device ([192.0.2.1]:22) and more."):
+            with self.subTest(line=line):
+                self.assertFalse(ssh_transport.parse_ssh_client_diagnostics(line + "\n").authenticated)
+
+    def test_client_diagnostics_blame_this_computer_for_a_listen_failure_without_reasons(self) -> None:
+        # ssh logs the listen failure only after trying this computer's
+        # addresses, so it is this computer's even when no address line says why.
+        error = ssh_transport.parse_ssh_client_diagnostics(
+            "channel_setup_fwd_listener_tcpip: cannot listen to port: 6000\n"
+        ).error
+        self.assertIsInstance(error, ssh_transport.SshClientError)
+        self.assertEqual(str(error), f"{COMPUTER} could not listen on local port 6000 for an SSH forward")
+
+    def test_client_diagnostics_give_socket_and_listen_failures_as_reasons(self) -> None:
+        # A kernel without IPv6 fails ::1 at socket(); listen() can fail too.
+        diagnostics = ssh_transport.parse_ssh_client_diagnostics(
+            "socket [::1]:6000: Address family not supported by protocol\n"
+            "listen [127.0.0.1]:6000: Invalid argument\n"
+            "channel_setup_fwd_listener_tcpip: cannot listen to port: 6000\n"
+        )
+        self.assertIsInstance(diagnostics.error, ssh_transport.SshClientError)
+        self.assertEqual(
+            str(diagnostics.error),
+            f"{COMPUTER} could not listen on local port 6000 for an SSH forward: "
+            "socket [::1]:6000: Address family not supported by protocol; listen [127.0.0.1]:6000: Invalid argument",
+        )
+        self.assertEqual(diagnostics.unbound_forward_addresses, {("::1", 6000), ("127.0.0.1", 6000)})
 
     def test_run_ssh_raises_on_ssh_transport_warning_even_with_zero_exit(self) -> None:
         run = self.ssh_runs((
@@ -396,8 +527,19 @@ class SSHTransportTests(unittest.TestCase):
         self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(
             str(exc.exception),
-            "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied",
+            f"{COMPUTER} could not listen on local port 108 for an SSH forward: bind [127.0.0.1]:108: Permission denied",
         )
+
+    def test_run_ssh_succeeds_when_a_forward_binds_one_loopback_family(self) -> None:
+        run = self.ssh_runs((0, "ok\n", "bind [::1]:108: Cannot assign requested address\n" + AUTHENTICATED_LOG))
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
+             mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
+            result = ssh_transport.run_ssh(
+                ssh_transport.SshConnection("root@192.168.1.67", "pw", "-o LocalForward=108:127.0.0.1:108"),
+                "/bin/echo ok",
+                timeout=10,
+            )
+        self.assertEqual(result.stdout, "ok\n")
 
     def test_run_ssh_keeps_client_warnings_out_of_remote_output(self) -> None:
         run = self.ssh_runs((
@@ -1692,8 +1834,20 @@ if "-N" in args:
     port = int(args[args.index("-L") + 1].split(":")[0])
     tunnel = scenario.get("tunnel", "ready")
     if tunnel == "bind_error":
+        say(f"bind [::1]:{port}: Permission denied")
         say(f"bind [127.0.0.1]:{port}: Permission denied")
+        say(f"channel_setup_fwd_listener_tcpip: cannot listen to port: {port}")
+        say("Could not request local forwarding.")
         sys.exit(255)
+    if tunnel in ("ipv4_only", "ipv6_only"):
+        # ssh logs the address it could not bind and keeps the other.
+        missing, family, host = (
+            ("::1", socket.AF_INET, "127.0.0.1") if tunnel == "ipv4_only" else ("127.0.0.1", socket.AF_INET6, "::1")
+        )
+        say(f"bind [{missing}]:{port}: {scenario.get('missing_reason', 'Cannot assign requested address')}")
+        listener = socket.socket(family)
+        listener.bind((host, port))
+        listener.listen()
     if tunnel == "crash":
         os.kill(os.getpid(), signal.SIGSEGV)
     if tunnel == "late":
@@ -1936,7 +2090,7 @@ class RealSshProcessTests(unittest.TestCase):
         with self.assertRaises(transport_errors.SshClientStoppedError):
             with ssh_transport.ssh_local_forward(
                 ssh_transport.SshConnection("root@device", "pa ss$1", ""),
-                local_port=find_free_local_port(), remote_host="127.0.0.1", remote_port=445,
+                remote_host="127.0.0.1", remote_port=445,
             ):
                 self.fail("stopped tunnel became ready")
         self.assertEqual(len(self.recorded()), 1)
@@ -1958,20 +2112,17 @@ class RealSshProcessTests(unittest.TestCase):
     def forward(self, *, ready_timeout: int = 20):
         return ssh_transport.ssh_local_forward(
             ssh_transport.SshConnection("root@fe80::1%en0", "pa ss$1", "-J jump.example"),
-            local_port=self.free_port(),
             remote_host="127.0.0.1",
             remote_port=445,
             ready_timeout=ready_timeout,
         )
 
-    @staticmethod
-    def free_port() -> int:
-        return find_free_local_port()
-
     def test_tunnel_is_ready_once_its_port_listens_and_its_ssh_ends_with_the_block(self) -> None:
-        with self.forward():
+        with self.forward() as (host, port):
             [run] = self.recorded()
             os.kill(run["pid"], 0)
+            self.assertEqual(host, "127.0.0.1")
+            self.assertEqual(run["args"][run["args"].index("-L") + 1].split(":", 1)[0], str(port))
         with self.assertRaises(ProcessLookupError):
             os.kill(run["pid"], 0)
         args = run["args"]
@@ -1981,11 +2132,52 @@ class RealSshProcessTests(unittest.TestCase):
         self.assertEqual(args[-1], "root@fe80::1%en0")
         self.assertIn("jump.example", args)
 
-    def test_tunnel_that_cannot_bind_reports_ssh_error(self) -> None:
+    def test_tunnel_that_cannot_bind_any_address_reports_why(self) -> None:
         self.scenario(tunnel="bind_error")
-        with self.assertRaisesRegex(ssh_transport.SshError, r"bind \[127.0.0.1\]:\d+: Permission denied"):
+        with self.assertRaisesRegex(
+            ssh_transport.SshClientError,
+            rf"^{COMPUTER} could not listen on local port \d+ for an SSH forward: "
+            r"bind \[::1\]:\d+: Permission denied; bind \[127\.0\.0\.1\]:\d+: Permission denied$",
+        ):
             with self.forward():
-                pass
+                self.fail("a tunnel with no listener became ready")
+
+    def test_tunnel_on_a_computer_without_ipv6_loopback_answers_on_ipv4(self) -> None:
+        self.scenario(tunnel="ipv4_only")
+        with self.forward() as (host, _port):
+            self.assertEqual(host, "127.0.0.1")
+
+    def test_tunnel_that_binds_only_ipv6_loopback_answers_there(self) -> None:
+        if not has_ipv6_loopback():
+            self.skipTest("this computer has no IPv6 loopback")
+        self.scenario(tunnel="ipv6_only")
+        with self.forward() as (host, _port):
+            self.assertEqual(host, "::1")
+
+    def test_tunnel_skips_an_address_another_program_took_before_ssh_bound_it(self) -> None:
+        # Another program takes 127.0.0.1 between the port choice and ssh's
+        # bind; ssh logs that and listens on ::1 alone.
+        if not has_ipv6_loopback():
+            self.skipTest("this computer has no IPv6 loopback")
+        squatter = socket.socket()
+        squatter.bind(("127.0.0.1", 0))
+        squatter.listen()
+        port = squatter.getsockname()[1]
+        self.scenario(tunnel="ipv6_only", missing_reason="Address already in use")
+        try:
+            with mock.patch.object(ssh_transport, "find_free_local_port", return_value=port):
+                with self.forward() as (host, ready_port):
+                    self.assertEqual((host, ready_port), ("::1", port))
+        finally:
+            squatter.close()
+
+    def test_tunnel_without_a_free_local_port_is_a_local_client_failure(self) -> None:
+        with mock.patch.object(ssh_transport, "find_free_local_port", side_effect=OSError(24, "Too many open files")), \
+                mock.patch.object(ssh_transport, "popen_process") as popen:
+            with self.assertRaisesRegex(ssh_transport.SshClientError, rf"^{COMPUTER} has no free local port .*Too many open files"):
+                with self.forward():
+                    self.fail("a tunnel without a port became ready")
+        popen.assert_not_called()
 
     def test_tunnel_whose_ssh_crashes_raises_the_local_crash_error(self) -> None:
         self.scenario(tunnel="crash")
@@ -2015,7 +2207,7 @@ class RealSshProcessTests(unittest.TestCase):
             # A timeout, so the error gets the timeout's guidance.
             with self.assertRaisesRegex(
                 ssh_transport.SshCommandTimeout,
-                r"^Timed out waiting for ssh tunnel to become ready: 127\.0\.0\.1:\d+ -> 127\.0\.0\.1:445 via root@fe80::1%en0$",
+                r"^Timed out waiting for ssh tunnel to become ready: localhost:\d+ -> 127\.0\.0\.1:445 via root@fe80::1%en0$",
             ):
                 with self.forward(ready_timeout=1):
                     pass
