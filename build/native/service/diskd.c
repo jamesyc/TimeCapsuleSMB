@@ -117,7 +117,7 @@ unsigned tc_diskd_step(struct tc_diskd *s, const struct tc_diskd_observation *o,
          * forward waiting on each other for good (F19). */
         if (o->disk_work)
             why = TC_DISKD_MAINTENANCE;
-        else if (o->acp_clients || !o->owner_idle || !o->fresh)
+        else if (o->acp_clients || !o->owner_idle || !o->fresh || !o->acpd_quiet)
             why = TC_DISKD_BUSY;
         else {
             phase = TC_DISKD_STOPPING;

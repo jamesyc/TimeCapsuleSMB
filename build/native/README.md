@@ -318,6 +318,28 @@ role, the mounts, its own children and the drain:
   child's exit, an audit), so an older table asks the next pass for a fresh
   read, as the audit does, rather than TERM on an idle seen up to a second
   ago.
+- **ACPd quiet** (`procfacts.h` `tc_acpd_quiet`): the main ACPd (an ACPd
+  whose parent is an ACPd gives that parent) has been quiet for 3 s
+  (`TC_ACPD_QUIET_MS`) across the table reads. Each read starts the stretch
+  again when ACPd is another process (pid or start time) than the last
+  read's, its row is runnable or on the CPU, the read comes more than 3.5 s
+  after the last (`TC_ACPD_QUIET_GAP_MS`; reads come 1-2 s apart), its CPU
+  time went back, or it grew more than 1 ms per second since the last read
+  (`TC_ACPD_QUIET_BUDGET_US`). No ACPd is not quiet. ACPd's main thread
+  calls diskd synchronously, and that call and the TERM's unregisters wait
+  on each other (F19). Quiet means ACPd is not working on such a call; one it
+  waits in without using CPU passes all the same. On a NetBSD 4 LE, an idle ACPd ran in bursts of
+  about 10 ms, usually two 6 s apart, every 25-30 s (0.73 ms/s); one local
+  `acp -q` cost it 1-1.3 ms and one network syUT read about 2 ms. The
+  stretch restarts on every burst and on most ACP reads (a lone local read
+  can fit in the allowance of a 2 s gap between reads), and a 3 s window
+  still fits between bursts. The manager's own `acp -q` reads count too, so each
+  one it makes during `quiesce` puts the TERM 3 s further off. Reads from a
+  Mac every second hold it for as long as they last. Right after boot ACPd
+  works in bursts every second or two until about uptime 55. A manager
+  started at uptime 29 beside a stock diskd held the TERM until ACPd had
+  started its wcifsfs, which the drain stops, and sent it at uptime 48
+  (`held=16`). NetBSD 6's ACPd was close to idle from uptime 58.
 - **acp clients**: processes named `acp`. ACPd forwards a client's MaSt read
   or `diskd.*` call to diskd and holds it in flight until diskd answers, so
   a TERM meanwhile can deadlock the same way (F19). Most are the runtime's
@@ -350,7 +372,7 @@ long. Each reason claims only this much:
 | `no_answer` | The last two readiness probes in a row got no answer: acp exited with an error (any code, -6727 "not registered" included), ran past its 20 s limit or was killed, or the manager could not start the probe (fork failed, or the previous probe had not exited). The title does not say which; the manager log has a line for each probe. |
 | `relaunch_wait` | No diskd runs and the next launch waits out its backoff: the last launch exited before exec, or our diskd exited. |
 | `observation` | This pass could not tell: no process table, an unreadable mount list, or one owner whose role no audit has read yet. |
-| `busy` | The stock owner is drained and runs no disk tool, but is not idle in its event loop in a table read this pass, or an acp client runs, so its TERM waits (F19). |
+| `busy` | The stock owner is drained and runs no disk tool, but is not idle in its event loop in a table read this pass, an acp client runs, or ACPd has not been quiet long enough, so its TERM waits (F19). One reason for all three: the host's ten-minute verdict is timed from the reason's start, which a switch between two reasons would keep moving. |
 
 Every pass, in this order: without a process table nothing changes (reason
 `observation`); a current owner that is gone is retired (below), since an
@@ -360,7 +382,7 @@ exit needs no argv; without the owner's role nothing new starts (reason
 | Phase | Entered on | What happens, and the next phase |
 | --- | --- | --- |
 | `inspect` | manager start, owner exit, failed launch | Our launch child not exec'd yet: wait. One loopback owner: `starting`. One stock owner: `quiesce`. No owner: disk work → `maintenance`; a leftover mount → `residual_mounts`; inside the backoff → `relaunch_wait`; else launch, `launching`. |
-| `quiesce` | one stock owner | On entry, once (action `ENTER_QUIESCE`, again after a retire brings in a new stock owner): stops the manager's smbd, rsync, staging and storage work, so the stock owner can unmount on TERM; none of them starts again outside `ready`. Discovery, which logs to the payload disk while smbd serves, restarts with its log in RAM, and the old one must have exited. Also waits until the audit no longer finds a foreign smbd, rsync daemon, discovery or `wcifsfs` (or a foreign `wcifsnd`), which it stops on its own (TERM, then KILL after 10 s): a TERM before then would unmount under them, or leave their busy volumes mounted with no diskd. A `wcifsfs` or `wcifsnd` that ACPd starts after the last audit is caught in the pass's own process table, since its audit runs in the background. Once drained with no disk work (reason `maintenance` while it lasts), the owner idle and no acp client running (reason `busy` until then, however long, F19): TERM the owner once, then `stopping`. Apple's `afpserver` and an rsync sshd started for a user's transfer are never stopped, so they are not waited for. |
+| `quiesce` | one stock owner | On entry, once (action `ENTER_QUIESCE`, again after a retire brings in a new stock owner): stops the manager's smbd, rsync, staging and storage work, so the stock owner can unmount on TERM; none of them starts again outside `ready`. Discovery, which logs to the payload disk while smbd serves, restarts with its log in RAM, and the old one must have exited. Also waits until the audit no longer finds a foreign smbd, rsync daemon, discovery or `wcifsfs` (or a foreign `wcifsnd`), which it stops on its own (TERM, then KILL after 10 s): a TERM before then would unmount under them, or leave their busy volumes mounted with no diskd. A `wcifsfs` or `wcifsnd` that ACPd starts after the last audit is caught in the pass's own process table, since its audit runs in the background. Once drained with no disk work (reason `maintenance` while it lasts), the owner idle, no acp client running and ACPd quiet (reason `busy` until then, however long, F19): TERM the owner once, then `stopping`. Apple's `afpserver` and an rsync sshd started for a user's transfer are never stopped, so they are not waited for. |
 | `stopping` | TERM sent | Owner gone: `inspect`. TERM is never resent or escalated; reason `maintenance` while a disk tool runs, since diskd handles TERM only after it returns. |
 | `launching` | fork | The child's PID shows up as `diskd`: `starting`. The child exits before exec: back off (reason `relaunch_wait`), then `inspect`. |
 | `starting` | one loopback owner | One `getVolumeCounts` probe at a time, 20 s each. acp exiting 0 is the answer, whatever status the reply carries: diskd dispatches RPCs only after its initial disk scan (F18), so the dispatch is what readiness means. Answer: `ready`. Anything else counts as no answer and the next probe follows 5 s later; two in a row set `no_answer`. A disk tool running sets `maintenance` instead. |
@@ -480,6 +502,9 @@ unmounts the disks on every restart without a reboot.
   the spells that ended. Every Deploy and Activate wait, successful or not,
   sends it as `acpd_after_start.diskd_held_sec` (0 without the word, left
   out for a manager without `diskd=`); failures carry the whole log anyway.
+  The TERM line says how much of a hold was ACPd's: diskd's row gives how
+  long diskd had been asleep in its event loop, and `acpd_quiet=` how long
+  ACPd had been quiet.
 - The same waits send the running manager's TERM line and acpd reads
   ("Watching the TERM") as `acpd_after_start.diskd_term` and `acpd_reads`.
   `runtime.log` keeps earlier managers' lines until a restart, so a TERM line
@@ -508,13 +533,15 @@ show idle stock diskd asleep in `kevent` for many seconds between wakeups.
 
 ### Watching the TERM
 
-The idle gate cannot see a code 14 already queued for ACPd's main thread
-(F19), so the manager records what it can around the TERM. None of this
+The gate cannot see a code 14 already queued for ACPd's main thread while
+ACPd uses no CPU on it (F19), so the manager records what it can around the
+TERM. None of this
 changes when the TERM goes out or holds the handoff.
 
 - **TERM line**, as the TERM is sent: `manager: diskd: TERM diskd=ROW
-  acpd=ROW acpd_children=LIST acp=N disk_work_ago=MS netbios_ago=MS
-  uptime=S` (`procfacts.h` `tc_proc_handoff_line`). A ROW is
+  acpd=ROW acpd_children=LIST acp=N acpd_quiet=MS disk_work_ago=MS
+  netbios_ago=MS uptime=S` (`procfacts.h` `tc_proc_handoff_line`;
+  `acpd_quiet` is how long ACPd has been quiet, -1 with no ACPd). A ROW is
   PID:STAT:WMESG:SLEPT:CPU_MS. ACPd's row is one thread under NetBSD 4's
   scheduler activations, and a healthy ACPd shows `netio` and keeps an
   unreaped `wcifsfs` for minutes, so neither is a wedge alone.
@@ -545,9 +572,12 @@ probe outcomes, the `quiesce` entry action, a table from an earlier pass,
 `held` and the title word, and the watch's episodes, cadence and report.
 `tests/native/unit/test_procfacts.c` drives `tc_proc_facts`: owners and
 their helpers, disk work and repair, acp clients, our launch child before
-and after exec, foreign NetBIOS, and the idle rule; and the TERM line's rows. `tests/native/test_manager.py` covers the boot takeover
-(stock TERM, wait, launch), the stock TERM waiting for an idle owner and
-no acp client, adopting a loopback owner, disk work and a
+and after exec, foreign NetBIOS, and the idle rule; the TERM line's rows;
+the main-ACPd pick; and every rule of the ACPd quiet tracker.
+`test_diskd.c` also holds the TERM for an ACPd that is not quiet.
+`tests/native/test_manager.py` covers the boot takeover (stock TERM, wait,
+launch), the stock TERM waiting for an idle owner, no acp client and a
+quiet ACPd (one runnable, and none at all), adopting a loopback owner, disk work and a
 leftover mount holding launch, a foreign smbd, discovery or `wcifsfs`, and
 our own disk-logging discovery, holding the stock TERM until it is gone, a
 retired owner's `unmounted=` verdict going with it and its claims starting
@@ -706,7 +736,7 @@ cite them by number. ([DETAIL.md](../../DETAIL.md) has the user-facing side.)
 | F16 | ACPd keeps one table of `diskd.*` RPC names. A second diskd's duplicate registration is rejected, but when it exits ACPd deletes the names it tried, which are the first diskd's, in registration order (`getHomeVolumeInfo`, `getVolumeCounts`, `useVolume`, ...). `acp rpc` exits 22 on routing failure. A routed call can exit zero with a nonzero handler status in the reply. Stderr carries -6727 for a missing name. Measured on NetBSD 4 LE. |
 | F17 | Diskd processes SIGTERM through its event loop and unregisters RPCs before unmounting volumes. NetBSD 4 LE cleanup is at `0xed950`, volume removal at `0xe98c8`, and mount preparation at `0xe9a20`. A failed initial mount frees the volume record but retains the seen device name, so an unchanged device is not retried on the next scan. Local ARM emulation reproduced this failure path. Persistent filesystem damage on the affected device remains unproven. |
 | F18 | The initial scan precedes event-loop RPC dispatch in the saved NetBSD 4 LE, 4 BE and 6 firmware. Scan/dispatch call sites: LE `0xee17c`/`0xee160`, BE `0xcae74`/`0xcae58`, 6 `0x1040e8`/`0x1040cc`. The read-only getVolumeCounts handlers are LE `0xe8e94`, BE `0xc5de0`, 6 `0xfec74`. The inspected binaries' SHA-256 values are LE `16539fccbe32dae85bf4267e12fcc59d4599fbbf11f4e02c1b3ed790d7dbfde3`, BE `a446998662315592b61f8264d21438453e9234a0fa7ad567cd20fdff3abdd5c3`, 6 `7a1e5fae541f8fd112d98f261b18eb3ac3ac1c8be02e3223660d5b1b7cc2e05b`. |
-| F19 | A TERM that reaches diskd before it is back in its event loop can deadlock it with ACPd. Its cleanup sends 13 unregisters on its request socket, each a blocking `recv(MSG_WAITALL)` with no timeout (LE `0x4070b0`, `0x4074d4`): eraseDisk, cancelEraseDisk, archiveDisk, cancelArchiveDisk, MaSt, then the nine `diskd.*` RPC names, getVolumeCounts twelfth. ACPd answers an unregister only once no call to that name is in flight, waiting in an unbounded 100 ms loop (`0x261444`; properties `0x261af4`). A forwarded call stays in flight in `recv` on diskd's callback socket, which diskd reads only from its event loop. ACPd's main thread calls `diskd.getVolumeCounts` synchronously after diskd's `acpd.processDiskChanges` (`0x24bdf0`), and the same thread accepts TCP 5009 (`0x410338`). So diskd sleeps in `netio`, `acp -A MaSt` fails, and 5009 accepts but never answers, while local `acp` (one ACPd thread per Unix client) keeps working, until diskd is killed (5009 answers again within seconds) or the device is unplugged. In all three images the main loop's `kevent` is the only one diskd's own code waits in (LE `0xee0d4`, BE `0xcadcc`, NetBSD 6 `0x104060`); its other calls only change events, and the ACP client library's waiting thread is one diskd never starts. Startup scan, per volume: `sh -c /sbin/fsck -q`, a mount, `sh -c /sbin/umount`. On a NetBSD 4 LE, a hand-started stock diskd TERMed during that scan (wmesg `wait`) wedged every time, with r8 = "diskd.getVolumeCounts" in its trapframe; TERMed asleep in `kqread` it exited every time. BE (`0xca64c`, `0x239514`, `0x225250`) and NetBSD 6 (`0x1038b4`, `0x28ff0c`, `0x2790e4`) have the same cleanup order, drain and main-thread call. ACPd's main thread gets its codes (code 14 among them) as bytes in a level-triggered pipe and takes one `kevent` event per wakeup (LE `0x410284`, BE `0x3c5bb0`, NetBSD 6 `0x4d2f88`), so the kernel serves the pipe and the listener in turn: each accepted 5009 connection follows at most one handled code. The idle gate cannot see a code still queued there ("Watching the TERM" under "Disk owner handoff"). All three images ignore SIGPIPE, set in that event constructor (LE `0x4106e4`, BE `0x3c601c`, NetBSD 6 `0x4d338c`): a client that closes mid-reply ends only its own session thread. |
+| F19 | A TERM that reaches diskd before it is back in its event loop can deadlock it with ACPd. Its cleanup sends 13 unregisters on its request socket, each a blocking `recv(MSG_WAITALL)` with no timeout (LE `0x4070b0`, `0x4074d4`): eraseDisk, cancelEraseDisk, archiveDisk, cancelArchiveDisk, MaSt, then the nine `diskd.*` RPC names, getVolumeCounts twelfth. ACPd answers an unregister only once no call to that name is in flight, waiting in an unbounded 100 ms loop (`0x261444`; properties `0x261af4`). A forwarded call stays in flight in `recv` on diskd's callback socket, which diskd reads only from its event loop. ACPd's main thread calls `diskd.getVolumeCounts` synchronously after diskd's `acpd.processDiskChanges` (`0x24bdf0`), and the same thread accepts TCP 5009 (`0x410338`). So diskd sleeps in `netio`, `acp -A MaSt` fails, and 5009 accepts but never answers, while local `acp` (one ACPd thread per Unix client) keeps working, until diskd is killed (5009 answers again within seconds) or the device is unplugged. In all three images the main loop's `kevent` is the only one diskd's own code waits in (LE `0xee0d4`, BE `0xcadcc`, NetBSD 6 `0x104060`); its other calls only change events, and the ACP client library's waiting thread is one diskd never starts. Startup scan, per volume: `sh -c /sbin/fsck -q`, a mount, `sh -c /sbin/umount`. On a NetBSD 4 LE, a hand-started stock diskd TERMed during that scan (wmesg `wait`) wedged every time, with r8 = "diskd.getVolumeCounts" in its trapframe; TERMed asleep in `kqread` it exited every time. BE (`0xca64c`, `0x239514`, `0x225250`) and NetBSD 6 (`0x1038b4`, `0x28ff0c`, `0x2790e4`) have the same cleanup order, drain and main-thread call. ACPd's main thread gets its codes (code 14 among them) as bytes in a level-triggered pipe and takes one `kevent` event per wakeup (LE `0x410284`, BE `0x3c5bb0`, NetBSD 6 `0x4d2f88`), so the kernel serves the pipe and the listener in turn: each accepted 5009 connection follows at most one handled code. The idle gate cannot see a code still queued there ("Watching the TERM" under "Disk owner handoff"). In the field, the one wedged TERM whose line was logged found ACPd running (`acpd=190:2:select:0:...`) with none of its wcifsfs, wcifsnd or afpserver started yet, and all eight acpd reads after it answered within 350 ms; every TERM that went well found ACPd asleep in `netio` for 10 s or more. That wedged ACPd never started its file servers. The manager also waits for ACPd to be quiet ("ACPd quiet" under "Observation"). All three images ignore SIGPIPE, set in that event constructor (LE `0x4106e4`, BE `0x3c601c`, NetBSD 6 `0x4d338c`): a client that closes mid-reply ends only its own session thread. |
 
 ### Apple ACPd
 

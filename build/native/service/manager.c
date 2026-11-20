@@ -250,6 +250,7 @@ struct manager {
      * last that showed a foreign wcifsfs or wcifsnd (-1: none yet).
      * acpd_reads times ACPd's listener after the TERM. Process-local. */
     long long disk_work_at, netbios_at;
+    struct tc_acpd_quiet acpd_quiet; /* describes procs, updated with it */
     struct tc_child acpd_reads;
     enum tc_diskd_phase logged_phase;
     enum tc_diskd_reason logged_reason;
@@ -957,8 +958,10 @@ static long long ago(long long at, long long now) {
 static void log_handoff_facts(const struct manager *m, const char *what, long long now) {
     char rows[320];
     tc_proc_handoff_line(&m->procs, m->handoff.owner, m->acpd_reads.group, rows, sizeof(rows));
-    timestamped_fprintf(stderr, "manager: diskd: %s %s disk_work_ago=%lld netbios_ago=%lld uptime=%lld\n", what, rows,
-                        ago(m->disk_work_at, now), ago(m->netbios_at, now), now / 1000);
+    timestamped_fprintf(stderr,
+                        "manager: diskd: %s %s acpd_quiet=%lld disk_work_ago=%lld netbios_ago=%lld uptime=%lld\n",
+                        what, rows, tc_acpd_quiet_ms(&m->acpd_quiet, now), ago(m->disk_work_at, now),
+                        ago(m->netbios_at, now), now / 1000);
 }
 /* What the facts depend on, as the manager's state is now. */
 static struct tc_proc_context proc_context(const struct manager *m) {
@@ -988,6 +991,7 @@ static void observe_diskd(struct manager *m, struct tc_diskd_observation *o, lon
     o->current_present = facts.current_present;
     o->disk_work = facts.disk_work;
     o->acp_clients = facts.acp_clients;
+    o->acpd_quiet = tc_acpd_quiet_ms(&m->acpd_quiet, now) >= TC_ACPD_QUIET_MS;
     if (facts.disk_work)
         m->disk_work_at = now;
     if (facts.foreign_netbios)
@@ -1574,6 +1578,7 @@ static void pump_sample(struct manager *m, long long now) {
         timestamped_fprintf(stderr, "manager: process table readable again\n");
     m->procs_unreadable = 0;
     m->procs_valid = 1;
+    tc_acpd_quiet_update(&m->acpd_quiet, &m->procs, now);
     {
         const struct tc_proc_context context = proc_context(m);
         struct tc_proc_facts facts;
@@ -1954,6 +1959,7 @@ int tc_manager_main(int argc, char **argv) {
     m->started_ms = m->hostname_wait_since = acp_monotonic_ms();
     tc_diskd_init(&m->handoff, m->started_ms);
     m->disk_work_at = m->netbios_at = -1;
+    tc_acpd_quiet_init(&m->acpd_quiet);
     m->unmounted_since = -1;
     set_manager_title(m);
     m->storage_dirty = 1;

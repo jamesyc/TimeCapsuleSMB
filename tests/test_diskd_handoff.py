@@ -131,11 +131,14 @@ class VerdictTests(unittest.TestCase):
         for way in ("failed", "timed out", "could not be sent"):
             self.assertIn(way, message)
 
-    def test_a_stock_diskd_that_never_idles_is_named_as_the_cause(self) -> None:
+    def test_a_stock_diskd_or_acpd_that_never_idles_is_named_as_the_cause(self) -> None:
         # The manager holds the TERM until Apple's diskd idles in its event
-        # loop (README F19); one that never does needs the restart.
-        _code, message = DiskdHandoff("quiesce", 0, "busy").verdict(RESTART_AFTER_SECONDS * 1000)
-        self.assertTrue(message.startswith("Apple's own disk service never became idle"))
+        # loop and ACPd is quiet (README F19); one that never does needs the
+        # restart. busy covers both, so the message names both.
+        code, message = DiskdHandoff("quiesce", 0, "busy").verdict(RESTART_AFTER_SECONDS * 1000)
+        self.assertEqual(code, ErrorCode.DISKD_RESTART_NEEDED)
+        self.assertTrue(message.startswith("Apple's own disk service could not be asked to hand over the disks"))
+        self.assertIn("Apple's AirPort service, never became idle", message)
 
     def test_the_pending_message_names_no_single_cause(self) -> None:
         # Pending also covers no answer yet, a conflict and leftover mounts.

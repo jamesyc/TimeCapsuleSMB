@@ -187,6 +187,101 @@ static void handoff_line_long_child_list(void) {
     assert(tc_proc_handoff_line(&t, who(229), 0, small, sizeof(small)) >= (int)sizeof(small));
     assert(strlen(small) == sizeof(small) - 1);
 }
+static void main_acpd_pick(void) {
+    struct tc_proc gone = row(190, 1, "ACPd", "", 0);
+    gone.stat = TC_LSZOMB;
+    const struct tc_proc rows[] = {
+        row(150, 190, "ACPd", "nanoslee", 30), row(190, 1, "ACPd", "netio", 5), row(229, 190, "diskd", "kqread", 4),
+    };
+    set(rows, 3);
+    /* The restart hang's child ACPd gives its parent. */
+    assert(tc_proc_main_acpd(&t)->pid == 190);
+    set(rows + 1, 2);
+    assert(tc_proc_main_acpd(&t)->pid == 190);
+    set(rows + 2, 1);
+    assert(!tc_proc_main_acpd(&t));
+    set(&gone, 1);
+    assert(!tc_proc_main_acpd(&t));
+}
+/* One table with ACPd (pid, born) at cpu_us and stat, read at now. */
+static void acpd_at(struct tc_acpd_quiet *q, pid_t pid, unsigned long long born, unsigned long long cpu_us, int stat,
+                    long long now) {
+    struct tc_proc acpd = row(pid, 1, "ACPd", stat == TC_LSSLEEP ? "netio" : "", 9);
+    acpd.born = born;
+    acpd.cpu_us = cpu_us;
+    acpd.stat = stat;
+    set(&acpd, 1);
+    tc_acpd_quiet_update(q, &t, now);
+}
+static void acpd_quiet_tracker(void) {
+    struct tc_acpd_quiet q;
+    const long long step = 1000, budget = TC_ACPD_QUIET_BUDGET_US;
+    tc_acpd_quiet_init(&q);
+    assert(tc_acpd_quiet_ms(&q, 0) == -1);
+    /* A first look proves nothing quiet yet. */
+    acpd_at(&q, 190, 1900, 5000000, TC_LSSLEEP, 10000);
+    assert(tc_acpd_quiet_ms(&q, 10000) == 0);
+    /* Flat, and growth up to the budget, keep the stretch. */
+    acpd_at(&q, 190, 1900, 5000000, TC_LSSLEEP, 10000 + step);
+    acpd_at(&q, 190, 1900, 5000000 + budget, TC_LSSLEEP, 10000 + 2 * step);
+    assert(tc_acpd_quiet_ms(&q, 10000 + 2 * step) == 2 * step && tc_acpd_quiet_ms(&q, 13000) == 3000);
+    /* One microsecond over starts again. */
+    acpd_at(&q, 190, 1900, 5000000 + 2 * budget + 1, TC_LSSLEEP, 13000);
+    assert(tc_acpd_quiet_ms(&q, 13000) == 0);
+    /* The budget is per second between reads: two reads of half each keep it,
+     * and reads twice as far apart allow twice as much. */
+    acpd_at(&q, 190, 1900, 5000000 + 2 * budget + 1 + budget / 2, TC_LSSLEEP, 14000);
+    acpd_at(&q, 190, 1900, 5000000 + 3 * budget + 1, TC_LSSLEEP, 15000);
+    assert(tc_acpd_quiet_ms(&q, 15000) == 2000);
+    acpd_at(&q, 190, 1900, 5000000 + 5 * budget + 1, TC_LSSLEEP, 17000);
+    assert(tc_acpd_quiet_ms(&q, 17000) == 4000);
+    acpd_at(&q, 190, 1900, 5000000 + 7 * budget + 2, TC_LSSLEEP, 19000);
+    assert(tc_acpd_quiet_ms(&q, 19000) == 0);
+    /* Half a second allows half: a second read soon after is held to it. */
+    acpd_at(&q, 190, 1900, 5000000 + 7 * budget + 2 + budget / 2 + 1, TC_LSSLEEP, 19500);
+    assert(tc_acpd_quiet_ms(&q, 19500) == 0);
+    /* Runnable or on the CPU with flat CPU: the work has not been charged yet. */
+    unsigned long long cpu = 5000000 + 7 * budget + 2 + budget / 2 + 1;
+    acpd_at(&q, 190, 1900, cpu, TC_LSRUN, 20500);
+    assert(tc_acpd_quiet_ms(&q, 20500) == 0);
+    acpd_at(&q, 190, 1900, cpu, TC_LSSLEEP, 21500);
+    acpd_at(&q, 190, 1900, cpu, TC_LSONPROC, 22500);
+    assert(tc_acpd_quiet_ms(&q, 22500) == 0);
+    /* A read longer than the gap after the last starts again, flat or not;
+     * a read at the gap keeps the stretch, with the allowance for it. */
+    acpd_at(&q, 190, 1900, cpu, TC_LSSLEEP, 23500);
+    acpd_at(&q, 190, 1900, cpu, TC_LSSLEEP, 23500 + TC_ACPD_QUIET_GAP_MS);
+    assert(tc_acpd_quiet_ms(&q, 23500 + TC_ACPD_QUIET_GAP_MS) == 1000 + TC_ACPD_QUIET_GAP_MS);
+    acpd_at(&q, 190, 1900, cpu, TC_LSSLEEP, 23500 + 2 * TC_ACPD_QUIET_GAP_MS + 1);
+    assert(tc_acpd_quiet_ms(&q, 23500 + 2 * TC_ACPD_QUIET_GAP_MS + 1) == 0);
+    long long now = 23500 + 2 * TC_ACPD_QUIET_GAP_MS + 1;
+    /* CPU gone back: another process. So are a new pid and a new start time. */
+    acpd_at(&q, 190, 1900, cpu - 1, TC_LSSLEEP, now + step);
+    assert(tc_acpd_quiet_ms(&q, now + step) == 0);
+    acpd_at(&q, 191, 1900, cpu - 1, TC_LSSLEEP, now + 2 * step);
+    assert(tc_acpd_quiet_ms(&q, now + 2 * step) == 0);
+    acpd_at(&q, 191, 1901, cpu - 1, TC_LSSLEEP, now + 3 * step);
+    assert(tc_acpd_quiet_ms(&q, now + 3 * step) == 0);
+    acpd_at(&q, 191, 1901, cpu - 1, TC_LSSLEEP, now + 4 * step);
+    assert(tc_acpd_quiet_ms(&q, now + 4 * step) == step);
+    /* ACPd gone: none, and one that comes back starts over. */
+    t.count = 0;
+    tc_acpd_quiet_update(&q, &t, now + 5 * step);
+    assert(tc_acpd_quiet_ms(&q, now + 5 * step) == -1);
+    acpd_at(&q, 191, 1901, cpu - 1, TC_LSSLEEP, now + 6 * step);
+    assert(tc_acpd_quiet_ms(&q, now + 6 * step) == 0);
+    /* A read stamped before the last one gets no allowance: any CPU starts
+     * the stretch again, and flat CPU does not make ACPd quiet any longer. */
+    const long long t = 50000 + TC_ACPD_QUIET_MS;
+    tc_acpd_quiet_init(&q);
+    acpd_at(&q, 190, 1900, 1000, TC_LSSLEEP, 50000);
+    acpd_at(&q, 190, 1900, 1000, TC_LSSLEEP, t);
+    assert(tc_acpd_quiet_ms(&q, t) == TC_ACPD_QUIET_MS);
+    acpd_at(&q, 190, 1900, 1001, TC_LSSLEEP, t - 500);
+    assert(tc_acpd_quiet_ms(&q, t - 500) == 0);
+    acpd_at(&q, 190, 1900, 1001, TC_LSSLEEP, t - 1000);
+    assert(tc_acpd_quiet_ms(&q, t - 1000) < TC_ACPD_QUIET_MS);
+}
 int main(void) {
     owners_and_helpers();
     our_launch_child();
@@ -195,5 +290,7 @@ int main(void) {
     handoff_line_rows();
     handoff_line_picks_the_main_acpd();
     handoff_line_long_child_list();
+    main_acpd_pick();
+    acpd_quiet_tracker();
     return 0;
 }

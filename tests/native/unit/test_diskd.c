@@ -9,7 +9,7 @@
 static const struct tc_proc_identity STOCK = {229, 100}, LOOPBACK = {680, 200}, OTHER = {700, 300};
 
 static struct tc_diskd_observation none(void) {
-    return (struct tc_diskd_observation){.kernel_valid = 1, .valid = 1, .drained = 1, .fresh = 1};
+    return (struct tc_diskd_observation){.kernel_valid = 1, .valid = 1, .drained = 1, .fresh = 1, .acpd_quiet = 1};
 }
 static struct tc_diskd_observation one(struct tc_proc_identity owner, int loopback, const struct tc_diskd *s) {
     struct tc_diskd_observation o = none();
@@ -356,6 +356,106 @@ static void stock_term_waits_for_an_idle_owner(void) {
     o = one(LOOPBACK, 1, &s);
     assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_PROBE && named(&s, "starting", "none"));
 }
+/* An idle owner still waits for ACPd to be quiet (F19): the TERM's
+ * unregisters deadlock with a call ACPd's main thread makes into diskd. */
+static void stock_term_waits_for_a_quiet_acpd(void) {
+    struct tc_diskd s;
+    tc_diskd_init(&s, 0);
+    struct tc_diskd_observation o = idle_stock(&s);
+    o.acpd_quiet = 0;
+    assert(tc_diskd_step(&s, &o, 10) == TC_DISKD_ENTER_QUIESCE && named(&s, "quiesce", "busy") && s.since == 10);
+    o = idle_stock(&s);
+    o.acpd_quiet = 0;
+    for (long long t = 11; t < 100000; t += 1000)
+        assert(!tc_diskd_step(&s, &o, t) && named(&s, "quiesce", "busy") && s.since == 10);
+    /* busy for the owner and busy for ACPd are one reason: switching between
+     * them keeps the reason's start, which the host's verdict is timed from,
+     * and the watch's episode. */
+    long long watch_since = s.watch_since;
+    o = one(STOCK, 0, &s);
+    assert(!tc_diskd_step(&s, &o, 100001) && named(&s, "quiesce", "busy") && s.since == 10);
+    o = idle_stock(&s);
+    o.acpd_quiet = 0;
+    assert(!tc_diskd_step(&s, &o, 100002) && s.since == 10 && s.watch_since == watch_since);
+    /* Quiet: the TERM, once, and the hold counts in held_ms. */
+    o.acpd_quiet = 1;
+    assert(tc_diskd_step(&s, &o, 100003) == TC_DISKD_TERM && named(&s, "stopping", "none"));
+    assert(s.held_ms == 100003 - 10);
+    o.acpd_quiet = 0;
+    assert(!tc_diskd_step(&s, &o, 100004) && named(&s, "stopping", "none"));
+    o.acpd_quiet = 1;
+    assert(!tc_diskd_step(&s, &o, 100005) && named(&s, "stopping", "none"));
+    /* An owner that exits while ACPd is busy is retired as any other. */
+    tc_diskd_init(&s, 0);
+    o = idle_stock(&s);
+    o.acpd_quiet = 0;
+    assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_ENTER_QUIESCE && named(&s, "quiesce", "busy"));
+    o = none();
+    o.acpd_quiet = 0;
+    assert(tc_diskd_step(&s, &o, 2) == (TC_DISKD_RETIRE | TC_DISKD_LAUNCH) && named(&s, "launching", "none"));
+    /* Our loopback owner is probed whatever ACPd does. */
+    tc_diskd_init(&s, 0);
+    o = one(LOOPBACK, 1, &s);
+    o.acpd_quiet = 0;
+    assert(tc_diskd_step(&s, &o, 1) == TC_DISKD_PROBE && named(&s, "starting", "none"));
+}
+/* Any order of observations, on a fixed pseudo-random sequence: each owner
+ * gets one TERM at most, and only from a pass that read the table this pass
+ * and found the owner idle, no acp client, nothing holding the volumes, no
+ * disk work and ACPd quiet (F19). */
+static unsigned next_random(unsigned *x) {
+    *x = *x * 1103515245u + 12345u;
+    return *x >> 16;
+}
+static void term_invariants(void) {
+    struct tc_diskd s;
+    struct tc_proc_identity owner = STOCK;
+    unsigned x = 20261120, terms = 0, generation, all_terms = 0;
+    long long now = 0;
+    int i;
+    tc_diskd_init(&s, 0);
+    generation = s.generation;
+    for (i = 0; i < 20000; i++) {
+        struct tc_diskd_observation o;
+        unsigned r = next_random(&x), actions;
+        now += 1 + (long long)(r % 1500);
+        if (r % 97 == 0) {
+            o = none(); /* the owner exited; the next one is another process */
+            owner.born++;
+        } else {
+            o = one(owner, 0, &s);
+            o.owner_idle = next_random(&x) % 4 != 0;
+            o.acpd_quiet = next_random(&x) % 3 == 0;
+            o.acp_clients = next_random(&x) % 10 == 0;
+            o.drained = next_random(&x) % 8 != 0;
+            o.disk_work = next_random(&x) % 20 == 0;
+            o.fresh = next_random(&x) % 4 != 0;
+        }
+        o.kernel_valid = next_random(&x) % 25 != 0;
+        o.valid = next_random(&x) % 25 != 0;
+        if (o.owners == 0)
+            o.valid = 1; /* a pass with no owner always knows its role */
+        actions = tc_diskd_step(&s, &o, now);
+        if (s.generation != generation) {
+            generation = s.generation;
+            terms = 0;
+        }
+        if (actions & TC_DISKD_TERM) {
+            assert(++terms == 1);
+            assert(o.kernel_valid && o.valid && o.fresh && o.owner_idle && o.acpd_quiet && !o.acp_clients &&
+                   o.drained && !o.disk_work);
+            all_terms++;
+        }
+        if (s.phase == TC_DISKD_READY || s.phase == TC_DISKD_STARTING) {
+            /* A loopback owner: start over with a stock one next time. */
+            tc_diskd_init(&s, now);
+            generation = s.generation;
+            terms = 0;
+        }
+    }
+    /* The sequence reached the TERM many times. */
+    assert(all_terms > 50);
+}
 /* QUIESCE is an entry action: once per entry, again after a retire brings
  * in a new stock owner, never for a conflict that kept the phase. */
 static void quiesce_is_entered_once(void) {
@@ -546,6 +646,8 @@ int main(void) {
     probe_failure_reasons();
     stopping_waits_for_disk_work();
     stock_term_waits_for_an_idle_owner();
+    stock_term_waits_for_a_quiet_acpd();
+    term_invariants();
     quiesce_is_entered_once();
     handoff_word();
     ready_survives_audit_failure_and_helpers();

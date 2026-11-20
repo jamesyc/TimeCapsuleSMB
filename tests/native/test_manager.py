@@ -69,6 +69,7 @@ TIMINGS=dict(
     TC_DISKD_WATCH_FAST_MS=2000, # device 5 min
     TC_DISKD_WATCH_SLOW_MS=4000, # device 10 min
     TC_DISKD_WATCH_REPORT_MS=3000, # device 60 s
+    TC_ACPD_QUIET_MS=500,        # device 3 s
 )
 
 CHILD = '''
@@ -300,7 +301,7 @@ def manager(manager_tools):
     else:hosts.unlink(missing_ok=True)
     for name in ('claim-status','claim-counts','bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','no-ipv6','diskd-absent','diskd-fail','record-acp','fail-claim','record-audit','record-fstat','smbd-hold','hold-activation',
                  'mounts-after-diskd','diskd-probe-hold','diskd-probe-ignore-term','diskd-reply','missing-rpc','probe-fail','stock-diskd',
-                 'diskd-lifetime','mast-hold',
+                 'diskd-lifetime','mast-hold','no-acpd',
                  'bufcache','bufcache.writes','bufcache.wakes','bufcache.tmp','bufcache.new','fork-fail','smbd-ignore-term','telemetry-hang',
                  'report-hold','report-exit','titles','smbd-corrupt','smbd-exit-status','rsync-exit-status','discovery-exit-status'):
         (root/name).unlink(missing_ok=True)
@@ -330,6 +331,10 @@ def manager(manager_tools):
         # Apple's own diskd, unless the test has the manager start one.
         if not (root/'diskd-absent').exists():
             processes(root,'apple-diskd','2 1 2 S diskd /sbin/diskd -i lo0 -d local.\n')
+        # ACPd asleep with its CPU time unchanged, so quiet (README F19),
+        # unless the test lists its own or removes it ('no-acpd').
+        if not (root/'procs/apple-acpd').exists() and not (root/'no-acpd').exists():
+            processes(root,'apple-acpd','190 1 190 S ACPd /sbin/ACPd\n')
         log=(root/'stderr').open('w')
         process=subprocess.Popen([str(binary),'manager'],
             stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,
@@ -396,14 +401,14 @@ def alive(pid):
 def started(role):return lambda events:any(e['kind']=='start' and e['role']==role for e in events)
 
 
-def processes(root,name,ps_lines,live=False,wmesg='-',slept=0):
+def processes(root,name,ps_lines,live=False,wmesg='-',slept=0,cpu_us=0):
     """Process-table rows (proctable.h) from "PID PPID PGID STATE NAME COMMAND" lines as ps prints them,
-    each sleeping on `wmesg` for `slept` seconds."""
+    each sleeping on `wmesg` for `slept` seconds after `cpu_us` of CPU. STATE R is runnable."""
     rows=[]
     for line in ps_lines.splitlines():
         pid,ppid,pgid,state,name_,command=line.split(None,5)
-        stat=5 if 'Z' in state else 3
-        rows.append(f"{'live ' if live else ''}{pid} {ppid} {pgid} {stat} 0x80 {slept} 0 {wmesg} {name_} {command}")
+        stat=5 if 'Z' in state else 2 if state.startswith('R') else 3
+        rows.append(f"{'live ' if live else ''}{pid} {ppid} {pgid} {stat} 0x80 {slept} {cpu_us} {wmesg} {name_} {command}")
     write_rows(root,name,rows)
 
 
@@ -2271,7 +2276,10 @@ def test_term_logs_the_owner_and_acpd_then_times_acpd_reads(manager,monkeypatch,
         term=re.search(r'manager: diskd: TERM (.*)',line)[1]
         assert term.startswith(f'diskd={stock.process.pid}:3:kqread:5:')
         assert ' acpd=190:3:-:0:0 acpd_children=wcifsfs:367:Z,+1 acp=0 ' in term
-        assert re.search(r' disk_work_ago=-1 netbios_ago=-1 uptime=\d+$',term)
+        # ACPd's CPU time never changes here: quiet since the manager's
+        # first table, at least the window.
+        quiet=int(re.search(r' acpd_quiet=(\d+) disk_work_ago=-1 netbios_ago=-1 uptime=\d+$',term)[1])
+        assert quiet>=TIMINGS['TC_ACPD_QUIET_MS']
         assert re.fullmatch(r'ms=\d+(,\d+){7}',acpd_reads(root))
         assert listener.requests==[acp._compose_message(acp.COMMAND_GETPROP,'password',
             acp._compose_property_element('syUT',None),flags=4)]*8
@@ -2371,6 +2379,47 @@ def test_an_owner_already_wedged_when_the_manager_starts_is_watched_while_busy(m
         wait(lambda rows:reports(events)==['diskd:quiesce:busy'],timeout=60)
         assert watch_lines(root,'busy')
         assert 'manager: diskd: TERM ' not in runtime_log(root)
+    finally:
+        stock.close()
+
+
+def test_an_idle_owner_waits_while_acpd_runs_and_gets_its_term_once_acpd_is_quiet(manager):
+    # ACPd running may be in a call into diskd that the TERM would deadlock
+    # with (README F19). A runnable ACPd row starts the quiet stretch again at
+    # every table read, with no timing in the test; one asleep with flat CPU
+    # lets the TERM go.
+    root,start,events,wait,_,_=manager
+    stock=StockDiskd(root)
+    try:
+        processes(root,'apple-acpd','190 1 190 R ACPd /sbin/ACPd\n',cpu_us=7000)
+        start()
+        # The manager's own watch says the TERM is being held, ACPd not quiet.
+        until(root,lambda:len(watch_lines(root,'busy'))>=2,timeout=30)
+        assert re.findall(r'busy for \d+ s: .* acpd_quiet=0 ',runtime_log(root))
+        assert 'manager: diskd: TERM ' not in runtime_log(root)
+        processes(root,'apple-acpd','190 1 190 S ACPd /sbin/ACPd\n',wmesg='netio',slept=9,cpu_us=7000)
+        stock.termed(timeout=30)
+        term=re.search(r'manager: diskd: TERM (.*)',wait_log(root,'manager: diskd: TERM '))[1]
+        assert int(re.search(r' acpd_quiet=(\d+) ',term)[1])>=TIMINGS['TC_ACPD_QUIET_MS']
+        assert ' acpd=190:3:netio:9:7 ' in term
+        stock.release();wait(started('smbd'),timeout=30)
+    finally:
+        stock.close()
+
+
+def test_an_idle_owner_waits_while_no_acpd_runs(manager):
+    # No ACPd is not quiet: the TERM waits, and the line says none.
+    root,start,events,wait,_,_=manager
+    (root/'no-acpd').touch()
+    stock=StockDiskd(root)
+    try:
+        start()
+        until(root,lambda:len(watch_lines(root,'busy'))>=2,timeout=30)
+        assert re.findall(r'busy for \d+ s: .* acpd=none .* acpd_quiet=-1 ',runtime_log(root))
+        assert 'manager: diskd: TERM ' not in runtime_log(root)
+        processes(root,'apple-acpd','190 1 190 S ACPd /sbin/ACPd\n')
+        stock.termed(timeout=30)
+        stock.release();wait(started('smbd'),timeout=30)
     finally:
         stock.close()
 

@@ -39,8 +39,10 @@ enum tc_diskd_reason {
      * or one owner whose role no audit has read yet. */
     TC_DISKD_OBSERVATION,
     /* The stock owner is not idle in its event loop in a table read this
-     * pass (owner_idle, fresh below), or an acp client runs (acp_clients), so
-     * its TERM waits (F19). */
+     * pass (owner_idle, fresh below), an acp client runs (acp_clients), or
+     * ACPd has not been quiet long enough (acpd_quiet), so its TERM waits
+     * (F19). One reason for all: the host's ten-minute verdict is timed from
+     * the reason's start, which a switch between two would keep moving. */
     TC_DISKD_BUSY
 };
 struct tc_diskd_observation {
@@ -65,6 +67,11 @@ struct tc_diskd_observation {
      * then can deadlock the same way (F19). Mostly our own short `acp -q`
      * reads of ACPd's properties, which cost a pass at most. */
     int acp_clients;
+    /* ACPd quiet for TC_ACPD_QUIET_MS in this table (procfacts.h
+     * tc_acpd_quiet): it is not working on anything, so not on a call into
+     * diskd that the TERM's unregisters would deadlock with (F19). A call it
+     * waits in without using CPU passes this test. */
+    int acpd_quiet;
 };
 /* ENTER_QUIESCE: the machine just entered `quiesce`. The manager then stops what
  * of its own holds the volumes, once; nothing restarts it outside `ready`. */

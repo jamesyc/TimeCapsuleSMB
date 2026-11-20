@@ -24,9 +24,11 @@
 #define TC_PROC_WMESG 9 /* kernel wait messages are 8 bytes, not NUL-terminated */
 #define TC_PROC_COMM 17
 /* The kernel's values on NetBSD 4 and 6 (sys/lwp.h, sys/proc.h). */
+#define TC_LSRUN 2 /* runnable, waiting for the CPU */
 #define TC_LSSLEEP 3
 #define TC_LSZOMB 5
 #define TC_LSDEAD 6
+#define TC_LSONPROC 7 /* on the CPU */
 #define TC_L_SINTR 0x80
 #define TC_P_SYSTEM 0x200
 

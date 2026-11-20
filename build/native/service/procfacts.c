@@ -53,6 +53,41 @@ void tc_proc_facts(const struct tc_proctable *t, const struct tc_proc_context *c
     if (out->owners == 1 && (p = tc_proctable_live(t, out->owner.pid)) && kevent_idle(p))
         out->owner_idle = !has_child(t, out->owner.pid);
 }
+const struct tc_proc *tc_proc_main_acpd(const struct tc_proctable *t) {
+    const struct tc_proc *acpd = NULL, *p;
+    size_t i;
+    for (i = 0; i < t->count && !acpd; i++)
+        if (!tc_proc_exited(&t->procs[i]) && !strcmp(t->procs[i].comm, "ACPd"))
+            acpd = &t->procs[i];
+    if (acpd && (p = tc_proctable_live(t, acpd->parent)) && !strcmp(p->comm, "ACPd"))
+        acpd = p;
+    return acpd;
+}
+void tc_acpd_quiet_init(struct tc_acpd_quiet *q) {
+    *q = (struct tc_acpd_quiet){.seen_at = -1, .since = -1};
+}
+void tc_acpd_quiet_update(struct tc_acpd_quiet *q, const struct tc_proctable *t, long long now) {
+    const struct tc_proc *acpd = tc_proc_main_acpd(t);
+    if (!acpd) {
+        tc_acpd_quiet_init(q);
+        return;
+    }
+    /* The allowance grows with the time between reads, which the gap rule
+     * caps, so one ACPd counts the same at either read spacing. */
+    long long gap = now - q->seen_at;
+    unsigned long long allowed = (unsigned long long)TC_ACPD_QUIET_BUDGET_US * (unsigned long long)(gap > 0 ? gap : 0);
+    allowed /= 1000;
+    if (acpd->pid != q->acpd.pid || acpd->born != q->acpd.born || acpd->stat == TC_LSRUN ||
+        acpd->stat == TC_LSONPROC || gap > TC_ACPD_QUIET_GAP_MS || acpd->cpu_us < q->cpu_us ||
+        acpd->cpu_us - q->cpu_us > allowed)
+        q->since = now;
+    q->acpd = (struct tc_proc_identity){acpd->pid, acpd->born};
+    q->cpu_us = acpd->cpu_us;
+    q->seen_at = now;
+}
+long long tc_acpd_quiet_ms(const struct tc_acpd_quiet *q, long long now) {
+    return q->acpd.pid ? now - q->since : -1;
+}
 /* A row as PID:STAT:WMESG:SLEPT:CPU_MS, or "none". */
 static void row_word(const struct tc_proc *p, char *out, size_t size) {
     if (!p)
@@ -69,15 +104,10 @@ int tc_proc_handoff_line(const struct tc_proctable *t, struct tc_proc_identity o
     int acp = 0, others = 0;
     for (i = 0; i < t->count; i++) {
         p = &t->procs[i];
-        if (tc_proc_exited(p))
-            continue;
-        if (!strcmp(p->comm, "acp") && !(skip_group && p->group == skip_group))
+        if (!tc_proc_exited(p) && !strcmp(p->comm, "acp") && !(skip_group && p->group == skip_group))
             acp++;
-        else if (!strcmp(p->comm, "ACPd") && !acpd)
-            acpd = p;
     }
-    if (acpd && (p = tc_proctable_live(t, acpd->parent)) && !strcmp(p->comm, "ACPd"))
-        acpd = p;
+    acpd = tc_proc_main_acpd(t);
     children[0] = 0;
     for (i = 0; acpd && i < t->count; i++) {
         p = &t->procs[i];
