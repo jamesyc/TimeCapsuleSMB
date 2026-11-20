@@ -17,8 +17,11 @@ from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.diskd import (
     PENDING_MESSAGE,
     RESTART_AFTER_SECONDS,
+    STUCK_DISKD_SECONDS,
     DiskdHandoff,
+    StuckDiskd,
     parse_diskd_handoff,
+    stuck_diskd,
 )
 from timecapsulesmb.device.disk_errors import DiskNotRespondingError
 from timecapsulesmb.device.errors import DeviceError, RsyncNotRunningError
@@ -41,6 +44,21 @@ from timecapsulesmb.transport.ssh import SshConnection
 
 CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
 READY = DiskdHandoff("ready", 40, "none")
+
+# A TimeCapsule6,116 five minutes after the manager's TERM wedged Apple's
+# diskd (README F19): diskd asleep on netio since, beside ACPd.
+WEDGED_ACPD = "  190     1    15 Ia   127 netio    0:02.46 ACPd"
+WEDGED_DISKD = "  228   190    15 I    127 netio    0:00.02 diskd           /sbin/diskd -i  -d local. "
+WEDGED_MANAGER = ("  417     1   375 S      1 select   0:00.37 service         "
+                  "service: role=manager started=25 diskd=stopping:25:none ")
+WEDGED_SSHD = "  107   190    15 S      0 select   0:00.16 sshd"
+WEDGED_NETBSD4 = "\n".join((WEDGED_SSHD, WEDGED_ACPD, WEDGED_DISKD, WEDGED_MANAGER, PS_LISTING_END))
+
+
+def diskd_row(*, sl: int = 127, wchan: str = "netio", stat: str = "I", ppid: int = 190,
+              argv: str = "/sbin/diskd -i  -d local.") -> str:
+    return f"  228 {ppid} 15 {stat} {sl} {wchan} 0:00.02 diskd {argv}"
+
 STARTING = DiskdHandoff("starting", 40, "none")
 
 
@@ -189,6 +207,49 @@ class RuntimeWaitTests(unittest.TestCase):
         self.assertIs(verdicts.lasting().manager_present, False)
 
 
+class StuckDiskdTests(unittest.TestCase):
+    """Apple's diskd asleep on netio for good (diskd.stuck_diskd), from a listing alone."""
+
+    def test_the_field_wedge_is_stuck(self) -> None:
+        stuck = stuck_diskd(WEDGED_NETBSD4)
+        self.assertEqual(stuck, StuckDiskd(228, 127, capped=True))
+        self.assertEqual(stuck.describe(), "diskd (pid 228) waiting on netio for 127+ s")
+        self.assertIn("more than 127 seconds", stuck.message)
+
+    def test_it_needs_the_threshold_on_netio(self) -> None:
+        cases = (
+            ("at the threshold", diskd_row(sl=STUCK_DISKD_SECONDS), StuckDiskd(228, STUCK_DISKD_SECONDS, False)),
+            ("a second short", diskd_row(sl=STUCK_DISKD_SECONDS - 1), None),
+            # Idle in its event loop: a healthy stock diskd.
+            ("idle in kevent", diskd_row(wchan="kqread"), None),
+            # Waiting on the disk: processes.disk_io_stalls names that.
+            ("on the disk", diskd_row(stat="D", wchan="biowait"), None),
+            ("an exited diskd", diskd_row(stat="Z"), None),
+        )
+        for name, row, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(stuck_diskd(f"{WEDGED_ACPD}\n{row}"), expected)
+
+    def test_only_apples_own_diskd_counts(self) -> None:
+        cases = (
+            ("the manager's loopback diskd", diskd_row(ppid=417, argv="/usr/libexec/diskd -i lo0 -d local."), None),
+            ("stock on bridge0", diskd_row(argv="/sbin/diskd -i bridge0 -d local."), StuckDiskd(228, 127, True)),
+            # A command line that was not read says nothing: ps reads every
+            # one but a process's in uninterruptible sleep, which netio is not.
+            ("unreadable", diskd_row(argv="(unreadable)"), None),
+            ("no command line", diskd_row(argv=""), None),
+        )
+        for name, row, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(stuck_diskd(f"{WEDGED_ACPD}\n{row}"), expected)
+
+    def test_no_manager_is_needed(self) -> None:
+        # A deploy stops the manager and leaves the wedged diskd behind.
+        self.assertIsNotNone(stuck_diskd(f"{WEDGED_ACPD}\n{WEDGED_DISKD}"))
+        self.assertIsNone(stuck_diskd(f"{WEDGED_ACPD}\n{WEDGED_MANAGER}"))
+        self.assertIsNone(stuck_diskd(""))
+
+
 class RuntimeFailureTests(unittest.TestCase):
     @staticmethod
     def failed(step_id: str = "runtime_timeout", *, samba_ready: bool = False) -> ManagedRuntimeProbeResult:
@@ -230,6 +291,29 @@ class RuntimeFailureTests(unittest.TestCase):
         error = runtime_failure_error(self.failed(), "Failed.", disk_stalls=stalls, manager=manager_read(STARTING))
         self.assertIsInstance(error, DiskNotRespondingError)
 
+    def test_a_stuck_diskd_comes_before_the_handoff_and_the_manager(self) -> None:
+        stuck = StuckDiskd(228, 127, True)
+        pending = DiskdHandoff("stopping", 25, "none")
+        for failed, manager in ((self.failed(), manager_read(pending)),
+                                (self.failed(), manager_read(pending, (25 + RESTART_AFTER_SECONDS) * 1000)),
+                                (self.failed(MANAGER_NOT_RUNNING_STEP), None)):
+            with self.subTest(failed.steps[-1].id, manager=manager):
+                error = runtime_failure_error(failed, "Failed.", stuck=stuck, manager=manager)
+                self.assertEqual(error.code, ErrorCode.DISKD_STUCK)
+                self.assertEqual(error.message, stuck.message)
+                self.assertIn("diskd (pid 228) waiting on netio for 127+ s", error.detail)
+        error = runtime_failure_error(self.failed(), "Failed.", stuck=stuck, manager=manager_read(pending))
+        self.assertIn(pending.detail, error.detail)
+
+    def test_a_disk_stall_and_a_quit_acpd_come_before_a_stuck_diskd(self) -> None:
+        stuck = StuckDiskd(228, 127, True)
+        stalls = tuple(disk_io_stalls("  421 379 39 D 127 biolock 0:00.00 mount_hfs\n"))
+        error = runtime_failure_error(self.failed(), "Failed.", disk_stalls=stalls, stuck=stuck)
+        self.assertIsInstance(error, DiskNotRespondingError)
+        from timecapsulesmb.device.probe import ACPD_QUIT_STEP
+        error = runtime_failure_error(self.failed(ACPD_QUIT_STEP), "Failed.", stuck=stuck)
+        self.assertEqual(error.code, ErrorCode.ACPD_QUIT)
+
     def test_no_manager_is_its_own_error_even_while_samba_listens(self) -> None:
         error = runtime_failure_error(self.failed(MANAGER_NOT_RUNNING_STEP, samba_ready=True), "Failed.")
         self.assertIn("manager is not running", str(error))
@@ -249,8 +333,9 @@ LISTING = ("  374 1 374 S 127 netio 0:01.00 diskd\n"
 
 class VerifyAfterWaitTests(unittest.TestCase):
     def verify(self, result: ManagedRuntimeProbeResult, start_states: list[ManagerStartupAgeProbeResult],
-               *, problems: object = (), network: object = True):
+               *, problems: object = (), network: object = True, listing: str | None = None):
         reads = mock.Mock(side_effect=start_states)
+        listing = LISTING if listing is None else listing
         self.debug: dict[str, object] = {}
         callbacks = OperationCallbacks(add_debug_fields=lambda **fields: self.debug.update(fields))
         with (
@@ -266,7 +351,7 @@ class VerifyAfterWaitTests(unittest.TestCase):
                     failure_message="Failed.",
                     probe_runtime=lambda *_args, **_kwargs: result,
                     read_runtime_logs=lambda _c: {}, read_disk_errors=lambda _c: None,
-                    read_start_state=reads, read_processes=lambda _c: LISTING,
+                    read_start_state=reads, read_processes=lambda _c: listing,
                 )
         self.read_problems = read_problems
         return raised.exception, reads
@@ -284,6 +369,15 @@ class VerifyAfterWaitTests(unittest.TestCase):
         self.assertEqual(self.debug["acpd_problems"], ["network_silent"])
         self.assertIs(self.debug["acpd_network_answers"], False)
         self.read_problems.assert_called_once_with(CONNECTION, LISTING)
+
+    def test_the_wedge_in_the_listing_is_the_error(self) -> None:
+        stopping = DiskdHandoff("stopping", 25, "none")
+        error, _ = self.verify(RuntimeFailureTests.failed(), [manager_read(stopping, 330_000)] * 2,
+                               listing=WEDGED_NETBSD4)
+        self.assertEqual(error.code, ErrorCode.DISKD_STUCK)
+        self.assertIn("diskd (pid 228) waiting on netio for 127+ s", error.detail)
+        # The pending handoff's own records still go with it.
+        self.assertIn("228 190 I 127 netio diskd", self.debug["diskd_processes"])
 
     def test_an_unreadable_acpd_is_recorded_beside_the_processes(self) -> None:
         stuck = DiskdHandoff("stopping", 5, "none")
@@ -521,6 +615,14 @@ class DoctorHandoffTests(unittest.TestCase):
         other = CheckResult("FAIL", "managed smbd parent process is not running", {"code": "smbd_not_running"})
         results, _, _ = self.check(STARTING, STARTING, earlier=(other,))
         self.assertEqual([r.details["code"] for r in results], [ErrorCode.DISKD_HANDOFF_PENDING])
+
+    def test_a_stuck_diskd_the_acpd_check_named_is_the_explanation(self) -> None:
+        # The ACPd check reports diskd_stuck from the same listing first: the
+        # handoff's pending verdict, which would say to wait, is left out.
+        named = CheckResult("FAIL", "Apple's disk service has waited", {"code": ErrorCode.DISKD_STUCK})
+        stuck = DiskdHandoff("stopping", 25, "none")
+        results, _, _ = self.check(stuck, stuck, earlier=(named,))
+        self.assertEqual(results, [])
 
     def test_ready_and_older_managers_need_no_second_read(self) -> None:
         for handoff in (READY, None):

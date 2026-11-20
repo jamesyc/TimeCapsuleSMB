@@ -1686,3 +1686,8 @@
 "backend.recovery.diskd_restart_needed.message" = "De schijfservice van Apple is vastgelopen en bestandsdeling kan de schijven pas gebruiken nadat het apparaat opnieuw is opgestart.";
 "backend.recovery.diskd_restart_needed.action.1" = "Herstart het apparaat zodra de reservekopieën en schijfbewerkingen klaar zijn en voer daarna ‘Controle’ opnieuw uit.";
 "doctor.check.diskd_restart_needed" = "De schijfservice van Apple is vastgelopen en bestandsdeling kan de schijven pas gebruiken nadat het apparaat opnieuw is opgestart. Herstart het apparaat zodra de reservekopieën en schijfbewerkingen klaar zijn en voer daarna ‘Controle’ opnieuw uit.";
+"backend.recovery.diskd_stuck.title" = "De schijfservice van Apple is vastgelopen";
+"backend.recovery.diskd_stuck.message" = "De schijfservice van Apple wacht op de AirPort-service van Apple en wordt niet klaar (een fout in de firmware van Apple). Bestandsdeling kan de schijven pas gebruiken nadat het apparaat opnieuw is opgestart.";
+"backend.recovery.diskd_stuck.action.1" = "Haal de stekker 10 seconden uit het apparaat, steek hem er weer in en wacht 2 minuten.";
+"backend.recovery.diskd_stuck.action.2" = "Voer daarna ‘Activeren’ uit.";
+"doctor.check.diskd_stuck" = "De schijfservice van Apple wacht op de AirPort-service van Apple en wordt niet klaar (een fout in de firmware van Apple). Haal de stekker 10 seconden uit het apparaat, steek hem er weer in, wacht 2 minuten en voer daarna ‘Activeren’ uit.";

@@ -27,6 +27,7 @@ from dataclasses import dataclass
 import re
 
 from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.device.processes import PS_SLEEP_SECONDS_CAP, argv_has_pair, parse_ps_rows
 
 # What only a restart clears, once it has held this long with no disk work.
 RESTART_REASONS = {
@@ -113,3 +114,52 @@ def handoff_log_fields(log: tuple[str, ...], manager_started_s: int | None) -> d
         elif line.startswith("acpd reads") and "diskd_term" in fields:
             fields["acpd_reads"] = line[:HANDOFF_LOG_CHARS]
     return fields
+
+
+# Apple's diskd waits on ACPd over a socket (wait channel netio) for
+# milliseconds while it serves, and its unmounts wait on the disk. One asleep
+# on netio this long waits for good: its TERM cleanup's unregisters and an
+# ACPd call into diskd are waiting on each other (build/native/README.md,
+# F19), and only a restart ends it. Only NetBSD 4 runs a stock diskd beside
+# the manager: on NetBSD 6, boot.sh's guard keeps one from starting.
+STUCK_DISKD_SECONDS = 30
+STUCK_DISKD_WCHAN = "netio"
+
+
+@dataclass(frozen=True)
+class StuckDiskd:
+    pid: int
+    seconds: int
+    # ps prints the sleep time capped at PS_SLEEP_SECONDS_CAP.
+    capped: bool
+
+    @property
+    def message(self) -> str:
+        seconds = f"more than {self.seconds}" if self.capped else str(self.seconds)
+        return (f"Apple's disk service has waited {seconds} seconds for Apple's AirPort service and will not "
+                "finish (a bug in Apple's firmware). File sharing cannot use the disks until the device restarts.")
+
+    def describe(self) -> str:
+        seconds = f"{self.seconds}+" if self.capped else str(self.seconds)
+        return f"diskd (pid {self.pid}) waiting on {STUCK_DISKD_WCHAN} for {seconds} s"
+
+
+def stuck_diskd(ps_output: str) -> StuckDiskd | None:
+    """Apple's own diskd asleep on netio for STUCK_DISKD_SECONDS or more, in a
+    PROCESS_SNAPSHOT_COMMAND listing; None when there is none.
+
+    Apple's own: its command line read, and not the manager's loopback diskd
+    (`-i lo0`). ps skips the command line of a process in uninterruptible
+    sleep, which diskd on netio is not, and one it could not read; a diskd
+    whose line went unread is not called stuck, and the next listing reads
+    it. A manager row is not needed: a deploy stops the manager and leaves a
+    wedged diskd behind. ps's sleep time restarts at every wake-up and a
+    wedged diskd never wakes, so the listing alone says how long, with no
+    clock. A diskd waiting on a disk that stopped answering is not on netio
+    (processes.disk_io_stalls names that)."""
+    for row in parse_ps_rows(ps_output):
+        if (row.ucomm == "diskd" and not row.zombie and row.wchan == STUCK_DISKD_WCHAN
+                and row.sl >= STUCK_DISKD_SECONDS and row.argv and not row.unreadable
+                and not argv_has_pair(row.argv, "-i", "lo0")):
+            return StuckDiskd(row.pid, row.sl, capped=row.sl >= PS_SLEEP_SECONDS_CAP)
+    return None

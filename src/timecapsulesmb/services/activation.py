@@ -290,7 +290,9 @@ def run_activation_actions_and_verify(
 # ACPd's problems that leave a start nothing to run on: the manager reads the
 # disks and the admin password from the device's own ACPd. A stuck fork of it
 # only hangs the next restart, and its network listener is not used here.
-ACPD_START_BLOCKERS = frozenset({"restart_never_happened", "quit", "syut_silent"})
+# A stuck diskd too: the manager cannot hand over the disks past it, so a
+# start would only wait out its verification (device.diskd.stuck_diskd).
+ACPD_START_BLOCKERS = frozenset({"restart_never_happened", "quit", "syut_silent", "diskd_stuck"})
 ACPD_QUIT_START_MESSAGE = f"NetBSD 4 activation failed. {acpd.ACPD_QUIT_MESSAGE} Nothing was started."
 
 
@@ -335,9 +337,10 @@ def require_acpd_for_start(
     problem = problems[0]
     if problem.code == "quit":
         raise AcpdQuitError(ACPD_QUIT_START_MESSAGE)
+    # Worded and coded as services.runtime.require_acpd_ready words them.
     raise DeviceError(
-        f"NetBSD 4 activation failed. {acpd.acpd_broken_message(problem.what, note=f'{problem.note}Nothing was started. ')}",
-        code=ErrorCode.ACPD_BROKEN,
+        f"NetBSD 4 activation failed. {acpd.problem_message(problem, note=f'{problem.note}Nothing was started.')}",
+        code=problem.error_code,
     )
 
 

@@ -114,6 +114,8 @@ class ErrorCode(str, Enum):
     DISK_NOT_RESPONDING = "disk_not_responding"
     DISKD_RESTART_NEEDED = "diskd_restart_needed"
     DISKD_HANDOFF_PENDING = "diskd_handoff_pending"
+    # Apple's diskd asleep on netio for good (device.diskd.stuck_diskd).
+    DISKD_STUCK = "diskd_stuck"
     DISK_CHECK_NOT_RESPONDING = "disk_check_not_responding"
     DISK_WRITE_TEST_UNRESPONSIVE = "disk_write_test_unresponsive"
     FSCK_ALREADY_RUNNING = "fsck_already_running"

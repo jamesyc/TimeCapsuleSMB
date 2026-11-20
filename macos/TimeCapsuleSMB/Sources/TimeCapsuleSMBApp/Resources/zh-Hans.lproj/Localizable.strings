@@ -1686,3 +1686,8 @@
 "backend.recovery.diskd_restart_needed.message" = "苹果的磁盘服务卡住了，重启设备之前，文件共享无法使用磁盘。";
 "backend.recovery.diskd_restart_needed.action.1" = "备份和磁盘操作结束后，请重启设备，然后再次运行“检查”。";
 "doctor.check.diskd_restart_needed" = "苹果的磁盘服务卡住了，重启设备之前，文件共享无法使用磁盘。备份和磁盘操作结束后，请重启设备，然后再次运行“检查”。";
+"backend.recovery.diskd_stuck.title" = "苹果的磁盘服务卡住了";
+"backend.recovery.diskd_stuck.message" = "苹果的磁盘服务正在等待苹果的 AirPort 服务，且不会完成（苹果固件的错误）。重启设备之前，文件共享无法使用磁盘。";
+"backend.recovery.diskd_stuck.action.1" = "拔掉设备电源 10 秒钟，再插回并等待 2 分钟。";
+"backend.recovery.diskd_stuck.action.2" = "然后运行“启动 SMB”。";
+"doctor.check.diskd_stuck" = "苹果的磁盘服务正在等待苹果的 AirPort 服务，且不会完成（苹果固件的错误）。请拔掉设备电源 10 秒钟，再插回并等待 2 分钟，然后运行“启动 SMB”。";

@@ -4416,6 +4416,37 @@ class CheckTests(unittest.TestCase):
                          ["restart_never_happened"])
         self.assertEqual(len([r for r in run.results if r.details.get("code") == "disk_not_responding"]), 1)
 
+    def test_run_doctor_checks_names_a_diskd_stuck_on_acpd_in_place_of_the_silent_listener(self) -> None:
+        # A stock diskd asleep on netio for good after its TERM (README F19):
+        # its own code and fix, not ACPd's, and the link is not blamed.
+        from tests.test_diskd_handoff import WEDGED_ACPD, WEDGED_DISKD
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=False) as network:
+            run = self.run_doctor_with_process_snapshot(
+                "\n".join([self.HEALTHY_SMBD_ROW, WEDGED_ACPD, WEDGED_DISKD]), device_reading=self.UNANSWERED_ACP_READ)
+
+        network.assert_not_called()
+        self.assertEqual(self.apple_acpd_failures(run), [])
+        stuck = [result for result in run.results if result.details.get("code") == ErrorCode.DISKD_STUCK]
+        self.assertEqual([result.status for result in stuck], ["FAIL"])
+        self.assertTrue(stuck[0].message.startswith("Apple's disk service has waited more than 127 seconds"))
+        self.assertIn("Unplug the device, wait 10 seconds", stuck[0].message)
+        self.assertIn("run Activate", stuck[0].message)
+        self.assertNotIn("connection to the device is not slow", stuck[0].message)
+        self.assertEqual(stuck[0].details["stuck_diskd"], "diskd (pid 228) waiting on netio for 127+ s")
+        self.assertEqual(run.debug_fields["acpd_problems"], ["diskd_stuck"])
+
+    def test_run_doctor_checks_stops_at_a_diskd_stuck_on_acpd_while_samba_is_off(self) -> None:
+        # The wedge leaves smbd never started: one FAIL with its fix, and none
+        # of the runtime, Samba and Bonjour checks that would only restate it.
+        from tests.test_diskd_handoff import WEDGED_NETBSD4
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=False):
+            run = self.run_doctor_with_process_snapshot(WEDGED_NETBSD4, device_reading=self.UNANSWERED_ACP_READ)
+
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual([result.details.get("code") for result in failures], [ErrorCode.DISKD_STUCK])
+        self.assertTrue(run.fatal)
+        run.mocks.check_authenticated_smb_listing.assert_not_called()
+
     def test_run_doctor_checks_does_not_call_a_listing_cut_short_a_quit_acpd(self) -> None:
         run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
 

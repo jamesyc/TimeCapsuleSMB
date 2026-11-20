@@ -4674,6 +4674,29 @@ describe_managed_smbd_status "" ""
                 self.assertIn(said, str(error))
                 self.assertTrue(str(error).endswith("Nothing was started."))
 
+    def test_activate_refuses_a_stuck_diskd(self) -> None:
+        # The manager cannot hand over the disks past a diskd stuck on ACPd:
+        # a start would only wait out its whole verification.
+        from tests.test_diskd_handoff import WEDGED_NETBSD4
+        debug: dict[str, object] = {}
+        with mock.patch("timecapsulesmb.services.activation.require_compatible_install"), \
+                mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn",
+                           return_value=self._runtime_not_ready()), \
+                mock.patch("timecapsulesmb.device.acpd.restart_verdict", return_value=RestartVerdict("none")), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True), \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=WEDGED_NETBSD4), \
+                mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as run_actions:
+            with self.assertRaises(DeviceError) as raised:
+                activate_runtime(SshConnection("host", "pw", ""), [],
+                                 callbacks=OperationCallbacks(add_debug_fields=debug.update))
+        run_actions.assert_not_called()
+        self.assertEqual(raised.exception.code, "diskd_stuck")
+        self.assertTrue(str(raised.exception).startswith(
+            "NetBSD 4 activation failed. Apple's disk service has waited more than 127 seconds for Apple's AirPort "
+            "service"))
+        self.assertTrue(str(raised.exception).endswith("Nothing was started."))
+        self.assertEqual(debug["acpd_problems"], ["diskd_stuck"])
+
     def test_activate_refuses_a_device_that_is_restarting(self) -> None:
         # The device is about to go down; nothing about ACPd is broken.
         error, run_actions = self._activate_with_acpd(restart=RestartVerdict("restarting", 9.0))

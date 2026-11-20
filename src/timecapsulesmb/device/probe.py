@@ -31,6 +31,7 @@ from timecapsulesmb.device.processes import (
     STUCK_PROCESS_PS_COMMAND,
     PS_ROWS_FUNCTION,
     acpd_running,
+    argv_has_pair,
     describe_uninterruptible,
     listing_complete,
     parse_ps_rows,
@@ -1382,10 +1383,6 @@ def _fstat_5353_listeners(fstat_out: str) -> dict[str, set[str]]:
     return listeners
 
 
-def _argv_has_pair(argv: tuple[str, ...], flag: str, value: str) -> bool:
-    return any(argv[i] == flag and argv[i + 1] == value for i in range(len(argv) - 1))
-
-
 def _parse_link_plan(text: str) -> dict[str, object]:
     """Parses `--print-link-plan` output (guide C.2): status, mode, links with
     masks, their addresses, and the probe script's `session:` line (the
@@ -1685,7 +1682,7 @@ exit 0
     # Same classification as the runtime's tc_apple_diskd_probe: a diskd is
     # ours only if its argv carries the `-i lo0` pair; every other live diskd
     # is ACPd's and advertises on the LAN regardless of ours (review 2, R8).
-    loopback_diskd = [process for process in diskd if _argv_has_pair(process.argv, "-i", "lo0")]
+    loopback_diskd = [process for process in diskd if argv_has_pair(process.argv, "-i", "lo0")]
     stray_diskd = [process for process in diskd if process not in loopback_diskd and process not in unreadable_diskd]
     diskless = any("--diskless" in process.argv for process in discovery)
 

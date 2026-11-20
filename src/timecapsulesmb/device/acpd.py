@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.device.diskd import stuck_diskd
 from timecapsulesmb.device.errors import DeviceRestartingError
 from timecapsulesmb.device.probe import AirportAcpReading, read_kern_limits_conn
 from timecapsulesmb.device.processes import (
@@ -121,8 +122,8 @@ class AcpdProblem:
     # ACPd is gone: it quit, or a restart tore it down without restarting the
     # kernel. Only unplugging the device brings it back.
     gone: bool = False
-    # ACPd is gone and a finished listing shows no smbd: nothing works until
-    # the device restarts.
+    # ACPd is gone, or Apple's diskd is stuck on it, and a finished listing
+    # shows no smbd: nothing works until the device restarts.
     sharing_off: bool = False
 
 
@@ -135,9 +136,9 @@ APPLE_ACPD_BROKEN_CODE = "apple_acpd_broken"
 
 # The problems a process stuck on the disk causes (processes.disk_io_stalls):
 # ACPd, waiting on diskd, which waits for the disk, answers neither its own acp
-# nor the network. A quit, a restart that never happened or a stuck fork of
-# ACPd is ACPd's own.
-DISK_STALL_PROBLEMS = frozenset({"syut_silent", "network_silent"})
+# nor the network, and a diskd that called ACPd meanwhile waits on it. A quit,
+# a restart that never happened or a stuck fork of ACPd is ACPd's own.
+DISK_STALL_PROBLEMS = frozenset({"syut_silent", "network_silent", "diskd_stuck"})
 
 
 def disk_stall_could_explain(problems: list[AcpdProblem]) -> bool:
@@ -481,7 +482,8 @@ def acpd_problems(
 
     An ACPd that quit is the whole story too: every other read would only
     fail the same way. Either one says whether file sharing is off
-    (AcpdProblem.sharing_off).
+    (AcpdProblem.sharing_off). Apple's diskd stuck on ACPd (diskd_stuck)
+    comes first among the rest and replaces network_silent, which it causes.
 
     `ps_output` is a PROCESS_SNAPSHOT_COMMAND listing already read; it is read
     here when None. `network_reading` is this computer's network ACP read of
@@ -512,6 +514,16 @@ def acpd_problems(
     if gone is not None:
         return [gone]
     problems = []
+    # Apple's diskd stuck for good on ACPd (diskd.stuck_diskd): ACPd's network
+    # listener goes silent beside it, which says nothing more, and the unplug
+    # it needs is followed by Activate.
+    wedged = stuck_diskd(ps_output)
+    if wedged is not None:
+        problems.append(AcpdProblem(
+            "diskd_stuck", "Apple's disk service is stuck", sentence=wedged.message,
+            details={"stuck_diskd": wedged.describe()}, error_code=ErrorCode.DISKD_STUCK,
+            sharing_off=smbd_running(ps_output) is False,
+        ))
     answers = acpd_answers(connection) if restart.acpd_answers is None else restart.acpd_answers
     if not answers:
         # The device's own acp gets no uptime (syUT) from ACPd.
@@ -526,7 +538,7 @@ def acpd_problems(
         ))
     # A read without a password has no error: it never asked the device.
     unanswered = bool(network_reading and network_reading.password_matches is None and network_reading.error)
-    if answers and unanswered and not acpd_answers_network(connection):
+    if wedged is None and answers and unanswered and not acpd_answers_network(connection):
         problems.append(AcpdProblem(
             "network_silent",
             "the AirPort service stopped answering the network",

@@ -1686,3 +1686,8 @@
 "backend.recovery.diskd_restart_needed.message" = "Apples Festplattendienst hängt, und die Dateifreigabe kann die Festplatten erst nach einem Neustart des Geräts verwenden.";
 "backend.recovery.diskd_restart_needed.action.1" = "Starten Sie das Gerät neu, sobald Backups und Festplattenvorgänge abgeschlossen sind, und führen Sie danach erneut die „Überprüfung“ aus.";
 "doctor.check.diskd_restart_needed" = "Apples Festplattendienst hängt, und die Dateifreigabe kann die Festplatten erst nach einem Neustart des Geräts verwenden. Starten Sie das Gerät neu, sobald Backups und Festplattenvorgänge abgeschlossen sind, und führen Sie danach erneut die „Überprüfung“ aus.";
+"backend.recovery.diskd_stuck.title" = "Apples Festplattendienst hängt";
+"backend.recovery.diskd_stuck.message" = "Apples Festplattendienst wartet auf Apples AirPort-Dienst und wird nicht fertig (ein Fehler in Apples Firmware). Die Dateifreigabe kann die Festplatten erst nach einem Neustart des Geräts verwenden.";
+"backend.recovery.diskd_stuck.action.1" = "Trennen Sie das Gerät 10 Sekunden lang vom Strom, schließen Sie es wieder an und warten Sie 2 Minuten.";
+"backend.recovery.diskd_stuck.action.2" = "Führen Sie dann „Aktivieren“ aus.";
+"doctor.check.diskd_stuck" = "Apples Festplattendienst wartet auf Apples AirPort-Dienst und wird nicht fertig (ein Fehler in Apples Firmware). Trennen Sie das Gerät 10 Sekunden lang vom Strom, schließen Sie es wieder an, warten Sie 2 Minuten und führen Sie dann „Aktivieren“ aus.";

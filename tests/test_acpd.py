@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device.probe import AirportAcpReading
 from timecapsulesmb.integrations import acp
@@ -815,6 +816,40 @@ class AcpdProblemsTests(unittest.TestCase):
         problems, _ps = self.problems(restart=HUNG, network_reading=READ_UNANSWERED, network_answers=False)
         self.assertEqual([problem.code for problem in problems], ["restart_never_happened"])
         self.network.assert_not_called()
+
+    def test_a_stuck_diskd_replaces_the_silent_listener_it_causes(self) -> None:
+        from tests.test_diskd_handoff import WEDGED_NETBSD4
+        with mock.patch("timecapsulesmb.device.acpd.network_silent_details") as details:
+            problems, _ps = self.problems(listing=WEDGED_NETBSD4, network_reading=READ_UNANSWERED,
+                                          network_answers=False)
+        self.assertEqual([problem.code for problem in problems], ["diskd_stuck"])
+        self.assertEqual(problems[0].error_code, ErrorCode.DISKD_STUCK)
+        self.assertIn("has waited more than 127 seconds", acpd.problem_message(problems[0]))
+        self.assertEqual(problems[0].details, {"stuck_diskd": "diskd (pid 228) waiting on netio for 127+ s"})
+        # A finished listing with no smbd: nothing works until the unplug.
+        self.assertIs(problems[0].sharing_off, True)
+        self.network.assert_not_called()
+        details.assert_not_called()
+
+    def test_a_stuck_diskd_is_named_while_the_listener_still_answers(self) -> None:
+        # The listener answers for minutes after the wedge.
+        from tests.test_diskd_handoff import WEDGED_NETBSD4
+        problems, _ps = self.problems(listing=WEDGED_NETBSD4)
+        self.assertEqual([problem.code for problem in problems], ["diskd_stuck"])
+        # Samba serving, or a listing cut short, does not end the check there.
+        from tests.test_diskd_handoff import WEDGED_ACPD, WEDGED_DISKD
+        for listing in (f"  1851 1 1851 S 0 select 0:00.10 smbd\n{WEDGED_NETBSD4}",
+                        f"{WEDGED_ACPD}\n{WEDGED_DISKD}"):
+            with self.subTest(listing):
+                problems, _ps = self.problems(listing=listing)
+                self.assertIs(problems[0].sharing_off, False)
+
+    def test_a_stuck_diskd_comes_before_acpds_own_problems(self) -> None:
+        from tests.test_diskd_handoff import WEDGED_NETBSD4
+        problems, _ps = self.problems(listing=WEDGED_NETBSD4, answers=False)
+        self.assertEqual([problem.code for problem in problems], ["diskd_stuck", "syut_silent"])
+        # A disk stall explains it as it explains the silence.
+        self.assertTrue(acpd.disk_stall_could_explain(problems[:1]))
 
     def test_a_silent_listener_follows_a_stuck_fork(self) -> None:
         problems, _ps = self.problems(listing=STUCK_BEFORE_REBOOT, network_reading=READ_UNANSWERED, network_answers=False)

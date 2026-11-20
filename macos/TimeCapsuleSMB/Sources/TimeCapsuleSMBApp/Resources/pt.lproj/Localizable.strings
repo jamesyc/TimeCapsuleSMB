@@ -1686,3 +1686,8 @@
 "backend.recovery.diskd_restart_needed.message" = "O serviço de discos da Apple está travado, e o compartilhamento de arquivos não pode usar os discos até o dispositivo ser reiniciado.";
 "backend.recovery.diskd_restart_needed.action.1" = "Quando os backups e as operações de disco terminarem, reinicie o dispositivo e execute “Verificação” novamente.";
 "doctor.check.diskd_restart_needed" = "O serviço de discos da Apple está travado, e o compartilhamento de arquivos não pode usar os discos até o dispositivo ser reiniciado. Quando os backups e as operações de disco terminarem, reinicie o dispositivo e execute “Verificação” novamente.";
+"backend.recovery.diskd_stuck.title" = "O serviço de discos da Apple está travado";
+"backend.recovery.diskd_stuck.message" = "O serviço de discos da Apple está esperando o serviço AirPort da Apple e não vai terminar (um bug no firmware da Apple). O compartilhamento de arquivos não pode usar os discos até o dispositivo ser reiniciado.";
+"backend.recovery.diskd_stuck.action.1" = "Desconecte o dispositivo da tomada por 10 segundos, conecte-o de novo e aguarde 2 minutos.";
+"backend.recovery.diskd_stuck.action.2" = "Depois, execute “Ativar”.";
+"doctor.check.diskd_stuck" = "O serviço de discos da Apple está esperando o serviço AirPort da Apple e não vai terminar (um bug no firmware da Apple). Desconecte o dispositivo da tomada por 10 segundos, conecte-o de novo, aguarde 2 minutos e depois execute “Ativar”.";

@@ -450,6 +450,20 @@ unmounts the disks on every restart without a reboot.
   word this release cannot read) says nothing about the handoff.
 - A process stuck on disk I/O gets the existing disk-not-responding verdict in
   any phase; disk work only explains a wait while nothing is stalled.
+- Otherwise Apple's own diskd (not the `-i lo0` one; one whose argv cannot
+  be read counts when ACPd is its parent) asleep on `netio` for 30 s or more
+  is `diskd_stuck`: F19's wedge, which only a restart ends. ps's sleep time
+  restarts at every wake-up, so the listing alone proves it, with or without
+  a manager. A deploy that stops the manager leaves the wedged diskd behind,
+  and MaSt then lists no disk. The failed wait and the ACPd checks (every
+  command's preflight and Checkup, in place of the `network_silent` it
+  causes) read it from their listing, and its fix is to unplug the device,
+  then Activate. Deploy, Activate (when it would start the runtime), Wipe
+  Disk, the flash writes and enabling SSH refuse on it before they change
+  anything, and so do Uninstall and Disk Repair when they restart the
+  device. Checkup stops at it while no smbd runs.
+  Every wedge on record was on NetBSD 4, with diskd on `netio`; the check
+  names only that wait channel.
 - Otherwise a phase other than `ready` is `diskd_handoff_pending`, whose
   message names no single cause. `conflict`, `no_answer`,
   `residual_mounts`, `busy` (Apple's diskd never idle, so never asked to

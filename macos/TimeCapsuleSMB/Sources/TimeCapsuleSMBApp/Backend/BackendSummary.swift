@@ -269,6 +269,10 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.diskd_handoff_pending")
         case "diskd_restart_needed":
             return L10n.string("doctor.check.diskd_restart_needed")
+        // Apple's diskd waits on ACPd for good: the helper's line counts the
+        // seconds, which the catalog leaves out.
+        case "diskd_stuck":
+            return L10n.string("doctor.check.diskd_stuck")
         // A failed Seagate internal disk, whatever the other disks hold.
         case "disk_seagate_failed":
             return L10n.string("doctor.check.disk_seagate_failed")

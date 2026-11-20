@@ -821,6 +821,8 @@ class FieldSituationCardTests(unittest.TestCase):
          'acpd_quit', ['run_checkup'], False),
         ("Apple's disk service is still handing over", 'deploy', 'diskd_handoff_pending', None,
          'diskd_handoff_pending', ['run_checkup'], True),
+        ("Apple's disk service stuck on ACPd", 'deploy', 'diskd_stuck', None,
+         'diskd_stuck', ['start_smb', 'run_checkup'], True),
         # Disks.
         ('MaSt lists no disk', 'deploy', 'deploy_no_disk_detected', None,
          'deploy.deploy_no_disk_detected', [], True),

@@ -1818,3 +1818,9 @@
 "backend.recovery.diskd_restart_needed.message" = "Apple's disk service is stuck, and file sharing cannot use the disks until the device restarts.";
 "backend.recovery.diskd_restart_needed.action.1" = "After backups and disk operations finish, restart the device, then run “Checkup” again.";
 "doctor.check.diskd_restart_needed" = "Apple's disk service is stuck, and file sharing cannot use the disks until the device restarts. After backups and disk operations finish, restart the device, then run “Checkup” again.";
+// diskd_stuck: Apple's diskd has waited on ACPd for good since its TERM (device.diskd.stuck_diskd); only a restart ends it. The step says to unplug, since a restart asked for from the Mac fails once ACPd stops answering the network. Unplug, then plug it back in: the bare forms are fine here (glossary, Unplug).
+"backend.recovery.diskd_stuck.title" = "Apple's disk service is stuck";
+"backend.recovery.diskd_stuck.message" = "Apple's disk service is waiting for Apple's AirPort service and will not finish (a bug in Apple's firmware). File sharing cannot use the disks until the device restarts.";
+"backend.recovery.diskd_stuck.action.1" = "Unplug the device for 10 seconds, plug it back in and wait 2 minutes.";
+"backend.recovery.diskd_stuck.action.2" = "Then run “Activate”.";
+"doctor.check.diskd_stuck" = "Apple's disk service is waiting for Apple's AirPort service and will not finish (a bug in Apple's firmware). Unplug the device for 10 seconds, plug it back in and wait 2 minutes, then run “Activate”.";

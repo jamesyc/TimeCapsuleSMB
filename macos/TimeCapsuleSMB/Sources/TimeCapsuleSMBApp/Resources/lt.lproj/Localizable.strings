@@ -1686,3 +1686,8 @@
 "backend.recovery.diskd_restart_needed.message" = "Apple diskų tarnyba nebeveikia tinkamai, todėl failų bendrinimas negali naudoti diskų, kol įrenginys nebus paleistas iš naujo.";
 "backend.recovery.diskd_restart_needed.action.1" = "Pasibaigus atsarginių kopijų kūrimui ir disko operacijoms, paleiskite įrenginį iš naujo, tada dar kartą paleiskite operaciją „Patikrinimas“.";
 "doctor.check.diskd_restart_needed" = "Apple diskų tarnyba nebeveikia tinkamai, todėl failų bendrinimas negali naudoti diskų, kol įrenginys nebus paleistas iš naujo. Pasibaigus atsarginių kopijų kūrimui ir disko operacijoms, paleiskite įrenginį iš naujo, tada dar kartą paleiskite operaciją „Patikrinimas“.";
+"backend.recovery.diskd_stuck.title" = "Apple diskų tarnyba užstrigo";
+"backend.recovery.diskd_stuck.message" = "Apple diskų tarnyba laukia Apple AirPort tarnybos ir nebaigs darbo (Apple programinės įrangos klaida). Failų bendrinimas negali naudoti diskų, kol įrenginys nebus paleistas iš naujo.";
+"backend.recovery.diskd_stuck.action.1" = "Atjunkite įrenginį nuo maitinimo 10 sekundžių, vėl prijunkite ir palaukite 2 minutes.";
+"backend.recovery.diskd_stuck.action.2" = "Tada paleiskite „Aktyvuoti“.";
+"doctor.check.diskd_stuck" = "Apple diskų tarnyba laukia Apple AirPort tarnybos ir nebaigs darbo (Apple programinės įrangos klaida). Atjunkite įrenginį nuo maitinimo 10 sekundžių, vėl prijunkite, palaukite 2 minutes ir tada paleiskite „Aktyvuoti“.";

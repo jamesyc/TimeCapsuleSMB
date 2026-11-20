@@ -1686,3 +1686,8 @@
 "backend.recovery.diskd_restart_needed.message" = "Il servizio dischi di Apple è bloccato e la condivisione dei file non può usare i dischi finché il dispositivo non viene riavviato.";
 "backend.recovery.diskd_restart_needed.action.1" = "Al termine dei backup e delle operazioni sul disco, riavvia il dispositivo, poi esegui di nuovo “Controllo”.";
 "doctor.check.diskd_restart_needed" = "Il servizio dischi di Apple è bloccato e la condivisione dei file non può usare i dischi finché il dispositivo non viene riavviato. Al termine dei backup e delle operazioni sul disco, riavvia il dispositivo, poi esegui di nuovo “Controllo”.";
+"backend.recovery.diskd_stuck.title" = "Il servizio dischi di Apple è bloccato";
+"backend.recovery.diskd_stuck.message" = "Il servizio dischi di Apple sta aspettando il servizio AirPort di Apple e non terminerà (un bug del firmware Apple). La condivisione dei file non può usare i dischi finché il dispositivo non viene riavviato.";
+"backend.recovery.diskd_stuck.action.1" = "Scollega il dispositivo dall’alimentazione per 10 secondi, ricollegalo e attendi 2 minuti.";
+"backend.recovery.diskd_stuck.action.2" = "Poi esegui “Attiva”.";
+"doctor.check.diskd_stuck" = "Il servizio dischi di Apple sta aspettando il servizio AirPort di Apple e non terminerà (un bug del firmware Apple). Scollega il dispositivo dall’alimentazione per 10 secondi, ricollegalo, attendi 2 minuti e poi esegui “Attiva”.";

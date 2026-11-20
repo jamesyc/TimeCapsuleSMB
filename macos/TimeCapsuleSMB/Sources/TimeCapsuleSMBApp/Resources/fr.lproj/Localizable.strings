@@ -1686,3 +1686,8 @@
 "backend.recovery.diskd_restart_needed.message" = "Le service de disque d’Apple est bloqué, et le partage de fichiers ne peut pas utiliser les disques avant le redémarrage de l’appareil.";
 "backend.recovery.diskd_restart_needed.action.1" = "Une fois les sauvegardes et les opérations sur disque terminées, redémarrez l’appareil, puis relancez « Vérification ».";
 "doctor.check.diskd_restart_needed" = "Le service de disque d’Apple est bloqué, et le partage de fichiers ne peut pas utiliser les disques avant le redémarrage de l’appareil. Une fois les sauvegardes et les opérations sur disque terminées, redémarrez l’appareil, puis relancez « Vérification ».";
+"backend.recovery.diskd_stuck.title" = "Le service de disque d’Apple est bloqué";
+"backend.recovery.diskd_stuck.message" = "Le service de disque d’Apple attend le service AirPort d’Apple et ne se terminera pas (un bug du firmware d’Apple). Le partage de fichiers ne peut pas utiliser les disques avant le redémarrage de l’appareil.";
+"backend.recovery.diskd_stuck.action.1" = "Débranchez l’appareil pendant 10 secondes, rebranchez-le et attendez 2 minutes.";
+"backend.recovery.diskd_stuck.action.2" = "Lancez ensuite « Activer ».";
+"doctor.check.diskd_stuck" = "Le service de disque d’Apple attend le service AirPort d’Apple et ne se terminera pas (un bug du firmware d’Apple). Débranchez l’appareil pendant 10 secondes, rebranchez-le, attendez 2 minutes, puis lancez « Activer ».";

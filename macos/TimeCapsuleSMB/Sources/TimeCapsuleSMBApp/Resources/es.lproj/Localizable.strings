@@ -1686,3 +1686,8 @@
 "backend.recovery.diskd_restart_needed.message" = "El servicio de discos de Apple se ha bloqueado y el uso compartido de archivos no puede usar los discos hasta que se reinicie el dispositivo.";
 "backend.recovery.diskd_restart_needed.action.1" = "Cuando terminen las copias de seguridad y las operaciones de disco, reinicie el dispositivo y vuelva a ejecutar «Comprobación».";
 "doctor.check.diskd_restart_needed" = "El servicio de discos de Apple se ha bloqueado y el uso compartido de archivos no puede usar los discos hasta que se reinicie el dispositivo. Cuando terminen las copias de seguridad y las operaciones de disco, reinicie el dispositivo y vuelva a ejecutar «Comprobación».";
+"backend.recovery.diskd_stuck.title" = "El servicio de discos de Apple se ha bloqueado";
+"backend.recovery.diskd_stuck.message" = "El servicio de discos de Apple está esperando al servicio AirPort de Apple y no terminará (un error del firmware de Apple). El uso compartido de archivos no puede usar los discos hasta que se reinicie el dispositivo.";
+"backend.recovery.diskd_stuck.action.1" = "Desenchufe el dispositivo durante 10 segundos, vuelva a enchufarlo y espere 2 minutos.";
+"backend.recovery.diskd_stuck.action.2" = "Después, ejecute «Activar».";
+"doctor.check.diskd_stuck" = "El servicio de discos de Apple está esperando al servicio AirPort de Apple y no terminará (un error del firmware de Apple). Desenchufe el dispositivo durante 10 segundos, vuelva a enchufarlo, espere 2 minutos y después ejecute «Activar».";

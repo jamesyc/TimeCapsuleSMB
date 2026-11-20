@@ -157,6 +157,11 @@ def parse_ps_rows(output: str) -> list[Process]:
     return rows
 
 
+def argv_has_pair(argv: tuple[str, ...], flag: str, value: str) -> bool:
+    """Whether a command line has `flag value` as two words in a row."""
+    return any(argv[i] == flag and argv[i + 1] == value for i in range(len(argv) - 1))
+
+
 # The listing doctor's Samba, mDNS, startup and hostname checks read: the
 # manager's and discovery's titles, and diskd's interface.
 PS_CAPTURE_FUNCTION = PS_ROWS_FUNCTION + "capture_ps_out() { ps_rows service diskd; }\n"

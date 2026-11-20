@@ -2772,11 +2772,12 @@ def _doctor_check_apple_acpd(
     ACPd: the disk's verdict says it, from the stuck-process step, or from a
     second listing here when ACPd's slow reads let a disk process pass the
     stall threshold after the first.
-    An ACPd that is gone while Samba is off (AcpdProblem.sharing_off) is the
-    whole verdict: without it the manager reads no disk and no setting, so
-    every check after it would only restate it. With smbd still running, the
-    checks after it say how sharing is. A stuck disk while Samba is off is
-    the whole verdict the same way (_disk_stall_stops). A restart under way,
+    An ACPd that is gone, or Apple's diskd stuck on it, while Samba is off
+    (AcpdProblem.sharing_off) is the whole verdict: without it the manager
+    reads no disk and no setting, so every check after it would only restate
+    it. With smbd still running, the checks after it say how sharing is. A
+    stuck disk while Samba is off is the whole verdict the same way
+    (_disk_stall_stops). A restart under way,
     such as another command's, is one FAIL that stops doctor: the device is
     about to go down."""
     if not remote.remote_checks_enabled or processes.timed_out or processes.snapshot is None:
@@ -2805,6 +2806,14 @@ def _doctor_check_apple_acpd(
     if disk_stalls:
         problems = [problem for problem in problems if problem.code not in acpd.DISK_STALL_PROBLEMS]
     for problem in problems:
+        if problem.error_code == ErrorCode.DISKD_STUCK:
+            # Not ACPd's own problem, and no slow link explains it: its own
+            # code. Only an unplug ends it; Activate starts the runtime after.
+            sink.add(CheckResult(
+                "FAIL", f"{problem.sentence} {acpd.ACPD_FIX}, then check again. {ACPD_GONE_ACTIVATE_NOTE}",
+                {"code": ErrorCode.DISKD_STUCK, **problem.details},
+            ))
+            continue
         # A problem a slow link can also cause puts the unplug after the link.
         fix = (f"If the connection to the device is not slow, {acpd.ACPD_FIX[0].lower()}{acpd.ACPD_FIX[1:]}"
                if problem.sentence else acpd.ACPD_FIX)
@@ -3090,8 +3099,10 @@ def _doctor_check_diskd_handoff(
     fix, unplugging the device, restarts Apple's diskd too, and a handoff
     stuck on a TERMed diskd also silences ACPd's network listener (README
     F19), where a second message saying to wait or restart would contradict
-    it. A title without a readable diskd= word (a manager before v3.8.5, or a
-    word this release cannot read) has no handoff to report."""
+    it. So is Apple's diskd stuck on ACPd (diskd_stuck), which the ACPd check
+    reports from the same listing. A title without a readable diskd= word (a
+    manager before v3.8.5, or a word this release cannot read) has no handoff
+    to report."""
     if manager is None or manager.handoff is None or manager.handoff.ready or not remote.remote_checks_enabled:
         return
     try:
@@ -3109,7 +3120,7 @@ def _doctor_check_diskd_handoff(
     verdict = handoff.verdict(fresh.now_monotonic_ms) if handoff is not None else None
     if verdict is None or any(
             result.details.get("code") in (ErrorCode.DISK_NOT_RESPONDING, ErrorCode.DISK_FAILING,
-                                           acpd.APPLE_ACPD_BROKEN_CODE)
+                                           acpd.APPLE_ACPD_BROKEN_CODE, ErrorCode.DISKD_STUCK)
             for result in sink.results):
         return
     code, message = verdict

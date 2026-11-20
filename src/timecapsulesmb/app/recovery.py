@@ -680,6 +680,23 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
+    # Apple's diskd asleep on netio for good (device.diskd.stuck_diskd): only
+    # a restart ends it. Unplugging comes first: ACPd stops answering the
+    # network soon after, so a restart asked for from this Mac fails, and the
+    # device's own runtime needs Activate after a restart unless the boot
+    # hook starts it.
+    ErrorCode.DISKD_STUCK: RecoveryInfo(
+        "Apple's disk service is stuck",
+        "Apple's disk service is waiting for Apple's AirPort service and will not finish (a bug in Apple's "
+        "firmware). File sharing cannot use the disks until the device restarts.",
+        (
+            "Unplug the device for 10 seconds, plug it back in and wait 2 minutes.",
+            "Then run “Activate”.",
+        ),
+        retryable=True,
+        suggested_operation="activate",
+        action_ids=("start_smb", "run_checkup"),
+    ),
     # A process has waited minutes for the disk (device.processes.disk_io_stalls),
     # and Apple's ACPd waits behind it: the preflight of every command that
     # restarts the device or writes it, and a MaSt read that hangs or fails

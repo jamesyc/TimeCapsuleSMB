@@ -7,7 +7,7 @@ from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
 from timecapsulesmb.device import acpd
-from timecapsulesmb.device.diskd import handoff_log_fields
+from timecapsulesmb.device.diskd import StuckDiskd, handoff_log_fields, stuck_diskd
 from timecapsulesmb.device.disk_errors import (
     DiskFailingError,
     DiskNotRespondingError,
@@ -126,6 +126,7 @@ def verify_managed_runtime_ready(
     disk_stalls = tuple(disk_io_stalls(listing))
     if disk_stalls:
         callbacks.debug(disk_io_stalls=[stall.describe() for stall in disk_stalls])
+    stuck = stuck_diskd(listing)
     manager = None
     if not any(step.id in (ACPD_QUIT_STEP, MANAGER_NOT_RUNNING_STEP) for step in verification.steps):
         # The manager's disk-owner handoff and the device clock, read once the
@@ -140,7 +141,7 @@ def verify_managed_runtime_ready(
             if not manager.handoff.ready:
                 callbacks.debug(**handoff_pending_details(connection, listing))
     raise runtime_failure_error(verification, failure_message, disk_errors=disk_errors, disk_stalls=disk_stalls,
-                                manager=manager)
+                                stuck=stuck, manager=manager)
 
 
 # The processes a pending handoff turns on: Apple's diskd and ACPd, ACPd's
@@ -222,6 +223,7 @@ def runtime_failure_error(
     *,
     disk_errors: tuple[str, ...] | None = None,
     disk_stalls: tuple[StuckProcess, ...] = (),
+    stuck: StuckDiskd | None = None,
     manager: ManagerStartupAgeProbeResult | None = None,
 ) -> DeviceError:
     """The error for a runtime that is not ready: this boot's disk errors
@@ -229,12 +231,14 @@ def runtime_failure_error(
     disk while Samba is off (disk_stalls, processes.disk_io_stalls: the
     manager cannot stage anything from it), else ACPd gone (the wait's
     ACPD_QUIT_STEP: without it the manager sees no disk, so its verdicts say
-    nothing), else no manager, else a manager that has not taken over the
-    disks when `manager` was read after the wait (DiskdHandoff.verdict, timed
-    on that read's device clock; a title without a readable diskd= word says
-    nothing), else the manager's verdict, or rsync's alone while file sharing
-    serves (whose error must not say file sharing failed), or failure_message
-    with the probe's detail."""
+    nothing), else Apple's diskd stuck for good (`stuck`, diskd.stuck_diskd:
+    the unplug it needs restarts the manager too, and the handoff's own
+    verdict would say to wait), else no manager, else a manager that has not
+    taken over the disks when `manager` was read after the wait
+    (DiskdHandoff.verdict, timed on that read's device clock; a title without
+    a readable diskd= word says nothing), else the manager's verdict, or
+    rsync's alone while file sharing serves (whose error must not say file
+    sharing failed), or failure_message with the probe's detail."""
     problem = runtime_payload_problem(verification)
     if disk_errors_explain(disk_errors, (problem,) if problem else (), samba_ready=verification.samba_ready):
         return DiskFailingError(disk_errors)
@@ -245,6 +249,11 @@ def runtime_failure_error(
         failed = "; ".join(step.detail for step in verification.steps
                            if step.status in ("fail", "timeout") and step.detail)
         return AcpdQuitError(f"{failure_message.rstrip()} {acpd.ACPD_QUIT_MESSAGE}", detail=failed or None)
+    if stuck is not None:
+        detail = "; ".join(part for part in (
+            stuck.describe(), manager.handoff.detail if manager is not None and manager.handoff is not None else "",
+            verification.detail.strip()) if part)
+        return DeviceError(stuck.message, code=ErrorCode.DISKD_STUCK, detail=detail)
     if any(step.id == MANAGER_NOT_RUNNING_STEP for step in verification.steps):
         # Not RUNTIME_NOT_RESTARTED: its way out is Activate, which only
         # NetBSD 4 has, and this ends NetBSD 6 deploys too.
