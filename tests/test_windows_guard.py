@@ -1,4 +1,5 @@
-"""Native Windows must exit before CLI imports and side effects."""
+"""Native Windows must exit when the package loads, before any module of ours
+and any side effect, whichever way the code is started."""
 import os
 from pathlib import Path
 import subprocess
@@ -9,11 +10,20 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 MESSAGE = "TimeCapsuleSMB supports only macOS and Linux. Run this command on a Mac or Linux computer."
-ENTRIES = {
+# The CLI's own entry points: ./tcapsule, the installed tcapsule command, and
+# python -m.
+CLI_ENTRIES = {
     "source": "runpy.run_path(sys.argv[0], run_name='__main__')",
     "installed": "from timecapsulesmb.cli.main import main; raise SystemExit(main())",
     "module": "runpy.run_module('timecapsulesmb.cli.main', run_name='__main__')",
 }
+# Code that skips them: a command's main called directly, as a script or an
+# assistant may do, and a service module imported directly.
+DIRECT_ENTRIES = {
+    "command": "from timecapsulesmb.cli.deploy import main; raise SystemExit(main(sys.argv[2:]))",
+    "service": "import timecapsulesmb.services.deploy",
+}
+ENTRIES = {**CLI_ENTRIES, **DIRECT_ENTRIES}
 
 
 def invoke(entry, platform, args, cwd, *, block_cli=False):
@@ -27,7 +37,8 @@ sys.argv = sys.argv[1:]
         script += """
 class BlockCLI:
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith('timecapsulesmb.') and fullname not in ('timecapsulesmb.cli', 'timecapsulesmb.cli.main'):
+        # Only the package itself may load: its import is the exit.
+        if fullname.startswith('timecapsulesmb.'):
             raise AssertionError('Windows must exit before importing ' + fullname)
 sys.meta_path.insert(0, BlockCLI())
 def block_side_effects(event, args):
@@ -48,7 +59,7 @@ def assert_rejected(result, cwd):
 
 
 @pytest.mark.parametrize("entry", ENTRIES)
-def test_windows_exits_before_cli_imports_or_side_effects(entry, tmp_path):
+def test_windows_exits_before_any_import_of_ours_or_side_effect(entry, tmp_path):
     assert_rejected(invoke(entry, "win32", ["deploy"], tmp_path, block_cli=True), tmp_path)
 
 
@@ -63,9 +74,19 @@ def test_source_launcher_exits_before_its_handoff_choice(args, tmp_path):
 # The host's own platform stands in for macOS and Linux: claiming the other
 # one breaks the standard library (urllib loads macOS's _scproxy for darwin).
 @pytest.mark.parametrize("platform", [sys.platform, "freebsd14"])
-@pytest.mark.parametrize("entry", ENTRIES)
+@pytest.mark.parametrize("entry", CLI_ENTRIES)
 def test_other_platforms_still_reach_cli_help(entry, platform, tmp_path):
     result = invoke(entry, platform, ["--help"], tmp_path)
     assert result.returncode == 0, result.stderr
     assert "TimeCapsuleSMB command line interface" in result.stdout
     assert result.stderr == ""
+
+
+# The package's guard does not turn away code that imports a module directly.
+@pytest.mark.parametrize("platform", [sys.platform, "freebsd14"])
+def test_other_platforms_still_import_commands_and_services(platform, tmp_path):
+    command = invoke("command", platform, ["deploy", "--help"], tmp_path)
+    assert command.returncode == 0, command.stderr
+    assert command.stdout.startswith("usage:")
+    service = invoke("service", platform, [], tmp_path)
+    assert (service.returncode, service.stdout, service.stderr) == (0, "", "")
