@@ -21,25 +21,29 @@ from tests.samba.run import GROWTH_CALLERS
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def pinned_samba(env_file: str = "/dev/null") -> tuple[str, str, str]:
+    """SAMBA4X_VERSION, SAMBA4X_GIT_REF and SAMBA4X_GIT_COMMIT as build/env.sh
+    sets them with env_file as the build's .env."""
+    result = subprocess.run(
+        ["sh", "-c", '. "$1"; printf "%s\\n%s\\n%s\\n" "$SAMBA4X_VERSION" "$SAMBA4X_GIT_REF" "$SAMBA4X_GIT_COMMIT"',
+         "sh", str(REPO_ROOT / "build/env.sh")],
+        env=dict(os.environ, TC_ENV_FILE=env_file), check=True, capture_output=True, text=True)
+    version, ref, commit = result.stdout.splitlines()
+    return version, ref, commit
+
+
+# The Samba version build/env.sh pins; the build names its cross-answers after it.
+SAMBA_VERSION = pinned_samba()[0]
+
+
 class Samba4XBuildScriptTests(unittest.TestCase):
     def test_build_env_example_selects_the_current_samba_source(self) -> None:
-        result = subprocess.run(
-            [
-                "sh",
-                "-c",
-                '. "$1"; printf "%s\\n%s\\n" "$SAMBA4X_VERSION" "$SAMBA4X_GIT_REF"',
-                "sh",
-                str(REPO_ROOT / "build/env.sh"),
-            ],
-            env=dict(os.environ, TC_ENV_FILE=str(REPO_ROOT / "build/.env.example")),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-
-        version, ref = result.stdout.splitlines()
-        self.assertEqual(version, "4.25.0")
+        # A build/.env copied from the example must build the pinned source,
+        # not an older version left in the example.
+        version, ref, commit = pinned_samba(str(REPO_ROOT / "build/.env.example"))
+        self.assertEqual((version, ref, commit), pinned_samba())
         self.assertEqual(ref, f"samba-{version}")
+        self.assertRegex(commit, r"^[0-9a-f]{40}$")
         for lane in ("netbsd7", "netbsd4le", "netbsd4be"):
             self.assertTrue((REPO_ROOT / f"build/cross-answers/samba4x-{version}-{lane}.answers").is_file())
 
@@ -457,7 +461,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             )
             self.assertEqual(self.cross_execute_args(args), [])
             cross_answers = self.cross_answer_arg(args)
-            self.assertTrue(cross_answers.endswith("/samba4x-4.25.0-netbsd7.answers"))
+            self.assertTrue(cross_answers.endswith(f"/samba4x-{SAMBA_VERSION}-netbsd7.answers"))
             self.assertFalse(cross_exec_capture.exists())
 
     def test_dependency_built_from_the_pinned_source_is_reused_without_download(self) -> None:
@@ -904,12 +908,12 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertIn("--disable-pthreadpool", args)
             self.assertIn("--disable-tdb-mutex-locking", args)
             cross_answers = self.cross_answer_arg(args)
-            self.assertTrue(cross_answers.endswith("/generated-samba4x-4.25.0-netbsd4be.answers"))
+            self.assertTrue(cross_answers.endswith(f"/generated-samba4x-{SAMBA_VERSION}-netbsd4be.answers"))
             self.assertEqual(len(self.cross_execute_args(args)), 1)
             seed = seed_capture.read_text()
             self.assertIn('Checking uname sysname type: "NetBSD"', seed)
             self.assertNotIn("CARRIED-FORWARD", seed)
-            generated = output_dir / "samba4x-4.25.0-netbsd4be.answers"
+            generated = output_dir / f"samba4x-{SAMBA_VERSION}-netbsd4be.answers"
             generated_text = generated.read_text()
             self.assertIn("Checking whether the realpath function allows a NULL argument: NO", generated_text)
             self.assertNotIn("CARRIED-FORWARD", generated_text)
@@ -940,13 +944,13 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             args = self.configure_args(capture)
             self.cross_answer_arg(args)
             self.assertEqual(len(self.cross_execute_args(args)), 1)
-            self.assertTrue((output_dir / "samba4x-4.25.0-netbsd7.answers").exists())
+            self.assertTrue((output_dir / f"samba4x-{SAMBA_VERSION}-netbsd7.answers").exists())
 
     def test_lane_wrappers_select_their_default_cross_answer_files(self) -> None:
         cases = (
-            ("samba4x.sh", "netbsd7", "samba4x-4.25.0-netbsd7.answers"),
-            ("samba4xoldle.sh", "netbsd4le", "samba4x-4.25.0-netbsd4le.answers"),
-            ("samba4xoldbe.sh", "netbsd4be", "samba4x-4.25.0-netbsd4be.answers"),
+            ("samba4x.sh", "netbsd7", f"samba4x-{SAMBA_VERSION}-netbsd7.answers"),
+            ("samba4xoldle.sh", "netbsd4le", f"samba4x-{SAMBA_VERSION}-netbsd4le.answers"),
+            ("samba4xoldbe.sh", "netbsd4be", f"samba4x-{SAMBA_VERSION}-netbsd4be.answers"),
         )
         for wrapper, lane, expected in cases:
             with self.subTest(wrapper=wrapper):
@@ -1671,7 +1675,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             result = self.run_wrapper("generate-samba4x-cross-answers-oldbe.sh", env)
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            generated = output_dir / "samba4x-4.25.0-netbsd4be.answers"
+            generated = output_dir / f"samba4x-{SAMBA_VERSION}-netbsd4be.answers"
             realpath_lines = [
                 line
                 for line in generated.read_text().splitlines()
@@ -1707,7 +1711,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 "disagrees with independent realpath(path, NULL) probe",
                 Path(env["SAMBA4X_NETBSD4BE_LOG"]).read_text(),
             )
-            self.assertFalse((output_dir / "samba4x-4.25.0-netbsd4be.answers").exists())
+            self.assertFalse((output_dir / f"samba4x-{SAMBA_VERSION}-netbsd4be.answers").exists())
 
 
 

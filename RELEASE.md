@@ -2,13 +2,21 @@
 
 TimeCapsuleSMB releases contain the macOS app bundle, the Python CLI, boot scripts, and checked-in static NetBSD binaries used by deploy. The release process should make it clear which artifacts were shipped and how to verify them.
 
-## Samba 4.25.0
+## Samba 4.25.1
 
-The current Samba build is pinned to `samba-4.25.0`. This brings in upstream
-stream parent-directory resolution and AFP_AfpInfo stat fixes. The downstream
+The current Samba build is pinned to `samba-4.25.1`. 4.25.0 brought in upstream
+stream parent-directory resolution and AFP_AfpInfo stat fixes. 4.25.1 is a
+bug-fix release, and most of its fixes are in parts we do not build (CTDB,
+`vfs_ceph_rgw`). Two touch modules we use, and neither changes what the
+device does. The `vfs_acl_xattr` crash needs an `flistxattr` call with a
+zero-length buffer, and nothing above `acl_xattr` in our VFS stack sends one. The rename
+fix (bug 16261) keeps the existing spelling when a rename with replace targets
+a name that differs only in case. On case-insensitive HFS, smbd's lookup finds
+the file under the client's spelling, so the file still takes the name the
+client sent; `dir_device.py`'s `replace-case` case checks this. The downstream
 series fixes NetBSD stream extent error handling, so deleting a file or directory
 with metadata does not fail after removing only its primary stream. It also
-preserves lookup and I/O failures instead of reporting false success. 4.25.0
+preserves lookup and I/O failures instead of reporting false success. 4.25.1
 does not include the extent fix, so the series still carries it.
 
 The existing NetBSD SDKs are retained. A const-preserving charset fallback

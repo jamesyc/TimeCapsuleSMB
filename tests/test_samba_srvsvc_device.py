@@ -65,7 +65,7 @@ def test_enum_request_is_level_one_with_all_results(server):
 
 
 def test_answer_lists_names_not_comments():
-    shares = [("AirPort Disk", "a comment"), ("IPC$", "IPC Service (Samba 4.25.0)"), ("x", "")]
+    shares = [("AirPort Disk", "a comment"), ("IPC$", "IPC Service (Samba 4.25.1)"), ("x", "")]
     assert srvsvc.parse_enum_all(answer(shares)) == ["AirPort Disk", "IPC$", "x"]
 
 

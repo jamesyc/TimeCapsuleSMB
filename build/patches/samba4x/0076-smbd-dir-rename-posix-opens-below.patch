@@ -352,7 +352,7 @@ diff --git a/source3/smbd/smb2_reply.c b/source3/smbd/smb2_reply.c
  /****************************************************************************
   We need to check if the source path is a parent directory of the destination
   (ie. a rename of /foo/bar/baz -> /foo/bar/baz/bibble/bobble. If so we must
-@@ -1606,6 +1834,14 @@ inform_others:
+@@ -1618,6 +1846,14 @@ inform_others:
  
  		TALLOC_FREE(lck);
  

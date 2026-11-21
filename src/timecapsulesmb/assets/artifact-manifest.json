@@ -14,27 +14,27 @@
     },
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "f3ccc88c9f25f5f2384bd347646cd4e87d419e86bb1046550281d11cccb3867a"
+      "sha256": "e8baeffe809d4ae7f169484a6a88b92ef7c9cc903112e113677439e7aefe47ef"
     },
     "smbd-netbsd4le": {
       "path": "bin/samba4-netbsd4le/smbd",
-      "sha256": "98195fbbb72a122d80eed1229e213742f743fdc783c73a3b0c8460d51ce82a4f"
+      "sha256": "f90b155cb98539828fbdeff31a1159d55310b61fdb3e6a723c89777acd8b4186"
     },
     "smbd-netbsd4be": {
       "path": "bin/samba4-netbsd4be/smbd",
-      "sha256": "2c9b5e1abeea3cdc4d9f542fe227708976e31debf3eeb895fa0739084ff015f3"
+      "sha256": "6a7cdddc102b07cd079b2af41f3240a5768ea79e9ee8ad5f9272f8b382a1ea17"
     },
     "xattr-migrator": {
       "path": "bin/xattr-migrate/xattr-hfs-migrate",
-      "sha256": "2ee731373c0883c8d856fe6f8a293c5d944977261f64049534e558c8a3942bb2"
+      "sha256": "da34544d5170b56c133a127048927f32fde863ad26dd7832f38421d7eaf00de7"
     },
     "xattr-migrator-netbsd4le": {
       "path": "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",
-      "sha256": "0cdf8e1f3d389823aa062e7b1c2a53526bea8ba3cb3ffa308be2f628d2a395e3"
+      "sha256": "62e8cab9a0f9dfbc6a4723c0c3e097526e0aad2ba0ef9b9c8c974384528e4714"
     },
     "xattr-migrator-netbsd4be": {
       "path": "bin/xattr-migrate-netbsd4be/xattr-hfs-migrate",
-      "sha256": "8e2deb133e7dff5bcb898f49a37b5b79aabf3239b8787da1182852d3bc60f007"
+      "sha256": "4c45766c7a1d084a2946a05a2a44a6b92811a0c0dc5d1ae64ff065a7797700f6"
     },
     "service": {
       "path": "bin/service/service",

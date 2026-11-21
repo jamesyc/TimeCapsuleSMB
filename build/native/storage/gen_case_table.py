@@ -5,7 +5,7 @@ tolower_m), so shares.c can tell which names Samba takes for one share.
 
 Run from the repository root with the pinned Samba source (SAMBA4X_VERSION in
 build/env.sh):
-    python3 build/native/storage/gen_case_table.py SAMBA/lib/util/charset/codepoints.c 4.25.0
+    python3 build/native/storage/gen_case_table.py SAMBA/lib/util/charset/codepoints.c 4.25.1
 
 Samba's table is its own, not Unicode's: Python's str.lower() differs from it
 in hundreds of code points. The header stores it as runs of code points that

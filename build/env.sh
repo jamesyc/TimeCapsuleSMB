@@ -59,13 +59,13 @@ SDK_JOBS="${SDK_JOBS:-}"
 
 # 4.25 includes the upstream stream-parent and AFP_AfpInfo fixes. Our series
 # still supplies NetBSD extent errno handling until upstream incorporates it.
-SAMBA4X_VERSION="${SAMBA4X_VERSION:-4.25.0}"
+SAMBA4X_VERSION="${SAMBA4X_VERSION:-4.25.1}"
 SAMBA4X_GIT_URL="${SAMBA4X_GIT_URL:-https://github.com/samba-team/samba.git}"
 SAMBA4X_GIT_REF="${SAMBA4X_GIT_REF:-samba-${SAMBA4X_VERSION}}"
 # Tags can be moved and mirrors can serve different bytes, so each download is
 # pinned to what the shipped binaries were built from. Update the pin together
 # with its version: the downloaders refuse a commit or archive that differs.
-SAMBA4X_GIT_COMMIT="${SAMBA4X_GIT_COMMIT:-b439e3ec13425de85e03eb4ac394ad15273decf7}"
+SAMBA4X_GIT_COMMIT="${SAMBA4X_GIT_COMMIT:-02e8e3f93f4af787bcb3389cbff9e22e74567eb2}"
 SAMBA4X_GMP_VERSION="${SAMBA4X_GMP_VERSION:-6.3.0}"
 SAMBA4X_NETTLE_VERSION="${SAMBA4X_NETTLE_VERSION:-3.10.1}"
 SAMBA4X_LIBTASN1_VERSION="${SAMBA4X_LIBTASN1_VERSION:-4.20.0}"

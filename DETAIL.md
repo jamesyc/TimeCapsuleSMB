@@ -5,7 +5,7 @@ This file covers what runs on the Time Capsule, what each setting and command do
 ## What works today
 
 TimeCapsuleSMB works end to end on the AirPort Time Capsule:
-- static Samba 4.25.0, built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices and from NetBSD 4 sources for older ones
+- static Samba 4.25.1, built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices and from NetBSD 4 sources for older ones
 - one static `service` image with manager, discovery, telemetry, and diagnostic roles
 - startup from `/mnt/Flash/rc.local` at boot
 - a native manager for `smbd`, discovery, telemetry, and optional rsync
@@ -124,9 +124,9 @@ Names:
 - the RAM runtime is always at `/mnt/Memory/samba4`
 - share names are not configured; the runtime builds them from Apple's `MaSt` volume names
 
-## Why Samba 4.8, then 4.25.0
+## Why Samba 4.8, then 4.25
 
-Samba 4.8 was the first version that worked as a Time Machine target on this hardware. The current release ships Samba 4.25.0.
+Samba 4.8 was the first version that worked as a Time Machine target on this hardware. The current release ships Samba 4.25.1.
 
 ### Samba 3
 
@@ -150,9 +150,9 @@ Samba 4.3 ran as an authenticated network share without bugs, but it could not b
 
 Samba 4.8 was the first stable target, with a working Time Machine stack through `vfs_fruit`.
 
-### Samba 4.25.0
+### Samba 4.25
 
-Samba 4.25.0 is the shipped version. It keeps the static-module build and uses the newer `samba4x` build lanes.
+Samba 4.25.1 is the shipped version. It keeps the static-module build and uses the newer `samba4x` build lanes.
 
 The shipped build includes:
 - `catia`
@@ -180,7 +180,7 @@ The first working build used:
 
 It builds reproducibly, runs on the Time Capsule, serves files, and supports Time Machine through `vfs_fruit`.
 
-The shipped Samba 4.25.0 uses the same NetBSD 7 / NetBSD 4 SDK split. The build scripts are under [build/](build); see [What the build pipeline produces](#what-the-build-pipeline-produces).
+The shipped Samba 4.25.1 uses the same NetBSD 7 / NetBSD 4 SDK split. The build scripts are under [build/](build); see [What the build pipeline produces](#what-the-build-pipeline-produces).
 
 ## Mac metadata on HFS
 
@@ -1048,7 +1048,7 @@ Building needs a NetBSD VM, a root-owned cross-build tree under `/root`, and `su
 Build scripts:
 - NetBSD 7 SDK: [build/download.sh](build/download.sh), [build/bootstrap.sh](build/bootstrap.sh)
 - NetBSD 4 SDKs: [build/downloadoldle.sh](build/downloadoldle.sh), [build/bootstrapoldle.sh](build/bootstrapoldle.sh), [build/downloadoldbe.sh](build/downloadoldbe.sh), [build/bootstrapoldbe.sh](build/bootstrapoldbe.sh)
-- Samba 4.25.0: [build/downloadsamba4x.sh](build/downloadsamba4x.sh) and [build/samba4x.sh](build/samba4x.sh); [build/downloadsamba4xoldle.sh](build/downloadsamba4xoldle.sh), [build/samba4xoldle.sh](build/samba4xoldle.sh), [build/downloadsamba4xoldbe.sh](build/downloadsamba4xoldbe.sh), [build/samba4xoldbe.sh](build/samba4xoldbe.sh); or [build/samba4xall.sh](build/samba4xall.sh) for all three
+- Samba 4.25.1: [build/downloadsamba4x.sh](build/downloadsamba4x.sh) and [build/samba4x.sh](build/samba4x.sh); [build/downloadsamba4xoldle.sh](build/downloadsamba4xoldle.sh), [build/samba4xoldle.sh](build/samba4xoldle.sh), [build/downloadsamba4xoldbe.sh](build/downloadsamba4xoldbe.sh), [build/samba4xoldbe.sh](build/samba4xoldbe.sh); or [build/samba4xall.sh](build/samba4xall.sh) for all three
 - rsync: [build/downloadrsync.sh](build/downloadrsync.sh), [build/rsync.sh](build/rsync.sh), [build/rsyncoldle.sh](build/rsyncoldle.sh), [build/rsyncoldbe.sh](build/rsyncoldbe.sh)
 - `service`: [build/service.sh](build/service.sh), [build/serviceoldle.sh](build/serviceoldle.sh), [build/serviceoldbe.sh](build/serviceoldbe.sh)
 
@@ -1183,7 +1183,7 @@ TimeCapsuleSMB:
 - on NetBSD 4, starts at boot with the firmware boot-hook patch, or with `activate` after each reboot on tested unpatched 1st-generation hardware
 - advertises itself over Bonjour
 - logs in with the AirPort password; the docs use the SMB username `admin`
-- serves the internal disk through Samba 4.25.0
+- serves the internal disk through Samba 4.25.1
 - works as a Time Machine destination through `vfs_fruit`
 
 The core features work. What remains is polish.

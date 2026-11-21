@@ -363,7 +363,7 @@ Turning on SSH restarts the device. When that fails, Configure and “Enable SSH
 
 #### Is this secure?
 
-It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. It's using a build of Samba 4.25.0 currently.
+It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. It's using a build of Samba 4.25.1 currently.
 
 #### Can I keep separate private folders for different Time Capsule users?
 

@@ -8,7 +8,7 @@ CLI_VERSION_CODE = 30808
 # Later. 0 for none. The appcast holds one release, so the floor stays set across
 # releases: lowering it forgets the apps that missed that release.
 CRITICAL_BELOW_VERSION_CODE = 0
-SAMBA_VERSION = "4.25.0"
+SAMBA_VERSION = "4.25.1"
 
 
 def release_major(version_code: int) -> int:

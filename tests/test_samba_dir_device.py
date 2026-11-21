@@ -1,6 +1,7 @@
 """The host-side parts of tests/samba/dir_device.py: how --compare reads two
 records, the SMB2 hard link request the deep case sends, the AAPL query a Mac
-client sends, and how the rename-open-below case judges a server."""
+client sends, and how the rename-open-below and replace-case cases judge a
+server."""
 from __future__ import annotations
 
 import itertools
@@ -12,9 +13,10 @@ from unittest import mock
 from smbprotocol.exceptions import SMBResponseException
 from smbprotocol.header import SMB2HeaderResponse
 
-from tests.samba.dir_device import (FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, HFS_FIRST, HFS_LAST,
-                                    NETBSD4_LAST, RENAME_ACCESS, STATUS_ACCESS_DENIED, TIME_RANGE, Client,
-                                    aapl_query, compare_records, filetime, kept_time, rename_open_below,
+from tests.samba.dir_device import (DISPOSITIONS, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, HFS_FIRST,
+                                    HFS_LAST, NETBSD4_LAST, RENAME_ACCESS, REPLACE_CASE_EXISTING,
+                                    REPLACE_CASE_TARGET, STATUS_ACCESS_DENIED, TIME_RANGE, Client, aapl_query,
+                                    compare_records, filetime, kept_time, rel, rename_open_below, replace_case,
                                     time_range)
 from tests.samba.links_device import Results
 
@@ -310,6 +312,134 @@ class RenameOpenBelowTest(unittest.TestCase):
         self.assertEqual(r.failed, [f"{self.MAC} (0x00000000)"])
         # Only the Windows check passed: nothing moved, so no read under the new name.
         self.assertEqual(r.passed, 1)
+
+
+class CaseServer:
+    """Files on a share, name -> bytes, and how a rename with replace treats a
+    target that matches an existing name only in case: "hfs" replaces it under
+    the client's spelling (a case-insensitive file system), "existing" keeps the
+    old spelling (Samba 4.25.1 on a case-sensitive one), "duplicate" leaves both
+    (bug 16261), "refuse" fails, "noop" reports success and changes nothing."""
+
+    def __init__(self, rule: str) -> None:
+        self.rule = rule
+        self.files: dict[str, bytes] = {}
+        self.renames: list[tuple[str, str, bool]] = []
+
+
+class CaseClient:
+    def __init__(self, server: CaseServer, aapl: bool) -> None:
+        self.server, self.aapl, self.closed = server, aapl, False
+        self.open_handles = 0
+
+    def open(self, path: str, access: int, disposition: int = 1, options: int = 0):
+        files = self.server.files
+        if disposition == DISPOSITIONS["create"]:
+            assert path not in files, path
+            files[path] = b""
+        elif not options & FILE_DIRECTORY_FILE:
+            assert path in files, path
+        self.open_handles += 1
+        handle = mock.Mock(path=path)
+
+        def write(data: bytes, offset: int) -> None:
+            files[path] = files[path][:offset] + data
+
+        def close() -> None:
+            self.open_handles -= 1
+
+        handle.write.side_effect = write
+        handle.read.side_effect = lambda offset, length: files[path][offset:offset + length]
+        handle.close.side_effect = close
+        return handle
+
+    def names(self, handle) -> list[str]:
+        prefix = handle.path + "\\"
+        return [".", ".."] + [p[len(prefix):] for p in self.server.files if p.startswith(prefix)]
+
+    def rename(self, handle, new_path: str, replace: bool = False) -> None:
+        server, old = self.server, handle.path
+        server.renames.append((old, new_path, replace))
+        if server.rule == "refuse":
+            raise refused(STATUS_ACCESS_DENIED)
+        if server.rule == "noop":
+            return
+        match = next((p for p in server.files if p.lower() == new_path.lower() and p != old), None)
+        data = server.files.pop(old)
+        if match is not None and server.rule != "duplicate":
+            del server.files[match]
+            if server.rule == "existing":
+                new_path = match
+        server.files[new_path] = data
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class ReplaceCaseTest(unittest.TestCase):
+    def run_case(self, rule: str):
+        servers: dict[bool, CaseServer] = {}
+        clients: list[CaseClient] = []
+
+        def connect(aapl: bool) -> CaseClient:
+            servers[aapl] = CaseServer(rule)
+            clients.append(CaseClient(servers[aapl], aapl))
+            return clients[-1]
+
+        self.device, r, record = FakeDevice(), Results(), {}
+        with mock.patch("builtins.print"):
+            replace_case(r, self.device, record, connect=connect)
+        return servers, clients, r, record
+
+    def test_hfs_replaces_under_the_clients_spelling_for_both_clients(self) -> None:
+        servers, clients, r, record = self.run_case("hfs")
+        device = self.device
+
+        self.assertEqual(r.failed, [])
+        self.assertEqual(r.passed, 4)
+        self.assertEqual([c.aapl for c in clients], [False, True])
+        for label, aapl in (("windows", False), ("mac", True)):
+            folder = f"replace-case {label}"
+            self.assertEqual(servers[aapl].files, {rel(folder, REPLACE_CASE_TARGET): b"new"})
+            # The temporary file is renamed with replace onto the case variant.
+            self.assertEqual(servers[aapl].renames,
+                             [(rel(folder, "tmpfile.tmp"), rel(folder, REPLACE_CASE_TARGET), True)])
+            self.assertEqual(record["replace-case"][label],
+                             {"status": "0x00000000", "names": [REPLACE_CASE_TARGET]})
+            # Each client works in its own folder, made over SSH first.
+            self.assertIn(f"{device.dir}/{folder}", device.paths)
+        for client in clients:
+            self.assertTrue(client.closed)
+            self.assertEqual(client.open_handles, 0)
+
+    def test_keeping_the_existing_spelling_fails_only_the_spelling_checks(self) -> None:
+        _, _, r, record = self.run_case("existing")
+
+        self.assertEqual(r.passed, 2)
+        self.assertEqual(len(r.failed), 2)
+        self.assertTrue(all("takes the spelling it sent" in name for name in r.failed))
+        self.assertEqual(record["replace-case"]["windows"]["names"], [REPLACE_CASE_EXISTING])
+
+    def test_a_duplicate_entry_fails_every_check(self) -> None:
+        _, _, r, record = self.run_case("duplicate")
+
+        self.assertEqual(r.passed, 0)
+        self.assertEqual(len(r.failed), 4)
+        self.assertEqual(record["replace-case"]["mac"]["names"], sorted([REPLACE_CASE_TARGET, REPLACE_CASE_EXISTING]))
+
+    def test_a_refused_rename_fails_and_records_the_status(self) -> None:
+        _, _, r, record = self.run_case("refuse")
+
+        self.assertEqual(r.passed, 0)
+        self.assertEqual(record["replace-case"]["windows"]["status"], "0xc0000022")
+        # Both files are left as they were.
+        self.assertEqual(record["replace-case"]["windows"]["names"], sorted([REPLACE_CASE_EXISTING, "tmpfile.tmp"]))
+
+    def test_a_success_that_changes_nothing_fails(self) -> None:
+        _, _, r, record = self.run_case("noop")
+
+        self.assertEqual(r.passed, 0)
+        self.assertEqual(record["replace-case"]["mac"]["status"], "0x00000000")
 
 
 if __name__ == "__main__":

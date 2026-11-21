@@ -48,6 +48,9 @@ check the directory paths a client can reach:
   A client without AAPL keeps Windows semantics: ACCESS_DENIED, nothing moves.
   A Mac (AAPL negotiated, so vfs_fruit marks its opens POSIX) renames it
   (patch 0076), and the open file keeps working under the new name.
+- replace-case: a temporary file renamed with replace onto an existing file
+  whose name differs only in case, by a Windows-semantics client and by a Mac.
+  One file remains, with the new data and the spelling the client sent.
 
 The Mac cases (skipped with --no-mac) mount the share: a 40-file tree with
 Unicode, mapped and case-only renames copied with ditto and compared, a
@@ -1020,8 +1023,64 @@ def rename_open_below(r: Results, device: Device, record: dict, connect=None) ->
             client.close()
 
 
+# A rename with replace onto a name that differs from the existing file's only
+# in case. Since Samba 4.25.1 (bug 16261) smbd renames onto the name its lookup
+# found on disk, which on a case-sensitive file system is the existing
+# spelling. HFS is case-insensitive: smbd's first stat of the client's name
+# finds the file, no case-folding scan runs, and the name it found is the one
+# the client sent. So every client, Windows or Mac, gets its own spelling, as
+# with 4.25.0.
+REPLACE_CASE_EXISTING, REPLACE_CASE_TARGET = "dzdz.lnk", "DZDZ.lnk"
+
+
+def replace_case(r: Results, device: Device, record: dict, connect=None) -> None:
+    """A safe save: a temporary file renamed with replace onto an existing file
+    whose name differs only in case. One file must remain, with the new data and
+    the spelling the client sent."""
+    connect = connect or (lambda aapl: Client(device, aapl=aapl))
+    seen = record.setdefault("replace-case", {})
+    for label, aapl in (("windows", False), ("mac", True)):
+        folder = f"replace-case {label}"
+        device.sh(f"mkdir -p {shlex.quote(device.dir + '/' + folder)}")
+        client = connect(aapl)
+        try:
+            for name, data in ((REPLACE_CASE_EXISTING, b"old"), ("tmpfile.tmp", b"new")):
+                h = client.open(rel(folder, name), GENERIC_READ | GENERIC_WRITE, DISPOSITIONS["create"],
+                                FILE_NON_DIRECTORY_FILE)
+                try:
+                    h.write(data, 0)
+                finally:
+                    h.close()
+            h = client.open(rel(folder, "tmpfile.tmp"), RENAME_ACCESS, 1, FILE_NON_DIRECTORY_FILE)
+            try:
+                status, _ = status_of(lambda: client.rename(h, rel(folder, REPLACE_CASE_TARGET), True))
+            finally:
+                h.close()
+            listing = client.open(rel(folder), ACCESS["list"], 1, FILE_DIRECTORY_FILE)
+            try:
+                names = sorted(n for n in client.names(listing) if n not in (".", ".."))
+            finally:
+                listing.close()
+            seen[label] = {"status": f"0x{status:08x}", "names": names}
+            data = b""
+            if len(names) == 1:
+                h = client.open(rel(folder, names[0]), GENERIC_READ, 1, FILE_NON_DIRECTORY_FILE)
+                try:
+                    data = h.read(0, 16)
+                finally:
+                    h.close()
+            r.check(f"replace-case: a {label} client's rename with replace onto a case variant replaces the "
+                    f"file (0x{status:08x}, {names})",
+                    lambda: status == STATUS_SUCCESS and len(names) == 1 and data == b"new")
+            r.check(f"replace-case: the {label} client's file takes the spelling it sent, "
+                    f"{REPLACE_CASE_TARGET!r} ({names})",
+                    lambda: names == [REPLACE_CASE_TARGET])
+        finally:
+            client.close()
+
+
 SMB_CASES = ("open-matrix", "listing", "mapped-names", "renamed-open", "deep", "delete", "times",
-             "listing-changes", "read-only", "rename-open-below")
+             "listing-changes", "read-only", "rename-open-below", "replace-case")
 
 
 # --quick (AGENTS.md "Test tiers"): no Mac case, and 300 files for
@@ -1051,6 +1110,8 @@ def run_case(case: str, r: Results, device: Device, record: dict, quick: bool = 
         read_only(r, device, record.setdefault("read-only", {}))
     elif case == "rename-open-below":
         rename_open_below(r, device, record)
+    elif case == "replace-case":
+        replace_case(r, device, record)
     elif case == "mac":
         mac_cases(r, device)
 
