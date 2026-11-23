@@ -131,6 +131,29 @@ pid_t test_waitpid(pid_t child, int *status, int options) {
     return waitpid(child, status, options);
 }
 
+/* The reason each failing scenario must leave on its request, with the errno
+ * the fault injected for the start failures. */
+static void expected_reason(enum acp_abort_reason *reason, int *error) {
+    static const struct { const char *name; enum acp_abort_reason reason; int error; } table[] = {
+        {"pipe", ACP_REASON_PIPE, EMFILE}, {"fork", ACP_REASON_FORK, EAGAIN},
+        {"nonblock", ACP_REASON_PIPE, EIO}, {"read_cloexec", ACP_REASON_PIPE, EIO},
+        {"write_cloexec", ACP_REASON_PIPE, EIO}, {"cancel_before_group", ACP_REASON_CANCELLED, 0},
+        {"cancel_after_fork", ACP_REASON_CANCELLED, 0}, {"cancel_before_fork", ACP_REASON_CANCELLED, 0},
+        {"child_group", ACP_REASON_EXEC, 0}, {"initial_clock", ACP_REASON_LOCAL, 0},
+        {"running_clock", ACP_REASON_LOCAL, 0}, {"select_error", ACP_REASON_LOCAL, 0},
+        {"read_error", ACP_REASON_OUTPUT, 0}, {"reap_stuck", ACP_REASON_TIMEOUT, 0},
+        {"deadline_timeout", ACP_REASON_TIMEOUT, 0},
+    };
+    size_t i;
+    *reason = ACP_REASON_NONE;
+    *error = 0;
+    for (i = 0; i < sizeof(table) / sizeof(table[0]); i++)
+        if (!strcmp(scenario, table[i].name)) {
+            *reason = table[i].reason;
+            *error = table[i].error;
+        }
+}
+
 static int open_fds(void) {
     int fd, count = 0;
     for (fd = 0; fd < 128; fd++) if (fcntl(fd, F_GETFD) >= 0) count++;
@@ -156,19 +179,22 @@ int main(int argc, char **argv) {
     /* The guard shares telemetry's group, outside the collector's group. */
     before = open_fds();
     if (!strcmp(scenario, "deadline_each")) {
-        char values[3][256];
-        struct acp_request requests[3] = {0};
-        const char *keys[] = {"syAP", "syAM", "syNm"};
+        char values[4][256];
+        struct acp_request requests[4] = {0};
+        const char *keys[] = {"syAP", "syAM", "syNm", "waMA"};
         size_t i;
-        for (i = 0; i < 3; i++) {
+        for (i = 0; i < 4; i++) {
             requests[i].key = keys[i];
             requests[i].output = values[i];
             requests[i].capacity = sizeof(values[i]);
         }
-        assert(acp_collect_run(requests, 3, 20000, 30000) == -1);
-        assert(requests[0].status == ACP_OK && !strcmp(values[0], "0x77"));
+        assert(acp_collect_run(requests, 4, 20000, 30000) == -1);
+        assert(requests[0].status == ACP_OK && !strcmp(values[0], "0x77") && requests[0].reason == ACP_REASON_NONE);
         assert(requests[1].status == ACP_OK && !strcmp(values[1], "TimeCapsule8,119"));
-        assert(requests[2].status == ACP_ABORT && !values[2][0]);
+        /* The budget stops the third child as it runs (a timeout), and the
+         * fourth is never asked. */
+        assert(requests[2].status == ACP_ABORT && !values[2][0] && requests[2].reason == ACP_REASON_TIMEOUT);
+        assert(requests[3].status == ACP_ABORT && !values[3][0] && requests[3].reason == ACP_REASON_BUDGET);
         assert(forks == 3 && virtual_ms == 30000);
         assert(open_fds() == before);
         errno = 0;
@@ -192,7 +218,24 @@ int main(int argc, char **argv) {
          * count the collector's own reads. */
         timed = !strncmp(scenario, "deadline_", 9);
         started = timed ? acp_monotonic_ms() : 0;
-        result = read_acp_value("syAP", output, sizeof(output));
+        if (repeat == 0) {
+            /* read_acp_value's own request, to see why it aborted. */
+            struct acp_request request;
+            enum acp_abort_reason reason;
+            int error;
+            memset(&request, 0, sizeof(request));
+            request.key = "syAP";
+            request.trim_whitespace = 1;
+            request.output = output;
+            request.capacity = sizeof(output);
+            (void)acp_collect_run(&request, 1, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
+                                  (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
+            result = request.status;
+            expected_reason(&reason, &error);
+            assert(request.reason == reason && request.error == error);
+        } else {
+            result = read_acp_value("syAP", output, sizeof(output));
+        }
         elapsed = timed ? acp_monotonic_ms() - started : 0;
         assert(result == (success ? ACP_OK : ACP_ABORT));
         /* The production timeout: an 18 s reply is kept, and a hung ACP is

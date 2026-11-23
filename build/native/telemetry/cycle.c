@@ -17,14 +17,16 @@ int telemetry_nonce(char out[33]) {
 }
 
 int telemetry_cycle(const char *reason, int lock_fd, int *delivered) {
+    /* Static: a heartbeat must not need memory the device may not have. */
+    static unsigned char body[TC_HTTP_BUFFER(TC_RESPONSE_MAX)];
     char payload[HEARTBEAT_MAX_JSON], nonce[33];
-    unsigned char *body = NULL;
     size_t len;
+    enum tc_outcome outcome;
     struct telemetry_response response;
     int rc;
     *delivered = 0;
     if (telemetry_nonce(nonce) || telemetry_payload(payload, sizeof(payload), reason, nonce) || telemetry_stop) return 1;
-    if (telemetry_http(HEARTBEAT_ENDPOINT, payload, &body, &len, TC_RESPONSE_MAX)) {
+    if (telemetry_http(HEARTBEAT_ENDPOINT, payload, body, sizeof(body), &len, &outcome)) {
         fputs("telemetry: POST failed\n", stderr); return 1;
     }
     /* The server has the heartbeat; later response or debug-job failures
@@ -32,12 +34,8 @@ int telemetry_cycle(const char *reason, int lock_fd, int *delivered) {
     *delivered = 1;
     /* A report owns no debug workspace and must remain safe to kill. Its
      * success is the POST itself, regardless of the server's debug reply. */
-    if (lock_fd < 0) {
-        free(body);
-        return 0;
-    }
+    if (lock_fd < 0) return 0;
     rc = telemetry_response_parse((const char *)body, len, &response);
-    free(body);
     if (rc) { fputs("telemetry: invalid response\n", stderr); return 1; }
     if (!response.debug) return 0;
     if (!telemetry_authorized(&response, payload)) {

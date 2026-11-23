@@ -34,6 +34,16 @@ struct acp_value {
  * snapshot. First-line scalar reads and raw multiline reads share one child
  * lifecycle; trimming never changes interior whitespace. */
 enum acp_read_form { ACP_QUERY, ACP_ARRAY };
+/* Why a request ended ACP_ABORT, so a caller can tell an ACPd that stopped
+ * answering (TIMEOUT) from a device out of processes (FORK) or descriptors
+ * (PIPE), a broken acp binary (EXEC), unusable output (OUTPUT), its own
+ * cancellation, or a key never asked because the collection budget was
+ * spent (BUDGET). LOCAL covers the collector's own failures: an invalid
+ * request, an unreadable clock, select() or waitpid() errors. */
+enum acp_abort_reason {
+    ACP_REASON_NONE = 0, ACP_REASON_TIMEOUT, ACP_REASON_BUDGET, ACP_REASON_FORK, ACP_REASON_PIPE,
+    ACP_REASON_EXEC, ACP_REASON_OUTPUT, ACP_REASON_CANCELLED, ACP_REASON_LOCAL
+};
 struct acp_request {
     const char *key;
     enum acp_read_form form;
@@ -44,6 +54,8 @@ struct acp_request {
     size_t length;
     int status;
     int exit_status;
+    enum acp_abort_reason reason; /* ACP_REASON_NONE unless status is ACP_ABORT */
+    int error;                    /* errno for FORK and PIPE, else 0 */
 };
 
 struct acp_bool { int available; int value; };
@@ -60,7 +72,7 @@ const char *acp_str(const struct acp_value *value);   /* NULL when unavailable *
 
 /* Non-blocking collection: one child at a time, next key on completion,
  * whole-collection budget after which remaining keys are marked
- * ACP_ABORT (never read, so not "not set"). Drive it with acp_collect_fd()/acp_collect_pump() from a
+ * ACP_ABORT with ACP_REASON_BUDGET (never read, so not "not set"). Drive it with acp_collect_fd()/acp_collect_pump() from a
  * select() loop, or synchronously with acp_collect_run(). */
 struct acp_collector {
     struct acp_request *requests;

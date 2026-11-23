@@ -11,7 +11,9 @@ native/dnssd/dnssd_ipc.c
 native/telemetry/device.c
 native/telemetry/cycle.c
 native/telemetry/debug_job.c
+native/telemetry/errclass.c
 native/telemetry/http.c
+native/telemetry/dns.c
 native/telemetry/main.c
 native/telemetry/payload.c
 native/telemetry/response.c

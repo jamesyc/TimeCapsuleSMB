@@ -32,9 +32,6 @@
  * heartbeat downloads retain their original meaning and HTTP proxy route. */
 #define TC_DEBUG_QUERY "?debug=true"
 #endif
-#ifndef TC_CURL_PATH
-#define TC_CURL_PATH "/usr/bin/curl"
-#endif
 #ifndef TC_TELEMETRY_WORK_ROOT
 #define TC_TELEMETRY_WORK_ROOT "/mnt/Memory"
 #endif
@@ -61,7 +58,22 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
 int telemetry_response_parse(const char *json, size_t len, struct telemetry_response *out);
 int telemetry_verify(const unsigned char *data, size_t len, const unsigned char *signature, size_t sig_len);
 int telemetry_authorized(const struct telemetry_response *response, const char *payload);
-int telemetry_http(const char *url, const char *payload, unsigned char **out, size_t *len, size_t limit);
+/* How a heartbeat attempt ended, for the retry rules. One attempt that meets
+ * several failures reports the first in this order: delivered, cancelled,
+ * busy, local_resource, acp_unavailable, network, server. */
+enum tc_outcome {
+    TC_OUTCOME_DELIVERED, TC_OUTCOME_CANCELLED, TC_OUTCOME_BUSY, TC_OUTCOME_LOCAL_RESOURCE,
+    TC_OUTCOME_ACP_UNAVAILABLE, TC_OUTCOME_NETWORK, TC_OUTCOME_SERVER
+};
+/* The status line and headers http.c reads before the body. */
+#define TC_HTTP_HEADER_MAX 4096
+/* The buffer telemetry_http needs for a body of at most limit bytes. */
+#define TC_HTTP_BUFFER(limit) (TC_HTTP_HEADER_MAX + (limit) + 1)
+/* GET (payload NULL) or POST url into buf (cap bytes: TC_HTTP_BUFFER of the
+ * largest body accepted). 0 with the body at buf (NUL-terminated, *len
+ * bytes), or -1; *outcome says which (http.c). */
+int telemetry_http(const char *url, const char *payload, unsigned char *buf, size_t cap, size_t *len,
+                   enum tc_outcome *outcome);
 /* A negative lock_fd sends a report only, without debug files or execution. */
 int telemetry_cycle(const char *reason, int lock_fd, int *delivered);
 int telemetry_debug_job(const char *reason, int lock_fd);

@@ -3,7 +3,7 @@ import subprocess
 import pytest
 from tests.native.build import ROOT, compile_modules
 
-@pytest.mark.parametrize('module', ['response', 'scheduler'])
+@pytest.mark.parametrize('module', ['response', 'scheduler', 'errclass'])
 def test_unit_module(tmp_path, module):
     native = ROOT / 'build/native/telemetry'
     output = tmp_path / module
@@ -31,32 +31,6 @@ def test_payload_device_boundary(tmp_path):
     assert payload['router_mode'] == 'unknown' and payload['links'] == []
     assert payload['plan_error'] == 'mode'
     assert payload['router_id'] == 'tc1-' + sha512(expected_input.encode()).hexdigest()[:64]
-
-
-@pytest.mark.parametrize(('mode', 'curl_body'), [
-    ('step', 'sleep 0.2\nprintf \'ok\\n200\''),
-    # Real curl is one process: exec, so the kill reaches the process holding
-    # the pipes instead of leaving a sleep child to hold pytest's for 10 s.
-    ('expire', 'exec sleep 10'),
-], ids=['step', 'expire'])
-def test_http_deadline_uses_monotonic_clock(tmp_path, mode, curl_body):
-    # The boot heartbeat is in flight when NTP steps the wall clock: a forward
-    # step must not abort it, and a hung curl must still be killed on time.
-    native = ROOT / 'build/native'
-    # step only needs a deadline far below the hour the wall clock jumps, with
-    # room for a loaded host to start the fake curl; expire waits out its own.
-    deadline_ms = 2000 if mode == 'expire' else 10000
-    curl = tmp_path / 'curl'
-    curl.write_text(f'#!/bin/sh\ncat >/dev/null\n{curl_body}\n')
-    curl.chmod(0o755)
-    output = tmp_path / 'http'
-    compile_modules(output, ('native/telemetry/http.c', 'native/common/acp.c'),
-                    flags=('-I', str(native / 'telemetry'), '-I', str(native / 'common'),
-                           f'-DTC_CURL_PATH="{curl}"', f'-DTC_HTTP_DEADLINE_MS={deadline_ms}'),
-                    extra_sources=(Path(__file__).parent / 'unit/test_http.c',))
-    run = subprocess.run([str(output), mode], capture_output=True, text=True, timeout=15,
-                         env={'PATH': '/usr/bin:/bin'})
-    assert run.returncode == 0, run.stderr
 
 
 def test_heartbeat_uptime_ignores_wall_clock_steps(tmp_path):

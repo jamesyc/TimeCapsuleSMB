@@ -62,15 +62,22 @@ static void stop_acp_child(pid_t child, int inherited_group) {
     syslog(LOG_DAEMON | LOG_ERR, "acp: child could not be reaped after SIGKILL");
 }
 
-/* Returns 0 with c->child/c->fd set, or -1 with *failure describing why. */
-static int start_acp_child(struct acp_collector *c, const struct acp_request *request, const char **failure) {
+/* Returns 0 with c->child/c->fd set, or -1 with *failure describing why and
+ * request->reason/error set. */
+static int start_acp_child(struct acp_collector *c, struct acp_request *request, const char **failure) {
     int output[2], flags;
     pid_t child;
 
-    if (pipe(output)) { *failure = "cannot create output pipe"; return -1; }
+    if (pipe(output)) {
+        request->reason = ACP_REASON_PIPE;
+        request->error = errno;
+        *failure = "cannot create output pipe"; return -1;
+    }
     flags = fcntl(output[0], F_GETFL);
     if (flags < 0 || fcntl(output[0], F_SETFL, flags | O_NONBLOCK) ||
         fcntl(output[0], F_SETFD, FD_CLOEXEC) || fcntl(output[1], F_SETFD, FD_CLOEXEC)) {
+        request->reason = ACP_REASON_PIPE;
+        request->error = errno;
         close(output[0]); close(output[1]);
         *failure = "cannot configure output pipe"; return -1;
     }
@@ -99,10 +106,15 @@ static int start_acp_child(struct acp_collector *c, const struct acp_request *re
         execl(TC_ACP_PATH, "acp", request->form == ACP_ARRAY ? "-A" : "-q", request->key, (char *)NULL);
         _exit(127);
     }
-    close(output[1]);
     if (child < 0) {
-        close(output[0]); *failure = "cannot fork"; return -1;
+        /* errno before close() can change it: EAGAIN is a full process
+         * table, ENOMEM short memory. */
+        request->reason = ACP_REASON_FORK;
+        request->error = errno;
+        close(output[0]); close(output[1]);
+        *failure = "cannot fork"; return -1;
     }
+    close(output[1]);
     c->child = child;
     c->fd = output[0];
     c->used = 0;
@@ -112,13 +124,21 @@ static int start_acp_child(struct acp_collector *c, const struct acp_request *re
     return 0;
 }
 
-static void finish_key(struct acp_collector *c, int status) {
+/* reason is kept only for ACP_ABORT; a reason already recorded (start
+ * failures) wins over the caller's. */
+static void finish_key(struct acp_collector *c, int status, enum acp_abort_reason reason) {
     struct acp_request *value = &c->requests[c->next];
     if (status != ACP_OK) {
         if (value->output && value->capacity) value->output[0] = '\0';
         value->length = 0;
     }
     value->status = status;
+    if (status != ACP_ABORT) {
+        value->reason = ACP_REASON_NONE;
+        value->error = 0;
+    } else if (value->reason == ACP_REASON_NONE) {
+        value->reason = reason;
+    }
     if (status == ACP_ABORT) {
         c->aborted = 1;
     }
@@ -128,7 +148,7 @@ static void finish_key(struct acp_collector *c, int status) {
     c->next++;
 }
 
-static void abort_current_child(struct acp_collector *c, const char *failure) {
+static void abort_current_child(struct acp_collector *c, const char *failure, enum acp_abort_reason reason) {
     stop_acp_child(c->child, c->inherited_group);
     if (c->inherited_group) {
         char discard[4096];
@@ -149,7 +169,7 @@ static void abort_current_child(struct acp_collector *c, const char *failure) {
     }
     close(c->fd);
     acp_log_failure(c->requests[c->next].key, failure);
-    finish_key(c, ACP_ABORT);
+    finish_key(c, ACP_ABORT, reason);
 }
 
 /* Start the next key's child, or mark it unavailable when the budget or a
@@ -162,13 +182,13 @@ static int advance(struct acp_collector *c) {
         struct acp_request *value = &c->requests[c->next];
         value->output[0] = '\0';
         if (cancelled()) {
-            finish_key(c, ACP_ABORT);
+            finish_key(c, ACP_ABORT, ACP_REASON_CANCELLED);
             continue;
         }
         now = acp_monotonic_ms();
         if (now < 0) {
             acp_log_failure(c->requests[c->next].key, "cannot read monotonic clock");
-            finish_key(c, ACP_ABORT);
+            finish_key(c, ACP_ABORT, ACP_REASON_LOCAL);
             continue;
         }
         if (now >= c->deadline_ms) {
@@ -176,12 +196,12 @@ static int advance(struct acp_collector *c) {
              * about it. UNAVAILABLE means acp answered "not set", which
              * the planner may act on; this must not look like that. */
             acp_log_failure(c->requests[c->next].key, "collection budget exhausted");
-            finish_key(c, ACP_ABORT);
+            finish_key(c, ACP_ABORT, ACP_REASON_BUDGET);
             continue;
         }
         if (start_acp_child(c, value, &failure) != 0) {
             acp_log_failure(c->requests[c->next].key, failure);
-            finish_key(c, ACP_ABORT);
+            finish_key(c, ACP_ABORT, ACP_REASON_LOCAL);
             continue;
         }
         /* Clamp before adding so even a large caller timeout cannot wrap. */
@@ -212,6 +232,8 @@ int acp_collect_begin(struct acp_collector *c, struct acp_request *requests, siz
         r->status = ACP_ABORT;
         r->exit_status = -1;
         r->length = 0;
+        r->reason = ACP_REASON_NONE;
+        r->error = 0;
         if (r->output && r->capacity) r->output[0] = '\0';
         if (!r->output || !r->capacity || !r->key || strlen(r->key) != 4 ||
             strspn(r->key, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != 4 ||
@@ -221,6 +243,7 @@ int acp_collect_begin(struct acp_collector *c, struct acp_request *requests, siz
     /* Validate arithmetic before forking; deadlines must not wrap. */
     if (invalid || now < 0 || budget_ms > LLONG_MAX - now || timeout_ms > LLONG_MAX - now) {
         acp_log_failure("read", "invalid request or monotonic deadline");
+        for (i = 0; i < count; i++) requests[i].reason = ACP_REASON_LOCAL;
         c->next = count;
         c->finished = c->aborted = 1;
         return -1;
@@ -264,23 +287,23 @@ static void reap_child(struct acp_collector *c) {
         c->active = 0;
         if (WIFEXITED(status)) c->requests[c->next].exit_status = WEXITSTATUS(status);
         if (acp_stop_requested) {
-            finish_key(c, ACP_ABORT);
+            finish_key(c, ACP_ABORT, ACP_REASON_CANCELLED);
         } else if (!WIFEXITED(status) || WEXITSTATUS(status) == 126 || WEXITSTATUS(status) == 127) {
             acp_log_failure(c->requests[c->next].key, "collector setup, exec, or signal failure");
-            finish_key(c, ACP_ABORT);
+            finish_key(c, ACP_ABORT, ACP_REASON_EXEC);
         } else if (WEXITSTATUS(status) != 0) {
-            finish_key(c, ACP_UNAVAILABLE);
+            finish_key(c, ACP_UNAVAILABLE, ACP_REASON_NONE);
         } else {
             struct acp_request *value = &c->requests[c->next];
             value->output[c->used] = '\0';
             if (value->trim_whitespace) trim_line(value->output);
             value->length = strlen(value->output);
-            finish_key(c, ACP_OK);
+            finish_key(c, ACP_OK, ACP_REASON_NONE);
         }
     } else if (waited < 0 && errno != EINTR) {
         close(c->fd);
         acp_log_failure(c->requests[c->next].key, "cannot reap collector");
-        finish_key(c, ACP_ABORT);
+        finish_key(c, ACP_ABORT, ACP_REASON_LOCAL);
     }
 }
 
@@ -291,11 +314,11 @@ int acp_collect_pump(struct acp_collector *c) {
     if (c->active) {
         long long now = acp_monotonic_ms();
         if (cancelled()) {
-            abort_current_child(c, "cancelled");
+            abort_current_child(c, "cancelled", ACP_REASON_CANCELLED);
         } else if (now < 0) {
-            abort_current_child(c, "cannot read monotonic clock");
+            abort_current_child(c, "cannot read monotonic clock", ACP_REASON_LOCAL);
         } else if (now >= c->child_deadline_ms) {
-            abort_current_child(c, "timed out");
+            abort_current_child(c, "timed out", ACP_REASON_TIMEOUT);
         } else if (c->eof) {
             reap_child(c);
         } else {
@@ -309,7 +332,7 @@ int acp_collect_pump(struct acp_collector *c) {
                 reap_child(c);
             } else if (n < 0) {
                 if (errno != EINTR && errno != EAGAIN) {
-                    abort_current_child(c, "cannot read output");
+                    abort_current_child(c, "cannot read output", ACP_REASON_OUTPUT);
                 }
             } else {
                 /* Capture the first line, but drain later output so it cannot
@@ -320,7 +343,7 @@ int acp_collect_pump(struct acp_collector *c) {
                     if (!value->multiline && chunk[i] == '\n') {
                         c->line_done = 1;
                     } else if (!chunk[i] || c->used + 1 >= value->capacity) {
-                        abort_current_child(c, "invalid or oversized output");
+                        abort_current_child(c, "invalid or oversized output", ACP_REASON_OUTPUT);
                         break;
                     } else {
                         value->output[c->used++] = chunk[i];
@@ -337,10 +360,10 @@ int acp_collect_pump(struct acp_collector *c) {
 
 void acp_collect_cancel(struct acp_collector *c) {
     if (c->active) {
-        abort_current_child(c, "cancelled");
+        abort_current_child(c, "cancelled", ACP_REASON_CANCELLED);
     }
     while (c->next < c->key_count) {
-        finish_key(c, ACP_ABORT);
+        finish_key(c, ACP_ABORT, ACP_REASON_CANCELLED);
     }
     c->finished = 1;
 }
@@ -365,7 +388,7 @@ int acp_collect_run(struct acp_request *requests, size_t count, long long timeou
         ready = select(fd >= 0 ? fd + 1 : 0, &reads, NULL, NULL, &timeout);
         if (ready < 0 && errno != EINTR) {
             if (c.active) {
-                abort_current_child(&c, "cannot wait for output");
+                abort_current_child(&c, "cannot wait for output", ACP_REASON_LOCAL);
             }
         }
         rc = acp_collect_pump(&c);
