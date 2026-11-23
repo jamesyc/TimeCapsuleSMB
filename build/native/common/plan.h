@@ -106,10 +106,25 @@ enum addr_kind addr4_kind(uint32_t network_order);
 enum addr_kind addr6_kind(const struct in6_addr *addr);
 int addr_is_service_address(const struct if_addr *addr);
 int addr_link_has_nbns_ipv4(unsigned flags, const struct if_addr *addrs, size_t count);
+/* The device's own hardware address, read without ACP or a fork: that of the
+ * lowest-index interface with one (not loopback, zero or multicast). The
+ * Ethernet ports attach first (mgi0, bcmeth1 at index 1) and carry the base
+ * address ACP reports as waMA and laMA, also on vlan0 and bridge0. Neither
+ * the lowest address nor the sdl_type picks it: Apple's kernels call every
+ * interface Ethernet, and bridge1's random ac:de:48 address sorts below
+ * NetBSD 4's e8:8d:28 base (tests/native/fixtures/iflist). Returns 0 with
+ * out set, or -1. */
+int if_table_device_mac(const struct if_table *table, unsigned char out[6]);
 const char *addr_text(const struct if_addr *addr, char *out, size_t out_len);
 
 /* facts.c */
 int collect_device_facts(struct device_facts *out);
+/* The two halves of a collection, for a caller that reads more keys in the
+ * same acp collection (telemetry): requests[ACP_KEY_COUNT] capture into
+ * facts; complete records their statuses and reads iflist, config and the
+ * hostname. facts must be cleared first. */
+void device_facts_requests(struct acp_request *requests, struct device_facts *facts);
+void device_facts_complete(struct device_facts *facts, const struct acp_request *requests);
 /* Non-blocking variant for the daemons: ACP children run one at a time
  * under the collection budget; the cheap parts (iflist, config, hostname)
  * complete synchronously on the final pump. */
@@ -152,6 +167,11 @@ int normalize_mac_text(char *out, size_t out_len, const char *value);
 /* plan.c — `previous` is the caller's LAST VALIDATED plan (or NULL); a plan
  * whose status is not validated must never be passed back as previous. */
 void device_plan_prune_history(struct device_plan *previous, const struct device_plan *current);
+/* After a build from history (the last validated plan, *have when there is
+ * one): a validated current plan becomes the history; otherwise links that
+ * are gone lose their old grants (device_plan_prune_history). Discovery's
+ * plan loop and telemetry share this. */
+void device_plan_history_update(struct device_plan *history, int *have, const struct device_plan *current);
 int device_plan_build(struct device_plan *out, const struct device_facts *facts,
                       const struct device_plan *previous, const struct plan_options *options, long long now_ms);
 int device_plan_collect(struct device_plan *out, const struct device_plan *previous, const struct plan_options *options);

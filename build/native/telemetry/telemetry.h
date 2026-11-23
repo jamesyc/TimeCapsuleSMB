@@ -4,7 +4,7 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include "../vendor/tweetnacl.h"
-#define HEARTBEAT_AGENT_VERSION "3"
+#define HEARTBEAT_AGENT_VERSION "4"
 #ifndef HEARTBEAT_ENDPOINT
 #define HEARTBEAT_ENDPOINT "http://timecapsulesmb.jamesyc.com/v1/router-heartbeats"
 #endif
@@ -51,13 +51,8 @@
 #endif
 #define TC_EXIT_BUSY 75
 struct telemetry_response { int debug; char signature[129]; };
-struct telemetry_schedule { time_t next_due; int boot_sent; time_t retry_seconds; };
 extern volatile sig_atomic_t telemetry_stop;
 int telemetry_enabled(void);
-int telemetry_payload(char *json, size_t cap, const char *reason, const char *nonce);
-int telemetry_response_parse(const char *json, size_t len, struct telemetry_response *out);
-int telemetry_verify(const unsigned char *data, size_t len, const unsigned char *signature, size_t sig_len);
-int telemetry_authorized(const struct telemetry_response *response, const char *payload);
 /* How a heartbeat attempt ended, for the retry rules. One attempt that meets
  * several failures reports the first in this order: delivered, cancelled,
  * busy, local_resource, acp_unavailable, network, server. */
@@ -65,6 +60,30 @@ enum tc_outcome {
     TC_OUTCOME_DELIVERED, TC_OUTCOME_CANCELLED, TC_OUTCOME_BUSY, TC_OUTCOME_LOCAL_RESOURCE,
     TC_OUTCOME_ACP_UNAVAILABLE, TC_OUTCOME_NETWORK, TC_OUTCOME_SERVER
 };
+
+struct tc_heartbeat_facts;
+/* What building a payload found: failure is why it failed (cancelled,
+ * acp_unavailable when there is no identity, server when it does not fit);
+ * local_resource that an acp child could not start for want of resources
+ * (the payload still went, with cached values). */
+struct tc_payload_result { enum tc_outcome failure; int local_resource; };
+/* Failed attempts since the last delivered heartbeat (planner.h), sent as
+ * "delivery": how long and why a device could not report. since is a
+ * monotonic time from this process, 0 for none. */
+struct tc_delivery { unsigned failed; long since; unsigned local_resource, acp_unavailable, network, server; };
+/* What a payload is built from: the facts this process keeps, whether to
+ * read acp afresh (heartbeat_facts.h; otherwise acp runs only if nothing was
+ * ever read), and the delivery record (NULL: none). */
+struct tc_payload_context {
+    struct tc_heartbeat_facts *facts;
+    int refresh;
+    const struct tc_delivery *delivery;
+};
+int telemetry_payload(char *json, size_t cap, const char *reason, const char *nonce,
+                      const struct tc_payload_context *ctx, struct tc_payload_result *result);
+int telemetry_response_parse(const char *json, size_t len, struct telemetry_response *out);
+int telemetry_verify(const unsigned char *data, size_t len, const unsigned char *signature, size_t sig_len);
+int telemetry_authorized(const struct telemetry_response *response, const char *payload);
 /* The status line and headers http.c reads before the body. */
 #define TC_HTTP_HEADER_MAX 4096
 /* The buffer telemetry_http needs for a body of at most limit bytes. */
@@ -75,11 +94,13 @@ enum tc_outcome {
 int telemetry_http(const char *url, const char *payload, unsigned char *buf, size_t cap, size_t *len,
                    enum tc_outcome *outcome);
 /* A negative lock_fd sends a report only, without debug files or execution. */
-int telemetry_cycle(const char *reason, int lock_fd, int *delivered);
+/* One heartbeat: payload, POST and, with a lock_fd, the debug job the reply
+ * authorizes. *outcome says how the heartbeat itself ended (the debug job
+ * comes after delivery and does not change it); the return value is the
+ * exit status, which a failed debug job also sets. */
+int telemetry_cycle(const char *reason, int lock_fd, const struct tc_payload_context *ctx, enum tc_outcome *outcome);
 int telemetry_debug_job(const char *reason, int lock_fd);
 int telemetry_nonce(char out[33]);
-int telemetry_schedule_due(struct telemetry_schedule *schedule, time_t now);
-void telemetry_schedule_finished(struct telemetry_schedule *schedule, time_t now, int delivered);
 int telemetry_lock(void);
 /* The caller must hold the workspace lock for these file mutations. */
 void telemetry_workspace_error(const char *operation, const char *path);

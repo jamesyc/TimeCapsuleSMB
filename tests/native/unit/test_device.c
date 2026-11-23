@@ -15,6 +15,11 @@ static int virtual_clock(void) {
     return getpid() == owner && !strncmp(scenario, "deadline_", 9);
 }
 
+/* deadline_skip is deadline_each with ACP_STOP_ON_TIMEOUT. */
+static int each_like(void) {
+    return !strcmp(scenario, "deadline_each") || !strcmp(scenario, "deadline_skip");
+}
+
 static int once(const char *name) {
     if (getpid() == owner && !injected && !strcmp(scenario, name)) {
         injected = 1;
@@ -76,7 +81,7 @@ int test_clock_gettime(clockid_t clock, struct timespec *value) {
 int test_select(int count, fd_set *readable, fd_set *writable, fd_set *errors, struct timeval *timeout) {
     if (once("select_error")) { errno = EBADF; return -1; }
     if (once("select_eintr")) { errno = EINTR; return -1; }
-    if (virtual_clock() && !strcmp(scenario, "deadline_each")) {
+    if (virtual_clock() && each_like()) {
         if (forks == 3) {
             /* The third answer is due at 36 s. Neither select() nor read()
              * sees it before the shared budget stops the child at 30 s. */
@@ -117,7 +122,7 @@ ssize_t test_read(int fd, void *buffer, size_t count) {
     if (once("read_eagain")) { errno = EAGAIN; return -1; }
     /* The collector reads on every pass, so a fixture that answers at once
      * would otherwise be read before the virtual 36 s. */
-    if (virtual_clock() && !strcmp(scenario, "deadline_each") && forks == 3) { errno = EAGAIN; return -1; }
+    if (virtual_clock() && each_like() && forks == 3) { errno = EAGAIN; return -1; }
     if (!strcmp(scenario, "byte_reads")) count = 1;
     return read(fd, buffer, count);
 }
@@ -178,7 +183,8 @@ int main(int argc, char **argv) {
     }
     /* The guard shares telemetry's group, outside the collector's group. */
     before = open_fds();
-    if (!strcmp(scenario, "deadline_each")) {
+    if (each_like()) {
+        int skip = !strcmp(scenario, "deadline_skip");
         char values[4][256];
         struct acp_request requests[4] = {0};
         const char *keys[] = {"syAP", "syAM", "syNm", "waMA"};
@@ -188,13 +194,15 @@ int main(int argc, char **argv) {
             requests[i].output = values[i];
             requests[i].capacity = sizeof(values[i]);
         }
-        assert(acp_collect_run(requests, 4, 20000, 30000) == -1);
+        assert(acp_collect_run_opts(requests, 4, 20000, 30000, skip ? ACP_STOP_ON_TIMEOUT : 0) == -1);
         assert(requests[0].status == ACP_OK && !strcmp(values[0], "0x77") && requests[0].reason == ACP_REASON_NONE);
         assert(requests[1].status == ACP_OK && !strcmp(values[1], "TimeCapsule8,119"));
         /* The budget stops the third child as it runs (a timeout), and the
-         * fourth is never asked. */
+         * fourth is never asked: the budget is spent, and with
+         * ACP_STOP_ON_TIMEOUT nothing is asked after a timeout anyway. */
         assert(requests[2].status == ACP_ABORT && !values[2][0] && requests[2].reason == ACP_REASON_TIMEOUT);
-        assert(requests[3].status == ACP_ABORT && !values[3][0] && requests[3].reason == ACP_REASON_BUDGET);
+        assert(requests[3].status == ACP_ABORT && !values[3][0] &&
+               requests[3].reason == (skip ? ACP_REASON_SKIPPED : ACP_REASON_BUDGET));
         assert(forks == 3 && virtual_ms == 30000);
         assert(open_fds() == before);
         errno = 0;

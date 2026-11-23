@@ -14,10 +14,11 @@ native/telemetry/debug_job.c
 native/telemetry/errclass.c
 native/telemetry/http.c
 native/telemetry/dns.c
+native/telemetry/heartbeat_facts.c
 native/telemetry/main.c
 native/telemetry/payload.c
 native/telemetry/response.c
-native/telemetry/scheduler.c
+native/telemetry/planner.c
 native/telemetry/signature.c
 native/telemetry/workspace.c
 native/vendor/random.c

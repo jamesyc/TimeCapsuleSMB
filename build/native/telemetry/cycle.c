@@ -16,22 +16,34 @@ int telemetry_nonce(char out[33]) {
     return 0;
 }
 
-int telemetry_cycle(const char *reason, int lock_fd, int *delivered) {
+int telemetry_cycle(const char *reason, int lock_fd, const struct tc_payload_context *ctx, enum tc_outcome *outcome) {
     /* Static: a heartbeat must not need memory the device may not have. */
     static unsigned char body[TC_HTTP_BUFFER(TC_RESPONSE_MAX)];
     char payload[HEARTBEAT_MAX_JSON], nonce[33];
     size_t len;
-    enum tc_outcome outcome;
+    enum tc_outcome posted;
+    struct tc_payload_result built;
     struct telemetry_response response;
     int rc;
-    *delivered = 0;
-    if (telemetry_nonce(nonce) || telemetry_payload(payload, sizeof(payload), reason, nonce) || telemetry_stop) return 1;
-    if (telemetry_http(HEARTBEAT_ENDPOINT, payload, body, sizeof(body), &len, &outcome)) {
+    *outcome = TC_OUTCOME_SERVER;
+    if (telemetry_nonce(nonce)) return 1;
+    if (telemetry_payload(payload, sizeof(payload), reason, nonce, ctx, &built)) {
+        /* A child that could not start ranks above the failure it led to. */
+        *outcome = built.local_resource && built.failure > TC_OUTCOME_LOCAL_RESOURCE ? TC_OUTCOME_LOCAL_RESOURCE
+                                                                                    : built.failure;
+        return 1;
+    }
+    if (telemetry_stop) {
+        *outcome = TC_OUTCOME_CANCELLED;
+        return 1;
+    }
+    if (telemetry_http(HEARTBEAT_ENDPOINT, payload, body, sizeof(body), &len, &posted)) {
+        *outcome = built.local_resource && posted > TC_OUTCOME_LOCAL_RESOURCE ? TC_OUTCOME_LOCAL_RESOURCE : posted;
         fputs("telemetry: POST failed\n", stderr); return 1;
     }
     /* The server has the heartbeat; later response or debug-job failures
      * must not resend it. */
-    *delivered = 1;
+    *outcome = TC_OUTCOME_DELIVERED;
     /* A report owns no debug workspace and must remain safe to kill. Its
      * success is the POST itself, regardless of the server's debug reply. */
     if (lock_fd < 0) return 0;

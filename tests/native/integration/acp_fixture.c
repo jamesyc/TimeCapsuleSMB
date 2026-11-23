@@ -118,6 +118,9 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[2], "syAP")) value = "0x77";
     if (!strcmp(argv[2], "syAM")) value = "TimeCapsule8,119";
     if (!strcmp(argv[2], "syNm")) value = "Test Capsule";
+    /* TC_TEST_ACP_NO_SERIAL: ACP does not answer sySN, so the heartbeat
+     * falls back to the device's hardware address. */
+    if (!strcmp(argv[2], "sySN") && !getenv("TC_TEST_ACP_NO_SERIAL")) value = "C86TEST0SN01";
     if (!strcmp(argv[2], "waMA")) value = "02:00:00:00:00:01";
     if (!strcmp(argv[2], "raMA")) value = "02:00:00:00:00:02";
     if (getenv("TC_TEST_PLAN_MODE")) {
@@ -125,7 +128,7 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[2], "raNA") || !strcmp(argv[2], "raDS")) value = nat ? "1" : "0";
         if (!strcmp(argv[2], "usbF")) value = "0x450";
     }
-    if (!*value) return 1; /* sySN is unavailable: exercise the normal fallback. */
+    if (!*value) return 1; /* an unset property: acp reports it unavailable */
     puts(value);
     if (!strcmp(mode, "drain"))
         for (i = 0; i < 65536; i++) putchar('x');

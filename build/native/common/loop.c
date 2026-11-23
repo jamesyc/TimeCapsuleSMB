@@ -157,12 +157,7 @@ static int finish_collection(struct plan_loop *loop, long long now_ms) {
             loop->logged_synthetic = 1;
         }
     }
-    if (loop->current.status.validated) {
-        loop->last_validated = loop->current;
-        loop->have_validated = 1;
-    } else if (loop->have_validated) {
-        device_plan_prune_history(&loop->last_validated, &loop->current);
-    }
+    device_plan_history_update(&loop->last_validated, &loop->have_validated, &loop->current);
     return 1;
 }
 

@@ -60,6 +60,14 @@ def test_iflist_parses_device_layout_fixture(fixture):
     assert int(bridge["flags"], 16) & 0x3 == 0x3 and not int(bridge["flags"], 16) & 0x8
     assert int(lo0["flags"], 16) & 0x8
     assert manifest["rtm_version"] == {"netbsd4le-bridge": 3, "netbsd6-bridge": 4}[fixture]
+    # The device's own address without ACP: on both captures it is the one
+    # ACP reported as waMA (sanitized to 02:00:00:00:00:01), on the first
+    # Ethernet port. Every interface but lo0 calls itself Ethernet (type 6).
+    waMA = next(k for k, v in manifest["sanitization"]["mac_map"].items() if v == "02:00:00:00:00:01")
+    assert waMA in ("80:ea:96:e6:58:68", "e8:8d:28:58:f1:5c")
+    assert [f for kind, f in rows if kind == "device"] == [{"mac": "02:00:00:00:00:01"}]
+    assert links[0]["index"] == "1" and links[0]["mac"] == "02:00:00:00:00:01"
+    assert {l["type"] for l in links if l["name"] != "lo0"} == {"6"}
 
 
 def test_iflist_layout_independence_sdk_header():
@@ -79,10 +87,25 @@ def test_iflist_version4_layout_skips_af_link_address_rows():
     assert addrs[1]["scope"] == "13"
 
 
+def test_device_mac_is_the_lowest_index_hardware_address():
+    # bridge1's random address sorts below the base, as on NetBSD 4, and
+    # comes first in the buffer; loopback and multicast rows have lower
+    # indexes. None of them is the device's.
+    rows = parse_kv_lines(run_case("iflist_parse", "--device-mac"))
+    links = {f["name"]: f for kind, f in rows if kind == "link"}
+    assert links["bridge1"]["mac"] == "ac:de:48:99:7c:35"
+    assert [f for kind, f in rows if kind == "device"] == [{"mac": "e8:8d:28:58:f1:5c"}]
+
+
+def test_device_mac_none_without_an_ethernet_address():
+    rows = parse_kv_lines(run_case("iflist_parse", "--unnamed"))
+    assert [f for kind, f in rows if kind == "device"] == [{"mac": "none"}]
+
+
 def test_iflist_link_without_sockaddr_dl_stays_unnamed():
     rows = parse_kv_lines(run_case("iflist_parse", "--unnamed"))
     links = [f for kind, f in rows if kind == "link"]
-    assert links == [{"name": "", "index": "4", "flags": "0x8843"}]
+    assert links == [{"name": "", "index": "4", "flags": "0x8843", "type": "0"}]
     addrs = [f for kind, f in rows if kind == "addr"]
     assert addrs[0]["owner"] == "4" and addrs[0]["addr"] == "10.0.0.4"
 

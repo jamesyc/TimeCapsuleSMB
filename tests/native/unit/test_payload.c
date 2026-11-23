@@ -1,51 +1,262 @@
+/* telemetry_payload (payload.c) and its heartbeat facts (heartbeat_facts.c)
+ * with acp, the plan builder and the interface table replaced by scripts.
+ * Prints the payloads that test_unit.py parses; everything else is asserted
+ * here. */
 #include "device.h"
+#include "heartbeat_facts.h"
+#include "errclass.h"
 #include "plan.h"
 #include <assert.h>
 #include <sys/utsname.h>
 volatile sig_atomic_t telemetry_stop;
 volatile sig_atomic_t acp_stop_requested;
-static int mode;
-void trim_line(char *v) { (void)v; }
+
+static const char *const plan_keys[ACP_KEY_COUNT] = {"raNA", "raDS", "waNM", "usbF", "laIP", "waIP", "waLL",
+                                                     "gnRo", "syNm", "waMA"};
+/* One scripted answer per key; unlisted keys answer "1". */
+struct answer { const char *key; int status; const char *value; enum acp_abort_reason reason; int error; };
+static struct answer script[8];
+static size_t script_count;
+static int collections, last_flags, plan_builds, built_with_history, validated = 1, have_mac = 1;
+static char keys_asked[512];
+
+static void answer(const char *key, int status, const char *value, enum acp_abort_reason reason, int error) {
+    script[script_count].key = key;
+    script[script_count].status = status;
+    script[script_count].value = value;
+    script[script_count].reason = reason;
+    script[script_count].error = error;
+    script_count++;
+}
+
+static void reset(void) {
+    script_count = 0;
+    collections = plan_builds = built_with_history = 0;
+    validated = have_mac = 1;
+    telemetry_stop = 0;
+    keys_asked[0] = 0;
+}
+
+void trim_line(char *v) {
+    size_t n;
+    char *start = v;
+    while (*start == ' ' || *start == '\t') start++;
+    memmove(v, start, strlen(start) + 1);
+    n = strlen(v);
+    while (n && (v[n - 1] == ' ' || v[n - 1] == '\t' || v[n - 1] == '\r' || v[n - 1] == '\n')) v[--n] = 0;
+}
 int uname(struct utsname *name) {
     memset(name, 0, sizeof(*name));
     strcpy(name->sysname, "NetBSD"); strcpy(name->release, "6.0"); strcpy(name->machine, "evbarm");
     return 0;
 }
-int read_acp_value(const char *key, char *out, size_t cap) {
-    const char *v = "";
-    if (!strcmp(key, "syAP")) v = "0x6a";
-    if (!strcmp(key, "syAM")) v = "TimeCapsule6,106";
-    if (!strcmp(key, "syNm")) v = "Name\n\"quoted\"";
-    if (!strcmp(key, "sySN") && !mode) v = "serial123";
-    snprintf(out, cap, "%s", v);
-    return *v ? 0 : -1;
-}
 int read_deploy_release_tag(char *out, size_t cap) { snprintf(out, cap, "v-test"); return 0; }
 int read_uptime_seconds(long *out) { *out = 123; return 0; }
-/* The identity test supplies an incomplete plan without probing the host. */
-int device_plan_collect(struct device_plan *out, const struct device_plan *previous, const struct plan_options *options) {
-    assert(previous == NULL && options->diskless == 0);
-    memset(out, 0, sizeof(*out));
-    strcpy(out->status.reason, "mode");
+long long acp_monotonic_ms(void) { return 50000; }
+
+int acp_collect_run_opts(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
+                         int flags) {
+    size_t i, j;
+    int timed_out = 0;
+    (void)timeout_ms; (void)budget_ms;
+    collections++;
+    last_flags = flags;
+    keys_asked[0] = 0;
+    for (i = 0; i < count; i++) {
+        const char *value = "1";
+        int status = ACP_OK;
+        enum acp_abort_reason reason = ACP_REASON_NONE;
+        int error = 0;
+        strcat(keys_asked, requests[i].key);
+        strcat(keys_asked, " ");
+        if (!strcmp(requests[i].key, "sySN")) value = "serial123";
+        if (!strcmp(requests[i].key, "syAP")) value = "0x6a";
+        if (!strcmp(requests[i].key, "syAM")) value = "TimeCapsule6,106";
+        if (!strcmp(requests[i].key, "syNm")) value = "  Name\n\"quoted\"";
+        for (j = 0; j < script_count; j++)
+            if (!strcmp(script[j].key, requests[i].key)) {
+                value = script[j].value;
+                status = script[j].status;
+                reason = script[j].reason;
+                error = script[j].error;
+            }
+        /* ACP_STOP_ON_TIMEOUT: nothing is asked after a timeout. */
+        if (timed_out) { status = ACP_ABORT; reason = ACP_REASON_SKIPPED; }
+        requests[i].status = status;
+        requests[i].reason = status == ACP_ABORT ? reason : ACP_REASON_NONE;
+        requests[i].error = error;
+        snprintf(requests[i].output, requests[i].capacity, "%s", status == ACP_OK ? value : "");
+        requests[i].length = strlen(requests[i].output);
+        if (status == ACP_ABORT && reason == ACP_REASON_TIMEOUT && (flags & ACP_STOP_ON_TIMEOUT)) timed_out = 1;
+    }
     return 0;
 }
-const char *router_mode_name(enum router_mode value) {
-    assert(value == ROUTER_MODE_UNKNOWN);
-    return "unknown";
+void device_facts_requests(struct acp_request *requests, struct device_facts *facts) {
+    size_t i;
+    for (i = 0; i < ACP_KEY_COUNT; i++) {
+        requests[i].key = plan_keys[i];
+        requests[i].output = facts->acp[i].text;
+        requests[i].capacity = sizeof(facts->acp[i].text);
+    }
 }
+void device_facts_complete(struct device_facts *facts, const struct acp_request *requests) {
+    size_t i;
+    for (i = 0; i < ACP_KEY_COUNT; i++)
+        facts->acp[i].status = requests[i].status == ACP_OK && !requests[i].length ? ACP_UNAVAILABLE : requests[i].status;
+}
+/* A plan validates when every key answered and the test allows it; an
+ * unvalidated one built from history keeps its age, as plan.c does. */
+int device_plan_build(struct device_plan *out, const struct device_facts *facts, const struct device_plan *previous,
+                      const struct plan_options *options, long long now_ms) {
+    size_t i;
+    int all = 1;
+    assert(options->diskless == 0);
+    plan_builds++;
+    if (previous) built_with_history++;
+    for (i = 0; i < ACP_KEY_COUNT; i++) if (facts->acp[i].status != ACP_OK) all = 0;
+    memset(out, 0, sizeof(*out));
+    out->status.validated = all && validated;
+    if (!out->status.validated) {
+        strcpy(out->status.reason, all ? "mode" : "syNm");
+        if (previous) out->status.stale_seconds = (unsigned long)((now_ms - previous->validated_at_ms) / 1000);
+    } else {
+        out->validated_at_ms = now_ms - 7000;
+    }
+    return 0;
+}
+void device_plan_history_update(struct device_plan *history, int *have, const struct device_plan *current) {
+    if (current->status.validated) { *history = *current; *have = 1; }
+}
+int iflist_collect(struct if_table *table) { memset(table, 0, sizeof(*table)); return 0; }
+int if_table_device_mac(const struct if_table *table, unsigned char out[6]) {
+    static const unsigned char mac[6] = {0x80, 0xea, 0x96, 0xe6, 0x58, 0x68};
+    (void)table;
+    if (!have_mac) return -1;
+    memcpy(out, mac, 6);
+    return 0;
+}
+const char *router_mode_name(enum router_mode value) { (void)value; return "unknown"; }
 const char *link_role_name(enum link_role value) { (void)value; assert(0); return ""; }
 int addr_is_service_address(const struct if_addr *addr) { (void)addr; assert(0); return 0; }
+
+static const struct tc_delivery *delivery;
+static int build(struct tc_heartbeat_facts *f, int refresh, char *json, size_t cap, struct tc_payload_result *r) {
+    struct tc_payload_context ctx;
+    ctx.facts = f;
+    ctx.refresh = refresh;
+    ctx.delivery = delivery;
+    return telemetry_payload(json, cap, "manual", "0123456789abcdef0123456789abcdef", &ctx, r);
+}
+
 int main(void) {
-    char json[4096];
-    assert(!telemetry_payload(json, sizeof(json), "manual", "0123456789abcdef0123456789abcdef"));
-    assert(strstr(json, "\"router_id\":\"serial123\""));
-    assert(strstr(json, "\"device_syap\":\"106\""));
-    assert(strstr(json, "Name\\n\\\"quoted\\\""));
-    assert(strstr(json, "\"uptime_sec\":123"));
-    assert(strstr(json, "\"deploy_release_tag\":\"v-test\""));
-    assert(telemetry_payload(json, 12, "manual", ""));
-    mode = 1;
-    assert(!telemetry_payload(json, sizeof(json), "manual", ""));
+    static struct tc_heartbeat_facts f;
+    struct tc_payload_result r;
+    struct tc_failure_counts counts;
+    char json[8192];
+
+    /* A first heartbeat reads everything in one collection: identity first,
+     * stopping at the first timeout. */
+    reset();
+    assert(!build(&f, 1, json, sizeof(json), &r) && !r.local_resource);
+    assert(collections == 1 && last_flags == ACP_STOP_ON_TIMEOUT);
+    assert(!strcmp(keys_asked, "sySN syAP syAM raNA raDS waNM usbF laIP waIP waLL gnRo syNm waMA "));
+    assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+    assert(strstr(json, "\"device_syap\":\"106\"") && strstr(json, "\"device_model\":\"TimeCapsule6,106\""));
+    /* syNm is captured whole for Bonjour; the heartbeat sends it trimmed. */
+    assert(strstr(json, "\"device_name\":\"Name\\n\\\"quoted\\\"\""));
+    assert(strstr(json, "\"uptime_sec\":123") && strstr(json, "\"deploy_release_tag\":\"v-test\""));
+    assert(!strstr(json, "plan_error") && !strstr(json, "plan_age_sec") && !strstr(json, "plan_stale_sec"));
+    assert(strstr(json, "\"delivery\":{\"failed\":0,\"since\":null,"));
     puts(json);
+
+    /* Without refresh nothing is read: the kept identity and plan go, with
+     * the plan's age, and the delivery record says what failed before. */
+    {
+        static struct tc_delivery record = {3, 4000, 2, 0, 1, 0};
+        delivery = &record;
+    }
+    reset();
+    assert(!build(&f, 0, json, sizeof(json), &r));
+    assert(collections == 0 && plan_builds == 0);
+    assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"plan_age_sec\":0"));
+    assert(strstr(json, "\"delivery\":{\"failed\":3,\"since\":4000,\"classes\":{\"local_resource\":2,"
+                        "\"acp_unavailable\":0,\"network\":1,\"server\":0}}"));
+    puts(json);
+    delivery = NULL;
+
+    /* ACPd hangs at syAP: the kept identity stands in, the plan is built
+     * from the validated one (its roles, with plan_error and its age), and
+     * the timeout is counted. */
+    reset();
+    answer("syAP", ACP_ABORT, "", ACP_REASON_TIMEOUT, 0);
+    assert(!build(&f, 1, json, sizeof(json), &r) && !r.local_resource);
+    assert(f.acp_timeouts == 1 && built_with_history == 1);
+    assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"device_syap\":\"106\""));
+    assert(strstr(json, "\"plan_error\":\"syNm\"") && strstr(json, "\"plan_stale_sec\":7"));
+    assert(!strstr(json, "plan_age_sec"));
+
+    /* A model read that fails for want of a process: the kept one goes. */
+    reset();
+    answer("syAM", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
+    assert(!build(&f, 1, json, sizeof(json), &r) && r.local_resource);
+    assert(strstr(json, "\"device_model\":\"TimeCapsule6,106\""));
+
+    /* A new process whose first identity read times out sends nothing: no
+     * heartbeat with a partial identity. */
+    {
+        static struct tc_heartbeat_facts fresh;
+        reset();
+        answer("syAM", ACP_ABORT, "", ACP_REASON_TIMEOUT, 0);
+        assert(build(&fresh, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE);
+    }
+    /* ... nor one whose acp binary is broken. */
+    {
+        static struct tc_heartbeat_facts fresh;
+        reset();
+        answer("sySN", ACP_ABORT, "", ACP_REASON_EXEC, 0);
+        assert(build(&fresh, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE);
+    }
+    /* A full process table at the first read is the device's trouble, not
+     * ACP's: it reports by hardware address, and the failed fork counts. */
+    {
+        static struct tc_heartbeat_facts fresh;
+        reset();
+        answer("sySN", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
+        answer("syAP", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
+        answer("syAM", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
+        answer("syNm", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
+        assert(!build(&fresh, 1, json, sizeof(json), &r) && r.local_resource);
+        assert(strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\"") && strstr(json, "\"device_model\":\"\""));
+        tc_failure_counts(&counts);
+        assert(counts.fork_eagain >= 4);
+    }
+    /* No serial ("not set"): the hardware address, never a hash. */
+    {
+        static struct tc_heartbeat_facts fresh;
+        reset();
+        answer("sySN", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
+        assert(!build(&fresh, 1, json, sizeof(json), &r));
+        assert(strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\""));
+    }
+    /* Neither a serial nor a hardware address: nothing to name it by. */
+    {
+        static struct tc_heartbeat_facts fresh;
+        reset();
+        have_mac = 0;
+        answer("sySN", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
+        assert(build(&fresh, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE);
+        assert(!fresh.mac[0]);
+    }
+    /* TERM during the collection. */
+    {
+        static struct tc_heartbeat_facts fresh;
+        reset();
+        telemetry_stop = 1;
+        assert(build(&fresh, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_CANCELLED);
+        telemetry_stop = 0;
+    }
+    /* Too small a buffer sends nothing. */
+    reset();
+    assert(build(&f, 0, json, 12, &r) && r.failure == TC_OUTCOME_SERVER);
     return 0;
 }

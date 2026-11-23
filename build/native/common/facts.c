@@ -51,7 +51,7 @@ static void read_hostname(struct device_facts *facts) {
 
 /* Both drivers capture directly into the scalar facts buffers. Descriptors
  * must outlive asynchronous collection; no large raw buffer is stored here. */
-static void facts_requests(struct acp_request *requests, struct device_facts *facts) {
+void device_facts_requests(struct acp_request *requests, struct device_facts *facts) {
     size_t i;
     memset(requests, 0, sizeof(*requests) * ACP_KEY_COUNT);
     for (i = 0; i < ACP_KEY_COUNT; i++) {
@@ -64,7 +64,7 @@ static void facts_requests(struct acp_request *requests, struct device_facts *fa
     }
 }
 
-static void facts_complete(struct device_facts *facts, const struct acp_request *requests) {
+void device_facts_complete(struct device_facts *facts, const struct acp_request *requests) {
     size_t i;
     for (i = 0; i < ACP_KEY_COUNT; i++) {
         facts->acp[i].status = requests[i].status == ACP_OK && !requests[i].length ?
@@ -79,7 +79,7 @@ int facts_collect_begin(struct facts_collector *c, struct device_facts *facts) {
     memset(c, 0, sizeof(*c));
     memset(facts, 0, sizeof(*facts));
     c->facts = facts;
-    facts_requests(c->requests, facts);
+    device_facts_requests(c->requests, facts);
     if (acp_collect_begin(&c->acp, c->requests, ACP_KEY_COUNT,
                           (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
                           (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000) != 0) {
@@ -103,7 +103,7 @@ int facts_collect_pump(struct facts_collector *c) {
     if (acp_collect_pump(&c->acp) == 0) {
         return 0;
     }
-    facts_complete(c->facts, c->requests);
+    device_facts_complete(c->facts, c->requests);
     c->done = 1;
     return 1;
 }
@@ -118,10 +118,10 @@ void facts_collect_cancel(struct facts_collector *c) {
 int collect_device_facts(struct device_facts *out) {
     struct acp_request requests[ACP_KEY_COUNT];
     memset(out, 0, sizeof(*out));
-    facts_requests(requests, out);
+    device_facts_requests(requests, out);
     (void)acp_collect_run(requests, ACP_KEY_COUNT, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
                           (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
-    facts_complete(out, requests);
+    device_facts_complete(out, requests);
     return 0;
 }
 

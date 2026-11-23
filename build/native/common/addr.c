@@ -104,3 +104,21 @@ const char *addr_text(const struct if_addr *addr, char *out, size_t out_len) {
     }
     return out;
 }
+
+int if_table_device_mac(const struct if_table *table, unsigned char out[6]) {
+    static const unsigned char zero[6];
+    const struct if_link *best = NULL;
+    size_t i;
+    for (i = 0; i < table->link_count; i++) {
+        const struct if_link *link = &table->links[i];
+        if (link->lladdr_len != 6 || (link->flags & IFF_LOOPBACK) || !memcmp(link->lladdr, zero, 6) ||
+            (link->lladdr[0] & 1))
+            continue;
+        if (!best || link->index < best->index)
+            best = link;
+    }
+    if (!best)
+        return -1;
+    memcpy(out, best->lladdr, 6);
+    return 0;
+}

@@ -1,4 +1,5 @@
 #include "device.h"
+#include "heartbeat_facts.h"
 #include "../common/plan.h"
 #include <sys/utsname.h>
 #if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__)
@@ -16,19 +17,6 @@ static void normalize_decimal_acp(char *value) {
     if (errno == 0 && end != value && end != NULL && *end == '\0') {
         (void)snprintf(value, HEARTBEAT_MAX_FIELD, "%lu", parsed);
     }
-}
-
-static void append_hash_input(char *buf, size_t buf_len, const char *label, const char *value) {
-    size_t used;
-
-    if (value == NULL || value[0] == '\0') {
-        return;
-    }
-    used = strlen(buf);
-    if (used >= buf_len) {
-        return;
-    }
-    (void)snprintf(buf + used, buf_len - used, "%s=%s\n", label, value);
 }
 
 static void bytes_to_hex(char *out, size_t out_len, const unsigned char *bytes, size_t byte_count) {
@@ -50,42 +38,6 @@ static void hash_text_hex(char *out, size_t out_len, const char *text) {
 
     crypto_hash(digest, (const unsigned char *)text, (unsigned long long)strlen(text));
     bytes_to_hex(out, out_len, digest, 32);
-}
-
-static int build_router_id(char *out, size_t out_len, const char *syap, const char *syam, const char *synm) {
-    char sysn[HEARTBEAT_MAX_FIELD];
-    char wama[HEARTBEAT_MAX_FIELD];
-    char rama[HEARTBEAT_MAX_FIELD];
-    char input[1024];
-    char hash_hex[65];
-    int result;
-
-    memset(input, 0, sizeof(input));
-    result = read_acp_value("sySN", sysn, sizeof(sysn));
-    if (result == ACP_ABORT) return 1;
-    if (result == ACP_OK) {
-        (void)snprintf(out, out_len, "%s", sysn);
-        return 0;
-    }
-
-    append_hash_input(input, sizeof(input), "namespace", "timecapsulesmb-router-heartbeat-v1");
-    append_hash_input(input, sizeof(input), "syAP", syap);
-    append_hash_input(input, sizeof(input), "syAM", syam);
-    append_hash_input(input, sizeof(input), "syNm", synm);
-    result = read_acp_value("waMA", wama, sizeof(wama));
-    if (result == ACP_ABORT) return 1;
-    if (result == ACP_OK) {
-        append_hash_input(input, sizeof(input), "waMA", wama);
-    }
-    result = read_acp_value("raMA", rama, sizeof(rama));
-    if (result == ACP_ABORT) return 1;
-    if (result == ACP_OK) {
-        append_hash_input(input, sizeof(input), "raMA", rama);
-    }
-
-    hash_text_hex(hash_hex, sizeof(hash_hex), input);
-    (void)snprintf(out, out_len, "tc1-%s", hash_hex);
-    return 0;
 }
 
 static void build_heartbeat_id(char *out, size_t out_len, const char *router_id, const char *reason) {
@@ -170,15 +122,13 @@ static const char *json_bool_or_null(struct acp_bool value, int invert) {
     return (value.value ? 1 : 0) != invert ? "true" : "false";
 }
 
-/* Appends the v2 fields; the caller has already emitted the v1 body up to
- * its closing brace position. Returns the number of bytes written or -1. */
-static int append_v2_fields(char *json, size_t cap, size_t used) {
-    struct device_plan plan;
-    struct plan_options options;
+/* Appends the v2 fields from plan; the caller has already emitted the v1
+ * body up to its closing brace position. age_sec >= 0 marks a plan resent
+ * without collecting (plan_age_sec). Returns the new length or -1. */
+static int append_v2_fields(char *json, size_t cap, size_t used, const struct device_plan *p, long long age_sec) {
+    const struct device_plan plan = *p;
     size_t i, emitted;
     int n;
-    memset(&options, 0, sizeof(options));
-    if (device_plan_collect(&plan, NULL, &options) != 0) return -1;
     n = snprintf(json + used, cap - used,
                  ",\"router_mode\":\"%s\",\"wan_setup_allowed\":%s,\"disks_over_wan\":%s,\"guest_enabled\":%s,"
                  "\"debug_logging\":%s,\"advertise_afp\":%s",
@@ -194,6 +144,12 @@ static int append_v2_fields(char *json, size_t cap, size_t used) {
         n = snprintf(json + used, cap - used, ",\"plan_error\":\"%s\"", plan.status.reason);
         if (n < 0 || (size_t)n >= cap - used) return -1;
         used += (size_t)n;
+        if (plan.status.stale_seconds) {
+            /* The roles above are the last validated plan's, this old. */
+            n = snprintf(json + used, cap - used, ",\"plan_stale_sec\":%lu", plan.status.stale_seconds);
+            if (n < 0 || (size_t)n >= cap - used) return -1;
+            used += (size_t)n;
+        }
         if (!strncmp(plan.status.reason, "iflist-", 7)) {
             /* The kernel's own totals: how far past the table a device is. */
             n = snprintf(json + used, cap - used, ",\"iflist_links\":%lu,\"iflist_addrs\":%lu",
@@ -228,17 +184,54 @@ static int append_v2_fields(char *json, size_t cap, size_t used) {
     }
     n = snprintf(json + used, cap - used, "]");
     if (n < 0 || (size_t)n >= cap - used) return -1;
+    used += (size_t)n;
+    if (age_sec >= 0) {
+        n = snprintf(json + used, cap - used, ",\"plan_age_sec\":%lld", age_sec);
+        if (n < 0 || (size_t)n >= cap - used) return -1;
+        used += (size_t)n;
+    }
+    return (int)used;
+}
+
+/* The router ID is the serial (ACP sySN) once read. A device whose ACP never
+ * gave one sends "mac-" and its hardware address, so it still reports;
+ * every heartbeat also carries "mac", which joins the two IDs. */
+static int build_router_id(char *out, size_t out_len, const struct tc_heartbeat_facts *f) {
+    if (f->id[TC_ID_SERIAL][0]) {
+        (void)snprintf(out, out_len, "%s", f->id[TC_ID_SERIAL]);
+        return 0;
+    }
+    if (f->mac[0]) {
+        (void)snprintf(out, out_len, "mac-%s", f->mac);
+        return 0;
+    }
+    return 1;
+}
+
+/* ,"delivery":{...} from the planner's record. */
+static int append_delivery(char *json, size_t cap, size_t used, const struct tc_delivery *d) {
+    static const struct tc_delivery none;
+    int n;
+    if (!d) d = &none;
+    n = d->since ? snprintf(json + used, cap - used, ",\"delivery\":{\"failed\":%u,\"since\":%ld", d->failed, d->since)
+                 : snprintf(json + used, cap - used, ",\"delivery\":{\"failed\":%u,\"since\":null", d->failed);
+    if (n < 0 || (size_t)n >= cap - used) return -1;
+    used += (size_t)n;
+    n = snprintf(json + used, cap - used,
+                 ",\"classes\":{\"local_resource\":%u,\"acp_unavailable\":%u,\"network\":%u,\"server\":%u}}",
+                 d->local_resource, d->acp_unavailable, d->network, d->server);
+    if (n < 0 || (size_t)n >= cap - used) return -1;
     return (int)(used + (size_t)n);
 }
 
-int telemetry_payload(char *json, size_t cap, const char *reason, const char *nonce) {
+int telemetry_payload(char *json, size_t cap, const char *reason, const char *nonce,
+                      const struct tc_payload_context *ctx, struct tc_payload_result *result) {
+    struct tc_heartbeat_facts *f = ctx->facts;
     char syap[HEARTBEAT_MAX_FIELD] = "";
-    char syam[HEARTBEAT_MAX_FIELD] = "";
-    char synm[HEARTBEAT_MAX_FIELD] = "";
     struct utsname system_name;
     char os_version[HEARTBEAT_MAX_FIELD * 3];
     char deploy_release_tag[HEARTBEAT_MAX_FIELD] = "";
-    char router_id[96];
+    char router_id[HEARTBEAT_MAX_FIELD + 8];
     char heartbeat_id[96];
     char esc_router_id[192];
     char esc_heartbeat_id[192];
@@ -248,14 +241,28 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
     char esc_syap[128];
     char esc_os[512];
     char esc_deploy_release_tag[HEARTBEAT_MAX_FIELD * 6 + 1];
-    char uptime_json[32];
+    char uptime_json[32], mac_json[24];
     long uptime_sec = 0;
     int have_uptime;
+    struct tc_facts_round round;
 
-    if (read_acp_value("syAP", syap, sizeof(syap)) == ACP_ABORT) return 1;
+    memset(result, 0, sizeof(*result));
+    result->failure = TC_OUTCOME_SERVER;
+    tc_heartbeat_facts_update(f, ctx->refresh, &round);
+    result->local_resource = round.local_resource;
+    if (telemetry_stop) {
+        result->failure = TC_OUTCOME_CANCELLED;
+        return 1;
+    }
+    if (round.identity_lost || build_router_id(router_id, sizeof(router_id), f)) {
+        fputs("telemetry: ACP gave no identity (serial, model, name)\n", stderr);
+        result->failure = TC_OUTCOME_ACP_UNAVAILABLE;
+        return 1;
+    }
+    (void)snprintf(syap, sizeof(syap), "%s", f->id[TC_ID_SYAP]);
     normalize_decimal_acp(syap);
-    if (read_acp_value("syAM", syam, sizeof(syam)) == ACP_ABORT ||
-        read_acp_value("syNm", synm, sizeof(synm)) == ACP_ABORT) return 1;
+    if (f->mac[0]) (void)snprintf(mac_json, sizeof(mac_json), "\"%s\"", f->mac);
+    else (void)snprintf(mac_json, sizeof(mac_json), "null");
     os_version[0] = '\0';
     if (uname(&system_name) == 0)
         (void)snprintf(os_version, sizeof(os_version), "%s %s %s", system_name.sysname, system_name.release, system_name.machine);
@@ -264,14 +271,13 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
     format_uptime_json(uptime_json, sizeof(uptime_json), uptime_sec, have_uptime);
     (void)read_deploy_release_tag(deploy_release_tag, sizeof(deploy_release_tag));
 
-    if (build_router_id(router_id, sizeof(router_id), syap, syam, synm) || telemetry_stop) return 1;
     build_heartbeat_id(heartbeat_id, sizeof(heartbeat_id), router_id, reason);
 
     if (json_escape(esc_router_id, sizeof(esc_router_id), router_id) != 0 ||
         json_escape(esc_heartbeat_id, sizeof(esc_heartbeat_id), heartbeat_id) != 0 ||
         json_escape(esc_reason, sizeof(esc_reason), reason) != 0 ||
-        json_escape(esc_syam, sizeof(esc_syam), syam) != 0 ||
-        json_escape(esc_synm, sizeof(esc_synm), synm) != 0 ||
+        json_escape(esc_syam, sizeof(esc_syam), f->id[TC_ID_SYAM]) != 0 ||
+        json_escape(esc_synm, sizeof(esc_synm), f->id[TC_ID_SYNM]) != 0 ||
         json_escape(esc_syap, sizeof(esc_syap), syap) != 0 ||
         json_escape(esc_os, sizeof(esc_os), os_version) != 0 ||
         json_escape(esc_deploy_release_tag, sizeof(esc_deploy_release_tag), deploy_release_tag) != 0) {
@@ -293,6 +299,7 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
                  "\"device_syap\":\"%s\","
                  "\"device_name\":\"%s\","
                  "\"device_os_version\":\"%s\","
+                 "\"mac\":%s,"
                  "\"uptime_sec\":%s,"
                  "\"reason\":\"%s\""
                  "}\n",
@@ -305,6 +312,7 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
                  esc_syap,
                  esc_synm,
                  esc_os,
+                 mac_json,
                  uptime_json,
                  esc_reason) >= (int)cap) {
         fprintf(stderr, "heartbeat: JSON payload too large\n");
@@ -316,7 +324,9 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
         int written;
         if (used < 2) return 1;
         used -= 2;
-        written = append_v2_fields(json, cap, used);
+        written = append_v2_fields(json, cap, used, &f->last,
+                                   round.collected ? -1 : (acp_monotonic_ms() - f->last_ms) / 1000);
+        if (written >= 0) written = append_delivery(json, cap, (size_t)written, ctx->delivery);
         if (written < 0 || (size_t)written + 3 > cap) {
             fprintf(stderr, "heartbeat: JSON payload too large\n");
             return 1;

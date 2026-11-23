@@ -185,6 +185,10 @@ static int advance(struct acp_collector *c) {
             finish_key(c, ACP_ABORT, ACP_REASON_CANCELLED);
             continue;
         }
+        if (c->stop_on_timeout && c->timed_out) {
+            finish_key(c, ACP_ABORT, ACP_REASON_SKIPPED);
+            continue;
+        }
         now = acp_monotonic_ms();
         if (now < 0) {
             acp_log_failure(c->requests[c->next].key, "cannot read monotonic clock");
@@ -217,11 +221,17 @@ static int advance(struct acp_collector *c) {
 
 int acp_collect_begin(struct acp_collector *c, struct acp_request *requests, size_t count,
                       long long timeout_ms, long long budget_ms) {
+    return acp_collect_begin_opts(c, requests, count, timeout_ms, budget_ms, 0);
+}
+
+int acp_collect_begin_opts(struct acp_collector *c, struct acp_request *requests, size_t count,
+                           long long timeout_ms, long long budget_ms, int flags) {
     long long now;
     size_t i;
     int invalid = timeout_ms <= 0 || budget_ms < 0;
 
     memset(c, 0, sizeof(*c));
+    c->stop_on_timeout = (flags & ACP_STOP_ON_TIMEOUT) != 0;
     c->inherited_group = inherited_scope;
     c->fd = -1;
     c->requests = requests;
@@ -318,6 +328,7 @@ int acp_collect_pump(struct acp_collector *c) {
         } else if (now < 0) {
             abort_current_child(c, "cannot read monotonic clock", ACP_REASON_LOCAL);
         } else if (now >= c->child_deadline_ms) {
+            c->timed_out = 1;
             abort_current_child(c, "timed out", ACP_REASON_TIMEOUT);
         } else if (c->eof) {
             reap_child(c);
@@ -371,8 +382,13 @@ void acp_collect_cancel(struct acp_collector *c) {
 /* Synchronous driver: the daemons use the fd/pump pair; one-shot helpers
  * and telemetry use this. */
 int acp_collect_run(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms) {
+    return acp_collect_run_opts(requests, count, timeout_ms, budget_ms, 0);
+}
+
+int acp_collect_run_opts(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
+                         int flags) {
     struct acp_collector c;
-    int rc = acp_collect_begin(&c, requests, count, timeout_ms, budget_ms);
+    int rc = acp_collect_begin_opts(&c, requests, count, timeout_ms, budget_ms, flags);
     if (rc != 0) {
         return rc;
     }

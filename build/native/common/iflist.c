@@ -92,6 +92,12 @@ static void decode_ifinfo(const unsigned char *msg, size_t msglen, struct if_lin
         if (8 + nlen + alen > sdl_len) {
             continue;
         }
+        /* The hardware address follows the name inside sockaddr_dl. */
+        link->lltype = msg[p + 4];
+        if (alen == sizeof(link->lladdr)) {
+            memcpy(link->lladdr, msg + p + 8 + nlen, sizeof(link->lladdr));
+            link->lladdr_len = (unsigned char)alen;
+        }
         if (nlen >= sizeof(link->name)) {
             nlen = sizeof(link->name) - 1;
         }

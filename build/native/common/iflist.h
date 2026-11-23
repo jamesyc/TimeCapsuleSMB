@@ -35,6 +35,9 @@ struct if_link {
     char name[IFNAMSIZ];
     unsigned index;
     unsigned flags;
+    unsigned char lltype;      /* sdl_type: 6 (Ethernet) for every interface but lo0 on these kernels */
+    unsigned char lladdr_len;  /* 6 when lladdr holds a hardware address */
+    unsigned char lladdr[6];
 };
 
 struct if_addr {

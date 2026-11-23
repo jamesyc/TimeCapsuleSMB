@@ -7,6 +7,8 @@
  *   iflist_parse --bad-sockaddr  NEWADDR whose inner sockaddr claims more bytes than the message (v3)
  *   iflist_parse --bad-sockaddr6 same, RTM_VERSION 4 layout
  *   iflist_parse --version6      RTM_VERSION 4 (NetBSD 6) synthetic message pair
+ *   iflist_parse --device-mac    a table whose lowest address and first row are not the
+ *                                device's: the lowest-index usable address is
  * Capacity tables (RTM_VERSION 4), N given as the second argument:
  *   --addressless N   lo0 and bridge0 own addresses; N address-less interfaces,
  *                     half before bridge0 and half after it
@@ -26,9 +28,19 @@ static void dump(const struct if_table *t) {
     printf("links=%lu addrs=%lu truncated=%s kernel_links=%lu kernel_addrs=%lu\n", (unsigned long)t->link_count,
            (unsigned long)t->addr_count, iflist_truncation_name(t->truncation), (unsigned long)t->kernel_link_count,
            (unsigned long)t->kernel_addr_count);
+    unsigned char mac[6];
     for (i = 0; i < t->link_count; i++) {
-        printf("link name=%s index=%u flags=0x%x\n", t->links[i].name, t->links[i].index, t->links[i].flags);
+        const struct if_link *l = &t->links[i];
+        printf("link name=%s index=%u flags=0x%x type=%u", l->name, l->index, l->flags, l->lltype);
+        if (l->lladdr_len == 6)
+            printf(" mac=%02x:%02x:%02x:%02x:%02x:%02x", l->lladdr[0], l->lladdr[1], l->lladdr[2], l->lladdr[3],
+                   l->lladdr[4], l->lladdr[5]);
+        putchar('\n');
     }
+    if (if_table_device_mac(t, mac) == 0)
+        printf("device mac=%02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    else
+        puts("device mac=none");
     for (i = 0; i < t->addr_count; i++) {
         const struct if_addr *a = &t->addrs[i];
         printf("addr owner=%u family=%s addr=%s prefix=%u scope=%u link_local=%d\n", a->owner_index,
@@ -195,6 +207,23 @@ int main(int argc, char **argv) {
         /* NetBSD 6 also emits an AF_LINK RTA_IFA row per interface: not an address. */
         memset(buf + len, 0, 64); buf[len + 2] = 4; buf[len + 3] = 0xc; put_u32(buf + len + 4, (1u << 2) | (1u << 5));
         put_u16(buf + len + 16, 13); buf[len + 24] = 15; buf[len + 32] = 21; buf[len + 33] = 18; put_u16(buf + len, 64); len += 64;
+    } else if (!strcmp(argv[1], "--device-mac")) {
+        /* NetBSD 4's base address e8:8d:28:... on the ports, vlan0 and
+         * bridge0; bridge1's random ac:de:48:... sorts lower and comes first
+         * in the buffer; loopback and multicast rows at lower indexes are
+         * not hardware addresses. */
+        static const unsigned char base[6] = {0xe8, 0x8d, 0x28, 0x58, 0xf1, 0x5c};
+        static const unsigned char radio[6] = {0xe8, 0x8d, 0x28, 0x61, 0x9b, 0x7d};
+        static const unsigned char random[6] = {0xac, 0xde, 0x48, 0x99, 0x7c, 0x35};
+        static const unsigned char loop[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x01};
+        static const unsigned char group[6] = {0x01, 0x00, 0x5e, 0x00, 0x00, 0x01};
+        len += ifinfo(buf + len, 3, 0xf, 152, 10, 0xe002, "bridge1", random, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 1, 0x8049, "lo0", loop, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 2, 0xe943, "grp0", group, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 3, 0xe943, "mgi0", base, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 4, 0xe802, "mgi1", base, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 5, 0x8843, "bwl0", radio, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 9, 0xe043, "bridge0", base, 1);
     } else {
         FILE *fp = fopen(argv[1], "rb");
         if (fp == NULL) { perror(argv[1]); return 1; }

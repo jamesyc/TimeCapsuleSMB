@@ -169,7 +169,8 @@ def test_no_debug_means_post_only(cycle, mode):
     payload = state['payloads'][0]
     assert payload['target_lane'] == '6' and len(payload['debug_nonce']) == 32
     assert payload['deploy_release_tag'] == 'test-release'
-    assert payload['reason'] == 'manual' and payload['router_id'].startswith('tc1-')
+    assert payload['reason'] == 'manual' and payload['router_id'] == 'C86TEST0SN01'
+    assert payload['mac'] == '02:00:00:00:00:01'
 
 @pytest.mark.parametrize('mode', ['true', 'child_fail'])
 def test_verified_debug_executes_and_cleans(cycle, mode):
@@ -694,7 +695,11 @@ def test_acp_exec_failure_aborts_without_posting(cycle, rig):
         acp.chmod(permissions)
 
 
-@pytest.mark.parametrize('key', ['syAM', 'syNm', 'sySN', 'waMA', 'raMA'])
+# One collection per heartbeat: the identity keys, then the plan's.
+COLLECTION = ['sySN', 'syAP', 'syAM', 'raNA', 'raDS', 'waNM', 'usbF', 'laIP', 'waIP', 'waLL', 'gnRo', 'syNm', 'waMA']
+
+
+@pytest.mark.parametrize('key', ['sySN', 'syAP', 'syAM', 'syNm'])
 def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, short_collector, acp_calls, key):
     _, state, _, _, env = cycle
     calls = acp_calls
@@ -705,10 +710,24 @@ def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, short_co
     assert state['calls'] == []
     # Collection stopped at key. The deadline may kill key's child before the
     # fixture records it, leaving the previous key as the last record.
-    identity = ['syAP', 'syAM', 'syNm', 'sySN', 'waMA', 'raMA']
     recorded = [line.split()[0] for line in calls.read_text().splitlines()]
-    assert recorded in (identity[:identity.index(key) + 1], identity[:identity.index(key)])
+    assert recorded in (COLLECTION[:COLLECTION.index(key) + 1], COLLECTION[:COLLECTION.index(key)])
     assert_collectors_stopped(calls)
+
+
+def test_acp_timeout_at_a_plan_key_still_posts_the_identity(cycle, short_collector, acp_calls):
+    # waMA is not part of the identity: the heartbeat goes with the plan it
+    # could build, saying why it is incomplete.
+    _, state, _, _, env = cycle
+    result = subprocess.run(telemetry_command(short_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': 'hang',
+                            'TC_TEST_ACP_KEY': 'waMA', 'TC_TEST_ACP_CALLS': str(acp_calls)},
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, result.stderr
+    assert 'acp: waMA timed out' in result.stderr
+    payload = state['payloads'][0]
+    assert payload['router_id'] == 'C86TEST0SN01' and payload['device_model'] == 'TimeCapsule8,119'
+    assert 'plan_error' in payload
+    assert_collectors_stopped(acp_calls)
 
 
 @pytest.mark.parametrize('args', [['--daemon'], ['--once'], ['--report'], ['--print-payload']])
@@ -741,7 +760,7 @@ def test_acp_unavailable_fields_and_extra_output_preserve_normal_reporting(cycle
     assert run('false', TC_TEST_ACP_MODE=mode).returncode == 0
     payload = state['payloads'][0]
     assert payload['device_syap'] == ('119' if mode == 'drain' else '')
-    assert payload['router_id'].startswith('tc1-')
+    assert payload['router_id'] == 'C86TEST0SN01'
 
 
 def test_production_telemetry_uses_the_default_acp_deadline(cycle, production_collector):
@@ -758,25 +777,35 @@ def test_production_telemetry_uses_the_default_acp_deadline(cycle, production_co
 
 def test_each_acp_command_gets_its_own_deadline(cycle, paced_collector, acp_calls):
     _, state, _, _, env = cycle
-    # The fake paces its replies, sleeping less when a start is slow: the six
-    # identity replies span 2.4 s, past paced_collector's 2 s per-key deadline,
-    # while each lasts only 0.4 s or its own startup. test_device.c pins the
-    # exact per-key and shared deadlines.
+    # The fake paces its replies, sleeping less when a start is slow: the 13
+    # replies span 5.2 s, past paced_collector's 2 s per-key deadline, while
+    # each lasts only 0.4 s or its own startup. test_device.c pins the exact
+    # per-key and shared deadlines.
     pace_ms = 400
     result = subprocess.run(telemetry_command(paced_collector, '--once', 'manual'),
                             env={**env, 'TC_TEST_ACP_MODE': 'slow_each', 'TC_TEST_ACP_KEY': '*',
                                  'TC_TEST_ACP_CALLS': str(acp_calls), 'TC_TEST_ACP_PACE_MS': str(pace_ms)},
                             capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
-    # Schema v2 then collects the device plan's ten keys under one 30 s
-    # budget, again one child at a time with its own per-key deadline.
+    # One collection under one 30 s budget: the identity keys and the
+    # device plan's, one child at a time, each with its own deadline, each
+    # key once.
     calls = [line.split() for line in acp_calls.read_text().splitlines()]
-    # The seventh call can start only after all six identity replies.
-    assert float(calls[6][3]) - float(calls[0][3]) >= 6 * pace_ms / 1000
-    assert [call[0] for call in calls] == [
-        'syAP', 'syAM', 'syNm', 'sySN', 'waMA', 'raMA',
-        'raNA', 'raDS', 'waNM', 'usbF', 'laIP', 'waIP', 'waLL', 'gnRo', 'syNm', 'waMA',
-    ]
+    # The fourth call can start only after the three identity replies.
+    assert float(calls[3][3]) - float(calls[0][3]) >= 3 * pace_ms / 1000
+    assert [call[0] for call in calls] == COLLECTION
+    assert len(state['calls']) == 1
+
+
+def test_router_id_falls_back_to_the_hardware_address_without_a_hash(cycle):
+    # A device whose ACP never answers sySN still reports, under its own
+    # hardware address; with neither, nothing is sent at all.
+    run, state, *_ = cycle
+    assert run('false', TC_TEST_ACP_NO_SERIAL='1').returncode == 0
+    payload = state['payloads'][0]
+    assert payload['router_id'] == 'mac-02:00:00:00:00:01' and payload['mac'] == '02:00:00:00:00:01'
+    result = run('false', TC_TEST_ACP_NO_SERIAL='1', TC_TEST_IFLIST='failed')
+    assert result.returncode == 1 and 'ACP gave no identity' in result.stderr
     assert len(state['calls']) == 1
 
 
@@ -799,7 +828,7 @@ def test_schema_v2_payload_reports_plan_availability(cycle):
     assert run('false').returncode == 0
     payload = state['payloads'][0]
     assert payload['schema_version'] == 2
-    assert payload['router_id'].startswith('tc1-') and payload['deploy_release_tag'] == 'test-release'
+    assert payload['router_id'] == 'C86TEST0SN01' and payload['deploy_release_tag'] == 'test-release'
     assert payload['router_mode'] == 'unknown'
     assert payload['wan_setup_allowed'] is None and payload['disks_over_wan'] is None
     assert payload['guest_enabled'] is False

@@ -37,12 +37,13 @@ enum acp_read_form { ACP_QUERY, ACP_ARRAY };
 /* Why a request ended ACP_ABORT, so a caller can tell an ACPd that stopped
  * answering (TIMEOUT) from a device out of processes (FORK) or descriptors
  * (PIPE), a broken acp binary (EXEC), unusable output (OUTPUT), its own
- * cancellation, or a key never asked because the collection budget was
- * spent (BUDGET). LOCAL covers the collector's own failures: an invalid
+ * cancellation, a key never asked because the collection budget was
+ * spent (BUDGET) or because an earlier key timed out in a collection begun
+ * with ACP_STOP_ON_TIMEOUT (SKIPPED). LOCAL covers the collector's own failures: an invalid
  * request, an unreadable clock, select() or waitpid() errors. */
 enum acp_abort_reason {
     ACP_REASON_NONE = 0, ACP_REASON_TIMEOUT, ACP_REASON_BUDGET, ACP_REASON_FORK, ACP_REASON_PIPE,
-    ACP_REASON_EXEC, ACP_REASON_OUTPUT, ACP_REASON_CANCELLED, ACP_REASON_LOCAL
+    ACP_REASON_EXEC, ACP_REASON_OUTPUT, ACP_REASON_CANCELLED, ACP_REASON_LOCAL, ACP_REASON_SKIPPED
 };
 struct acp_request {
     const char *key;
@@ -91,12 +92,21 @@ struct acp_collector {
     int finished;
     int aborted;
     int inherited_group;
+    int stop_on_timeout; /* ACP_STOP_ON_TIMEOUT */
+    int timed_out;       /* a key timed out */
 };
+/* acp_collect_begin_opts flag: after one key times out, ask no more keys
+ * (ACP_REASON_SKIPPED). ACPd that has stopped answering one key will not
+ * answer the next: telemetry would otherwise spend its whole budget on
+ * children that time out one after another. */
+#define ACP_STOP_ON_TIMEOUT 1
 
 /* begin/pump return 0 while pending, 1 when complete, -1 if any request
  * aborted. Inspect per-request status: missing values are not batch failures. */
 int acp_collect_begin(struct acp_collector *c, struct acp_request *requests, size_t count,
                       long long timeout_ms, long long budget_ms);
+int acp_collect_begin_opts(struct acp_collector *c, struct acp_request *requests, size_t count,
+                           long long timeout_ms, long long budget_ms, int flags);
 int acp_collect_fd(const struct acp_collector *c);
 long long acp_collect_deadline_ms(const struct acp_collector *c);
 /* The same deadline as seen at monotonic time now; tests choose the time. */
@@ -104,5 +114,7 @@ long long acp_collect_deadline_at(const struct acp_collector *c, long long now);
 int acp_collect_pump(struct acp_collector *c);      /* 1 = finished, 0 = in progress, -1 = aborted */
 void acp_collect_cancel(struct acp_collector *c);
 int acp_collect_run(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms);
+int acp_collect_run_opts(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
+                         int flags);
 long long acp_monotonic_ms(void);
 #endif

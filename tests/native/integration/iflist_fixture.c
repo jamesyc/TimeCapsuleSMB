@@ -1,7 +1,9 @@
 #include "common/iflist.h"
 
 /* Heartbeat tests must not depend on the host's VPNs or kernel layout.
- * TC_TEST_IFLIST selects a table:
+ * Unset, the table holds one address-less Ethernet port carrying the
+ * device's hardware address (the heartbeat's mac). TC_TEST_IFLIST selects
+ * another table:
  *   failed            the sysctl read fails
  *   sockaddr|links|addrs  an incomplete snapshot with that cause
  *   extenders         bridge0 and lo0 plus 30 address-less interfaces
@@ -29,7 +31,14 @@ static void add_ipv4(struct if_table *table, unsigned index, const char *text, u
 int iflist_collect(struct if_table *table) {
     const char *mode = getenv("TC_TEST_IFLIST");
     memset(table, 0, sizeof(*table));
-    if (mode == NULL) return 0;
+    if (mode == NULL) {
+        static const unsigned char mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+        add_link(table, "bcmeth0", 1);
+        table->links[0].lltype = 6;
+        table->links[0].lladdr_len = 6;
+        memcpy(table->links[0].lladdr, mac, 6);
+        return 0;
+    }
     if (!strcmp(mode, "failed")) return -1;
     if (!strcmp(mode, "extenders")) {
         char name[IFNAMSIZ];

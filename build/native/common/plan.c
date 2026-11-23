@@ -175,6 +175,15 @@ void device_plan_prune_history(struct device_plan *previous, const struct device
     previous->link_count = count;
 }
 
+void device_plan_history_update(struct device_plan *history, int *have, const struct device_plan *current) {
+    if (current->status.validated) {
+        *history = *current;
+        *have = 1;
+    } else if (*have) {
+        device_plan_prune_history(history, current);
+    }
+}
+
 int device_plan_collect(struct device_plan *out, const struct device_plan *previous, const struct plan_options *options) {
     struct device_facts facts;
     collect_device_facts(&facts);
