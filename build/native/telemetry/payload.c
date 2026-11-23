@@ -1,5 +1,6 @@
 #include "device.h"
 #include "heartbeat_facts.h"
+#include "health.h"
 #include "../common/plan.h"
 #include <sys/utsname.h>
 #if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__)
@@ -125,35 +126,34 @@ static const char *json_bool_or_null(struct acp_bool value, int invert) {
 /* Appends the v2 fields from plan; the caller has already emitted the v1
  * body up to its closing brace position. age_sec >= 0 marks a plan resent
  * without collecting (plan_age_sec). Returns the new length or -1. */
-static int append_v2_fields(char *json, size_t cap, size_t used, const struct device_plan *p, long long age_sec) {
-    const struct device_plan plan = *p;
+static int append_v2_fields(char *json, size_t cap, size_t used, const struct device_plan *plan, long long age_sec) {
     size_t i, emitted;
     int n;
     n = snprintf(json + used, cap - used,
                  ",\"router_mode\":\"%s\",\"wan_setup_allowed\":%s,\"disks_over_wan\":%s,\"guest_enabled\":%s,"
                  "\"debug_logging\":%s,\"advertise_afp\":%s",
-                 router_mode_name(plan.mode),
-                 json_bool_or_null(plan.waNM, 1),             /* waNM=1 means setup over WAN disabled */
-                 plan.usbF.available ? (plan.wan_disks_allowed ? "true" : "false") : "null",
-                 plan.gnRo.available ? "true" : "false",
-                 config_bool_json(plan.config.debug_logging),
-                 config_bool_json(plan.config.advertise_afp));
+                 router_mode_name(plan->mode),
+                 json_bool_or_null(plan->waNM, 1),             /* waNM=1 means setup over WAN disabled */
+                 plan->usbF.available ? (plan->wan_disks_allowed ? "true" : "false") : "null",
+                 plan->gnRo.available ? "true" : "false",
+                 config_bool_json(plan->config.debug_logging),
+                 config_bool_json(plan->config.advertise_afp));
     if (n < 0 || (size_t)n >= cap - used) return -1;
     used += (size_t)n;
-    if (!plan.status.validated) {
-        n = snprintf(json + used, cap - used, ",\"plan_error\":\"%s\"", plan.status.reason);
+    if (!plan->status.validated) {
+        n = snprintf(json + used, cap - used, ",\"plan_error\":\"%s\"", plan->status.reason);
         if (n < 0 || (size_t)n >= cap - used) return -1;
         used += (size_t)n;
-        if (plan.status.stale_seconds) {
+        if (plan->status.stale_seconds) {
             /* The roles above are the last validated plan's, this old. */
-            n = snprintf(json + used, cap - used, ",\"plan_stale_sec\":%lu", plan.status.stale_seconds);
+            n = snprintf(json + used, cap - used, ",\"plan_stale_sec\":%lu", plan->status.stale_seconds);
             if (n < 0 || (size_t)n >= cap - used) return -1;
             used += (size_t)n;
         }
-        if (!strncmp(plan.status.reason, "iflist-", 7)) {
+        if (!strncmp(plan->status.reason, "iflist-", 7)) {
             /* The kernel's own totals: how far past the table a device is. */
             n = snprintf(json + used, cap - used, ",\"iflist_links\":%lu,\"iflist_addrs\":%lu",
-                         (unsigned long)plan.kernel_link_count, (unsigned long)plan.kernel_addr_count);
+                         (unsigned long)plan->kernel_link_count, (unsigned long)plan->kernel_addr_count);
             if (n < 0 || (size_t)n >= cap - used) return -1;
             used += (size_t)n;
         }
@@ -161,8 +161,8 @@ static int append_v2_fields(char *json, size_t cap, size_t used, const struct de
     n = snprintf(json + used, cap - used, ",\"links\":[");
     if (n < 0 || (size_t)n >= cap - used) return -1;
     used += (size_t)n;
-    for (i = 0, emitted = 0; i < plan.link_count; i++) {
-        const struct link_plan *link = &plan.links[i];
+    for (i = 0, emitted = 0; i < plan->link_count; i++) {
+        const struct link_plan *link = &plan->links[i];
         int v4 = 0, v6 = 0;
         size_t j;
         /* Every byte of a name may need a six-byte \u escape. */
@@ -208,6 +208,10 @@ static int build_router_id(char *out, size_t out_len, const struct tc_heartbeat_
     return 1;
 }
 
+/* The largest payload fits its buffer, with room for the closing brace. */
+typedef char tc_payload_fits[(TC_PAYLOAD_BASE_MAX + TC_DELIVERY_JSON_MAX + TC_HEALTH_JSON_MAX + 3 <= HEARTBEAT_MAX_JSON)
+                             ? 1 : -1];
+
 /* ,"delivery":{...} from the planner's record. */
 static int append_delivery(char *json, size_t cap, size_t used, const struct tc_delivery *d) {
     static const struct tc_delivery none;
@@ -225,7 +229,7 @@ static int append_delivery(char *json, size_t cap, size_t used, const struct tc_
 }
 
 int telemetry_payload(char *json, size_t cap, const char *reason, const char *nonce,
-                      const struct tc_payload_context *ctx, struct tc_payload_result *result) {
+                      struct tc_payload_context *ctx, struct tc_payload_result *result) {
     struct tc_heartbeat_facts *f = ctx->facts;
     char syap[HEARTBEAT_MAX_FIELD] = "";
     struct utsname system_name;
@@ -248,14 +252,16 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
 
     memset(result, 0, sizeof(*result));
     result->failure = TC_OUTCOME_SERVER;
+    ctx->health_token = 0;
+    ctx->health_sent = 0;
     tc_heartbeat_facts_update(f, ctx->refresh, &round);
     result->local_resource = round.local_resource;
     if (telemetry_stop) {
         result->failure = TC_OUTCOME_CANCELLED;
         return 1;
     }
-    if (round.identity_lost || build_router_id(router_id, sizeof(router_id), f)) {
-        fputs("telemetry: ACP gave no identity (serial, model, name)\n", stderr);
+    if (build_router_id(router_id, sizeof(router_id), f)) {
+        fputs("telemetry: no router serial or hardware address\n", stderr);
         result->failure = TC_OUTCOME_ACP_UNAVAILABLE;
         return 1;
     }
@@ -327,6 +333,24 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
         written = append_v2_fields(json, cap, used, &f->last,
                                    round.collected ? -1 : (acp_monotonic_ms() - f->last_ms) / 1000);
         if (written >= 0) written = append_delivery(json, cap, (size_t)written, ctx->delivery);
+        if (written >= 0 && ctx->health) {
+            /* Health is diagnostics: when it does not fit (with room left
+             * for the closing brace), the heartbeat still goes, saying so,
+             * and its events wait for the next one. */
+            unsigned token;
+            int with_health;
+            tc_health_note_failures(ctx->health, f->acp_timeouts);
+            with_health = tc_health_append_json(json, cap - 3, (size_t)written, ctx->health, f->acp_timeouts,
+                                                f->acp_budget_exhausted, &token);
+            if (with_health >= 0) {
+                written = with_health;
+                ctx->health_token = token;
+                ctx->health_sent = 1;
+            } else {
+                int n = snprintf(json + written, cap - (size_t)written, ",\"health\":null");
+                written = n < 0 || (size_t)n >= cap - (size_t)written ? -1 : written + n;
+            }
+        }
         if (written < 0 || (size_t)written + 3 > cap) {
             fprintf(stderr, "heartbeat: JSON payload too large\n");
             return 1;

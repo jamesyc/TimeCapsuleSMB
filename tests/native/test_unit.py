@@ -19,7 +19,8 @@ def test_payload_device_boundary(tmp_path):
     # acp, the plan builder and the interface table are scripted in
     # test_payload.c; the payload and its heartbeat facts are the shipped code.
     compile_modules(output, ('native/telemetry/payload.c', 'native/telemetry/heartbeat_facts.c',
-                             'native/telemetry/errclass.c', 'native/vendor/tweetnacl.c', 'native/vendor/random.c'),
+                             'native/telemetry/errclass.c', 'native/telemetry/health.c', 'native/telemetry/health_json.c',
+                             'native/vendor/tweetnacl.c', 'native/vendor/random.c'),
                     flags=('-I', str(native / 'telemetry'), '-I', str(native / 'common')),
                     extra_sources=(Path(__file__).parent / 'unit/test_payload.c',))
     run = subprocess.run([str(output)], capture_output=True, text=True, timeout=5)

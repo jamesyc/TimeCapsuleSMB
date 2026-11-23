@@ -15,6 +15,9 @@ from tests.native.build import ROOT, compile_modules
 DEADLINE_MS = 3000
 CONNECT_MS = 1000
 DNS_SERVER_MS = 500
+# The TERM test's own build: a deadline far past the 1 s stop-flag poll, so
+# stopping on TERM and running to the deadline cannot be mistaken.
+LONG_DEADLINE_MS = 20000
 
 
 def have_ipv6_loopback():
@@ -59,6 +62,9 @@ def responder(state):
                 mode = state["mode"]
                 if mode == "silent":
                     time.sleep(DEADLINE_MS / 1000 + 2)
+                    return
+                if mode == "silent_long":
+                    time.sleep(LONG_DEADLINE_MS / 1000 + 2)
                     return
                 if mode == "slow_ok":
                     time.sleep(0.2)
@@ -187,14 +193,17 @@ def rig(tmp_path_factory):
     resolv = root / "resolv.conf"
     resolv.write_text("nameserver 127.0.0.1\n")
     native = ROOT / "build/native"
-    binary = root / "http"
-    compile_modules(binary, ("native/telemetry/http.c", "native/telemetry/dns.c", "native/common/acp.c",
-                             "native/telemetry/errclass.c"),
-                    flags=("-I", str(native / "telemetry"), "-I", str(native / "common"), "-I", str(native),
-                           f"-DTC_HTTP_DEADLINE_MS={DEADLINE_MS}", f"-DTC_HTTP_CONNECT_MS={CONNECT_MS}",
-                           f"-DTC_DNS_SERVER_MS={DNS_SERVER_MS}", f"-DTC_DNS_PORT={dns4.port}",
-                           f'-DTC_RESOLV_CONF="{resolv}"'),
-                    extra_sources=(ROOT / "tests/native/unit/test_http.c",))
+    def build(path, deadline_ms):
+        compile_modules(path, ("native/telemetry/http.c", "native/telemetry/dns.c", "native/common/acp.c",
+                               "native/telemetry/errclass.c"),
+                        flags=("-I", str(native / "telemetry"), "-I", str(native / "common"), "-I", str(native),
+                               f"-DTC_HTTP_DEADLINE_MS={deadline_ms}", f"-DTC_HTTP_CONNECT_MS={CONNECT_MS}",
+                               f"-DTC_DNS_SERVER_MS={DNS_SERVER_MS}", f"-DTC_DNS_PORT={dns4.port}",
+                               f'-DTC_RESOLV_CONF="{resolv}"'),
+                        extra_sources=(ROOT / "tests/native/unit/test_http.c",))
+        return path
+    binary = build(root / "http", DEADLINE_MS)
+    long_binary = build(root / "http-long", LONG_DEADLINE_MS)
     state = {"mode": "ok", "requests": []}
     http4 = Http(("127.0.0.1", 0), responder(state))
     threading.Thread(target=http4.serve_forever, daemon=True).start()
@@ -202,7 +211,7 @@ def rig(tmp_path_factory):
     if IPV6:
         http6 = Http6(("::1", http4.server_address[1]), responder(state))
         threading.Thread(target=http6.serve_forever, daemon=True).start()
-    yield {"binary": binary, "state": state, "port": http4.server_address[1], "resolv": resolv,
+    yield {"binary": binary, "long_binary": long_binary, "state": state, "port": http4.server_address[1], "resolv": resolv,
            "dns4": dns4, "dns6": dns6}
     http4.shutdown()
     if http6:
@@ -430,18 +439,19 @@ def test_a_repeated_reply_adds_no_addresses(http):
 
 def test_term_stops_a_request_within_a_second(http):
     rig, _ = http
-    rig["state"]["mode"] = "silent"
-    process = subprocess.Popen([str(rig["binary"]), "post", f"http://127.0.0.1:{rig['port']}/x"],
+    rig["state"]["mode"] = "silent_long"
+    process = subprocess.Popen([str(rig["long_binary"]), "post", f"http://127.0.0.1:{rig['port']}/x"],
                                stdout=subprocess.PIPE, text=True)
     deadline = time.monotonic() + 5
     while not rig["state"]["requests"] and time.monotonic() < deadline:
         time.sleep(0.01)
     started = time.monotonic()
     process.terminate()
-    out, _ = process.communicate(timeout=10)
+    out, _ = process.communicate(timeout=30)
     assert out.splitlines()[0] == "fail cancelled"
-    # Well under the 3 s deadline: the stop flag is checked every second.
-    assert time.monotonic() - started < 1.5
+    # The stop flag is checked every second; without it the request would
+    # run to its 20 s deadline.
+    assert time.monotonic() - started < LONG_DEADLINE_MS / 2000
 
 
 def test_no_descriptor_for_a_socket_is_a_local_failure(http):

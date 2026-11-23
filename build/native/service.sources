@@ -15,6 +15,9 @@ native/telemetry/errclass.c
 native/telemetry/http.c
 native/telemetry/dns.c
 native/telemetry/heartbeat_facts.c
+native/telemetry/health.c
+native/telemetry/health_read.c
+native/telemetry/health_json.c
 native/telemetry/main.c
 native/telemetry/payload.c
 native/telemetry/response.c

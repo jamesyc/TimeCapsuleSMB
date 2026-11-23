@@ -57,6 +57,9 @@ int main(int argc, char **argv) {
     /* Each test source writes its own file. */
     write_file("base", "2 1 2 3 0x80 4 0 select diskd born=123456789 /sbin/diskd -i lo0 -d local.\n"
                        "31 2 31 5 0x0 0 0 - smbd (smbd)\n"
+                       "50 1 50 3 0x80 0 0 select service born=7 rss=96 /mnt/Flash/service manager\n"
+                       "51 1 51 3 0x80 0 0 select smbd rss=700 smbd -F\n"
+                       "52 1 52 3 0x80 0 0 select sshd rss=33 born=9 /usr/sbin/sshd -D\n"
                        "40 1 40 3 0x0 75 1200 biowait a_command_name_longer_than_16 x\n"
                        "garbage line\n");
     snprintf(text, sizeof(text),
@@ -70,11 +73,20 @@ int main(int argc, char **argv) {
      * are not read twice. */
     write_file(".external.new", text);
     assert(tc_proctable_read(&t) == 0);
-    assert(t.count == 5);
+    assert(t.count == 8);
     assert(find(&t, 2)->stat == 3 && find(&t, 2)->flag == 0x80 && find(&t, 2)->slept == 4);
     assert(!strcmp(find(&t, 2)->wmesg, "select") && !strcmp(find(&t, 2)->comm, "diskd"));
     assert(find(&t, 2)->threads == 1 && find(&t, 2)->parent == 1 && find(&t, 2)->group == 2);
     assert(find(&t, 2)->born == 123456789 && find(&t, 31)->born == 0);
+    /* rss= follows born= when both are given, and either may be left out;
+     * neither is part of the command line. */
+    assert(find(&t, 2)->rss_pages == 0 && find(&t, 31)->rss_pages == 0);
+    assert(find(&t, 50)->born == 7 && find(&t, 50)->rss_pages == 96);
+    assert(find(&t, 51)->born == 0 && find(&t, 51)->rss_pages == 700);
+    assert(find(&t, 52)->born == 9 && find(&t, 52)->rss_pages == 33);
+    assert(tc_proctable_argv(52, line, sizeof(line)) == 0 && !strcmp(line, "/usr/sbin/sshd -D"));
+    assert(tc_proctable_argv(50, line, sizeof(line)) == 0 && !strcmp(line, "/mnt/Flash/service manager"));
+    assert(tc_proctable_argv(51, line, sizeof(line)) == 0 && !strcmp(line, "smbd -F"));
     /* "-" is no wait message; zombies stay in the table, marked exited. */
     assert(!strcmp(find(&t, 31)->wmesg, "") && tc_proc_exited(find(&t, 31)));
     assert(!tc_proc_exited(find(&t, 2)));

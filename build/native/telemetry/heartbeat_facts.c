@@ -22,17 +22,15 @@ static int start_failed_for_resources(const struct acp_request *r) {
     return 0;
 }
 
-/* Keeps a key's answer: a value, or empty for "not set". An abort keeps the
- * cached value; one that is not for want of resources, on a key never
- * answered, means the identity is unknown. */
-static void keep(struct tc_heartbeat_facts *f, int index, int status, const char *value, int resources,
-                 struct tc_facts_round *round) {
+/* Keeps a key's answer: a value, or empty for "not set". A failed read keeps
+ * the cached value, or empty if there is none: with the router named by its
+ * serial or hardware address, a missing model or name no longer changes who
+ * the heartbeat is from. */
+static void keep(struct tc_heartbeat_facts *f, int index, int status, const char *value) {
     if (status == ACP_OK || status == ACP_UNAVAILABLE) {
         (void)snprintf(f->id[index], sizeof(f->id[index]), "%s", status == ACP_OK ? value : "");
         trim_line(f->id[index]);
         f->answered[index] = 1;
-    } else if (!f->answered[index] && !resources) {
-        round->identity_lost = 1;
     }
 }
 
@@ -41,7 +39,6 @@ void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, int refresh, struct
     static struct device_facts facts;
     struct acp_request requests[IDENTITY_REQUESTS + ACP_KEY_COUNT];
     char values[IDENTITY_REQUESTS][ACP_VALUE_MAX];
-    int resources[IDENTITY_REQUESTS + ACP_KEY_COUNT];
     struct plan_options options;
     size_t i;
     memset(round, 0, sizeof(*round));
@@ -57,21 +54,22 @@ void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, int refresh, struct
     }
     device_facts_requests(requests + IDENTITY_REQUESTS, &facts);
     (void)acp_collect_run_opts(requests, IDENTITY_REQUESTS + ACP_KEY_COUNT, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
-                               (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000, ACP_STOP_ON_TIMEOUT);
+                               (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000,
+                               ACP_STOP_ON_TIMEOUT | ACP_STOP_ON_START_FAILURE);
     device_facts_complete(&facts, requests + IDENTITY_REQUESTS);
     round->collected = 1;
     for (i = 0; i < IDENTITY_REQUESTS + ACP_KEY_COUNT; i++) {
         if (requests[i].status == ACP_ABORT && requests[i].reason == ACP_REASON_TIMEOUT) round->timed_out = 1;
-        resources[i] = start_failed_for_resources(&requests[i]);
-        if (resources[i]) round->local_resource = 1;
+        if (requests[i].status == ACP_ABORT && requests[i].reason == ACP_REASON_BUDGET) round->budget_spent = 1;
+        if (start_failed_for_resources(&requests[i])) round->local_resource = 1;
     }
     if (round->timed_out) f->acp_timeouts++;
+    if (round->budget_spent) f->acp_budget_exhausted++;
     for (i = 0; i < IDENTITY_REQUESTS; i++) {
         int status = requests[i].status == ACP_OK && !requests[i].length ? ACP_UNAVAILABLE : requests[i].status;
-        keep(f, (int)i, status, values[i], resources[i], round);
+        keep(f, (int)i, status, values[i]);
     }
-    keep(f, TC_ID_SYNM, facts.acp[ACP_KEY_syNm].status, facts.acp[ACP_KEY_syNm].text,
-         resources[IDENTITY_REQUESTS + ACP_KEY_syNm], round);
+    keep(f, TC_ID_SYNM, facts.acp[ACP_KEY_syNm].status, facts.acp[ACP_KEY_syNm].text);
     memset(&options, 0, sizeof(options));
     f->last_ms = acp_monotonic_ms();
     (void)device_plan_build(&f->last, &facts, f->have_history ? &f->history : NULL, &options, f->last_ms);

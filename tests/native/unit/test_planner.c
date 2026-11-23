@@ -142,9 +142,42 @@ static void extra_heartbeats(void) {
     p.retry_at = 0;
     p.next_scheduled = t;
     a = next(&p, t, 1);
-    assert(a.kind == TC_ATTEMPT_EXTRA);
+    /* It reads acp afresh only once acp has gone unread for the interval. */
+    assert(a.kind == TC_ATTEMPT_EXTRA && a.refresh == (t >= p.next_refresh));
+    p.next_refresh = t;
+    assert(next(&p, t, 1).refresh);
     planner_finished(&p, t, &a, TC_OUTCOME_DELIVERED, 0);
     assert(p.next_scheduled == t + TC_INTERVAL_SECONDS && next(&p, t + 1, 0).kind == TC_ATTEMPT_NONE);
+}
+
+static void chronic_requests_still_refresh(void) {
+    /* A health event that never clears: forty days of extra heartbeats at
+     * the 12-hour cap, every one delivered. acp is still read at least
+     * every 12 hours. */
+    struct tc_planner p;
+    long t, last_refresh = 0;
+    planner_init(&p, 900);
+    run(&p, 0, 1, TC_OUTCOME_DELIVERED);
+    for (t = 1; t < 40L * 86400; t++) {
+        struct tc_attempt a = next(&p, t, 1);
+        if (a.kind == TC_ATTEMPT_NONE) continue;
+        if (a.refresh) last_refresh = t;
+        assert(t - last_refresh <= TC_INTERVAL_SECONDS);
+        planner_finished(&p, t, &a, TC_OUTCOME_DELIVERED, 1);
+    }
+    assert(last_refresh > 39L * 86400);
+}
+
+static void setup_failures(void) {
+    /* Out of descriptors or memory before the heartbeat is built is the
+     * device short of resources; anything else keeps its old meaning. */
+    assert(tc_setup_outcome(ENFILE, 1) == TC_OUTCOME_LOCAL_RESOURCE);
+    assert(tc_setup_outcome(EMFILE, 1) == TC_OUTCOME_LOCAL_RESOURCE);
+    assert(tc_setup_outcome(ENOMEM, 0) == TC_OUTCOME_LOCAL_RESOURCE);
+    assert(tc_setup_outcome(EMFILE, 0) == TC_OUTCOME_LOCAL_RESOURCE);
+    assert(tc_setup_outcome(EAGAIN, 1) == TC_OUTCOME_BUSY);
+    assert(tc_setup_outcome(EPERM, 1) == TC_OUTCOME_BUSY);
+    assert(tc_setup_outcome(ENOENT, 0) == TC_OUTCOME_SERVER);
 }
 
 static void one_attempt_per_slot(void) {
@@ -182,6 +215,8 @@ int main(void) {
     busy_and_cancelled();
     extra_heartbeats();
     one_attempt_per_slot();
+    chronic_requests_still_refresh();
+    setup_failures();
     arming();
     return 0;
 }

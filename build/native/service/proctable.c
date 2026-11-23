@@ -64,6 +64,7 @@ static void fill(struct tc_proc *out, const struct kinfo_proc2 *p) {
     out->slept = p->p_slptime;
     out->cpu_us = (unsigned long long)p->p_rtime_sec * 1000000ULL + p->p_rtime_usec;
     out->born = (unsigned long long)p->p_ustart_sec * 1000000ULL + p->p_ustart_usec;
+    out->rss_pages = p->p_vm_rssize > 0 ? (unsigned)p->p_vm_rssize : 0;
     copy_field(out->wmesg, sizeof(out->wmesg), p->p_wmesg, sizeof(p->p_wmesg));
     copy_field(out->comm, sizeof(out->comm), p->p_comm, sizeof(p->p_comm));
 }
@@ -177,13 +178,20 @@ static int parse_row(char *line, struct tc_proc *p, const char **argv) {
     p->group = (pid_t)group;
     p->threads = 0;
     p->born = 0;
+    p->rss_pages = 0;
     copy_field(p->wmesg, sizeof(p->wmesg), strcmp(wmesg, "-") ? wmesg : "", sizeof(wmesg));
     copy_field(p->comm, sizeof(p->comm), comm, sizeof(comm));
     *argv = offset ? row + offset : row + strlen(row);
-    /* Optional test identity, before argv, so older fixtures stay valid. */
-    if (!strncmp(*argv, "born=", 5)) {
+    /* Optional test identity and size, before argv and in either order, so
+     * older fixtures stay valid. */
+    for (;;) {
         char *end;
-        p->born = strtoull(*argv + 5, &end, 10);
+        if (!strncmp(*argv, "born=", 5))
+            p->born = strtoull(*argv + 5, &end, 10);
+        else if (!strncmp(*argv, "rss=", 4))
+            p->rss_pages = (unsigned)strtoul(*argv + 4, &end, 10);
+        else
+            break;
         while (isspace((unsigned char)*end)) end++;
         *argv = end;
     }

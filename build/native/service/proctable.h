@@ -13,7 +13,8 @@
  *
  * Host test builds read the file named by TC_TEST_PROCS instead, one line per
  * process:
- *     [live] PID PPID GROUP STAT FLAG SLEPT CPU_US WMESG COMM [ARGV...]
+ *     [live] PID PPID GROUP STAT FLAG SLEPT CPU_US WMESG COMM [born=N] [rss=N] [ARGV...]
+ * (born= and rss= in either order)
  * and one per thread of a multi-threaded process:
  *     lwp PID LID STAT FLAG SLEPT WMESG
  * STAT and FLAG are the kernel's values; WMESG is "-" for none. A "live" row
@@ -38,6 +39,7 @@ struct tc_proc {
     unsigned slept;            /* seconds in this sleep: the kernel's l_slptime */
     unsigned long long cpu_us; /* CPU time so far */
     unsigned long long born; /* Kernel process start time; distinguishes PID reuse. */
+    unsigned rss_pages;      /* resident set size in pages (0 for a zombie) */
     char wmesg[TC_PROC_WMESG], comm[TC_PROC_COMM];
 };
 /* A process: its PID and kernel start time. A reused PID is another process. */

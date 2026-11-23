@@ -36,7 +36,7 @@ int test_pipe(int fds[2]) {
 
 pid_t test_fork(void) {
     forks++;
-    if (once("fork")) { errno = EAGAIN; return -1; }
+    if (once("fork") || once("fork_skip")) { errno = EAGAIN; return -1; }
     collector = fork();
     if (collector > 0 && (once("cancel_after_fork") || once("cancel_before_group"))) acp_stop_requested = 1;
     return collector;
@@ -194,20 +194,43 @@ int main(int argc, char **argv) {
             requests[i].output = values[i];
             requests[i].capacity = sizeof(values[i]);
         }
-        assert(acp_collect_run_opts(requests, 4, 20000, 30000, skip ? ACP_STOP_ON_TIMEOUT : 0) == -1);
+        /* deadline_skip has budget to spare, so the third key's own 20 s
+         * runs out first (at 44 s): a timeout. deadline_each's 30 s budget
+         * runs out first, at 30 s, while the third child still runs. */
+        assert(acp_collect_run_opts(requests, 4, 20000, skip ? 60000 : 30000, skip ? ACP_STOP_ON_TIMEOUT : 0) == -1);
         assert(requests[0].status == ACP_OK && !strcmp(values[0], "0x77") && requests[0].reason == ACP_REASON_NONE);
         assert(requests[1].status == ACP_OK && !strcmp(values[1], "TimeCapsule8,119"));
-        /* The budget stops the third child as it runs (a timeout), and the
-         * fourth is never asked: the budget is spent, and with
-         * ACP_STOP_ON_TIMEOUT nothing is asked after a timeout anyway. */
-        assert(requests[2].status == ACP_ABORT && !values[2][0] && requests[2].reason == ACP_REASON_TIMEOUT);
+        /* The budget stopping a running child is not that key timing out,
+         * and does not stop an ACP_STOP_ON_TIMEOUT collection by itself. */
+        assert(requests[2].status == ACP_ABORT && !values[2][0] &&
+               requests[2].reason == (skip ? ACP_REASON_TIMEOUT : ACP_REASON_BUDGET));
         assert(requests[3].status == ACP_ABORT && !values[3][0] &&
                requests[3].reason == (skip ? ACP_REASON_SKIPPED : ACP_REASON_BUDGET));
-        assert(forks == 3 && virtual_ms == 30000);
+        assert(forks == 3 && virtual_ms == (skip ? 44000 : 30000));
         assert(open_fds() == before);
         errno = 0;
         assert(waitpid(collector, &status, WNOHANG) == -1 && errno == ECHILD);
         assert(kill(guard, 0) == 0);
+        kill(guard, SIGKILL);
+        assert(waitpid(guard, &status, 0) == guard);
+        return 0;
+    }
+    if (!strcmp(scenario, "fork_skip")) {
+        /* A full process table: after the first fork fails, nothing more
+         * is forked in an ACP_STOP_ON_START_FAILURE collection. */
+        char values[3][256];
+        struct acp_request requests[3] = {0};
+        const char *keys[] = {"syAP", "syAM", "syNm"};
+        size_t i;
+        for (i = 0; i < 3; i++) {
+            requests[i].key = keys[i];
+            requests[i].output = values[i];
+            requests[i].capacity = sizeof(values[i]);
+        }
+        assert(acp_collect_run_opts(requests, 3, 20000, 30000, ACP_STOP_ON_START_FAILURE) == -1);
+        assert(forks == 1 && requests[0].reason == ACP_REASON_FORK && requests[0].error == EAGAIN);
+        assert(requests[1].reason == ACP_REASON_SKIPPED && requests[2].reason == ACP_REASON_SKIPPED);
+        assert(open_fds() == before);
         kill(guard, SIGKILL);
         assert(waitpid(guard, &status, 0) == guard);
         return 0;

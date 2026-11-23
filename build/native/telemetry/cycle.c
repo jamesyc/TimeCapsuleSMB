@@ -1,4 +1,5 @@
 #include "telemetry.h"
+#include "planner.h"
 
 int telemetry_nonce(char out[33]) {
     unsigned char bytes[16];
@@ -8,7 +9,12 @@ int telemetry_nonce(char out[33]) {
     while (off < sizeof(bytes)) {
         ssize_t n = read(fd, bytes + off, sizeof(bytes) - off);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { close(fd); return -1; }
+        if (n <= 0) {
+            int error = n < 0 ? errno : EIO;
+            close(fd);
+            errno = error;
+            return -1;
+        }
         off += (size_t)n;
     }
     close(fd);
@@ -16,7 +22,7 @@ int telemetry_nonce(char out[33]) {
     return 0;
 }
 
-int telemetry_cycle(const char *reason, int lock_fd, const struct tc_payload_context *ctx, enum tc_outcome *outcome) {
+int telemetry_cycle(const char *reason, int lock_fd, struct tc_payload_context *ctx, enum tc_outcome *outcome) {
     /* Static: a heartbeat must not need memory the device may not have. */
     static unsigned char body[TC_HTTP_BUFFER(TC_RESPONSE_MAX)];
     char payload[HEARTBEAT_MAX_JSON], nonce[33];
@@ -26,7 +32,10 @@ int telemetry_cycle(const char *reason, int lock_fd, const struct tc_payload_con
     struct telemetry_response response;
     int rc;
     *outcome = TC_OUTCOME_SERVER;
-    if (telemetry_nonce(nonce)) return 1;
+    if (telemetry_nonce(nonce)) {
+        *outcome = tc_setup_outcome(errno, 0);
+        return 1;
+    }
     if (telemetry_payload(payload, sizeof(payload), reason, nonce, ctx, &built)) {
         /* A child that could not start ranks above the failure it led to. */
         *outcome = built.local_resource && built.failure > TC_OUTCOME_LOCAL_RESOURCE ? TC_OUTCOME_LOCAL_RESOURCE

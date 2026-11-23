@@ -37,10 +37,13 @@ enum acp_read_form { ACP_QUERY, ACP_ARRAY };
 /* Why a request ended ACP_ABORT, so a caller can tell an ACPd that stopped
  * answering (TIMEOUT) from a device out of processes (FORK) or descriptors
  * (PIPE), a broken acp binary (EXEC), unusable output (OUTPUT), its own
- * cancellation, a key never asked because the collection budget was
- * spent (BUDGET) or because an earlier key timed out in a collection begun
- * with ACP_STOP_ON_TIMEOUT (SKIPPED). LOCAL covers the collector's own failures: an invalid
- * request, an unreadable clock, select() or waitpid() errors. */
+ * cancellation, the collection budget running out (BUDGET: the key was not
+ * asked, or its child was stopped when the budget ran out before its own
+ * timeout), or a key not asked because an earlier one timed out or could not
+ * start in a collection begun with ACP_STOP_ON_TIMEOUT or
+ * ACP_STOP_ON_START_FAILURE (SKIPPED). LOCAL covers the collector's own
+ * failures: an invalid request, an unreadable clock, select() or waitpid()
+ * errors. */
 enum acp_abort_reason {
     ACP_REASON_NONE = 0, ACP_REASON_TIMEOUT, ACP_REASON_BUDGET, ACP_REASON_FORK, ACP_REASON_PIPE,
     ACP_REASON_EXEC, ACP_REASON_OUTPUT, ACP_REASON_CANCELLED, ACP_REASON_LOCAL, ACP_REASON_SKIPPED
@@ -92,14 +95,19 @@ struct acp_collector {
     int finished;
     int aborted;
     int inherited_group;
-    int stop_on_timeout; /* ACP_STOP_ON_TIMEOUT */
-    int timed_out;       /* a key timed out */
+    int stop_on_timeout;       /* ACP_STOP_ON_TIMEOUT */
+    int stop_on_start_failure; /* ACP_STOP_ON_START_FAILURE */
+    int timed_out;             /* a key timed out */
+    int start_failed;          /* a child could not start (fork, pipe) */
+    int child_at_budget;       /* the running child's deadline is the budget's */
 };
-/* acp_collect_begin_opts flag: after one key times out, ask no more keys
- * (ACP_REASON_SKIPPED). ACPd that has stopped answering one key will not
- * answer the next: telemetry would otherwise spend its whole budget on
- * children that time out one after another. */
+/* acp_collect_begin_opts flags: ask no more keys (ACP_REASON_SKIPPED) after
+ * one times out, or after a child cannot start. An ACPd that has stopped
+ * answering one key will not answer the next, and a process table that is
+ * full for one fork is full for the next: telemetry would otherwise spend
+ * its budget, or a dozen forks, on children that fail one after another. */
 #define ACP_STOP_ON_TIMEOUT 1
+#define ACP_STOP_ON_START_FAILURE 2
 
 /* begin/pump return 0 while pending, 1 when complete, -1 if any request
  * aborted. Inspect per-request status: missing values are not batch failures. */

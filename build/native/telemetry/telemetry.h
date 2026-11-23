@@ -11,10 +11,17 @@
 #define HEARTBEAT_TOKEN "8a3598c2b142dffda9513a4c41ff4dacb47abce9cd4e85cc0fd3260257c40c5d"
 #define HEARTBEAT_MAX_FIELD 256
 /* json_escape refuses a field longer than its buffer in payload.c, so those
- * buffers bound the payload: about 4 KB of fields at their limits, ~0.4 KB of
- * v2 fields and TC_MAX_LINKS links of up to ~160 bytes with fully escaped
- * names, about 9.5 KB in all. An oversized payload sends no heartbeat. */
+ * buffers bound the payload before the delivery record and health: about
+ * 4 KB of fields at their limits, ~0.4 KB of v2 fields and TC_MAX_LINKS
+ * links of up to ~160 bytes with fully escaped names, at most
+ * TC_PAYLOAD_BASE_MAX (test_largest_possible_heartbeat_still_fits). The
+ * delivery record adds at most TC_DELIVERY_JSON_MAX and the health object
+ * TC_HEALTH_JSON_MAX (test_payload.c, test_health.c); payload.c checks
+ * that the three fit. An oversized payload sends no heartbeat; a health
+ * object that does not fit goes as null. */
 #define HEARTBEAT_MAX_JSON 16384
+#define TC_PAYLOAD_BASE_MAX 9728
+#define TC_DELIVERY_JSON_MAX 192
 #ifndef HEARTBEAT_FLASH_CONFIG_PATH
 #define HEARTBEAT_FLASH_CONFIG_PATH "/mnt/Flash/tcapsulesmb.conf"
 #endif
@@ -74,16 +81,26 @@ struct tc_delivery { unsigned failed; long since; unsigned local_resource, acp_u
 /* What a payload is built from: the facts this process keeps, whether to
  * read acp afresh (heartbeat_facts.h; otherwise acp runs only if nothing was
  * ever read), and the delivery record (NULL: none). */
+struct tc_health;
 struct tc_payload_context {
     struct tc_heartbeat_facts *facts;
     int refresh;
     const struct tc_delivery *delivery;
+    struct tc_health *health;  /* NULL: no health object */
+    /* Set by telemetry_payload: the health events the payload carried
+     * (health.h); the caller clears them once it is delivered. */
+    unsigned health_token;
+    int health_sent;
 };
 int telemetry_payload(char *json, size_t cap, const char *reason, const char *nonce,
-                      const struct tc_payload_context *ctx, struct tc_payload_result *result);
+                      struct tc_payload_context *ctx, struct tc_payload_result *result);
 int telemetry_response_parse(const char *json, size_t len, struct telemetry_response *out);
 int telemetry_verify(const unsigned char *data, size_t len, const unsigned char *signature, size_t sig_len);
 int telemetry_authorized(const struct telemetry_response *response, const char *payload);
+/* The whole request, name lookup included (http.c). */
+#ifndef TC_HTTP_DEADLINE_MS
+#define TC_HTTP_DEADLINE_MS 70000
+#endif
 /* The status line and headers http.c reads before the body. */
 #define TC_HTTP_HEADER_MAX 4096
 /* The buffer telemetry_http needs for a body of at most limit bytes. */
@@ -98,7 +115,7 @@ int telemetry_http(const char *url, const char *payload, unsigned char *buf, siz
  * authorizes. *outcome says how the heartbeat itself ended (the debug job
  * comes after delivery and does not change it); the return value is the
  * exit status, which a failed debug job also sets. */
-int telemetry_cycle(const char *reason, int lock_fd, const struct tc_payload_context *ctx, enum tc_outcome *outcome);
+int telemetry_cycle(const char *reason, int lock_fd, struct tc_payload_context *ctx, enum tc_outcome *outcome);
 int telemetry_debug_job(const char *reason, int lock_fd);
 int telemetry_nonce(char out[33]);
 int telemetry_lock(void);

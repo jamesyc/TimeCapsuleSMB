@@ -95,9 +95,7 @@ typedef char stage_job_fits_two_payload_reads[2 * TC_PAYLOAD_READ_BUDGET_MS + 30
 #ifndef TC_BUFSTALL_REPORT_RETRY_MS
 #define TC_BUFSTALL_REPORT_RETRY_MS 60000
 #endif
-#ifndef TC_BUFSTALL_REPORT_TIMEOUT_MS
-#define TC_BUFSTALL_REPORT_TIMEOUT_MS 180000
-#endif
+#include "../common/report_deadline.h"
 /* Heartbeats waiting for the report job: stuck processes (each episode sends
  * at most two), lock-directory resets, and the reports sent once per manager
  * (once_prefixes), so a few cover several at once. A once-report that a full

@@ -594,24 +594,81 @@ failed wait, stall precedence and the reason timer.
 Schema 2 reports `debug_logging` (Samba or mDNS) and `advertise_afp`, using
 null for unreadable settings. It omits `nbns_enabled`: native NBNS is always on,
 and the server treats that field as optional. `plan_error` contains a
-short critical-facts failure reason and is omitted on success. There is no
-`ps` probe, constant daemon label, or live registration-state upload.
-This probe has no retained history and does not assert that services stopped.
+short critical-facts failure reason and is omitted on success.
 
-`service telemetry --daemon` sends a boot heartbeat and then one every 12 hours.
-A heartbeat that is not delivered (usually DNS not ready yet right after boot)
-retries after 60 seconds, doubling up to 12 hours, and keeps the `boot` reason
-until one is delivered.
+Agent version 4 names the router by its serial (ACP `sySN`) or, when ACP never
+gave one, `mac-` and the device's hardware address (the lowest-index interface
+with one, which ACP reports as `waMA`); every heartbeat also carries `mac`, which
+joins the two. There is no hashed ID.
+
+A heartbeat never needs to fork while the device is in trouble: HTTP/1.0 and DNS
+are native (`http.c`, `dns.c`; libc `getaddrinfo` would add about 250 KB), the
+response lands in a static buffer, and identity and network plan come from one
+acp collection (`heartbeat_facts.c`): `sySN`, `syAP`, `syAM`, then the plan's ten
+keys (`syNm` among them), one child at a time under the 30 s budget, stopping at
+the first timeout or the first child that cannot start (a full process table stays
+full). A key stopped because the budget ran out is `BUDGET`, not a timeout, and is
+counted in `acp_budget_exhausted`. Values once read are kept for the process's life; the plan is
+built from the last validated one (`device_plan_history_update`, shared with
+discovery's plan loop), so a collection that loses keys reports the roles it kept,
+with `plan_error` and `plan_stale_sec`. A heartbeat that collects nothing resends
+the last plan with `plan_age_sec`. A value never read goes out empty: the router
+is named by its serial or hardware address, so a missing model or name cannot make
+a different router (`main`'s fallback ID hashed them, which is why it refused a
+partial identity).
+
+The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
+
+- `planner.c`: one machine for the boot heartbeat, the scheduled one every 12
+  hours, and the extra `resource_high` one health requests (spaced 1, 2, 4, 8,
+  then 12 hours, back to 1 after a quiet day). Failures back off by kind: a local
+  failure (no process, descriptor or memory) retries every minute ten times, then
+  every five minutes; network, server and missing identity double from a minute.
+  Out of descriptors or memory while taking the workspace lock or the nonce
+  counts as local. Any delivered heartbeat restarts the 12-hour schedule, and an
+  extra one reads acp afresh once acp has gone 12 hours unread. The top of
+  `planner.h` has the transition table.
+- `health.c`, `health_read.c`, `health_json.c`: readers take a sample every 15 s
+  (`sysctl` only: process table, files, memory, mbufs, the kernel message buffer)
+  and a probe round every 5 minutes (loopback sshd over IPv4 and smbd over
+  IPv4 then IPv6, one probe per service at a time: sshd logs every probe and
+  ACPd keeps the line in its log, `acp -q logm`, so one family is enough;
+  skipped while the table is within 2 of
+  `kern.maxproc`, where a probe's own child could refuse a client). A refused
+  probe is a failure only from a target that answered before, of a service whose
+  listener runs; no `::1` on the kernel skips the probe. Pure detectors (`threshold`, `probe_track`,
+  `kmsg_scan`) note events in a ledger, documented at each. Requesting events
+  (`procs`, `files`, `kmsg` for a full process or file table, `probe`) ask for an
+  extra heartbeat once armed (after the boot heartbeat, or 15 minutes of uptime);
+  the rest (`kmsg_warning`, `ram`, `mbuf`, `fork`, `socket`, `acp_timeout`,
+  `kmsg_at_start`) ride along as `news`. The JSON writer returns the events it
+  wrote; only a delivered heartbeat clears them.
+
+Each heartbeat carries `delivery` (failed attempts since the last delivered one,
+by kind, and when the first failed) and `health`: `procs`, `procs_peak` and
+`procs_first_high` snapshots (counts, the largest groups by name and depth, wait
+channels, largest resident sizes, most descriptors, smbd's children), files, memory,
+mbufs, `kmsg` (per pattern: first and last new sighting, count, `at_start`),
+`probes` (last result, streak, counts), `probe_rounds_skipped`, fork failures (one
+per acp collection or debug job) and socket failures, `acp_timeouts`,
+`acp_budget_exhausted`, `triggers` and `news`. Times are monotonic seconds of the telemetry process: they
+compare within one process, not across a restart. A health object that does not
+fit goes as null and its events wait.
+
 `--once [reason]` performs one cycle; `--print-payload [reason]` only prints.
 `--report [reason]` posts only, without downloading or executing debug jobs.
-It neither locks nor cleans the debug workspace, so a running signed job does
-not block it. Exit zero acknowledges a successful POST; opt-out, cancellation
-and transport failure return nonzero. The bounded HTTP response is discarded,
-including any debug request. Managed reports keep their collectors in their
-own process group so timeout or shutdown can stop the whole report safely.
-`--cleanup` removes stale debug files without collecting or posting telemetry.
-An existing cycle or inherited debug lock causes `--once` and `--cleanup` to
-exit 75. Cleanup errors return 1 and prevent a new cycle from starting.
+One-shot modes take one sample and one probe round first. A device build checks
+at compile time that a one-shot heartbeat's worst case (acp budget, probe round,
+HTTP deadline, 30 s spare) fits the manager's report limit
+(`common/report_deadline.h`). `--report` neither locks nor cleans the debug
+workspace, so a running signed job does not block it. Exit zero acknowledges a
+successful POST; opt-out, cancellation and transport failure return nonzero. The
+bounded HTTP response is discarded, including any debug request. Managed reports
+keep their collectors in their own process group so timeout or shutdown can stop
+the whole report safely. `--cleanup` removes stale debug files without collecting
+or posting telemetry. An existing cycle or inherited debug lock causes `--once` and
+`--cleanup` to exit 75. Cleanup errors return 1 and prevent a new cycle from
+starting.
 
 The POST to `/v1/router-heartbeats` uses schema version 2 and preserves the
 original device fields. It adds `target_lane` (`6`, `4le`, `4be`) and `debug_nonce` (16 random
@@ -643,8 +700,9 @@ Old requests without the query still download the old heartbeat. New direct
 Debug's detached Ed25519 signature covers the complete executable bytes. The
 executable is bounded to 1 MiB while receiving, verified before being written
 executable, and run with only the cycle reason as an argument. Response bodies
-are bounded to 4096 bytes and signatures to 512. Curl config files are disabled;
-fixed endpoints are used without following redirects. No server-provided shell
+are bounded to 4096 bytes and signatures to 512. Fixed endpoints are used
+without following redirects; only a complete 2xx response with a valid
+Content-Length (or one read to the close) succeeds. No server-provided shell
 command or arbitrary URL is executed.
 
 Downloads are written with exclusive creation and mode 0600. The signature file
@@ -660,7 +718,6 @@ process is allowed to finish and is reaped by telemetry. Debug inherits the
 kernel lock across exec, so even a killed telemetry parent does not make an
 active debug job look stale. `TC_DEBUG_LOCK_FD` identifies the descriptor: debug
 must keep it open, and pass it to any detached worker, until all work is done.
-Curl does not inherit this descriptor.
 
 After releasing its own reference, telemetry reacquires the lock before
 cleanup. If a surviving worker still owns it, cleanup is deferred. Recovery
@@ -704,7 +761,7 @@ make coverage-native
 ```
 
 The native suite includes checked-in packet and interface regression cases,
-pure parser/scheduler tests, a local HTTP server, real curl and a harmless signed
+pure parser and planner tests, a local HTTP server and DNS server, and a harmless signed
 test executable. Test-only builds use a separate key and local endpoints.
 Production endpoints/keys are not used by integration tests. Test children have
 deadlines and isolated workspaces. Coverage uses LLVM tools and retains its HTML

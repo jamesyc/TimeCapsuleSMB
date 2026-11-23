@@ -12,8 +12,10 @@
  * scheduled one is due, or (after boot) while health requests one and the
  * extra spacing has passed. It is allowed once retry_at has passed. Its
  * reason is "boot" until the boot heartbeat is in, then "resource_high" when
- * the extra one is wanted, else "scheduled". Only boot and scheduled
- * heartbeats read acp afresh, and not right after a local failure.
+ * the extra one is wanted, else "scheduled". Boot and scheduled heartbeats
+ * read acp afresh, and so does an extra one once acp has gone unread for
+ * TC_INTERVAL_SECONDS (next_refresh); none does right after a local
+ * failure.
  *
  * After an attempt:
  *   delivered        clear every retry and the failure record; the next
@@ -62,6 +64,7 @@ struct tc_attempt {
 struct tc_planner {
     int boot_sent, last_local;
     long next_scheduled, retry_at, net_delay;
+    long next_refresh; /* an extra heartbeat reads acp again from here */
     unsigned local_count;
     long spacing, next_extra_at, last_extra_at; /* last_extra_at < 0: none yet */
     long arm_after;
@@ -76,4 +79,9 @@ struct tc_attempt planner_next(const struct tc_planner *p, long now, int request
 void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a, enum tc_outcome outcome,
                       int requests);
 int planner_armed(const struct tc_planner *p, long now);
+/* The outcome of a failure before the heartbeat is built: taking the
+ * workspace lock (lock) or reading the nonce. Out of descriptors or memory
+ * is local_resource; any other lock failure stays busy (another holder, or
+ * a workspace the log already names), any other nonce failure server. */
+enum tc_outcome tc_setup_outcome(int error, int lock);
 #endif

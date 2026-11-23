@@ -1,4 +1,5 @@
 from __future__ import annotations
+import errno
 import json
 from hashlib import sha512
 import os
@@ -9,6 +10,7 @@ import sys
 import threading
 import time
 import signal
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -21,6 +23,8 @@ from tests.processes import kill_acp_fixture_groups, kill_group
 # alone can take seconds; tests with real deadlines assert elapsed time
 # themselves.
 HANG_TIMEOUT = 20
+# The rig's first spacing between extra resource heartbeats, in seconds.
+HEALTH_SPACING = 3
 
 
 def telemetry_command(binary, *args):
@@ -110,6 +114,11 @@ def rig(tmp_path_factory):
     public = key.public_key().export_key(format='raw')
     (root / 'work').mkdir()
     (root / 'work/keep.txt').write_text('unrelated runtime file')
+    closed_ports = []
+    for _ in range(2):
+        with socket.socket() as probe_port:
+            probe_port.bind(('127.0.0.1', 0))
+            closed_ports.append(probe_port.getsockname()[1])
     config = root / 'test_config.h'
     config.write_text('\n'.join([
         f'#define HEARTBEAT_ENDPOINT "{base}/v1/router-heartbeats"',
@@ -117,6 +126,15 @@ def rig(tmp_path_factory):
         '#define TC_DEBUG_QUERY ""',
         '#define TC_CLEANUP_INTERVAL_SECONDS 1',
         '#define TC_HEARTBEAT_RETRY_SECONDS 1',
+        '#define TC_HEALTH_SAMPLE_SECONDS 1',
+        f'#define TC_EXTRA_SPACING_SECONDS {HEALTH_SPACING}',
+        # The host's monotonic clock counts from its own boot, days ago: arm
+        # only on the boot heartbeat, as a device does in its first minutes.
+        '#define TC_ARM_AFTER_SECONDS 2000000000L',
+        # The loopback probes must not depend on the host's own sshd or SMB
+        # server: ports nothing listens on.
+        f'#define TC_HEALTH_SSH_PORT {closed_ports[0]}',
+        f'#define TC_HEALTH_SMB_PORT {closed_ports[1]}',
         f'#define TC_ACP_PATH "{acp}"',
         f'#define TC_TELEMETRY_WORK_ROOT "{root}/work"',
         f'#define HEARTBEAT_FLASH_CONFIG_PATH "{root}/config"',
@@ -475,6 +493,155 @@ def test_daemon_retries_an_undelivered_boot_heartbeat(cycle):
         process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
 
 
+def health_fixtures(tmp_path, env):
+    procs = tmp_path / 'procs'
+    procs.mkdir()
+    counters = tmp_path / 'counters'
+    counters.write_text('maxproc 90\n')
+
+    def table(rows):
+        text = ''.join(f'{1000 + i} 1 {1000 + i} 3 0x80 0 0 nanoslp sleep sleep 150\n' for i in range(rows))
+        (procs / '.table.new').write_text(text)
+        (procs / '.table.new').rename(procs / 'table')
+    return {**env, 'TC_TEST_PROCS': str(procs), 'TC_TEST_HEALTH': str(counters)}, table
+
+
+def test_daemon_sends_one_extra_heartbeat_when_the_process_table_nears_full(cycle, tmp_path):
+    # The outage usually ends with an unplug that loses the daemon's peaks,
+    # so the daemon reports the first crossing while it can, and only once
+    # while the table stays high.
+    _, state, _, binary, env = cycle
+    env, table = health_fixtures(tmp_path, env)
+    table(40)
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: len(state['calls']) == 1)
+        assert state['payloads'][0]['reason'] == 'boot'
+        assert state['payloads'][0]['health']['procs']['n'] == 40
+        assert state['payloads'][0]['health']['triggers'] == []
+        table(85)
+        wait_until(lambda: len(state['calls']) == 2)
+        extra = state['payloads'][1]
+        assert extra['reason'] == 'resource_high'
+        assert extra['health']['triggers'] == ['procs']
+        assert extra['health']['procs_first_high']['n'] == 85
+        assert extra['health']['maxproc'] == 90
+        assert extra['router_id'] == state['payloads'][0]['router_id']
+        assert extra['delivery'] == {'failed': 0, 'since': None, 'classes': {
+            'local_resource': 0, 'acp_unavailable': 0, 'network': 0, 'server': 0}}
+        # Still high, then the file table crosses 90 %: the next heartbeat is
+        # for files alone. A second procs crossing, whenever it came, would
+        # be a heartbeat of its own or ride in this one's triggers or news,
+        # so load cannot make this pass wrongly.
+        (tmp_path / 'counters').write_text('maxproc 90\nmaxfiles 1000\nfiles 950\n')
+        wait_until(lambda: len(state['calls']) == 3)
+        files = state['payloads'][2]
+        assert files['reason'] == 'resource_high' and files['health']['triggers'] == ['files']
+        assert 'procs' not in files['health']['news']
+    finally:
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
+
+
+def test_extra_heartbeat_is_delivered_with_no_fork_once_the_table_is_full(cycle, tmp_path):
+    # The case issue 429 needs: after the boot heartbeat, fork() fails for
+    # everything (as with kern.maxproc reached). The extra heartbeat still
+    # goes out over the native HTTP client, with the serial and network plan
+    # this process read at boot, and it does not even try to fork an acp
+    # child.
+    _, state, _, binary, env = cycle
+    env, table = health_fixtures(tmp_path, env)
+    calls = tmp_path / 'acp-calls'
+    fork_fail = tmp_path / 'fork-fail'
+    env = {**env, 'TC_TEST_ACP_CALLS': str(calls), 'TC_TEST_FORK_FAIL': str(fork_fail)}
+    table(40)
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: len(state['calls']) == 1)
+        boot = state['payloads'][0]
+        assert boot['router_id'] == 'C86TEST0SN01' and 'plan_age_sec' not in boot
+        reads_at_boot = calls.read_text()
+        fork_fail.write_text(str(errno.EAGAIN))
+        table(85)
+        wait_until(lambda: len(state['calls']) == 2)
+        extra = state['payloads'][1]
+        assert extra['reason'] == 'resource_high'
+        assert extra['router_id'] == 'C86TEST0SN01' and extra['device_model'] == 'TimeCapsule8,119'
+        assert extra['plan_error'] == boot['plan_error'] and extra['plan_age_sec'] >= 0
+        assert extra['health']['fork_failures'] == {'eagain': 0, 'enomem': 0, 'other': 0}
+        assert 'fork' not in extra['health']['news'] and 'procs' in extra['health']['news']
+        assert calls.read_text() == reads_at_boot
+    finally:
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores RLIMIT_NPROC")
+def test_payload_survives_a_kernel_that_refuses_every_fork(cycle):
+    # RLIMIT_NPROC 0 makes the real kernel refuse every fork() with EAGAIN,
+    # as kern.maxproc does on a device. No acp reading works, so the router
+    # is named by its hardware address, and the failures are counted.
+    import resource
+    _, state, _, binary, env = cycle
+    # A sanitizer build's leak check forks at exit, which this limit refuses.
+    env = {**env, 'ASAN_OPTIONS': 'detect_leaks=0'}
+    result = subprocess.run(telemetry_command(binary, '--print-payload', 'probe'), env=env, capture_output=True,
+                            text=True, timeout=HANG_TIMEOUT,
+                            preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NPROC, (0, 0)))
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload['router_id'] == 'mac-02:00:00:00:00:01'
+    assert payload['device_model'] == ''
+    # One acp collection, which stops at its first failed fork.
+    assert payload['health']['fork_failures']['eagain'] == 1
+    assert 'fork' in payload['health']['news'] and payload['health']['triggers'] == []
+    assert state['calls'] == []
+
+
+def test_no_probe_round_within_two_of_the_process_limit(cycle, tmp_path):
+    # At 88 of 90 the probe's own sshd or smbd child could take a slot a
+    # client needs: the round is skipped and counted. At 85 it still runs.
+    _, state, _, binary, env = cycle
+    env, table = health_fixtures(tmp_path, env)
+    table(88)
+    result = subprocess.run(telemetry_command(binary, '--print-payload', 'probe'), env=env, capture_output=True,
+                            text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, result.stderr
+    health = json.loads(result.stdout)['health']
+    assert health['probe_rounds_skipped'] == 1
+    assert all(probe['last'] == 'none' for probe in health['probes'].values())
+    table(85)
+    result = subprocess.run(telemetry_command(binary, '--print-payload', 'probe'), env=env, capture_output=True,
+                            text=True, timeout=HANG_TIMEOUT)
+    health = json.loads(result.stdout)['health']
+    assert health['probe_rounds_skipped'] == 0 and health['probes']['ssh4']['last'] == 'absent'
+
+
+def test_a_table_high_from_boot_is_reported_once_the_boot_heartbeat_is_in(cycle, tmp_path):
+    # Boot runs many short-lived processes against the stock kern.maxproc, so
+    # nothing counts before the boot heartbeat is delivered: with the server
+    # failing it keeps retrying as "boot", and no extra heartbeat jumps ahead.
+    # Once it is in, a table still high for two samples is reported.
+    _, state, _, binary, env = cycle
+    env, table = health_fixtures(tmp_path, env)
+    table(85)
+    state['mode'] = 'http_error'
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: len(state['calls']) == 2)
+        state['mode'] = 'false'
+        wait_until(lambda: any(p['reason'] == 'resource_high' for p in state['payloads']))
+        reasons = [p['reason'] for p in state['payloads']]
+        first_extra = reasons.index('resource_high')
+        assert set(reasons[:first_extra]) == {'boot'}
+        boot = state['payloads'][first_extra - 1]
+        assert boot['health']['triggers'] == [] and boot['health']['procs']['n'] == 85
+        # The delivered boot heartbeat says how many tries failed before it.
+        assert boot['delivery']['failed'] >= 2 and boot['delivery']['classes']['server'] >= 2
+        extra = state['payloads'][first_extra]
+        assert extra['health']['triggers'] == ['procs'] and 'procs' in extra['health']['news']
+    finally:
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
+
+
 def test_daemon_housekeeping_cleans_between_heartbeats(cycle, rig):
     _, state, _, binary, env = cycle
     root, _, _ = rig
@@ -629,26 +796,30 @@ def test_collector_cleanup_distinguishes_zombie_gone_and_live(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize('mode', ['hang', 'line_hang', 'closed_hang', 'ignore_term', 'descendant', 'oversized', 'crash', 'drip', 'drip_after_line', 'nul'])
-def test_acp_failure_aborts_cycle_reaps_children_and_releases_lock(cycle, short_collector, acp_calls, mode):
+def test_acp_failure_reaps_children_releases_lock_and_still_reports(cycle, short_collector, acp_calls, mode):
+    # A broken or hung syAP read is stopped and reaped, and the heartbeat
+    # still goes under the serial with the model number empty: the router ID
+    # does not depend on it.
     _, state, marker, binary, env = cycle
     calls = acp_calls
-    state['mode'] = 'true'
+    state['mode'] = 'false'
     started = time.monotonic()
     result = subprocess.run(telemetry_command(short_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': mode,
                             'TC_TEST_ACP_CALLS': str(calls)}, capture_output=True, text=True, timeout=HANG_TIMEOUT)
-    assert result.returncode == 1
+    assert result.returncode == 0, result.stderr
     assert time.monotonic() - started < 15 # Below the 30 s collection budget, with scheduling margin.
+    assert len(state['calls']) == 1
+    assert state['payloads'][0]['router_id'] == 'C86TEST0SN01' and state['payloads'][0]['device_syap'] == ''
     assert 'acp: syAP' in result.stderr
     if mode in ('drip', 'drip_after_line'): assert 'timed out' in result.stderr
     # Only the deadline may stop the child before the fixture records itself.
     if not recorded_collectors(calls): assert 'acp: syAP timed out' in result.stderr
-    assert state['calls'] == [] and not marker.exists()
+    assert not marker.exists()
     assert_collectors_stopped(calls)
     assert subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=HANG_TIMEOUT).returncode == 0
-    # A fresh invocation can collect/post after the failed owner exits.
-    state['mode'] = 'false'
+    # A fresh invocation can collect/post after the owner exits.
     assert subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, timeout=HANG_TIMEOUT).returncode == 0
-    assert len(state['calls']) == 1
+    assert len(state['calls']) == 2 and state['payloads'][1]['device_syap'] == '119'
 
 
 @pytest.mark.parametrize('value,expected', [
@@ -667,10 +838,12 @@ def test_acp_preserves_complete_first_line_at_eof_and_buffer_boundary(cycle, val
 
 
 def test_acp_rejects_a_first_line_one_byte_beyond_the_buffer(cycle):
+    # The oversized name is refused, never truncated into the payload; the
+    # heartbeat still goes, with the name empty.
     run, state, marker, *_ = cycle
-    result = run('true', TC_TEST_ACP_MODE='value', TC_TEST_ACP_KEY='syNm', TC_TEST_ACP_VALUE='x' * 256)
-    assert result.returncode == 1 and 'oversized output' in result.stderr
-    assert state['calls'] == [] and not marker.exists()
+    result = run('false', TC_TEST_ACP_MODE='value', TC_TEST_ACP_KEY='syNm', TC_TEST_ACP_VALUE='x' * 256)
+    assert result.returncode == 0 and 'oversized output' in result.stderr
+    assert state['payloads'][0]['device_name'] == '' and not marker.exists()
 
 
 def test_acp_exec_does_not_inherit_workspace_or_pipe_descriptors(cycle):
@@ -681,7 +854,10 @@ def test_acp_exec_does_not_inherit_workspace_or_pipe_descriptors(cycle):
     assert state['payloads'][0]['device_syap'] == '119'
 
 
-def test_acp_exec_failure_aborts_without_posting(cycle, rig):
+def test_acp_exec_failure_reports_under_the_hardware_address(cycle, rig):
+    # A broken acp binary is exactly what a heartbeat should report: with no
+    # serial, the hardware address names the router, and every acp field is
+    # empty.
     _, state, _, binary, env = cycle
     root, _, _ = rig
     acp = root / 'acp'
@@ -689,8 +865,10 @@ def test_acp_exec_failure_aborts_without_posting(cycle, rig):
     try:
         acp.chmod(0o600)
         result = subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
-        assert result.returncode == 1 and 'exec' in result.stderr
-        assert state['calls'] == []
+        assert result.returncode == 0 and 'exec' in result.stderr
+        payload = state['payloads'][0]
+        assert payload['router_id'] == 'mac-02:00:00:00:00:01'
+        assert payload['device_model'] == payload['device_name'] == payload['device_syap'] == ''
     finally:
         acp.chmod(permissions)
 
@@ -699,35 +877,29 @@ def test_acp_exec_failure_aborts_without_posting(cycle, rig):
 COLLECTION = ['sySN', 'syAP', 'syAM', 'raNA', 'raDS', 'waNM', 'usbF', 'laIP', 'waIP', 'waLL', 'gnRo', 'syNm', 'waMA']
 
 
-@pytest.mark.parametrize('key', ['sySN', 'syAP', 'syAM', 'syNm'])
-def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, short_collector, acp_calls, key):
+@pytest.mark.parametrize('key', ['sySN', 'syAP', 'syAM', 'raNA', 'syNm'])
+def test_acp_timeout_stops_the_collection_and_posts_what_was_read(cycle, short_collector, acp_calls, key):
+    # Nothing is asked after a timeout. A new process sends what it read:
+    # the serial (or, if that hung, the hardware address), and empty fields
+    # for the key that hung and every key after it.
     _, state, _, _, env = cycle
     calls = acp_calls
     result = subprocess.run(telemetry_command(short_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': 'hang',
                             'TC_TEST_ACP_KEY': key, 'TC_TEST_ACP_CALLS': str(calls)},
                             capture_output=True, text=True, timeout=HANG_TIMEOUT)
-    assert result.returncode == 1 and f'acp: {key} timed out' in result.stderr
-    assert state['calls'] == []
+    assert result.returncode == 0 and f'acp: {key} timed out' in result.stderr
+    payload = state['payloads'][0]
+    read = COLLECTION[:COLLECTION.index(key)]
+    assert payload['router_id'] == ('C86TEST0SN01' if 'sySN' in read else 'mac-02:00:00:00:00:01')
+    assert payload['device_syap'] == ('119' if 'syAP' in read else '')
+    assert payload['device_model'] == ('TimeCapsule8,119' if 'syAM' in read else '')
+    assert payload['device_name'] == ('Test Capsule' if 'syNm' in read else '')
+    assert 'plan_error' in payload
     # Collection stopped at key. The deadline may kill key's child before the
     # fixture records it, leaving the previous key as the last record.
     recorded = [line.split()[0] for line in calls.read_text().splitlines()]
     assert recorded in (COLLECTION[:COLLECTION.index(key) + 1], COLLECTION[:COLLECTION.index(key)])
     assert_collectors_stopped(calls)
-
-
-def test_acp_timeout_at_a_plan_key_still_posts_the_identity(cycle, short_collector, acp_calls):
-    # waMA is not part of the identity: the heartbeat goes with the plan it
-    # could build, saying why it is incomplete.
-    _, state, _, _, env = cycle
-    result = subprocess.run(telemetry_command(short_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': 'hang',
-                            'TC_TEST_ACP_KEY': 'waMA', 'TC_TEST_ACP_CALLS': str(acp_calls)},
-                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
-    assert result.returncode == 0, result.stderr
-    assert 'acp: waMA timed out' in result.stderr
-    payload = state['payloads'][0]
-    assert payload['router_id'] == 'C86TEST0SN01' and payload['device_model'] == 'TimeCapsule8,119'
-    assert 'plan_error' in payload
-    assert_collectors_stopped(acp_calls)
 
 
 @pytest.mark.parametrize('args', [['--daemon'], ['--once'], ['--report'], ['--print-payload']])
@@ -805,7 +977,7 @@ def test_router_id_falls_back_to_the_hardware_address_without_a_hash(cycle):
     payload = state['payloads'][0]
     assert payload['router_id'] == 'mac-02:00:00:00:00:01' and payload['mac'] == '02:00:00:00:00:01'
     result = run('false', TC_TEST_ACP_NO_SERIAL='1', TC_TEST_IFLIST='failed')
-    assert result.returncode == 1 and 'ACP gave no identity' in result.stderr
+    assert result.returncode == 1 and 'no router serial or hardware address' in result.stderr
     assert len(state['calls']) == 1
 
 
@@ -921,6 +1093,12 @@ def test_largest_possible_heartbeat_still_fits(cycle, rig):
     assert all(link['families'] == ['ipv4'] for link in payload['links'])
     # The old 4096-byte buffer could not have held it; the new one has room.
     assert 4096 < len(raw) < 16384 // 2
+    # Everything before the delivery record and health stays within the
+    # budget payload.c checks at compile time.
+    header = (ROOT / 'build/native/telemetry/telemetry.h').read_text()
+    base_max = int(re.search(r'#define TC_PAYLOAD_BASE_MAX (\d+)', header)[1])
+    raw_bytes = raw if isinstance(raw, bytes) else raw.encode()
+    assert raw_bytes.index(b',"delivery":') + 2 <= base_max
 
 
 def test_unreadable_and_invalid_config_are_not_reported_as_false(cycle, rig):

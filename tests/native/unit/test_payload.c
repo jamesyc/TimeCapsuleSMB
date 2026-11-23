@@ -57,7 +57,7 @@ long long acp_monotonic_ms(void) { return 50000; }
 int acp_collect_run_opts(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
                          int flags) {
     size_t i, j;
-    int timed_out = 0;
+    int stopped = 0;
     (void)timeout_ms; (void)budget_ms;
     collections++;
     last_flags = flags;
@@ -80,14 +80,16 @@ int acp_collect_run_opts(struct acp_request *requests, size_t count, long long t
                 reason = script[j].reason;
                 error = script[j].error;
             }
-        /* ACP_STOP_ON_TIMEOUT: nothing is asked after a timeout. */
-        if (timed_out) { status = ACP_ABORT; reason = ACP_REASON_SKIPPED; }
+        /* ACP_STOP_ON_TIMEOUT and ACP_STOP_ON_START_FAILURE: nothing is
+         * asked after a timeout or a child that could not start. */
+        if (stopped) { status = ACP_ABORT; reason = ACP_REASON_SKIPPED; error = 0; }
         requests[i].status = status;
         requests[i].reason = status == ACP_ABORT ? reason : ACP_REASON_NONE;
         requests[i].error = error;
         snprintf(requests[i].output, requests[i].capacity, "%s", status == ACP_OK ? value : "");
         requests[i].length = strlen(requests[i].output);
-        if (status == ACP_ABORT && reason == ACP_REASON_TIMEOUT && (flags & ACP_STOP_ON_TIMEOUT)) timed_out = 1;
+        if (status == ACP_ABORT && reason == ACP_REASON_TIMEOUT && (flags & ACP_STOP_ON_TIMEOUT)) stopped = 1;
+        if (status == ACP_ABORT && reason == ACP_REASON_FORK && (flags & ACP_STOP_ON_START_FAILURE)) stopped = 1;
     }
     return 0;
 }
@@ -142,6 +144,7 @@ int addr_is_service_address(const struct if_addr *addr) { (void)addr; assert(0);
 static const struct tc_delivery *delivery;
 static int build(struct tc_heartbeat_facts *f, int refresh, char *json, size_t cap, struct tc_payload_result *r) {
     struct tc_payload_context ctx;
+    memset(&ctx, 0, sizeof(ctx));
     ctx.facts = f;
     ctx.refresh = refresh;
     ctx.delivery = delivery;
@@ -158,7 +161,7 @@ int main(void) {
      * stopping at the first timeout. */
     reset();
     assert(!build(&f, 1, json, sizeof(json), &r) && !r.local_resource);
-    assert(collections == 1 && last_flags == ACP_STOP_ON_TIMEOUT);
+    assert(collections == 1 && last_flags == (ACP_STOP_ON_TIMEOUT | ACP_STOP_ON_START_FAILURE));
     assert(!strcmp(keys_asked, "sySN syAP syAM raNA raDS waNM usbF laIP waIP waLL gnRo syNm waMA "));
     assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
     assert(strstr(json, "\"device_syap\":\"106\"") && strstr(json, "\"device_model\":\"TimeCapsule6,106\""));
@@ -201,34 +204,50 @@ int main(void) {
     assert(!build(&f, 1, json, sizeof(json), &r) && r.local_resource);
     assert(strstr(json, "\"device_model\":\"TimeCapsule6,106\""));
 
-    /* A new process whose first identity read times out sends nothing: no
-     * heartbeat with a partial identity. */
+    /* A new process whose model read times out still reports, under its
+     * serial, with the model empty: the router ID does not depend on it. */
     {
         static struct tc_heartbeat_facts fresh;
         reset();
         answer("syAM", ACP_ABORT, "", ACP_REASON_TIMEOUT, 0);
-        assert(build(&fresh, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE);
+        assert(!build(&fresh, 1, json, sizeof(json), &r));
+        assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"device_model\":\"\""));
+        /* ... and the name, asked after the timeout, is empty too. */
+        assert(strstr(json, "\"device_name\":\"\"") && fresh.acp_timeouts == 1);
     }
-    /* ... nor one whose acp binary is broken. */
+    /* A hung ACPd from the first read (ACPd stuck at boot, telemetry
+     * restarted during the wedge): the hardware address names it. */
+    {
+        static struct tc_heartbeat_facts fresh;
+        reset();
+        answer("sySN", ACP_ABORT, "", ACP_REASON_TIMEOUT, 0);
+        assert(!build(&fresh, 1, json, sizeof(json), &r));
+        assert(strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\""));
+    }
+    /* A broken acp binary is worth a heartbeat too. */
     {
         static struct tc_heartbeat_facts fresh;
         reset();
         answer("sySN", ACP_ABORT, "", ACP_REASON_EXEC, 0);
-        assert(build(&fresh, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE);
+        answer("syAP", ACP_ABORT, "", ACP_REASON_EXEC, 0);
+        answer("syAM", ACP_ABORT, "", ACP_REASON_EXEC, 0);
+        answer("syNm", ACP_ABORT, "", ACP_REASON_EXEC, 0);
+        assert(!build(&fresh, 1, json, sizeof(json), &r) && !r.local_resource);
+        assert(strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\"") && strstr(json, "\"device_syap\":\"\""));
     }
     /* A full process table at the first read is the device's trouble, not
-     * ACP's: it reports by hardware address, and the failed fork counts. */
+     * ACP's: it reports by hardware address. The collection stops at the
+     * first failed fork, so it counts once. */
     {
         static struct tc_heartbeat_facts fresh;
+        struct tc_failure_counts before;
+        tc_failure_counts(&before);
         reset();
         answer("sySN", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
-        answer("syAP", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
-        answer("syAM", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
-        answer("syNm", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
         assert(!build(&fresh, 1, json, sizeof(json), &r) && r.local_resource);
         assert(strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\"") && strstr(json, "\"device_model\":\"\""));
         tc_failure_counts(&counts);
-        assert(counts.fork_eagain >= 4);
+        assert(counts.fork_eagain == before.fork_eagain + 1);
     }
     /* No serial ("not set"): the hardware address, never a hash. */
     {
@@ -254,6 +273,19 @@ int main(void) {
         telemetry_stop = 1;
         assert(build(&fresh, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_CANCELLED);
         telemetry_stop = 0;
+    }
+    /* The largest delivery record fits its budget (telemetry.h). */
+    {
+        static struct tc_delivery most = {4294967295u, 2147483647L, 4294967295u, 4294967295u, 4294967295u,
+                                          4294967295u};
+        const char *start, *end;
+        delivery = &most;
+        reset();
+        assert(!build(&f, 0, json, sizeof(json), &r));
+        start = strstr(json, ",\"delivery\":");
+        end = strstr(start, "}}");
+        assert(start && end && (size_t)(end + 2 - start) <= TC_DELIVERY_JSON_MAX);
+        delivery = NULL;
     }
     /* Too small a buffer sends nothing. */
     reset();

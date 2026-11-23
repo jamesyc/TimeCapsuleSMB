@@ -20,9 +20,6 @@
  * why a request failed: the device short of sockets (LOCAL_RESOURCE), the
  * network or name lookup (NETWORK), an answer that is not a complete 2xx
  * (SERVER), or TERM (CANCELLED). */
-#ifndef TC_HTTP_DEADLINE_MS
-#define TC_HTTP_DEADLINE_MS 70000
-#endif
 #ifndef TC_HTTP_CONNECT_MS
 #define TC_HTTP_CONNECT_MS 10000
 #endif

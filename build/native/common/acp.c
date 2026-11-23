@@ -81,7 +81,25 @@ static int start_acp_child(struct acp_collector *c, struct acp_request *request,
         close(output[0]); close(output[1]);
         *failure = "cannot configure output pipe"; return -1;
     }
+#ifdef TC_NATIVE_TEST
+    /* Tests make fork() fail as a full process table does: while the file
+     * TC_TEST_FORK_FAIL names exists, with the errno it holds. */
+    {
+        const char *path = getenv("TC_TEST_FORK_FAIL");
+        FILE *f = path ? fopen(path, "r") : NULL;
+        int error = EAGAIN;
+        if (f) {
+            if (fscanf(f, "%d", &error) != 1) error = EAGAIN;
+            fclose(f);
+            child = -1;
+            errno = error;
+        } else {
+            child = fork();
+        }
+    }
+#else
     child = fork();
+#endif
     if (child == 0) {
         int null_fd;
         /* Only the child creates its group. Concurrent parent/child setpgid
@@ -185,7 +203,7 @@ static int advance(struct acp_collector *c) {
             finish_key(c, ACP_ABORT, ACP_REASON_CANCELLED);
             continue;
         }
-        if (c->stop_on_timeout && c->timed_out) {
+        if ((c->stop_on_timeout && c->timed_out) || (c->stop_on_start_failure && c->start_failed)) {
             finish_key(c, ACP_ABORT, ACP_REASON_SKIPPED);
             continue;
         }
@@ -205,12 +223,18 @@ static int advance(struct acp_collector *c) {
         }
         if (start_acp_child(c, value, &failure) != 0) {
             acp_log_failure(c->requests[c->next].key, failure);
+            c->start_failed = 1;
             finish_key(c, ACP_ABORT, ACP_REASON_LOCAL);
             continue;
         }
-        /* Clamp before adding so even a large caller timeout cannot wrap. */
+        /* Clamp before adding so even a large caller timeout cannot wrap.
+         * A child cut short by the budget did not time out on its own. */
         c->child_deadline_ms = c->deadline_ms;
-        if (c->timeout_ms < c->deadline_ms - now) c->child_deadline_ms = now + c->timeout_ms;
+        c->child_at_budget = 1;
+        if (c->timeout_ms < c->deadline_ms - now) {
+            c->child_deadline_ms = now + c->timeout_ms;
+            c->child_at_budget = 0;
+        }
     }
     if (!c->active && c->next >= c->key_count) {
         c->finished = 1;
@@ -232,6 +256,7 @@ int acp_collect_begin_opts(struct acp_collector *c, struct acp_request *requests
 
     memset(c, 0, sizeof(*c));
     c->stop_on_timeout = (flags & ACP_STOP_ON_TIMEOUT) != 0;
+    c->stop_on_start_failure = (flags & ACP_STOP_ON_START_FAILURE) != 0;
     c->inherited_group = inherited_scope;
     c->fd = -1;
     c->requests = requests;
@@ -327,6 +352,8 @@ int acp_collect_pump(struct acp_collector *c) {
             abort_current_child(c, "cancelled", ACP_REASON_CANCELLED);
         } else if (now < 0) {
             abort_current_child(c, "cannot read monotonic clock", ACP_REASON_LOCAL);
+        } else if (now >= c->child_deadline_ms && c->child_at_budget) {
+            abort_current_child(c, "collection budget exhausted", ACP_REASON_BUDGET);
         } else if (now >= c->child_deadline_ms) {
             c->timed_out = 1;
             abort_current_child(c, "timed out", ACP_REASON_TIMEOUT);

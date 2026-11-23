@@ -18,9 +18,17 @@ struct tc_attempt planner_next(const struct tc_planner *p, long now, int request
     if (now < p->retry_at || (!scheduled && !extra)) return a;
     a.kind = !p->boot_sent ? TC_ATTEMPT_BOOT : extra ? TC_ATTEMPT_EXTRA : TC_ATTEMPT_SCHEDULED;
     a.reason = a.kind == TC_ATTEMPT_BOOT ? "boot" : a.kind == TC_ATTEMPT_EXTRA ? "resource_high" : "scheduled";
-    /* An extra heartbeat, or a retry after a local failure, must not fork. */
-    a.refresh = a.kind != TC_ATTEMPT_EXTRA && !p->last_local;
+    /* An extra heartbeat must not fork, unless acp has gone unread for
+     * TC_INTERVAL_SECONDS: every delivered heartbeat restarts the schedule,
+     * so a chronic health event's extras would otherwise keep the boot-time
+     * identity and plan forever. A retry after a local failure never forks. */
+    a.refresh = (a.kind != TC_ATTEMPT_EXTRA || now >= p->next_refresh) && !p->last_local;
     return a;
+}
+
+enum tc_outcome tc_setup_outcome(int error, int lock) {
+    if (error == EMFILE || error == ENFILE || error == ENOMEM) return TC_OUTCOME_LOCAL_RESOURCE;
+    return lock ? TC_OUTCOME_BUSY : TC_OUTCOME_SERVER;
 }
 
 void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a, enum tc_outcome outcome,
@@ -30,6 +38,7 @@ void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a
     case TC_OUTCOME_DELIVERED:
         if (a->kind == TC_ATTEMPT_BOOT) p->boot_sent = 1;
         p->next_scheduled = now + TC_INTERVAL_SECONDS;
+        if (a->refresh) p->next_refresh = now + TC_INTERVAL_SECONDS;
         p->retry_at = p->net_delay = 0;
         p->local_count = 0;
         p->last_local = 0;
