@@ -18,6 +18,7 @@ import zlib
 
 import pytest
 from tests.executables import write_executable
+from tests.loopback import has_ipv6_loopback
 from tests.native.build import compile_service, header_define
 from tests.processes import signal_if_ours
 from tests.timing import hang_guard
@@ -2251,21 +2252,13 @@ def acpd_reads(root,timeout=15):
     return re.search(r'manager: diskd: acpd reads (.*)',log)[1]
 
 
-def ipv6_loopback():
-    import socket
-    try:
-        with socket.socket(socket.AF_INET6) as sock:sock.bind(('::1',0))
-    except OSError:return False
-    return True
-
-
 @pytest.mark.parametrize('host',['::1','127.0.0.1'])
 def test_term_logs_the_owner_and_acpd_then_times_acpd_reads(manager,monkeypatch,host):
     # The reads go to whichever loopback address ACPd listens on, with the
     # admin password keyed in exactly as integrations/acp.py sends it, and
     # read each whole reply before closing.
     from timecapsulesmb.integrations import acp
-    if ':' in host and not ipv6_loopback():pytest.skip('this computer has no IPv6 loopback')
+    if ':' in host and not has_ipv6_loopback():pytest.skip('this computer has no IPv6 loopback')
     root,start,events,wait,_,_=manager
     listener=FakeAcpd(host);monkeypatch.setenv('TC_TEST_ACPD_PORT',str(listener.port))
     stock=StockDiskd(root)

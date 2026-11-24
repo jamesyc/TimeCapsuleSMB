@@ -1,5 +1,4 @@
 from __future__ import annotations
-import errno
 import json
 from hashlib import sha512
 import os
@@ -66,6 +65,11 @@ def rig(tmp_path_factory):
             state['payloads'].append(payload)
             state['raw'].append(raw)
             if mode == 'http_error': return self.answer(b'{"DEBUG":true}', 500)
+            if mode == 'http_error_once':
+                # The server's own switch: a daemon retrying within a second
+                # must not race the test thread.
+                state['mode'] = 'false'
+                return self.answer(b'{"DEBUG":true}', 500)
             if mode == 'malformed': return self.answer(b'{"DEBUG":true}junk')
             if mode == 'oversized': return self.answer(b' ' * 6000)
             if mode == 'legacy': return self.answer(b'{"ok":true,"accepted":1}')
@@ -131,6 +135,8 @@ def rig(tmp_path_factory):
         # The host's monotonic clock counts from its own boot, days ago: arm
         # only on the boot heartbeat, as a device does in its first minutes.
         '#define TC_ARM_AFTER_SECONDS 2000000000L',
+        # Daemons send their boot heartbeat at once unless a test holds it.
+        '#ifndef TC_BOOT_HOLD_SECONDS', '#define TC_BOOT_HOLD_SECONDS 0', '#endif',
         # The loopback probes must not depend on the host's own sshd or SMB
         # server: ports nothing listens on.
         f'#define TC_HEALTH_SSH_PORT {closed_ports[0]}',
@@ -330,6 +336,58 @@ def test_idle_daemon_exits_when_device_config_disables_telemetry(cycle, rig):
         process.communicate(timeout=HANG_TIMEOUT)
 
 
+@pytest.fixture(scope='module')
+def held_collector(rig):
+    # A boot hold that outlasts any test.
+    return collector_with(rig[0], 'service-held', '-DTC_BOOT_HOLD_SECONDS=1000000')
+
+
+def test_a_held_boot_heartbeat_blocks_nothing_else(cycle, rig, held_collector, tmp_path):
+    # The hold is the daemon's own: it reads no acp and posts nothing, while
+    # the same binary's --report (the manager's) delivers at once, and the
+    # daemon still leaves promptly on opt-out or SIGTERM.
+    _, state, _, binary, env = cycle
+    root, _, _ = rig
+    held_calls, report_calls = tmp_path / 'held-acp-calls', tmp_path / 'report-acp-calls'
+    held = {**env, 'TC_TEST_ACP_CALLS': str(held_calls)}
+    stale = root / 'work/debug'
+
+    def in_loop():
+        # Housekeeping runs through the hold; once it has removed a stale
+        # download the daemon is in its loop, signal handlers set.
+        return not stale.exists() and process.poll() is None
+
+    stale.write_bytes(b'stale')
+    process = subprocess.Popen(telemetry_command(held_collector, '--daemon'), env=held, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+    try:
+        wait_until(in_loop)
+        result = subprocess.run(telemetry_command(held_collector, '--report', 'bufstall:resolved:5'),
+                                env={**env, 'TC_TEST_ACP_CALLS': str(report_calls)}, capture_output=True,
+                                timeout=HANG_TIMEOUT)
+        assert result.returncode == 0, result.stderr
+        assert [p['reason'] for p in state['payloads']] == ['bufstall:resolved:5'] and recorded_collectors(report_calls)
+        assert process.poll() is None and not recorded_collectors(held_calls)
+        (root / 'config').write_text('TELEMETRY=false\n')
+        assert process.wait(timeout=HANG_TIMEOUT) == 0
+    finally:
+        if process.poll() is None: process.terminate()
+        process.communicate(timeout=HANG_TIMEOUT)
+    (root / 'config').write_text("TC_DEPLOY_RELEASE_TAG='test-release'\n")
+    stale.write_bytes(b'stale')
+    process = subprocess.Popen(telemetry_command(held_collector, '--daemon'), env=held, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+    try:
+        wait_until(in_loop)
+        process.terminate()
+        # The loop sleeps a second at a time; SIGTERM ends the sleep.
+        assert process.wait(timeout=5) == 0
+    finally:
+        if process.poll() is None: process.kill()
+        process.communicate(timeout=HANG_TIMEOUT)
+    assert len(state['calls']) == 1 and not recorded_collectors(held_calls)
+
+
 def test_opt_out_keeps_local_cleanup_available(cycle, rig):
     _, state, _, binary, env = cycle
     root, _, _ = rig
@@ -476,19 +534,46 @@ def test_debug_crash_is_reaped_and_cleaned(cycle):
     assert marker.read_text().startswith('executed\n')
 
 
-def test_daemon_retries_an_undelivered_boot_heartbeat(cycle):
+def serial_reads(calls):
+    # One per collection: sySN is its first key.
+    return [line for line in recorded_collectors(calls) if line.split()[0] == 'sySN' and line.split()[2] == 'parent']
+
+
+def test_daemon_retries_an_undelivered_boot_heartbeat(cycle, acp_calls):
     # Right after boot DNS is often not ready. An undelivered heartbeat must
-    # retry soon, still labelled boot, and stop once one is delivered.
+    # retry soon, still labelled boot, and stop once one is delivered. acp
+    # answered every key, so the retry sends the same facts without forking
+    # acp again.
     _, state, _, binary, env = cycle
-    state['mode'] = 'http_error'
-    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    state['mode'] = 'http_error_once'
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env={**env, 'TC_TEST_ACP_CALLS': str(acp_calls)},
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        wait_until(lambda: len(state['calls']) == 1)
-        state['mode'] = 'false'
         wait_until(lambda: len(state['calls']) == 2)
         time.sleep(3)
         assert len(state['calls']) == 2
         assert [p['reason'] for p in state['payloads']] == ['boot', 'boot']
+        assert len(serial_reads(acp_calls)) == 1
+        assert state['payloads'][0]['router_id'] == state['payloads'][1]['router_id'] == 'C86TEST0SN01'
+    finally:
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
+
+
+def test_daemon_retry_reads_acp_again_after_an_incomplete_collection(cycle, acp_calls):
+    # The boot collection loses waMA (output too long for acp to accept) and
+    # the POST fails: the retry collects again, and carries the address.
+    _, state, _, binary, env = cycle
+    state['mode'] = 'http_error_once'
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'),
+                               env={**env, 'TC_TEST_ACP_CALLS': str(acp_calls), 'TC_TEST_ACP_KEY': 'waMA',
+                                    'TC_TEST_ACP_MODE': 'countdown', 'TC_TEST_ACP_VALUE': 'x' * 4096,
+                                    'TC_TEST_ACP_UNTIL': '1', 'TC_TEST_ACP_LATER': '80:EA:96:E6:58:68'},
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: len(state['calls']) == 2)
+        assert [p['reason'] for p in state['payloads']] == ['boot', 'boot']
+        assert len(serial_reads(acp_calls)) == 2 and len(wama_reads(acp_calls)) == 2
+        assert state['payloads'][1]['mac'] == REAL_MAC
     finally:
         process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
 
@@ -560,7 +645,7 @@ def test_extra_heartbeat_is_delivered_with_no_fork_once_the_table_is_full(cycle,
         boot = state['payloads'][0]
         assert boot['router_id'] == 'C86TEST0SN01' and 'plan_age_sec' not in boot
         reads_at_boot = calls.read_text()
-        fork_fail.write_text(str(errno.EAGAIN))
+        fork_fail.touch()
         table(85)
         wait_until(lambda: len(state['calls']) == 2)
         extra = state['payloads'][1]
@@ -686,13 +771,16 @@ def production_collector(rig):
     return rig[1]
 
 
-def collector_with_acp_deadline(root, name, seconds):
+def collector_with(root, name, *defines):
     binary = compile_service(root / name,
-                             flags=['-include', str(root / 'test_config.h'),
-                                    f'-DTC_ACP_TIMEOUT_SECONDS={seconds}', '-I', str(ROOT / 'build/native')],
+                             flags=['-include', str(root / 'test_config.h'), *defines, '-I', str(ROOT / 'build/native')],
                              exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
     first_exec(binary)
     return binary
+
+
+def collector_with_acp_deadline(root, name, seconds):
+    return collector_with(root, name, f'-DTC_ACP_TIMEOUT_SECONDS={seconds}')
 
 
 @pytest.fixture(scope='module')
@@ -976,9 +1064,91 @@ def test_router_id_falls_back_to_the_hardware_address_without_a_hash(cycle):
     assert run('false', TC_TEST_ACP_NO_SERIAL='1').returncode == 0
     payload = state['payloads'][0]
     assert payload['router_id'] == 'mac-02:00:00:00:00:01' and payload['mac'] == '02:00:00:00:00:01'
-    result = run('false', TC_TEST_ACP_NO_SERIAL='1', TC_TEST_IFLIST='failed')
+    result = run('false', TC_TEST_ACP_NO_SERIAL='1', TC_TEST_IFLIST='failed', TC_TEST_ACP_KEY='waMA',
+                 TC_TEST_ACP_MODE='empty')
     assert result.returncode == 1 and 'no router serial or hardware address' in result.stderr
     assert len(state['calls']) == 1
+
+
+PLACEHOLDER = '00:01:02:03:04:05'
+REAL_MAC = '80:ea:96:e6:58:68'
+
+
+def wama_reads(calls):
+    return [line for line in recorded_collectors(calls) if line.split()[0] == 'waMA' and line.split()[2] == 'parent']
+
+
+def test_mac_comes_from_wama_over_the_interface_table(cycle, tmp_path):
+    # Apple's own answer names the device, whatever the lowest interface holds.
+    run, state, *_ = cycle
+    table = tmp_path / 'mac'
+    table.write_text('e8:8d:28:58:f1:5c\n')
+    assert run('false', TC_TEST_IFLIST='mac_file', TC_TEST_IFLIST_MAC=str(table), TC_TEST_ACP_KEY='waMA',
+               TC_TEST_ACP_MODE='value', TC_TEST_ACP_VALUE='80:EA:96:E6:58:68').returncode == 0
+    assert state['payloads'][0]['mac'] == REAL_MAC
+
+
+def test_a_placeholder_is_never_sent_and_never_names_the_router(cycle, tmp_path):
+    # Every unit of a model boots with the same placeholder: with no serial
+    # and no waMA, a placeholder table leaves nothing to name the router by.
+    run, state, *_ = cycle
+    table = tmp_path / 'mac'
+    table.write_text(PLACEHOLDER + '\n')
+    placeholder = {'TC_TEST_IFLIST': 'mac_file', 'TC_TEST_IFLIST_MAC': str(table), 'TC_TEST_ACP_KEY': 'waMA',
+                   'TC_TEST_ACP_MODE': 'value', 'TC_TEST_ACP_VALUE': PLACEHOLDER}
+    assert run('false', **placeholder).returncode == 0
+    assert state['payloads'][0]['router_id'] == 'C86TEST0SN01' and state['payloads'][0]['mac'] is None
+    result = run('false', TC_TEST_ACP_NO_SERIAL='1', **placeholder)
+    assert result.returncode == 1 and 'no router serial or hardware address' in result.stderr
+    assert len(state['calls']) == 1
+
+
+def test_daemon_without_a_serial_retries_until_wama_is_real(cycle, acp_calls, tmp_path):
+    # No serial, and waMA and the table hold the placeholder: nothing names
+    # the router, so the boot heartbeat fails acp_unavailable, and each retry
+    # collects again, waMA included, until it answers the real address.
+    _, state, _, binary, env = cycle
+    iflist = tmp_path / 'mac'
+    iflist.write_text(PLACEHOLDER + '\n')
+    env = {**env, 'TC_TEST_ACP_CALLS': str(acp_calls), 'TC_TEST_ACP_NO_SERIAL': '1', 'TC_TEST_ACP_KEY': 'waMA',
+           'TC_TEST_ACP_MODE': 'countdown', 'TC_TEST_ACP_VALUE': PLACEHOLDER, 'TC_TEST_ACP_UNTIL': '2',
+           'TC_TEST_ACP_LATER': '80:EA:96:E6:58:68', 'TC_TEST_IFLIST': 'mac_file', 'TC_TEST_IFLIST_MAC': str(iflist)}
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True)
+    try:
+        wait_until(lambda: len(state['calls']) == 1)
+        boot = state['payloads'][0]
+        assert boot['reason'] == 'boot' and boot['router_id'] == f'mac-{REAL_MAC}' and boot['mac'] == REAL_MAC
+        assert boot['delivery']['failed'] == 2 and boot['delivery']['classes']['acp_unavailable'] == 2
+        assert len(wama_reads(acp_calls)) == 3
+    finally:
+        process.terminate()
+        _, stderr = process.communicate(timeout=HANG_TIMEOUT)
+    assert f'hardware address {REAL_MAC} from ACP waMA' in stderr
+
+
+def test_daemon_without_a_serial_waits_for_a_real_table_address(cycle, acp_calls, tmp_path):
+    # No serial and no waMA: the boot heartbeat retries while the table holds
+    # the placeholder, and goes under the real address once boot sets it.
+    _, state, _, binary, env = cycle
+    iflist = tmp_path / 'mac'
+    iflist.write_text(PLACEHOLDER + '\n')
+    env = {**env, 'TC_TEST_ACP_CALLS': str(acp_calls), 'TC_TEST_ACP_NO_SERIAL': '1', 'TC_TEST_ACP_KEY': 'waMA',
+           'TC_TEST_ACP_MODE': 'empty', 'TC_TEST_IFLIST': 'mac_file', 'TC_TEST_IFLIST_MAC': str(iflist)}
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+    try:
+        # A third attempt has begun, so two have been refused for want of a
+        # router ID (the third may still read the real address below).
+        wait_until(lambda: sum(line.split()[0] == 'sySN' for line in recorded_collectors(acp_calls)) >= 3)
+        assert state['calls'] == []
+        iflist.write_text(REAL_MAC + '\n')
+        wait_until(lambda: len(state['calls']) == 1)
+        boot = state['payloads'][0]
+        assert boot['reason'] == 'boot' and boot['router_id'] == f'mac-{REAL_MAC}' and boot['mac'] == REAL_MAC
+        assert boot['delivery']['failed'] >= 2 and boot['delivery']['classes']['acp_unavailable'] == boot['delivery']['failed']
+    finally:
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
 
 
 def test_print_payload_uses_current_schema_without_posting(cycle):

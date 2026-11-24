@@ -86,6 +86,23 @@ int main(int argc, char **argv) {
         if (!getenv("TC_TEST_ACP_NO_NEWLINE")) putchar('\n');
         return 0;
     }
+    /* The first TC_TEST_ACP_UNTIL reads of the key answer TC_TEST_ACP_VALUE,
+     * later ones TC_TEST_ACP_LATER: an address boot has not set yet. */
+    if (!strcmp(mode, "countdown")) {
+        char line[256], seen[16], role[16];
+        long pid;
+        double at;
+        int reads = 0;
+        FILE *calls = fopen(getenv("TC_TEST_ACP_CALLS"), "r");
+        if (!calls) return 95;
+        while (fgets(line, sizeof(line), calls))
+            if (sscanf(line, "%15s %ld %15s %lf", seen, &pid, role, &at) == 4 && !strcmp(seen, argv[2]) &&
+                !strcmp(role, "parent"))
+                reads++;
+        fclose(calls);
+        puts(getenv(reads <= atoi(getenv("TC_TEST_ACP_UNTIL")) ? "TC_TEST_ACP_VALUE" : "TC_TEST_ACP_LATER"));
+        return 0;
+    }
     if (!strcmp(mode, "nul")) {
         fwrite("first\0hidden\n", 1, 13, stdout);
         return 0;

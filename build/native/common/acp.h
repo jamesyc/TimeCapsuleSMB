@@ -40,10 +40,9 @@ enum acp_read_form { ACP_QUERY, ACP_ARRAY };
  * cancellation, the collection budget running out (BUDGET: the key was not
  * asked, or its child was stopped when the budget ran out before its own
  * timeout), or a key not asked because an earlier one timed out or could not
- * start in a collection begun with ACP_STOP_ON_TIMEOUT or
- * ACP_STOP_ON_START_FAILURE (SKIPPED). LOCAL covers the collector's own
- * failures: an invalid request, an unreadable clock, select() or waitpid()
- * errors. */
+ * start in a collection begun with ACP_STOP_EARLY (SKIPPED). LOCAL covers
+ * the collector's own failures: an invalid request, an unreadable clock,
+ * select() or waitpid() errors. */
 enum acp_abort_reason {
     ACP_REASON_NONE = 0, ACP_REASON_TIMEOUT, ACP_REASON_BUDGET, ACP_REASON_FORK, ACP_REASON_PIPE,
     ACP_REASON_EXEC, ACP_REASON_OUTPUT, ACP_REASON_CANCELLED, ACP_REASON_LOCAL, ACP_REASON_SKIPPED
@@ -67,7 +66,6 @@ struct acp_u32  { int available; uint32_t value; };
 struct acp_ipv4 { int available; uint32_t addr; };   /* network byte order */
 
 void trim_line(char *value);
-int read_acp_value(const char *key, char *out, size_t out_len);
 
 struct acp_bool acp_bool(const struct acp_value *value);
 struct acp_u32 acp_u32(const struct acp_value *value);
@@ -95,26 +93,21 @@ struct acp_collector {
     int finished;
     int aborted;
     int inherited_group;
-    int stop_on_timeout;       /* ACP_STOP_ON_TIMEOUT */
-    int stop_on_start_failure; /* ACP_STOP_ON_START_FAILURE */
-    int timed_out;             /* a key timed out */
-    int start_failed;          /* a child could not start (fork, pipe) */
+    int stop_early;            /* ACP_STOP_EARLY */
+    int stopped;               /* a key timed out or its child could not start */
     int child_at_budget;       /* the running child's deadline is the budget's */
 };
-/* acp_collect_begin_opts flags: ask no more keys (ACP_REASON_SKIPPED) after
- * one times out, or after a child cannot start. An ACPd that has stopped
+/* Flags: ACP_STOP_EARLY asks no more keys (ACP_REASON_SKIPPED) after one
+ * times out, or after a child cannot start. An ACPd that has stopped
  * answering one key will not answer the next, and a process table that is
  * full for one fork is full for the next: telemetry would otherwise spend
  * its budget, or a dozen forks, on children that fail one after another. */
-#define ACP_STOP_ON_TIMEOUT 1
-#define ACP_STOP_ON_START_FAILURE 2
+#define ACP_STOP_EARLY 1
 
 /* begin/pump return 0 while pending, 1 when complete, -1 if any request
  * aborted. Inspect per-request status: missing values are not batch failures. */
 int acp_collect_begin(struct acp_collector *c, struct acp_request *requests, size_t count,
-                      long long timeout_ms, long long budget_ms);
-int acp_collect_begin_opts(struct acp_collector *c, struct acp_request *requests, size_t count,
-                           long long timeout_ms, long long budget_ms, int flags);
+                      long long timeout_ms, long long budget_ms, int flags);
 int acp_collect_fd(const struct acp_collector *c);
 long long acp_collect_deadline_ms(const struct acp_collector *c);
 /* The same deadline as seen at monotonic time now; tests choose the time. */

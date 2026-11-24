@@ -5,6 +5,9 @@
  * device's hardware address (the heartbeat's mac). TC_TEST_IFLIST selects
  * another table:
  *   failed            the sysctl read fails
+ *   mac_file          the default port, with the address read from the file
+ *                     TC_TEST_IFLIST_MAC on every call (a test rewrites it
+ *                     to model boot setting the real address)
  *   sockaddr|links|addrs  an incomplete snapshot with that cause
  *   extenders         bridge0 and lo0 plus 30 address-less interfaces
  *   worst             TC_MAX_LINKS links, each with a service address and a
@@ -31,10 +34,20 @@ static void add_ipv4(struct if_table *table, unsigned index, const char *text, u
 int iflist_collect(struct if_table *table) {
     const char *mode = getenv("TC_TEST_IFLIST");
     memset(table, 0, sizeof(*table));
-    if (mode == NULL) {
-        static const unsigned char mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+    if (mode == NULL || !strcmp(mode, "mac_file")) {
+        unsigned char mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+        if (mode != NULL) {
+            unsigned v[6], i;
+            FILE *fp = fopen(getenv("TC_TEST_IFLIST_MAC"), "r");
+            if (!fp) return -1;
+            if (fscanf(fp, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6) {
+                fclose(fp);
+                return -1;
+            }
+            fclose(fp);
+            for (i = 0; i < 6; i++) mac[i] = (unsigned char)v[i];
+        }
         add_link(table, "bcmeth0", 1);
-        table->links[0].lltype = 6;
         table->links[0].lladdr_len = 6;
         memcpy(table->links[0].lladdr, mac, 6);
         return 0;

@@ -18,6 +18,11 @@ struct answer { const char *key; int status; const char *value; enum acp_abort_r
 static struct answer script[8];
 static size_t script_count;
 static int collections, last_flags, plan_builds, built_with_history, validated = 1, have_mac = 1;
+/* The interface table's lowest-index address; the real one by default. */
+static const unsigned char real_mac[6] = {0x80, 0xea, 0x96, 0xe6, 0x58, 0x68};
+static const unsigned char placeholder_mac[6] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05};
+static const unsigned char other_mac[6] = {0xe8, 0x8d, 0x28, 0x58, 0xf1, 0x5c};
+static const unsigned char *table_mac = real_mac;
 static char keys_asked[512];
 
 static void answer(const char *key, int status, const char *value, enum acp_abort_reason reason, int error) {
@@ -33,6 +38,7 @@ static void reset(void) {
     script_count = 0;
     collections = plan_builds = built_with_history = 0;
     validated = have_mac = 1;
+    table_mac = real_mac;
     telemetry_stop = 0;
     keys_asked[0] = 0;
 }
@@ -80,7 +86,7 @@ int acp_collect_run_opts(struct acp_request *requests, size_t count, long long t
                 reason = script[j].reason;
                 error = script[j].error;
             }
-        /* ACP_STOP_ON_TIMEOUT and ACP_STOP_ON_START_FAILURE: nothing is
+        /* ACP_STOP_EARLY: nothing is
          * asked after a timeout or a child that could not start. */
         if (stopped) { status = ACP_ABORT; reason = ACP_REASON_SKIPPED; error = 0; }
         requests[i].status = status;
@@ -88,8 +94,9 @@ int acp_collect_run_opts(struct acp_request *requests, size_t count, long long t
         requests[i].error = error;
         snprintf(requests[i].output, requests[i].capacity, "%s", status == ACP_OK ? value : "");
         requests[i].length = strlen(requests[i].output);
-        if (status == ACP_ABORT && reason == ACP_REASON_TIMEOUT && (flags & ACP_STOP_ON_TIMEOUT)) stopped = 1;
-        if (status == ACP_ABORT && reason == ACP_REASON_FORK && (flags & ACP_STOP_ON_START_FAILURE)) stopped = 1;
+        if (status == ACP_ABORT && (reason == ACP_REASON_TIMEOUT || reason == ACP_REASON_FORK) &&
+            (flags & ACP_STOP_EARLY))
+            stopped = 1;
     }
     return 0;
 }
@@ -131,10 +138,9 @@ void device_plan_history_update(struct device_plan *history, int *have, const st
 }
 int iflist_collect(struct if_table *table) { memset(table, 0, sizeof(*table)); return 0; }
 int if_table_device_mac(const struct if_table *table, unsigned char out[6]) {
-    static const unsigned char mac[6] = {0x80, 0xea, 0x96, 0xe6, 0x58, 0x68};
     (void)table;
     if (!have_mac) return -1;
-    memcpy(out, mac, 6);
+    memcpy(out, table_mac, 6);
     return 0;
 }
 const char *router_mode_name(enum router_mode value) { (void)value; return "unknown"; }
@@ -151,6 +157,137 @@ static int build(struct tc_heartbeat_facts *f, int refresh, char *json, size_t c
     return telemetry_payload(json, cap, "manual", "0123456789abcdef0123456789abcdef", &ctx, r);
 }
 
+/* tc_mac_parse: waMA as acp prints it, or the table's address; never a
+ * boot placeholder. */
+static void test_mac_parse(void) {
+    char out[18];
+    assert(!tc_mac_parse("80:EA:96:E6:58:68", out) && !strcmp(out, "80:ea:96:e6:58:68"));
+    assert(!tc_mac_parse(" e8:8d:28:58:f1:5c \r\n", out) && !strcmp(out, "e8:8d:28:58:f1:5c"));
+    assert(tc_mac_parse("00:01:02:03:04:05", out) && !out[0]);
+    assert(tc_mac_parse("00:0A:AA:BB:CC:DD", out) && tc_mac_parse("00:0a:aa:bb:cc:dd", out));
+    assert(tc_mac_parse("00:00:00:00:00:00", out) && tc_mac_parse("01:00:5e:00:00:01", out));
+    assert(tc_mac_parse("ff:ff:ff:ff:ff:ff", out));
+    assert(tc_mac_parse("80:ea:96:e6:58", out) && tc_mac_parse("80:ea:96:e6:58:68:00", out));
+    assert(tc_mac_parse("80-ea-96-e6-58-68", out) && tc_mac_parse("80:ea:96:e6:58:6g", out));
+    assert(tc_mac_parse("1", out) && tc_mac_parse("", out) && tc_mac_parse(NULL, out));
+}
+
+/* When a retry may keep the facts it has instead of reading acp again. */
+static void test_facts_fresh(void) {
+    static const struct { const char *key; int status; enum acp_abort_reason reason; int error; } incomplete[] = {
+        {"syNm", ACP_ABORT, ACP_REASON_TIMEOUT, 0}, {"waMA", ACP_ABORT, ACP_REASON_BUDGET, 0},
+        {"syAP", ACP_ABORT, ACP_REASON_FORK, EAGAIN}, {"raNA", ACP_ABORT, ACP_REASON_EXEC, ENOENT}};
+    struct tc_heartbeat_facts f;
+    struct tc_facts_round round;
+    size_t i;
+    const long long limit = (long long)TC_FACTS_REUSE_SECONDS * 1000;
+    /* Nothing collected: nothing to keep. */
+    reset();
+    memset(&f, 0, sizeof(f));
+    assert(!tc_heartbeat_facts_fresh(&f, 50000));
+    /* Every key answered, "not set" included: fresh until the limit. */
+    answer("waMA", ACP_OK, "", ACP_REASON_NONE, 0);
+    answer("usbF", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
+    tc_heartbeat_facts_update(&f, 1, &round);
+    assert(round.collected && f.last_complete);
+    assert(tc_heartbeat_facts_fresh(&f, 50000) && tc_heartbeat_facts_fresh(&f, 50000 + limit - 1));
+    assert(!tc_heartbeat_facts_fresh(&f, 50000 + limit));
+    /* Reusing them reads nothing and does not make them younger. */
+    tc_heartbeat_facts_update(&f, 0, &round);
+    assert(!round.collected && collections == 1 && !tc_heartbeat_facts_fresh(&f, 50000 + limit));
+    /* A key that timed out, ran out of budget or never started (and every
+     * key skipped after it): read again. */
+    for (i = 0; i < sizeof(incomplete) / sizeof(incomplete[0]); i++) {
+        reset();
+        memset(&f, 0, sizeof(f));
+        answer(incomplete[i].key, incomplete[i].status, "", incomplete[i].reason, incomplete[i].error);
+        tc_heartbeat_facts_update(&f, 1, &round);
+        assert(round.collected && f.have_last && !f.last_complete && !tc_heartbeat_facts_fresh(&f, 50000));
+        /* A complete collection after it is fresh again. */
+        reset();
+        tc_heartbeat_facts_update(&f, 1, &round);
+        assert(f.last_complete && tc_heartbeat_facts_fresh(&f, 50000));
+    }
+}
+
+/* The facts: where each heartbeat's address comes from. */
+static void test_mac_sources(void) {
+    char json[8192];
+    struct tc_payload_result r;
+    /* waMA wins over a different table address. */
+    {
+        static struct tc_heartbeat_facts f;
+        reset();
+        table_mac = other_mac;
+        answer("waMA", ACP_OK, "80:EA:96:E6:58:68", ACP_REASON_NONE, 0);
+        assert(!build(&f, 1, json, sizeof(json), &r));
+        assert(strstr(json, "\"mac\":\"80:ea:96:e6:58:68\"") && !strcmp(f.wama, "80:ea:96:e6:58:68"));
+        /* Kept through a collection that stops before waMA (syAP times out),
+         * one where waMA is "not set", and one that never validates. */
+        reset();
+        answer("syAP", ACP_ABORT, "", ACP_REASON_TIMEOUT, 0);
+        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+        reset();
+        answer("waMA", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
+        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+    }
+    /* A plan that never validates still gets waMA's address. */
+    {
+        static struct tc_heartbeat_facts f;
+        reset();
+        validated = 0;
+        table_mac = other_mac;
+        answer("waMA", ACP_OK, "80:EA:96:E6:58:68", ACP_REASON_NONE, 0);
+        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+    }
+    /* Boot: both sources hold a placeholder. The serial names the router
+     * and no address goes. */
+    {
+        static struct tc_heartbeat_facts f;
+        reset();
+        table_mac = placeholder_mac;
+        answer("waMA", ACP_OK, "00:01:02:03:04:05", ACP_REASON_NONE, 0);
+        assert(!build(&f, 1, json, sizeof(json), &r));
+        assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"mac\":null") && !f.wama[0]);
+        /* The table is read again on every heartbeat until waMA answers. */
+        reset();
+        table_mac = other_mac;
+        assert(!build(&f, 0, json, sizeof(json), &r) && collections == 0);
+        assert(strstr(json, "\"mac\":\"e8:8d:28:58:f1:5c\""));
+        /* The next collection's waMA is kept, and later heartbeats send it
+         * with no acp read, whatever the table holds. */
+        reset();
+        answer("waMA", ACP_OK, "80:EA:96:E6:58:68\n", ACP_REASON_NONE, 0);
+        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+        reset();
+        table_mac = placeholder_mac;
+        assert(!build(&f, 0, json, sizeof(json), &r) && collections == 0);
+        assert(strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+        /* A later placeholder leaves it; a different usable answer replaces it. */
+        reset();
+        answer("waMA", ACP_OK, "00:01:02:03:04:05", ACP_REASON_NONE, 0);
+        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+        reset();
+        answer("waMA", ACP_OK, "e8:8d:28:58:f1:5c", ACP_REASON_NONE, 0);
+        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"e8:8d:28:58:f1:5c\""));
+    }
+    /* No serial, no waMA, a placeholder table: nothing names the router, so
+     * nothing goes, never under the placeholder; once the table is real, the
+     * retry reports under it. */
+    {
+        static struct tc_heartbeat_facts f;
+        reset();
+        table_mac = placeholder_mac;
+        answer("sySN", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
+        answer("waMA", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
+        assert(build(&f, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE && !f.mac[0]);
+        reset();
+        answer("sySN", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
+        answer("waMA", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
+        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\""));
+    }
+}
+
 int main(void) {
     static struct tc_heartbeat_facts f;
     struct tc_payload_result r;
@@ -161,7 +298,7 @@ int main(void) {
      * stopping at the first timeout. */
     reset();
     assert(!build(&f, 1, json, sizeof(json), &r) && !r.local_resource);
-    assert(collections == 1 && last_flags == (ACP_STOP_ON_TIMEOUT | ACP_STOP_ON_START_FAILURE));
+    assert(collections == 1 && last_flags == ACP_STOP_EARLY);
     assert(!strcmp(keys_asked, "sySN syAP syAM raNA raDS waNM usbF laIP waIP waLL gnRo syNm waMA "));
     assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
     assert(strstr(json, "\"device_syap\":\"106\"") && strstr(json, "\"device_model\":\"TimeCapsule6,106\""));
@@ -290,5 +427,8 @@ int main(void) {
     /* Too small a buffer sends nothing. */
     reset();
     assert(build(&f, 0, json, 12, &r) && r.failure == TC_OUTCOME_SERVER);
+    test_mac_parse();
+    test_facts_fresh();
+    test_mac_sources();
     return 0;
 }

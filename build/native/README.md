@@ -597,9 +597,18 @@ and the server treats that field as optional. `plan_error` contains a
 short critical-facts failure reason and is omitted on success.
 
 Agent version 4 names the router by its serial (ACP `sySN`) or, when ACP never
-gave one, `mac-` and the device's hardware address (the lowest-index interface
-with one, which ACP reports as `waMA`); every heartbeat also carries `mac`, which
-joins the two. There is no hashed ID.
+gave one, `mac-` and the device's hardware address; every heartbeat also carries
+`mac`, which joins the two. There is no hashed ID. The address is ACP's `waMA`,
+which every collection reads anyway. Early in boot it holds a placeholder that
+every unit of a model shares (`00:01:02:03:04:05` on NetBSD 6, `00:0a:aa:bb:cc:dd`
+on NetBSD 4), which counts as no answer. The daemon holds its boot heartbeat a
+minute from its start, so the collection that heartbeat makes, its first, usually
+finds a usable `waMA` (and its first POST finds the network up). The last usable
+answer is kept. Until there is one, a heartbeat sends the interface table's address
+of the moment if it is not a placeholder (the lowest-index interface with one),
+which names a router whose ACP never answered this process (ACPd hung, or no
+process to fork), else `"mac":null`. With no serial either there is no router ID:
+the heartbeat fails `acp_unavailable`, and the planner's retries collect again.
 
 A heartbeat never needs to fork while the device is in trouble: HTTP/1.0 and DNS
 are native (`http.c`, `dns.c`; libc `getaddrinfo` would add about 250 KB), the
@@ -612,18 +621,22 @@ counted in `acp_budget_exhausted`. Values once read are kept for the process's l
 built from the last validated one (`device_plan_history_update`, shared with
 discovery's plan loop), so a collection that loses keys reports the roles it kept,
 with `plan_error` and `plan_stale_sec`. A heartbeat that collects nothing resends
-the last plan with `plan_age_sec`. A value never read goes out empty: the router
+the last plan with `plan_age_sec`; that includes a retry after a failed POST, so a
+boot heartbeat delivered on its second try carries one of about a minute. A value never read goes out empty: the router
 is named by its serial or hardware address, so a missing model or name cannot make
 a different router (`main`'s fallback ID hashed them, which is why it refused a
 partial identity).
 
 The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
 
-- `planner.c`: one machine for the boot heartbeat, the scheduled one every 12
-  hours, and the extra `resource_high` one health requests (spaced 1, 2, 4, 8,
+- `planner.c`: one machine for the boot heartbeat (held 60 s from the daemon's
+  start; one-shot modes such as the manager's `--report` never wait), the
+  scheduled one every 12 hours, and the extra `resource_high` one health requests (spaced 1, 2, 4, 8,
   then 12 hours, back to 1 after a quiet day). Failures back off by kind: a local
   failure (no process, descriptor or memory) retries every minute ten times, then
   every five minutes; network, server and missing identity double from a minute.
+  A retry after a network or server failure sends the facts it has, without
+  forking acp, while they come from a complete collection under an hour old.
   Out of descriptors or memory while taking the workspace lock or the nonce
   counts as local. Any delivered heartbeat restarts the 12-hour schedule, and an
   extra one reads acp afresh once acp has gone 12 hours unread. The top of

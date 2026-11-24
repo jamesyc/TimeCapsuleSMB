@@ -15,7 +15,7 @@ static int virtual_clock(void) {
     return getpid() == owner && !strncmp(scenario, "deadline_", 9);
 }
 
-/* deadline_skip is deadline_each with ACP_STOP_ON_TIMEOUT. */
+/* deadline_skip is deadline_each with ACP_STOP_EARLY. */
 static int each_like(void) {
     return !strcmp(scenario, "deadline_each") || !strcmp(scenario, "deadline_skip");
 }
@@ -197,11 +197,11 @@ int main(int argc, char **argv) {
         /* deadline_skip has budget to spare, so the third key's own 20 s
          * runs out first (at 44 s): a timeout. deadline_each's 30 s budget
          * runs out first, at 30 s, while the third child still runs. */
-        assert(acp_collect_run_opts(requests, 4, 20000, skip ? 60000 : 30000, skip ? ACP_STOP_ON_TIMEOUT : 0) == -1);
+        assert(acp_collect_run_opts(requests, 4, 20000, skip ? 60000 : 30000, skip ? ACP_STOP_EARLY : 0) == -1);
         assert(requests[0].status == ACP_OK && !strcmp(values[0], "0x77") && requests[0].reason == ACP_REASON_NONE);
         assert(requests[1].status == ACP_OK && !strcmp(values[1], "TimeCapsule8,119"));
         /* The budget stopping a running child is not that key timing out,
-         * and does not stop an ACP_STOP_ON_TIMEOUT collection by itself. */
+         * and does not stop an ACP_STOP_EARLY collection by itself. */
         assert(requests[2].status == ACP_ABORT && !values[2][0] &&
                requests[2].reason == (skip ? ACP_REASON_TIMEOUT : ACP_REASON_BUDGET));
         assert(requests[3].status == ACP_ABORT && !values[3][0] &&
@@ -217,7 +217,7 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(scenario, "fork_skip")) {
         /* A full process table: after the first fork fails, nothing more
-         * is forked in an ACP_STOP_ON_START_FAILURE collection. */
+         * is forked in an ACP_STOP_EARLY collection. */
         char values[3][256];
         struct acp_request requests[3] = {0};
         const char *keys[] = {"syAP", "syAM", "syNm"};
@@ -227,7 +227,7 @@ int main(int argc, char **argv) {
             requests[i].output = values[i];
             requests[i].capacity = sizeof(values[i]);
         }
-        assert(acp_collect_run_opts(requests, 3, 20000, 30000, ACP_STOP_ON_START_FAILURE) == -1);
+        assert(acp_collect_run_opts(requests, 3, 20000, 30000, ACP_STOP_EARLY) == -1);
         assert(forks == 1 && requests[0].reason == ACP_REASON_FORK && requests[0].error == EAGAIN);
         assert(requests[1].reason == ACP_REASON_SKIPPED && requests[2].reason == ACP_REASON_SKIPPED);
         assert(open_fds() == before);
@@ -249,8 +249,7 @@ int main(int argc, char **argv) {
          * count the collector's own reads. */
         timed = !strncmp(scenario, "deadline_", 9);
         started = timed ? acp_monotonic_ms() : 0;
-        if (repeat == 0) {
-            /* read_acp_value's own request, to see why it aborted. */
+        {
             struct acp_request request;
             enum acp_abort_reason reason;
             int error;
@@ -262,10 +261,11 @@ int main(int argc, char **argv) {
             (void)acp_collect_run(&request, 1, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
                                   (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
             result = request.status;
-            expected_reason(&reason, &error);
-            assert(request.reason == reason && request.error == error);
-        } else {
-            result = read_acp_value("syAP", output, sizeof(output));
+            /* Why it aborted, on the first run of the scenario. */
+            if (repeat == 0) {
+                expected_reason(&reason, &error);
+                assert(request.reason == reason && request.error == error);
+            }
         }
         elapsed = timed ? acp_monotonic_ms() - started : 0;
         assert(result == (success ? ACP_OK : ACP_ABORT));

@@ -17,7 +17,7 @@ int main(void) {
         requests[i].output = values[i].text;
         requests[i].capacity = sizeof(values[i].text);
     }
-    rc = acp_collect_begin(&c, requests, 3, 1000, 0);
+    rc = acp_collect_begin(&c, requests, 3, 1000, 0, 0);
 
     if (rc != -1) {
         printf("expected the collection to finish immediately, rc=%d\n", rc);

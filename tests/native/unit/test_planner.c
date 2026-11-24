@@ -16,7 +16,7 @@ static enum tc_attempt_kind run(struct tc_planner *p, long now, int requests, en
 static void boot_and_schedule(void) {
     struct tc_planner p;
     struct tc_attempt a;
-    planner_init(&p, 900);
+    planner_init(&p, 900, 0);
     /* The first heartbeat is the boot one, due at once, read afresh. */
     a = next(&p, 100, 0);
     assert(a.kind == TC_ATTEMPT_BOOT && !strcmp(a.reason, "boot") && a.refresh);
@@ -54,7 +54,7 @@ static void local_failures(void) {
     struct tc_planner p;
     struct tc_attempt a;
     int i;
-    planner_init(&p, 900);
+    planner_init(&p, 900, 0);
     run(&p, 0, 0, TC_OUTCOME_DELIVERED);
     /* A full process table: retry every minute, ten times, then every five
      * minutes, without reading acp afresh. */
@@ -81,7 +81,7 @@ static void local_failures(void) {
 
 static void busy_and_cancelled(void) {
     struct tc_planner p;
-    planner_init(&p, 900);
+    planner_init(&p, 900, 0);
     run(&p, 10, 0, TC_OUTCOME_NETWORK);
     /* A held workspace lock retries soon and touches nothing else. */
     run(&p, 100, 0, TC_OUTCOME_BUSY);
@@ -92,7 +92,7 @@ static void busy_and_cancelled(void) {
     /* Cancelled: nothing changes. */
     {
         struct tc_planner before = p;
-        struct tc_attempt a = {TC_ATTEMPT_BOOT, "boot", 1};
+        struct tc_attempt a = {TC_ATTEMPT_BOOT, "boot", 1, 0};
         planner_finished(&p, 300, &a, TC_OUTCOME_CANCELLED, 0);
         assert(!memcmp(&before, &p, sizeof(p)));
     }
@@ -102,7 +102,7 @@ static void extra_heartbeats(void) {
     struct tc_planner p;
     struct tc_attempt a;
     long t;
-    planner_init(&p, 900);
+    planner_init(&p, 900, 0);
     /* Nothing extra before the boot heartbeat is in: boot carries it. */
     a = next(&p, 10, 1);
     assert(a.kind == TC_ATTEMPT_BOOT);
@@ -156,7 +156,7 @@ static void chronic_requests_still_refresh(void) {
      * every 12 hours. */
     struct tc_planner p;
     long t, last_refresh = 0;
-    planner_init(&p, 900);
+    planner_init(&p, 900, 0);
     run(&p, 0, 1, TC_OUTCOME_DELIVERED);
     for (t = 1; t < 40L * 86400; t++) {
         struct tc_attempt a = next(&p, t, 1);
@@ -185,7 +185,7 @@ static void one_attempt_per_slot(void) {
      * with a scheduled heartbeat overdue and an extra one requested. */
     struct tc_planner p;
     long t, attempts = 0, last = -1000;
-    planner_init(&p, 900);
+    planner_init(&p, 900, 0);
     run(&p, 0, 0, TC_OUTCOME_DELIVERED);
     p.next_scheduled = 1000;
     for (t = 1000; t < 1000 + 30 * 60; t++) {
@@ -201,9 +201,77 @@ static void one_attempt_per_slot(void) {
     assert(attempts == 14);
 }
 
+static void boot_hold(void) {
+    /* The daemon starts at 40 and holds its boot heartbeat to 100. */
+    struct tc_planner p;
+    struct tc_attempt a;
+    long t;
+    planner_init(&p, 900, 100);
+    for (t = 40; t < 100; t++) {
+        /* A health request does not cut the hold short: the boot heartbeat
+         * carries what it saw. */
+        assert(next(&p, t, 0).kind == TC_ATTEMPT_NONE && next(&p, t, 1).kind == TC_ATTEMPT_NONE);
+    }
+    /* The hold counts as nothing: no failure, no back-off. */
+    assert(!p.failed && !p.failed_since && !p.net_delay && !p.boot_sent);
+    a = next(&p, 100, 1);
+    assert(a.kind == TC_ATTEMPT_BOOT && a.refresh);
+    /* A failure after it backs off from the base, as without a hold. */
+    planner_finished(&p, 100, &a, TC_OUTCOME_NETWORK, 0);
+    assert(p.retry_at == 100 + TC_HEARTBEAT_RETRY_SECONDS && p.failed == 1 && p.failed_since == 100);
+    assert(run(&p, 100 + TC_HEARTBEAT_RETRY_SECONDS, 0, TC_OUTCOME_DELIVERED) == TC_ATTEMPT_BOOT && p.boot_sent);
+    /* No hold: the boot heartbeat goes at once. */
+    planner_init(&p, 900, 0);
+    assert(next(&p, 0, 0).kind == TC_ATTEMPT_BOOT);
+}
+
+static void reuse_after_network_failures(void) {
+    struct tc_planner p;
+    struct tc_attempt a;
+    planner_init(&p, 900, 0);
+    /* The first attempt has nothing to reuse. */
+    a = next(&p, 0, 0);
+    assert(a.refresh && !a.reuse);
+    /* Network and server failures: acp answered, so the retry may reuse. */
+    planner_finished(&p, 0, &a, TC_OUTCOME_NETWORK, 0);
+    a = next(&p, p.retry_at, 0);
+    assert(a.kind == TC_ATTEMPT_BOOT && a.refresh && a.reuse);
+    planner_finished(&p, p.retry_at, &a, TC_OUTCOME_SERVER, 0);
+    a = next(&p, p.retry_at, 0);
+    assert(a.reuse);
+    /* A held lock leaves the mark: the retry after it still may reuse. */
+    planner_finished(&p, p.retry_at, &a, TC_OUTCOME_BUSY, 0);
+    assert(next(&p, p.retry_at, 0).reuse);
+    /* No router ID (acp did not answer well enough) reads afresh. */
+    a = next(&p, p.retry_at, 0);
+    planner_finished(&p, p.retry_at, &a, TC_OUTCOME_ACP_UNAVAILABLE, 0);
+    a = next(&p, p.retry_at, 0);
+    assert(a.refresh && !a.reuse);
+    /* A local failure forks nothing on its retry, reuse or not. */
+    planner_finished(&p, p.retry_at, &a, TC_OUTCOME_NETWORK, 0);
+    a = next(&p, p.retry_at, 0);
+    planner_finished(&p, p.retry_at, &a, TC_OUTCOME_LOCAL_RESOURCE, 0);
+    a = next(&p, p.retry_at, 0);
+    assert(!a.refresh && !a.reuse);
+    /* Delivery clears it; the next scheduled heartbeat reads afresh. */
+    planner_finished(&p, 5000, &a, TC_OUTCOME_NETWORK, 0);
+    a = next(&p, p.retry_at, 0);
+    planner_finished(&p, 6000, &a, TC_OUTCOME_DELIVERED, 0);
+    a = next(&p, 6000 + TC_INTERVAL_SECONDS, 0);
+    assert(a.kind == TC_ATTEMPT_SCHEDULED && a.refresh && !a.reuse);
+    /* Delivered on reused facts (refresh cleared by the daemon): an extra
+     * heartbeat's next read counts from the last real one, not this one. */
+    p.next_refresh = 100;
+    planner_finished(&p, 6000 + TC_INTERVAL_SECONDS, &a, TC_OUTCOME_NETWORK, 0);
+    a = next(&p, p.retry_at, 0);
+    a.refresh = 0;
+    planner_finished(&p, 7000 + TC_INTERVAL_SECONDS, &a, TC_OUTCOME_DELIVERED, 0);
+    assert(p.next_refresh == 100);
+}
+
 static void arming(void) {
     struct tc_planner p;
-    planner_init(&p, 900);
+    planner_init(&p, 900, 0);
     assert(!planner_armed(&p, 899) && planner_armed(&p, 900));
     run(&p, 50, 0, TC_OUTCOME_DELIVERED);
     assert(planner_armed(&p, 51));
@@ -217,6 +285,8 @@ int main(void) {
     one_attempt_per_slot();
     chronic_requests_still_refresh();
     setup_failures();
+    boot_hold();
+    reuse_after_network_failures();
     arming();
     return 0;
 }
