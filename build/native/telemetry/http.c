@@ -145,31 +145,16 @@ static int send_all(int fd, const char *data, size_t len, long long deadline) {
     return 0;
 }
 
-/* The value of header name (case-insensitive) in head, which ends at the
- * blank line, or NULL. */
-static const char *header(const char *head, const char *name) {
-    size_t n = strlen(name);
-    const char *p = strstr(head, "\r\n");
-    while (p && p[2] && p[2] != '\r') {
-        p += 2;
-        if (!strncasecmp(p, name, n) && p[n] == ':') {
-            p += n + 1;
-            while (*p == ' ' || *p == '\t') p++;
-            return p;
-        }
-        p = strstr(p, "\r\n");
-    }
-    return NULL;
-}
-
 /* Content-Length as servers write it: optional spaces, digits, optional
  * spaces, end of line. Returns 0 when absent, 1 with *out set, -1 for any
- * other value or for two headers that disagree. head ends at the blank line. */
+ * other value, for two headers that disagree, or for any Transfer-Encoding
+ * (chunked is never sent to HTTP/1.0). head ends at the blank line. */
 static int content_length(const char *head, long long *out) {
     const char *p = strstr(head, "\r\n");
     int found = 0;
     while (p && p[2] && p[2] != '\r') {
         p += 2;
+        if (!strncasecmp(p, "Transfer-Encoding:", 18)) return -1;
         if (!strncasecmp(p, "Content-Length:", 15)) {
             const char *q = p + 15;
             long long value = 0;
@@ -192,7 +177,7 @@ static int content_length(const char *head, long long *out) {
 int telemetry_http(const char *url, const char *payload, unsigned char *buf, size_t cap, size_t *len,
                    enum tc_outcome *outcome) {
     char host[256], host_header[300], request[1024];
-    const char *path, *value;
+    const char *path;
     unsigned port;
     size_t used = 0, body_at = 0, payload_len = payload ? strlen(payload) : 0, limit;
     long long started = acp_monotonic_ms(), deadline, expected = -1;
@@ -241,10 +226,8 @@ int telemetry_http(const char *url, const char *payload, unsigned char *buf, siz
                 int found;
                 buf[body_at - 2] = 0; /* the head ends at the blank line */
                 found = content_length((char *)buf, &expected);
-                value = header((char *)buf, "Transfer-Encoding");
                 buf[body_at - 2] = (unsigned char)saved;
-                /* chunked is never sent to HTTP/1.0 */
-                if (found < 0 || value) { result = TC_OUTCOME_SERVER; goto done; }
+                if (found < 0) { result = TC_OUTCOME_SERVER; goto done; }
                 if (!found) expected = -2; /* read to the close */
                 if (expected > (long long)limit) { result = TC_OUTCOME_SERVER; goto done; }
             }

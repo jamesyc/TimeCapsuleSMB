@@ -10,6 +10,7 @@ import time
 
 import pytest
 
+from tests.loopback import has_ipv6_loopback
 from tests.native.build import ROOT, compile_modules
 
 DEADLINE_MS = 3000
@@ -20,16 +21,7 @@ DNS_SERVER_MS = 500
 LONG_DEADLINE_MS = 20000
 
 
-def have_ipv6_loopback():
-    try:
-        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
-            s.bind(("::1", 0))
-        return True
-    except OSError:
-        return False
-
-
-IPV6 = have_ipv6_loopback()
+IPV6 = has_ipv6_loopback()
 
 
 class Http(socketserver.ThreadingMixIn, socketserver.TCPServer):

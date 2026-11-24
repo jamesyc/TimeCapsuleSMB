@@ -82,24 +82,12 @@ static int start_acp_child(struct acp_collector *c, struct acp_request *request,
         *failure = "cannot configure output pipe"; return -1;
     }
 #ifdef TC_NATIVE_TEST
-    /* Tests make fork() fail as a full process table does: while the file
-     * TC_TEST_FORK_FAIL names exists, with the errno it holds. */
-    {
-        const char *path = getenv("TC_TEST_FORK_FAIL");
-        FILE *f = path ? fopen(path, "r") : NULL;
-        int error = EAGAIN;
-        if (f) {
-            if (fscanf(f, "%d", &error) != 1) error = EAGAIN;
-            fclose(f);
-            child = -1;
-            errno = error;
-        } else {
-            child = fork();
-        }
-    }
-#else
-    child = fork();
+    if (TC_TEST_FORK_FAILS()) {
+        child = -1;
+        errno = EAGAIN;
+    } else
 #endif
+        child = fork();
     if (child == 0) {
         int null_fd;
         /* Only the child creates its group. Concurrent parent/child setpgid
@@ -203,7 +191,7 @@ static int advance(struct acp_collector *c) {
             finish_key(c, ACP_ABORT, ACP_REASON_CANCELLED);
             continue;
         }
-        if ((c->stop_on_timeout && c->timed_out) || (c->stop_on_start_failure && c->start_failed)) {
+        if (c->stop_early && c->stopped) {
             finish_key(c, ACP_ABORT, ACP_REASON_SKIPPED);
             continue;
         }
@@ -223,7 +211,7 @@ static int advance(struct acp_collector *c) {
         }
         if (start_acp_child(c, value, &failure) != 0) {
             acp_log_failure(c->requests[c->next].key, failure);
-            c->start_failed = 1;
+            c->stopped = 1;
             finish_key(c, ACP_ABORT, ACP_REASON_LOCAL);
             continue;
         }
@@ -244,19 +232,13 @@ static int advance(struct acp_collector *c) {
 }
 
 int acp_collect_begin(struct acp_collector *c, struct acp_request *requests, size_t count,
-                      long long timeout_ms, long long budget_ms) {
-    return acp_collect_begin_opts(c, requests, count, timeout_ms, budget_ms, 0);
-}
-
-int acp_collect_begin_opts(struct acp_collector *c, struct acp_request *requests, size_t count,
-                           long long timeout_ms, long long budget_ms, int flags) {
+                      long long timeout_ms, long long budget_ms, int flags) {
     long long now;
     size_t i;
     int invalid = timeout_ms <= 0 || budget_ms < 0;
 
     memset(c, 0, sizeof(*c));
-    c->stop_on_timeout = (flags & ACP_STOP_ON_TIMEOUT) != 0;
-    c->stop_on_start_failure = (flags & ACP_STOP_ON_START_FAILURE) != 0;
+    c->stop_early = (flags & ACP_STOP_EARLY) != 0;
     c->inherited_group = inherited_scope;
     c->fd = -1;
     c->requests = requests;
@@ -355,7 +337,7 @@ int acp_collect_pump(struct acp_collector *c) {
         } else if (now >= c->child_deadline_ms && c->child_at_budget) {
             abort_current_child(c, "collection budget exhausted", ACP_REASON_BUDGET);
         } else if (now >= c->child_deadline_ms) {
-            c->timed_out = 1;
+            c->stopped = 1;
             abort_current_child(c, "timed out", ACP_REASON_TIMEOUT);
         } else if (c->eof) {
             reap_child(c);
@@ -415,7 +397,7 @@ int acp_collect_run(struct acp_request *requests, size_t count, long long timeou
 int acp_collect_run_opts(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
                          int flags) {
     struct acp_collector c;
-    int rc = acp_collect_begin_opts(&c, requests, count, timeout_ms, budget_ms, flags);
+    int rc = acp_collect_begin(&c, requests, count, timeout_ms, budget_ms, flags);
     if (rc != 0) {
         return rc;
     }
@@ -439,18 +421,6 @@ int acp_collect_run_opts(struct acp_request *requests, size_t count, long long t
             return rc;
         }
     }
-}
-
-int read_acp_value(const char *key, char *out, size_t out_len) {
-    struct acp_request request;
-    memset(&request, 0, sizeof(request));
-    request.key = key;
-    request.trim_whitespace = 1;
-    request.output = out;
-    request.capacity = out_len < ACP_VALUE_MAX ? out_len : ACP_VALUE_MAX;
-    (void)acp_collect_run(&request, 1, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
-                         (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
-    return request.status == ACP_OK && !request.length ? ACP_UNAVAILABLE : request.status;
 }
 
 

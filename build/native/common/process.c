@@ -45,10 +45,7 @@ static int spawn(struct tc_child *child, tc_child_fn function, void *data, const
     pid_t pid;
     sigset_t stops, old;
 #ifdef TC_NATIVE_TEST
-    /* Host tests stand in for a full process table: fork() fails with EAGAIN
-     * while the file named by TC_TEST_FORK_FAIL exists. */
-    const char *fork_fail = getenv("TC_TEST_FORK_FAIL");
-    if (fork_fail && !access(fork_fail, F_OK)) {
+    if (TC_TEST_FORK_FAILS()) {
         errno = EAGAIN;
         return -1;
     }

@@ -17,7 +17,7 @@ int main(int argc, char **argv) {
     assert(buffer);
     request.output = buffer;
     if (atoi(argv[4])) {
-        rc = acp_collect_begin(&collector, &request, 1, 5000, atoi(argv[5]));
+        rc = acp_collect_begin(&collector, &request, 1, 5000, atoi(argv[5]), 0);
         while (!rc) {
             fd_set reads;
             struct timeval delay = {0, 10000};

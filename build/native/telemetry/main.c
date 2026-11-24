@@ -27,19 +27,24 @@ typedef char tc_report_fits_manager_deadline[(TC_ACP_COLLECTION_BUDGET_SECONDS *
                                               TC_BUFSTALL_REPORT_TIMEOUT_MS) ? 1 : -1];
 #endif
 
-/* One sample and one probe round, for a one-shot heartbeat (not armed:
- * nothing it sees is a crossing). */
-static void sample_once(struct telemetry_daemon *d, time_t now) {
-    struct tc_reading reading;
+/* One probe round, unless the table is too full for the probe's child. */
+static void probe_round(struct telemetry_daemon *d, time_t now) {
     struct tc_probe_round round;
-    tc_health_read_sample(&reading, (long)now);
-    tc_health_sample(&d->health, &reading, (long)now, 0);
     if (tc_health_probe_allowed(&d->health)) {
         tc_health_read_probes(&round);
         tc_health_probes(&d->health, &round, (long)now);
     } else {
         tc_health_probes_skipped(&d->health);
     }
+}
+
+/* One sample and one probe round, for a one-shot heartbeat (not armed:
+ * nothing it sees is a crossing). */
+static void sample_once(struct telemetry_daemon *d, time_t now) {
+    struct tc_reading reading;
+    tc_health_read_sample(&reading, (long)now);
+    tc_health_sample(&d->health, &reading, (long)now, 0);
+    probe_round(d, now);
 }
 static struct telemetry_daemon daemon_state;
 static int collect_cancelled(void) { return telemetry_stop || !tc_parent_alive(parent_fd); }
@@ -68,7 +73,6 @@ int tc_telemetry_main(int argc, char **argv) {
     struct tc_payload_context ctx;
     enum tc_outcome outcome;
     memset(d, 0, sizeof(*d));
-    planner_init(&d->planner, TC_ARM_AFTER_SECONDS);
     memset(&delivery, 0, sizeof(delivery));
     memset(&ctx, 0, sizeof(ctx));
     ctx.facts = &d->facts;
@@ -95,6 +99,8 @@ int tc_telemetry_main(int argc, char **argv) {
         fputs("Usage: telemetry --daemon | --once [reason] | --report [reason] | --cleanup | --print-payload [reason] | --version\n", stderr);
         return 2;
     }
+    /* Only the daemon plans; one-shot modes go at once. */
+    planner_init(&d->planner, TC_ARM_AFTER_SECONDS, daemon ? (long)monotonic_seconds() + TC_BOOT_HOLD_SECONDS : 0);
     if (cleanup_only) {
         rc = telemetry_recover();
         if (rc == TC_EXIT_BUSY) fputs("telemetry: cleanup deferred; workspace is in use\n", stderr);
@@ -129,27 +135,22 @@ int tc_telemetry_main(int argc, char **argv) {
         if (daemon && now >= d->next_sample) {
             struct tc_reading reading;
             tc_health_read_sample(&reading, (long)now);
-            tc_health_note_failures(&d->health, d->facts.acp_timeouts);
             tc_health_sample(&d->health, &reading, (long)now, planner_armed(&d->planner, (long)now));
             d->next_sample = now + TC_HEALTH_SAMPLE_SECONDS;
         }
         if (daemon && now >= d->next_probe) {
-            struct tc_probe_round round;
-            if (tc_health_probe_allowed(&d->health)) {
-                tc_health_read_probes(&round);
-                tc_health_probes(&d->health, &round, (long)now);
-            } else {
-                tc_health_probes_skipped(&d->health);
-            }
+            probe_round(d, now);
             d->next_probe = monotonic_seconds() + TC_HEALTH_PROBE_SECONDS;
         }
         /* --once is one heartbeat with its own reason, read afresh. */
         if (daemon) {
             attempt = planner_next(&d->planner, (long)now, tc_health_requests(&d->health));
+            if (attempt.reuse && tc_heartbeat_facts_fresh(&d->facts, acp_monotonic_ms())) attempt.refresh = 0;
         } else {
             attempt.kind = TC_ATTEMPT_SCHEDULED;
             attempt.reason = reason;
             attempt.refresh = 1;
+            attempt.reuse = 0;
         }
         /* Recheck while idle so a running daemon observes a manual opt-out.
          * An active cycle still finishes its normal child/cleanup handling. */

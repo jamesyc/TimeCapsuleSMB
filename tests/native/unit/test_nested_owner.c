@@ -42,7 +42,15 @@ static int job(void *unused) {
     tc_worker_begin("nested-test");
     if (!strcmp(mode, "acp") || !strcmp(mode, "acp-descendant") || !strcmp(mode, "acp-timeout")) {
         char result[128];
-        rc = read_acp_value("syNm", result, sizeof(result));
+        struct acp_request request;
+        memset(&request, 0, sizeof(request));
+        request.key = "syNm";
+        request.trim_whitespace = 1;
+        request.output = result;
+        request.capacity = sizeof(result);
+        (void)acp_collect_run(&request, 1, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
+                              (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
+        rc = request.status;
         if (!strcmp(mode, "acp-descendant") || !strcmp(mode, "acp-timeout")) {
             assert(rc == ACP_ABORT);
             assert(!!acp_stop_requested == !strcmp(mode, "acp-descendant"));

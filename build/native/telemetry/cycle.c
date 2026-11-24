@@ -37,22 +37,20 @@ int telemetry_cycle(const char *reason, int lock_fd, struct tc_payload_context *
         return 1;
     }
     if (telemetry_payload(payload, sizeof(payload), reason, nonce, ctx, &built)) {
-        /* A child that could not start ranks above the failure it led to. */
-        *outcome = built.local_resource && built.failure > TC_OUTCOME_LOCAL_RESOURCE ? TC_OUTCOME_LOCAL_RESOURCE
-                                                                                    : built.failure;
-        return 1;
-    }
-    if (telemetry_stop) {
+        *outcome = built.failure;
+    } else if (telemetry_stop) {
         *outcome = TC_OUTCOME_CANCELLED;
-        return 1;
+    } else if (telemetry_http(HEARTBEAT_ENDPOINT, payload, body, sizeof(body), &len, &posted)) {
+        *outcome = posted;
+        fputs("telemetry: POST failed\n", stderr);
+    } else {
+        /* The server has the heartbeat; later response or debug-job
+         * failures must not resend it. */
+        *outcome = TC_OUTCOME_DELIVERED;
     }
-    if (telemetry_http(HEARTBEAT_ENDPOINT, payload, body, sizeof(body), &len, &posted)) {
-        *outcome = built.local_resource && posted > TC_OUTCOME_LOCAL_RESOURCE ? TC_OUTCOME_LOCAL_RESOURCE : posted;
-        fputs("telemetry: POST failed\n", stderr); return 1;
-    }
-    /* The server has the heartbeat; later response or debug-job failures
-     * must not resend it. */
-    *outcome = TC_OUTCOME_DELIVERED;
+    /* A child that could not start ranks above the failure it led to. */
+    if (built.local_resource && *outcome > TC_OUTCOME_LOCAL_RESOURCE) *outcome = TC_OUTCOME_LOCAL_RESOURCE;
+    if (*outcome != TC_OUTCOME_DELIVERED) return 1;
     /* A report owns no debug workspace and must remain safe to kill. Its
      * success is the POST itself, regardless of the server's debug reply. */
     if (lock_fd < 0) return 0;

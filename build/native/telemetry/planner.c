@@ -1,7 +1,8 @@
 #include "planner.h"
 
-void planner_init(struct tc_planner *p, long arm_after) {
+void planner_init(struct tc_planner *p, long arm_after, long hold_until) {
     memset(p, 0, sizeof(*p));
+    p->retry_at = hold_until;
     p->spacing = TC_EXTRA_SPACING_SECONDS;
     p->last_extra_at = -1;
     p->arm_after = arm_after;
@@ -12,7 +13,7 @@ int planner_armed(const struct tc_planner *p, long now) {
 }
 
 struct tc_attempt planner_next(const struct tc_planner *p, long now, int requests) {
-    struct tc_attempt a = {TC_ATTEMPT_NONE, NULL, 0};
+    struct tc_attempt a = {TC_ATTEMPT_NONE, NULL, 0, 0};
     int scheduled = !p->boot_sent || now >= p->next_scheduled;
     int extra = requests && p->boot_sent && now >= p->next_extra_at;
     if (now < p->retry_at || (!scheduled && !extra)) return a;
@@ -23,6 +24,7 @@ struct tc_attempt planner_next(const struct tc_planner *p, long now, int request
      * so a chronic health event's extras would otherwise keep the boot-time
      * identity and plan forever. A retry after a local failure never forks. */
     a.refresh = (a.kind != TC_ATTEMPT_EXTRA || now >= p->next_refresh) && !p->last_local;
+    a.reuse = a.refresh && p->net_retry;
     return a;
 }
 
@@ -42,6 +44,7 @@ void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a
         p->retry_at = p->net_delay = 0;
         p->local_count = 0;
         p->last_local = 0;
+        p->net_retry = 0;
         p->failed = 0;
         p->failed_since = 0;
         memset(p->failed_by, 0, sizeof(p->failed_by));
@@ -65,6 +68,7 @@ void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a
     p->failed++;
     p->failed_by[outcome]++;
     if (!p->failed_since) p->failed_since = now > 0 ? now : 1;
+    p->net_retry = outcome == TC_OUTCOME_NETWORK || outcome == TC_OUTCOME_SERVER;
     if (outcome == TC_OUTCOME_LOCAL_RESOURCE) {
         p->local_count++;
         p->last_local = 1;

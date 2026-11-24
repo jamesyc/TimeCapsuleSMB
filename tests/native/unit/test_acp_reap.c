@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
     request.trim_whitespace = 1;
     request.output = buffer;
     request.capacity = sizeof(buffer);
-    rc = acp_collect_begin(&collector, &request, 1, 5000, 5000);
+    rc = acp_collect_begin(&collector, &request, 1, 5000, 5000, 0);
     assert(rc == 0 && collector.active);
     if (!strcmp(argv[1], "exit")) {
         siginfo_t info;

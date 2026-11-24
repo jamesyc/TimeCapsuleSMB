@@ -30,4 +30,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef TC_NATIVE_TEST
+/* Host tests stand in for a full process table: fork() fails with EAGAIN
+ * while the file named by TC_TEST_FORK_FAIL exists. */
+#define TC_TEST_FORK_FAILS() (getenv("TC_TEST_FORK_FAIL") && !access(getenv("TC_TEST_FORK_FAIL"), F_OK))
+#endif
+
 #endif

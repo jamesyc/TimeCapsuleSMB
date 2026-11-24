@@ -82,7 +82,7 @@ int facts_collect_begin(struct facts_collector *c, struct device_facts *facts) {
     device_facts_requests(c->requests, facts);
     if (acp_collect_begin(&c->acp, c->requests, ACP_KEY_COUNT,
                           (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
-                          (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000) != 0) {
+                          (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000, 0) != 0) {
         return facts_collect_pump(c);
     }
     return 0;

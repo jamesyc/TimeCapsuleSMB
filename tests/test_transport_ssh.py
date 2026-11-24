@@ -20,6 +20,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from tests.loopback import has_ipv6_loopback
 from timecapsulesmb.core.install import this_computer
 from timecapsulesmb.transport import errors as transport_errors
 from timecapsulesmb.transport import ssh as ssh_transport
@@ -45,15 +46,6 @@ def listening_on(address: str):
         listener.bind((address, 0))
         listener.listen()
         yield listener.getsockname()[1]
-
-
-def has_ipv6_loopback() -> bool:
-    try:
-        with socket.socket(socket.AF_INET6) as sock:
-            sock.bind(("::1", 0))
-    except OSError:
-        return False
-    return True
 
 
 class SSHTransportTests(unittest.TestCase):

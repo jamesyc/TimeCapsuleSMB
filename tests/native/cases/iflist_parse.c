@@ -31,7 +31,7 @@ static void dump(const struct if_table *t) {
     unsigned char mac[6];
     for (i = 0; i < t->link_count; i++) {
         const struct if_link *l = &t->links[i];
-        printf("link name=%s index=%u flags=0x%x type=%u", l->name, l->index, l->flags, l->lltype);
+        printf("link name=%s index=%u flags=0x%x", l->name, l->index, l->flags);
         if (l->lladdr_len == 6)
             printf(" mac=%02x:%02x:%02x:%02x:%02x:%02x", l->lladdr[0], l->lladdr[1], l->lladdr[2], l->lladdr[3],
                    l->lladdr[4], l->lladdr[5]);

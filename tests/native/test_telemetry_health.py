@@ -11,6 +11,7 @@ import time
 
 import pytest
 
+from tests.loopback import has_ipv6_loopback
 from tests.native.build import ROOT, compile_modules
 
 # Probe limits for the test build: long enough that a server thread's
@@ -21,16 +22,7 @@ ANSWER_MS = 2000
 LONG_ANSWER_MS = 10000
 
 
-def have_ipv6_loopback():
-    try:
-        with socket.socket(socket.AF_INET6) as s:
-            s.bind(("::1", 0))
-        return True
-    except OSError:
-        return False
-
-
-IPV6 = have_ipv6_loopback()
+IPV6 = has_ipv6_loopback()
 
 
 def free_port():
