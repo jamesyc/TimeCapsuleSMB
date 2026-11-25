@@ -256,6 +256,26 @@ def test_report_posts_without_executing_debug(cycle, mode, expected):
     assert not marker.exists()
 
 
+def test_a_reports_token_gives_every_attempt_one_heartbeat_id(cycle):
+    # The manager starts a new --report process for each try of one report
+    # and passes the same token: the tries share an id (the server keeps one
+    # row), even when a buffer-stall retry's reason has grown with merged
+    # episodes; a new token is a new heartbeat, and with no token each
+    # process makes its own.
+    _, state, _, binary, env = cycle
+    state['mode'] = 'http_error'
+    def report(*args):
+        result = subprocess.run(telemetry_command(binary, '--report', *args), env=env, capture_output=True,
+                                timeout=HANG_TIMEOUT)
+        assert result.returncode == 1, result.stderr
+        return state['payloads'][-1]['heartbeat_id']
+    first = report('bufstall:resolved:3', '0123456789abcdef')
+    assert report('bufstall:resolved:3', '0123456789abcdef') == first
+    assert report('bufstall:capped:41', '0123456789abcdef') == first
+    assert report('bufstall:resolved:3', 'fedcba9876543210') != first
+    assert report('stuck:smbd:biowait:400') != report('stuck:smbd:biowait:400')
+
+
 def test_report_and_its_cancellation_do_not_touch_a_running_signed_job(cycle, rig, tmp_path):
     _, state, marker, binary, env = cycle
     root, _, _ = rig
@@ -1192,7 +1212,10 @@ def test_stop_during_acp_collection_is_prompt_even_with_long_timeout(cycle, prod
         'TC_TEST_ACP_MODE': mode, 'TC_TEST_ACP_CALLS': str(calls)},
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        wait_until(lambda: calls.exists() and calls.stat().st_size > 0)
+        # The mode applies to syAP alone: wait for its child, not sySN's
+        # before it, which answers and exits by itself, so a stop that
+        # lands during it cancels the collection with nothing to abort.
+        wait_until(lambda: calls.exists() and any(line.split()[:1] == ['syAP'] for line in calls.read_text().splitlines()))
         if mode == 'descendant': wait_until(lambda: ' descendant' in calls.read_text())
         started = time.monotonic()
         process.send_signal(stop_signal)

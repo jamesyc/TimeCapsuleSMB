@@ -214,12 +214,15 @@ int tc_telemetry_main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--daemon")) daemon = 1;
     else if (argc == 2 && !strcmp(argv[1], "--cleanup")) cleanup_only = 1;
     else if ((argc == 2 || argc == 3) && !strcmp(argv[1], "--once")) reason = argc == 3 ? argv[2] : reason;
-    else if ((argc == 2 || argc == 3) && !strcmp(argv[1], "--report")) {
+    else if (argc >= 2 && argc <= 4 && !strcmp(argv[1], "--report")) {
+        /* The manager's token names the report: its retries, each a new
+         * process, send the same heartbeat id, under a changed reason too. */
         report_only = 1;
-        reason = argc == 3 ? argv[2] : reason;
+        reason = argc >= 3 ? argv[2] : reason;
+        ctx.report_token = argc == 4 ? argv[3] : NULL;
     }
     else {
-        fputs("Usage: telemetry --daemon | --once [reason] | --report [reason] | --cleanup | --print-payload [reason] | --version\n", stderr);
+        fputs("Usage: telemetry --daemon | --once [reason] | --report [reason [token]] | --cleanup | --print-payload [reason] | --version\n", stderr);
         return 2;
     }
     if (cleanup_only) {

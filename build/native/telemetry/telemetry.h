@@ -106,13 +106,16 @@ struct tc_heartbeat_ident {
 static inline void tc_heartbeat_ident_clear(struct tc_heartbeat_ident *ident) { ident->id[0] = '\0'; }
 /* What a payload is built from: the facts this process keeps, which of them
  * it may keep (struct tc_facts_reuse), the delivery record (NULL: none) and the
- * pending heartbeat id (NULL: a new id each time, as one-shot modes send). */
+ * pending heartbeat id (NULL: a new id each time, as one-shot modes send,
+ * unless report_token names the manager's report, whose every attempt is a
+ * new process and which keeps its id when its reason changes). */
 struct tc_health;
 struct tc_payload_context {
     struct tc_heartbeat_facts *facts;
     struct tc_facts_reuse reuse;
     const struct tc_delivery *delivery;
     struct tc_heartbeat_ident *ident;
+    const char *report_token; /* telemetry --report's token (NULL: none) */
     struct tc_health *health;  /* NULL: no health object */
     /* The attempt record: what this attempt's payload carried, the health
      * events among them (health.h), which the daemon marks reported once
