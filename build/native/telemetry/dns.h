@@ -28,8 +28,9 @@
  * server getting TC_DNS_RETRANS_MS on the first and that doubled per round,
  * shared among the servers, after it, at least 1 s (RES_TIMEOUT 5 s,
  * RES_DFLRETRY 2). One server: 5 s then 10 s; three: 5 s each, then 3.3 s
- * each. A round asks a server only the queries it has not answered, and a
- * server that answered both is not asked again. */
+ * each. A round asks a server only the queries it has not answered, on the
+ * socket it was first asked on, and a server that answered both is not
+ * asked again. */
 #ifndef TC_DNS_RETRANS_MS
 #define TC_DNS_RETRANS_MS 5000
 #endif

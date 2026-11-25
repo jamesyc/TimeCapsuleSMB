@@ -247,8 +247,25 @@ class ProbeServer:
         self.stop()
 
 
-def probe_rounds(binary, rounds=1):
-    run = subprocess.run([str(binary), "probes", str(rounds)], capture_output=True, text=True, timeout=60)
+def table_env(directory, procs, maxproc=90):
+    """The reader's fixtures for a table of procs sleeping processes under
+    kern.maxproc: the IPv6 smbd probe runs only when the table, read after
+    the IPv4 pair, has room for it."""
+    directory.mkdir(exist_ok=True)
+    (directory / "procs").mkdir(exist_ok=True)
+    (directory / "procs" / "table").write_text(
+        "".join(f"{100 + i} 1 {100 + i} 3 0x80 0 0 select p{i}\n" for i in range(procs)))
+    (directory / "counters").write_text(f"maxproc {maxproc}\n")
+    return {"TC_TEST_PROCS": str(directory / "procs"), "TC_TEST_HEALTH": str(directory / "counters")}
+
+
+@pytest.fixture(scope="module")
+def room(tmp_path_factory):
+    return table_env(tmp_path_factory.mktemp("room"), 11)
+
+
+def probe_rounds(binary, env, rounds=1):
+    run = subprocess.run([str(binary), "probes", str(rounds)], capture_output=True, text=True, timeout=60, env=env)
     assert run.returncode == 0, run.stderr
     results = []
     for line in run.stdout.splitlines():
@@ -273,10 +290,10 @@ def assert_no_ipv6_ssh_probe(made, result):
         assert made[2].most_open == 0 and made[2].behaviors == ["banner"]  # never connected
 
 
-def test_a_probe_round_reads_each_answer(binary, ports):
+def test_a_probe_round_reads_each_answer(binary, ports, room):
     made = servers(ports, ["banner"], ["smb"], ["garbage"])
     try:
-        [result] = probe_rounds(binary)
+        [result] = probe_rounds(binary, room)
     finally:
         for server in made:
             server.close()
@@ -301,10 +318,10 @@ def test_a_probe_round_reads_each_answer(binary, ports):
 
 
 @pytest.mark.skipif(not IPV6, reason="no IPv6 loopback")
-def test_ipv6_probes_read_answers_like_ipv4(binary, ports):
+def test_ipv6_probes_read_answers_like_ipv4(binary, ports, room):
     made = servers(ports, ["close"], ["smb_partial"], ["smb"])
     try:
-        [result] = probe_rounds(binary)
+        [result] = probe_rounds(binary, room)
     finally:
         for server in made:
             server.close()
@@ -317,13 +334,13 @@ def test_ipv6_probes_read_answers_like_ipv4(binary, ports):
 
 @pytest.mark.parametrize("family, service", [(socket.AF_INET, "ssh"), (socket.AF_INET, "smb"),
                                              (socket.AF_INET6, "smb")])
-def test_refused_and_reset_connections(binary, ports, family, service):
+def test_refused_and_reset_connections(binary, ports, family, service, room):
     # One service resets; nothing else of that family listens.
     if family == socket.AF_INET6 and not IPV6:
         pytest.skip("no IPv6 loopback")
     made = [ProbeServer(family, ports[service], ["reset"])]
     try:
-        [result] = probe_rounds(binary)
+        [result] = probe_rounds(binary, room)
     finally:
         for server in made:
             server.close()
@@ -343,7 +360,7 @@ def fill_backlog(family, port):
 
 
 @pytest.mark.parametrize("family", [socket.AF_INET, socket.AF_INET6])
-def test_a_full_listen_queue_times_out_unlike_a_refusal(binary, ports, family):
+def test_a_full_listen_queue_times_out_unlike_a_refusal(binary, ports, family, room):
     # smbd's parent stops accepting: its queue fills and the kernel drops
     # new SYNs, so the probe's connect never completes. That is a timeout,
     # after the connect limit; nothing listening is an immediate refusal.
@@ -352,7 +369,7 @@ def test_a_full_listen_queue_times_out_unlike_a_refusal(binary, ports, family):
     made = [ProbeServer(socket.AF_INET, ports["ssh"], ["banner"])]
     full = fill_backlog(family, ports["smb"])
     try:
-        [result] = probe_rounds(binary)
+        [result] = probe_rounds(binary, room)
     finally:
         for server in made:
             server.close()
@@ -366,13 +383,13 @@ def test_a_full_listen_queue_times_out_unlike_a_refusal(binary, ports, family):
         assert result[f"smb{other}"] == "absent"
 
 
-def test_a_round_runs_one_probe_per_service_at_a_time(binary, ports):
+def test_a_round_runs_one_probe_per_service_at_a_time(binary, ports, room):
     # Every server silent: IPv4's pair waits out the answer limit together,
     # then IPv6's smbd probe, so a round takes two waits, not three, and no
     # port ever sees two probes at once.
     made = servers(ports, ["silent"], ["silent"], ["silent"])
     try:
-        [result] = probe_rounds(binary)
+        [result] = probe_rounds(binary, room)
     finally:
         for server in made:
             server.close()
@@ -384,10 +401,10 @@ def test_a_round_runs_one_probe_per_service_at_a_time(binary, ports):
     assert_no_ipv6_ssh_probe(made, result)
 
 
-def test_term_skips_the_rest_of_a_round(long_binary, ports):
+def test_term_skips_the_rest_of_a_round(long_binary, ports, room):
     made = servers(ports, ["silent"], ["silent"], ["silent"])
     try:
-        process = subprocess.Popen([str(long_binary), "probes", "1"], stdout=subprocess.PIPE, text=True)
+        process = subprocess.Popen([str(long_binary), "probes", "1"], stdout=subprocess.PIPE, text=True, env=room)
         deadline = time.monotonic() + 5
         while made[0].open == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -407,13 +424,13 @@ def test_term_skips_the_rest_of_a_round(long_binary, ports):
     assert_no_ipv6_ssh_probe(made, fields)
 
 
-def test_term_keeps_an_answer_already_in(long_binary, ports):
+def test_term_keeps_an_answer_already_in(long_binary, ports, room):
     # sshd answered and the probe is saying goodbye when TERM comes: its
     # result is in and stays ok; smbd, still silent, is skipped.
     made = [ProbeServer(socket.AF_INET, ports["ssh"], ["banner_hold"]),
             ProbeServer(socket.AF_INET, ports["smb"], ["silent"])]
     try:
-        process = subprocess.Popen([str(long_binary), "probes", "1"], stdout=subprocess.PIPE, text=True)
+        process = subprocess.Popen([str(long_binary), "probes", "1"], stdout=subprocess.PIPE, text=True, env=room)
         assert made[0].answered.wait(10), "the probe never answered"
         process.send_signal(signal.SIGTERM)
         out, _ = process.communicate(timeout=60)
@@ -425,15 +442,57 @@ def test_term_keeps_an_answer_already_in(long_binary, ports):
     assert fields["ssh4"] == "ok" and fields["smb4"] == "none"
 
 
-def test_an_smbd_that_does_not_answer_negotiate_is_silent_not_ok(binary, ports):
+def test_an_smbd_that_does_not_answer_negotiate_is_silent_not_ok(binary, ports, room):
     # A listener that accepts but answers something other than SMB2 (or a
     # parent that never hands the connection to a child) is not a working
     # smbd: silent, not ok.
     made = [ProbeServer(socket.AF_INET, ports["ssh"], ["banner"]),
             ProbeServer(socket.AF_INET, ports["smb"], ["garbage"])]
     try:
-        [result] = probe_rounds(binary)
+        [result] = probe_rounds(binary, room)
     finally:
         for server in made:
             server.close()
     assert result["ssh4"] == "ok" and result["smb4"] == "silent"
+
+
+@pytest.mark.skipif(not IPV6, reason="no IPv6 loopback")
+@pytest.mark.parametrize("procs, runs", [(87, True), (88, False)])
+def test_the_ipv6_probe_runs_only_with_room_beside_the_ipv4_pairs_children(binary, ports, tmp_path, procs, runs):
+    # tc_health_probe_allowed's rule (procs + 2 < maxproc), asked again of
+    # the table after the IPv4 pair: whose sshd and smbd children may still
+    # hold their slots. 88 of 90 leaves no room, and the IPv6 probe is
+    # skipped without connecting.
+    made = servers(ports, ["banner"], ["smb"], ["smb"])
+    try:
+        [result] = probe_rounds(binary, table_env(tmp_path, procs))
+    finally:
+        for server in made:
+            server.close()
+    assert result["ssh4"] == "ok" and result["smb4"] == "ok"
+    if runs:
+        assert result["smb6"] == "ok"
+    else:
+        assert result["smb6"] == "none"
+        assert made[3].behaviors == ["smb"]  # never connected
+    assert_no_ipv6_ssh_probe(made, result)
+
+
+@pytest.mark.skipif(not IPV6, reason="no IPv6 loopback")
+@pytest.mark.parametrize("unreadable", ["counters", "table"])
+def test_an_unreadable_table_skips_the_ipv6_probe(binary, ports, tmp_path, unreadable):
+    """No kern.maxproc, or a process table that cannot be read: the reader
+    cannot tell the IPv6 probe has room, so it skips it after the IPv4
+    pair."""
+    env = table_env(tmp_path, 11)
+    if unreadable == "counters":
+        (tmp_path / "counters").unlink()
+    else:
+        del env["TC_TEST_PROCS"]  # the fixture's table read then fails
+    made = servers(ports, ["banner"], ["smb"], ["smb"])
+    try:
+        [result] = probe_rounds(binary, env)
+    finally:
+        for server in made:
+            server.close()
+    assert result["ssh4"] == "ok" and result["smb6"] == "none" and made[3].behaviors == ["smb"]

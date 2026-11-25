@@ -233,7 +233,9 @@ void tc_health_probes(struct tc_health *h, const struct tc_probe_round *round, l
  * is not within TC_HEALTH_PROC_FULL_MARGIN of kern.maxproc, where the
  * probe's own sshd or smbd child could be the process that refuses a
  * client. Closer than TC_HEALTH_PROC_HIGH_MARGIN the probes still run:
- * that is when they are evidence. */
+ * that is when they are evidence. The IPv6 smbd probe asks the same of the
+ * table read again after the IPv4 pair, whose children may not have exited
+ * yet (tc_health_read_probes skips it otherwise). */
 int tc_health_probe_allowed(const struct tc_health *h);
 void tc_health_probes_skipped(struct tc_health *h, long now);
 /* Seconds from the end of a probe round (run or skipped) to the next:
