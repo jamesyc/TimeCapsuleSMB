@@ -83,7 +83,7 @@ static int keep(struct tc_heartbeat_facts *f, int index, int status, const char 
     return 1;
 }
 
-void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, enum tc_facts_read how, struct tc_facts_round *round) {
+void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, struct tc_facts_reuse reuse, struct tc_facts_round *round) {
     /* Static: device_facts holds the interface table. */
     static struct device_facts facts;
     struct acp_request requests[IDENTITY_REQUESTS + ACP_KEY_COUNT];
@@ -92,8 +92,7 @@ void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, enum tc_facts_read 
     size_t i;
     int empty = 1, aborted = 0, had_serial, got[IDENTITY_REQUESTS];
     memset(round, 0, sizeof(*round));
-    if (how == TC_FACTS_READ_UNLESS_FRESH && tc_heartbeat_facts_fresh(f, acp_monotonic_ms())) how = TC_FACTS_KEEP;
-    if (how == TC_FACTS_KEEP && f->have_last) {
+    if (tc_heartbeat_facts_reusable(f, reuse, acp_monotonic_ms())) {
         choose_mac(f);
         return;
     }
@@ -126,7 +125,7 @@ void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, enum tc_facts_read 
         if (got[i] || requests[i].status == ACP_ABORT) empty = 0;
     }
     if (empty) f->acp.empty++;
-    /* Complete, so a retry may keep these facts (tc_heartbeat_facts_fresh):
+    /* Complete, so a retry may keep these facts (tc_heartbeat_facts_reusable):
      * every key answered, not every identity key with nothing (an ACPd
      * that cannot answer), and the serial came back if this process read
      * one before. A unit that never gave a serial still keeps its facts. */
@@ -141,7 +140,11 @@ void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, enum tc_facts_read 
     f->have_last = 1;
 }
 
-int tc_heartbeat_facts_fresh(const struct tc_heartbeat_facts *f, long long now_ms) {
-    return f->have_last && f->last_complete && now_ms >= f->last_ms &&
-           now_ms - f->last_ms < (long long)TC_FACTS_REUSE_SECONDS * 1000;
+/* The age is compared in whole seconds, never max_age scaled up to
+ * milliseconds: TC_FACTS_FOREVER is LONG_MAX, and long is 32 bits on the
+ * devices. floor(age_ms / 1000) < max_age exactly when age_ms < max_age *
+ * 1000, so the boundary is the same. */
+int tc_heartbeat_facts_reusable(const struct tc_heartbeat_facts *f, struct tc_facts_reuse reuse, long long now_ms) {
+    if (!f->have_last || (reuse.complete_only && !f->last_complete) || now_ms < f->last_ms) return 0;
+    return (now_ms - f->last_ms) / 1000 < (long long)reuse.max_age;
 }

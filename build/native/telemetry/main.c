@@ -14,7 +14,6 @@ struct telemetry_daemon {
     struct tc_planner planner;
     struct tc_heartbeat_facts facts;
     struct tc_health health;
-    struct tc_delivery delivery; /* the planner's failure record, as the next payload sends it */
     struct tc_heartbeat_ident ident; /* the pending heartbeat's id (telemetry.h) */
     time_t next_cleanup, next_sample, next_probe;
 };
@@ -58,15 +57,6 @@ static time_t monotonic_seconds(void) {
     return ms < 0 ? -1 : (time_t)(ms / 1000);
 }
 
-static void delivery_record(const struct tc_planner *p, struct tc_delivery *out) {
-    out->failed = p->failed;
-    out->since = p->failed_since;
-    out->local_resource = p->failed_by[TC_OUTCOME_LOCAL_RESOURCE];
-    out->acp_unavailable = p->failed_by[TC_OUTCOME_ACP_UNAVAILABLE];
-    out->network = p->failed_by[TC_OUTCOME_NETWORK];
-    out->server = p->failed_by[TC_OUTCOME_SERVER];
-}
-
 /* The workspace lock, or -1 with the exit status for the failure in *rc
  * (busy for another holder) and errno kept for tc_setup_outcome. */
 static int take_lock(int *rc) {
@@ -83,23 +73,15 @@ static int take_lock(int *rc) {
  * heartbeat for reason (NULL: housekeeping only). Returns the exit status;
  * *done says how the heartbeat ended (busy when the workspace could not be
  * cleaned, which holds the heartbeat back like a lock held elsewhere;
- * cancelled when the process is stopping) and whether it read acp. */
-static int locked_cycle(struct tc_payload_context *ctx, int lock, const char *reason,
-                        struct tc_attempt_result *done) {
+ * cancelled when the process is stopping). */
+static int locked_cycle(struct tc_payload_context *ctx, int lock, const char *reason, enum tc_outcome *done) {
     int rc = telemetry_cleanup_locked();
-    done->read_acp = 0;
-    done->outcome = rc ? TC_OUTCOME_BUSY : TC_OUTCOME_CANCELLED;
+    *done = rc ? TC_OUTCOME_BUSY : TC_OUTCOME_CANCELLED;
     if (rc || !reason || telemetry_stop) {
         close(lock);
         return rc;
     }
-    rc = telemetry_cycle(reason, lock, ctx, &done->outcome);
-    done->read_acp = ctx->read_acp;
-    if (done->outcome == TC_OUTCOME_DELIVERED) {
-        /* The heartbeat is in: its events are reported and its id done. */
-        if (ctx->health_sent) tc_health_delivered(ctx->health, ctx->health_token);
-        if (ctx->ident) tc_heartbeat_ident_clear(ctx->ident);
-    }
+    rc = telemetry_cycle(reason, lock, ctx, done);
     /* Closing this reference preserves an inherited child's lock. Never
      * LOCK_UN a lock shared with a running job. */
     close(lock);
@@ -112,14 +94,36 @@ static int locked_cycle(struct tc_payload_context *ctx, int lock, const char *re
 /* --once: one heartbeat with its own reason, read afresh, after one sample
  * and probe round. */
 static int run_once(struct telemetry_daemon *d, struct tc_payload_context *ctx, const char *reason) {
-    struct tc_attempt_result done;
+    enum tc_outcome done;
     int rc = 0, lock;
     if (!telemetry_enabled() || !tc_parent_alive(parent_fd)) return 0;
     lock = take_lock(&rc);
     if (lock < 0) return rc;
     sample_once(d, monotonic_seconds());
-    ctx->facts_read = TC_FACTS_READ;
+    memset(&ctx->reuse, 0, sizeof(ctx->reuse));
     return locked_cycle(ctx, lock, reason, &done);
+}
+
+/* A planned heartbeat attempt, from planner_next to here:
+ *   planned   daemon_pass clears the attempt record (ctx->sent) and sets
+ *             the facts it may keep (ctx->reuse);
+ *   built     telemetry_payload fills the record in, under the workspace
+ *             lock; an attempt that finds the lock held or gets no nonce
+ *             never gets here and its record stays empty;
+ *   finished  here, once, whatever ended it.
+ * Finishing is the only transition out: a delivered heartbeat's health
+ * events are marked reported (only those its payload carried; events
+ * noted since stay pending) and its id is done, so the next heartbeat
+ * takes a new one; then the planner learns the outcome (planner.h), which
+ * also keeps the delivery record the next payload sends. Any other outcome
+ * leaves the events and the id for the retry. */
+static void heartbeat_finished(struct telemetry_daemon *d, const struct tc_payload_context *ctx,
+                               const struct tc_attempt *attempt, enum tc_outcome outcome) {
+    if (outcome == TC_OUTCOME_DELIVERED) {
+        if (ctx->sent.health) tc_health_delivered(&d->health, ctx->sent.health_token);
+        tc_heartbeat_ident_clear(&d->ident);
+    }
+    planner_finished(&d->planner, (long)monotonic_seconds(), attempt, outcome, tc_health_requests(&d->health));
 }
 
 /* One pass of the daemon at now, each step only when it is due: a sample
@@ -131,7 +135,7 @@ static int run_once(struct telemetry_daemon *d, struct tc_payload_context *ctx, 
  * locked step (rc when this pass took none). */
 static int daemon_pass(struct telemetry_daemon *d, struct tc_payload_context *ctx, time_t now, int rc) {
     struct tc_attempt attempt;
-    struct tc_attempt_result done;
+    enum tc_outcome done;
     int lock;
     if (now >= d->next_sample) {
         struct tc_reading reading;
@@ -145,17 +149,14 @@ static int daemon_pass(struct telemetry_daemon *d, struct tc_payload_context *ct
     }
     attempt = planner_next(&d->planner, (long)now, tc_health_requests(&d->health));
     if (attempt.kind == TC_ATTEMPT_NONE && now < d->next_cleanup) return rc;
+    memset(&ctx->sent, 0, sizeof(ctx->sent));
+    ctx->reuse = attempt.facts;
     lock = take_lock(&rc);
-    if (lock < 0) {
-        done.outcome = tc_setup_outcome(errno, 1);
-        done.read_acp = 0;
-    } else {
-        ctx->facts_read = attempt.facts;
-        delivery_record(&d->planner, &d->delivery);
+    if (lock < 0)
+        done = tc_setup_outcome(errno, 1);
+    else
         rc = locked_cycle(ctx, lock, attempt.kind != TC_ATTEMPT_NONE ? attempt.reason : NULL, &done);
-    }
-    if (attempt.kind != TC_ATTEMPT_NONE)
-        planner_finished(&d->planner, (long)monotonic_seconds(), &attempt, &done, tc_health_requests(&d->health));
+    if (attempt.kind != TC_ATTEMPT_NONE) heartbeat_finished(d, ctx, &attempt, done);
     d->next_cleanup = monotonic_seconds() + TC_CLEANUP_INTERVAL_SECONDS;
     return rc;
 }
@@ -168,6 +169,7 @@ static int run_daemon(struct telemetry_daemon *d, struct tc_payload_context *ctx
     long hold_until = (long)monotonic_seconds() + TC_BOOT_HOLD_SECONDS;
     int rc = 0;
     ctx->ident = &d->ident;
+    ctx->delivery = &d->planner.delivery;
     planner_init(&d->planner, TC_ARM_AFTER_SECONDS, hold_until);
     d->next_probe = (time_t)hold_until;
     while (!telemetry_stop) {
@@ -196,9 +198,9 @@ int tc_telemetry_main(int argc, char **argv) {
     enum tc_outcome outcome;
     memset(d, 0, sizeof(*d));
     memset(&ctx, 0, sizeof(ctx));
+    /* One-shot modes: reuse zeroed reads afresh, and no delivery record or
+     * pending id (run_daemon sets both). */
     ctx.facts = &d->facts;
-    ctx.facts_read = TC_FACTS_READ;
-    ctx.delivery = &d->delivery;
     ctx.health = &d->health;
     signal(SIGTERM, stop); signal(SIGINT, stop); signal(SIGPIPE, SIG_IGN);
     if (argc == 2 && !strcmp(argv[1], "--version")) { puts(HEARTBEAT_AGENT_VERSION); return 0; }

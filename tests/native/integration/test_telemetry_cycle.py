@@ -16,7 +16,7 @@ import pytest
 from Crypto.PublicKey import ECC
 from Crypto.Signature import eddsa
 from tests.loopback import accept_loop, held_refusing_ports
-from tests.native.build import ROOT, compile_program, compile_service
+from tests.native.build import ROOT, compile_program, compile_service, header_define
 from tests.processes import kill_acp_fixture_groups, kill_group
 
 # Hang guards only. Under ASan on shared hosted macOS runners, process startup
@@ -74,6 +74,8 @@ def rig(tmp_path_factory, probe_ports):
             state['raw'].append(raw)
             # Last, so a test that sees this call also sees its payload.
             state['calls'].append(('POST', self.path))
+            # A test's step to take while the device waits for this answer.
+            if state.get('before_answer'): state['before_answer']()
             if mode == 'http_error': return self.answer(b'{"DEBUG":true}', 500)
             if mode == 'http_error_once':
                 # The server's own switch: a daemon retrying within a second
@@ -703,6 +705,74 @@ def test_daemon_sends_one_extra_heartbeat_when_the_process_table_nears_full(cycl
         assert files['reason'] == 'resource_high' and files['health']['triggers'] == ['files']
         assert 'procs' not in files['health']['news']
     finally:
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
+
+
+def test_a_failed_extra_heartbeat_retries_with_its_triggers_and_id(cycle, tmp_path):
+    # The server answered 500: nothing was stored, so the retry must carry
+    # the same events (they are cleared only once one is delivered), under
+    # the same id, with the failure on record.
+    _, state, _, binary, env = cycle
+    env, table = health_fixtures(tmp_path, env)
+    table(40)
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: len(state['calls']) == 1)
+        state['mode'] = 'http_error_once'
+        table(85)
+        wait_until(lambda: len(state['calls']) == 3)
+        first, retry = state['payloads'][1:3]
+        assert first['reason'] == retry['reason'] == 'resource_high'
+        assert first['health']['triggers'] == retry['health']['triggers'] == ['procs']
+        assert first['heartbeat_id'] == retry['heartbeat_id'] != state['payloads'][0]['heartbeat_id']
+        assert retry['delivery']['failed'] == 1 and retry['delivery']['classes']['server'] == 1
+    finally:
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
+
+
+def test_a_held_workspace_keeps_a_failed_heartbeats_id_events_and_record(cycle, rig, tmp_path):
+    # An attempt that finds the workspace lock held (busy) builds no payload
+    # and is not counted: the attempt after the lock is free is the same
+    # heartbeat as the failed one before it, with its id, events and record.
+    import fcntl
+    _, state, _, binary, env = cycle
+    root, _, _ = rig
+    env, table = health_fixtures(tmp_path, env)
+    table(40)
+    held, fd = threading.Event(), os.open(root / 'work', os.O_RDONLY)
+
+    def hold_once_free():
+        # Blocks until the daemon's cycle lets go, then holds the lock, so
+        # every retry after the failed attempt finds it busy.
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        held.set()
+
+    def start_holding():
+        state['before_answer'] = None
+        threading.Thread(target=hold_once_free, daemon=True).start()
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: len(state['calls']) == 1)
+        # The server starts the holder while it handles the failing POST,
+        # with the daemon's lock still held: no race with the retry.
+        state['before_answer'] = start_holding
+        state['mode'] = 'http_error_once'
+        table(85)
+        wait_until(held.is_set)
+        # Retries come a second apart in this build (TC_HEARTBEAT_RETRY_SECONDS
+        # and TC_CLEANUP_INTERVAL_SECONDS are 1): five seconds of busy ones.
+        time.sleep(5)
+        assert len(state['calls']) == 2
+        os.close(fd)
+        fd = -1
+        wait_until(lambda: len(state['calls']) == 3)
+        first, retry = state['payloads'][1:3]
+        assert first['reason'] == retry['reason'] == 'resource_high'
+        assert first['heartbeat_id'] == retry['heartbeat_id'] != state['payloads'][0]['heartbeat_id']
+        assert first['health']['triggers'] == retry['health']['triggers'] == ['procs']
+        assert retry['delivery']['failed'] == 1 and retry['delivery']['classes']['server'] == 1
+    finally:
+        if fd >= 0: os.close(fd)
         process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
 
 
@@ -1388,8 +1458,7 @@ def test_largest_possible_heartbeat_still_fits(cycle, rig):
     assert 4096 < len(raw) < 16384 // 2
     # Everything before the delivery record and health stays within the
     # budget payload.c checks at compile time.
-    header = (ROOT / 'build/native/telemetry/telemetry.h').read_text()
-    base_max = int(re.search(r'#define TC_PAYLOAD_BASE_MAX (\d+)', header)[1])
+    base_max = header_define('telemetry/telemetry.h', 'TC_PAYLOAD_BASE_MAX')
     raw_bytes = raw if isinstance(raw, bytes) else raw.encode()
     assert raw_bytes.index(b',"delivery":') + 2 <= base_max
 

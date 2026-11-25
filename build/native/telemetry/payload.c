@@ -270,10 +270,8 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
 
     memset(result, 0, sizeof(*result));
     result->failure = TC_OUTCOME_SERVER;
-    ctx->health_token = 0;
-    ctx->health_sent = 0;
-    tc_heartbeat_facts_update(f, ctx->facts_read, &round);
-    ctx->read_acp = round.collected;
+    memset(&ctx->sent, 0, sizeof(ctx->sent));
+    tc_heartbeat_facts_update(f, ctx->reuse, &round);
     result->local_resource = round.local_resource;
     if (telemetry_stop) {
         result->failure = TC_OUTCOME_CANCELLED;
@@ -362,8 +360,8 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
             with_health = tc_health_append_json(json, cap - 3, (size_t)written, ctx->health, &f->acp, &token);
             if (with_health >= 0) {
                 written = with_health;
-                ctx->health_token = token;
-                ctx->health_sent = 1;
+                ctx->sent.health_token = token;
+                ctx->sent.health = 1;
             } else {
                 int n = snprintf(json + written, cap - (size_t)written, ",\"health\":null");
                 written = n < 0 || (size_t)n >= cap - (size_t)written ? -1 : written + n;

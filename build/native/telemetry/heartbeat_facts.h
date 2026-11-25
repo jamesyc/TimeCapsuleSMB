@@ -17,7 +17,10 @@
  * named by its serial or hardware address, so a missing model or name does
  * not change which router a heartbeat is from. The plan is built from the
  * last validated one (device_plan_history_update, as discovery does), so a
- * collection that loses keys reports the roles it kept, with plan_error. */
+ * collection that loses keys reports the roles it kept, with plan_error.
+ * It is the plan of a device with a payload: discovery learns --diskless
+ * from the manager's argv, and telemetry, started once, is not told, so a
+ * diskless device's heartbeat can name roles its discovery does not use. */
 enum { TC_ID_SERIAL, TC_ID_SYAP, TC_ID_SYAM, TC_ID_SYNM, TC_ID_COUNT };
 
 /* The hardware address, sent as "mac" and as the router ID of a device with
@@ -67,17 +70,14 @@ struct tc_facts_round {
     int local_resource; /* a child could not start for want of processes, descriptors or memory */
 };
 
-/* A heartbeat retried after a network or server failure may skip acp: the
- * last collection was complete (no key timed out, ran out of budget,
- * failed to start or was skipped, and the serial came back if one was read
- * before) and ran less than TC_FACTS_REUSE_SECONDS
- * before now_ms. Usually they are the facts the failed heartbeat carried;
- * an outage that outlasts the limit gets a fresh read on its next retry. */
-#ifndef TC_FACTS_REUSE_SECONDS
-#define TC_FACTS_REUSE_SECONDS 3600
-#endif
-int tc_heartbeat_facts_fresh(const struct tc_heartbeat_facts *f, long long now_ms);
-/* Reads acp as how says (enum tc_facts_read), and always when nothing was
- * ever collected. */
-void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, enum tc_facts_read how, struct tc_facts_round *round);
+/* Whether a heartbeat at now_ms may keep f's facts under reuse (struct
+ * tc_facts_reuse): something was collected, under reuse.max_age seconds
+ * before now_ms, and complete if reuse.complete_only says so (no key timed
+ * out, ran out of budget, failed to start or was skipped, and the serial
+ * came back if one was read before). A clock that went back keeps nothing. */
+int tc_heartbeat_facts_reusable(const struct tc_heartbeat_facts *f, struct tc_facts_reuse reuse, long long now_ms);
+/* Keeps the facts when tc_heartbeat_facts_reusable allows, else reads acp
+ * once; round says which. The address sent (mac) is chosen again either
+ * way. */
+void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, struct tc_facts_reuse reuse, struct tc_facts_round *round);
 #endif

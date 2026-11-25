@@ -27,8 +27,10 @@ def test_payload_device_boundary(tmp_path):
     native = ROOT / 'build/native'
     output = tmp_path / 'payload'
     # acp, the plan builder and the interface table are scripted in
-    # test_payload.c; the payload and its heartbeat facts are the shipped code.
+    # test_payload.c; the payload, its heartbeat facts and the planner are the
+    # shipped code.
     compile_modules(output, ('native/telemetry/payload.c', 'native/telemetry/heartbeat_facts.c',
+                             'native/telemetry/planner.c',
                              'native/telemetry/errclass.c', 'native/telemetry/health.c', 'native/telemetry/health_json.c',
                              'native/vendor/tweetnacl.c', 'native/vendor/random.c'),
                     flags=('-I', str(native / 'telemetry'), '-I', str(native / 'common')),
