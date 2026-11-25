@@ -68,6 +68,14 @@ const char *iflist_truncation_name(enum iflist_truncation truncation);
 int iflist_truncation_from_name(const char *name, enum iflist_truncation *out);
 #endif
 int iflist_collect(struct if_table *out);
+/* The index of the interface named name, or 0 (no interface has index 0):
+ * NetBSD 4 has no reliable if_nametoindex(). */
+static inline unsigned iflist_index_of(const struct if_table *table, const char *name) {
+    size_t i;
+    for (i = 0; i < table->link_count; i++)
+        if (!strcmp(table->links[i].name, name)) return table->links[i].index;
+    return 0;
+}
 unsigned iflist_prefix_from_mask(const unsigned char *mask, size_t len);
 
 #endif

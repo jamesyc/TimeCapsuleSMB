@@ -1,6 +1,5 @@
 #include "health.h"
-
-static const char *const probe_result_names[] = {"none", "ok", "closed", "silent", "down", "absent"};
+#include "heartbeat_facts.h"
 
 /* snprintf at json + *used, failing instead of truncating. */
 static int put(char *json, size_t cap, size_t *used, const char *format, ...) {
@@ -74,10 +73,10 @@ static int put_names(char *json, size_t cap, size_t *used, const char *key, unsi
     return put(json, cap, used, "]");
 }
 
-/* Times are seconds on this process's monotonic clock: comparable within
- * one telemetry process, not across a restart. */
-int tc_health_append_json(char *json, size_t cap, size_t used, const struct tc_health *h, unsigned acp_timeouts,
-                          unsigned acp_budget_exhausted, unsigned *token) {
+/* Times are seconds since boot (health.h). smbd_children counts every live
+ * child of smbd's listener (health_read.c read_snapshot). */
+int tc_health_append_json(char *json, size_t cap, size_t used, const struct tc_health *h,
+                          const struct tc_acp_counts *acp, unsigned *token) {
     const struct tc_counters *c = &h->now;
     struct tc_failure_counts f;
     long long pagesize = c->have_mem && c->pagesize > 0 ? c->pagesize : 4096;
@@ -88,26 +87,26 @@ int tc_health_append_json(char *json, size_t cap, size_t used, const struct tc_h
         put_snapshot(json, cap, &used, "procs", &h->current, pagesize) ||
         put_snapshot(json, cap, &used, "procs_peak", &h->peak, pagesize) ||
         put_snapshot(json, cap, &used, "procs_first_high", &h->first_high, pagesize) ||
-        put(json, cap, &used, ",\"procs_near_full_samples\":%u,\"procs_high_events\":%u,\"files_high_events\":%u",
-            h->near_full, h->procs.events, h->files.events) ||
+        put(json, cap, &used, ",\"procs_high_events\":%u,\"files_high_events\":%u", h->procs.events,
+            h->files.events) ||
         put(json, cap, &used, ",\"files\":{\"n\":") ||
         (c->files >= 0 ? put(json, cap, &used, "%d", c->files) : put(json, cap, &used, "null")) ||
         put_long_or_null(json, cap, &used, "max", c->maxfiles, c->maxfiles > 0) ||
         put_long_or_null(json, cap, &used, "peak", h->peak_files, c->files >= 0 || h->peak_files > 0) ||
-        put_long_or_null(json, cap, &used, "peak_at", h->peak_files_at, h->peak_files > 0) || put(json, cap, &used, "}"))
+        put(json, cap, &used, "}"))
         return -1;
     if (c->have_mem) {
         if (put(json, cap, &used,
                 ",\"mem\":{\"page_kb\":%lld,\"free\":%lld,\"min_free\":%lld,\"min_free_at\":%ld,\"freetarg\":%lld,"
-                "\"active\":%lld,\"inactive\":%lld,\"anon\":%lld,\"file\":%lld,\"fltnoram\":%lld,\"pdscans\":%lld}",
+                "\"active\":%lld,\"inactive\":%lld,\"anon\":%lld,\"file\":%lld,\"fltnoram\":%lld}",
                 pagesize / 1024, c->free, h->min_free, h->min_free_at, c->freetarg, c->active, c->inactive, c->anon,
-                c->file, c->fltnoram, c->pdscans))
+                c->file, c->fltnoram))
             return -1;
     } else if (put(json, cap, &used, ",\"mem\":null")) {
         return -1;
     }
     if (c->have_mbuf) {
-        if (put(json, cap, &used, ",\"mbuf\":{\"drops\":%lu,\"waits\":%lu", c->mbuf_drops, c->mbuf_waits) ||
+        if (put(json, cap, &used, ",\"mbuf\":{\"drops\":%lu", c->mbuf_drops) ||
             put_long_or_null(json, cap, &used, "clusters_max", c->nmbclusters, c->nmbclusters > 0) ||
             put(json, cap, &used, "}"))
             return -1;
@@ -115,8 +114,9 @@ int tc_health_append_json(char *json, size_t cap, size_t used, const struct tc_h
         return -1;
     }
     /* bytes: -1 unreadable, 0 an empty buffer. Each pattern: null (never),
-     * or when this process first and last saw it in new text and how often,
-     * and whether it was already there at the first read. */
+     * or when this process first and last saw it in new text and how often
+     * (close, not exact: see kmsg_scan), and
+     * whether it was already there at the first read. */
     if (put(json, cap, &used, ",\"kmsg\":{\"bytes\":%ld", h->kmsg.bytes)) return -1;
     for (i = 0; i < TC_KMSG_PATTERNS; i++) {
         const struct tc_kmsg_sighting *s = &h->kmsg.seen[i];
@@ -134,11 +134,13 @@ int tc_health_append_json(char *json, size_t cap, size_t used, const struct tc_h
     for (i = 0; i < TC_PROBES; i++) {
         const struct tc_probe_track *p = &h->probe[i];
         if (put(json, cap, &used,
-                "%s\"%s\":{\"last\":\"%s\",\"streak\":%u,\"ok\":%u,\"closed\":%u,\"silent\":%u,\"down\":%u",
-                i ? "," : "", tc_probe_names[i], probe_result_names[p->last], p->streak, p->ok, p->closed, p->silent,
-                p->down) ||
+                "%s\"%s\":{\"last\":\"%s\",\"streak\":%u,\"ok\":%u,\"closed\":%u,\"silent\":%u,\"refused\":%u,"
+                "\"timeout\":%u,\"down\":%u",
+                i ? "," : "", tc_probe_names[i], tc_probe_result_names[p->last], p->streak, p->ok, p->closed,
+                p->silent, p->refused, p->timeout, p->down) ||
             put_long_or_null(json, cap, &used, "first_fail_at", p->first_fail_at, p->first_fail_at != 0) ||
             put_long_or_null(json, cap, &used, "last_fail_at", p->last_fail_at, p->first_fail_at != 0) ||
+            put_long_or_null(json, cap, &used, "probed_at", p->probed_at, p->probed_at != 0) ||
             put(json, cap, &used, "}"))
             return -1;
     }
@@ -147,7 +149,8 @@ int tc_health_append_json(char *json, size_t cap, size_t used, const struct tc_h
             f.fork_enomem, f.fork_other) ||
         put(json, cap, &used, ",\"socket_failures\":{\"emfile\":%u,\"enfile\":%u,\"enobufs\":%u,\"other\":%u}",
             f.socket_emfile, f.socket_enfile, f.socket_enobufs, f.socket_other) ||
-        put(json, cap, &used, ",\"acp_timeouts\":%u,\"acp_budget_exhausted\":%u", acp_timeouts, acp_budget_exhausted) ||
+        put(json, cap, &used, ",\"acp_timeouts\":%u,\"acp_budget_exhausted\":%u,\"acp_empty\":%u", acp->timeouts,
+            acp->budget_exhausted, acp->empty) ||
         put_names(json, cap, &used, "triggers", h->pending) || put_names(json, cap, &used, "news", h->news) ||
         put(json, cap, &used, "}"))
         return -1;

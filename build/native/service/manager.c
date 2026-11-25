@@ -667,7 +667,7 @@ static int mast_job(void *unused) {
     request.multiline = 1;
     request.output = result.text;
     request.capacity = sizeof(result.text);
-    (void)acp_collect_run(&request, 1, 20000, 20000);
+    (void)acp_collect_run(&request, 1, 20000, 20000, 0);
     result.status = request.status;
     result.length = request.length;
     return tc_worker_finish(tc_worker_result(&result, sizeof(result)) ? 1 : 0);

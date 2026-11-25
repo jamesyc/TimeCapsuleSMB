@@ -74,8 +74,9 @@ const char *acp_str(const struct acp_value *value);   /* NULL when unavailable *
 
 /* Non-blocking collection: one child at a time, next key on completion,
  * whole-collection budget after which remaining keys are marked
- * ACP_ABORT with ACP_REASON_BUDGET (never read, so not "not set"). Drive it with acp_collect_fd()/acp_collect_pump() from a
- * select() loop, or synchronously with acp_collect_run(). */
+ * ACP_ABORT with ACP_REASON_BUDGET (never read, so not "not set"). Drive
+ * it with acp_collect_fd()/acp_collect_pump() from a select() loop, or
+ * synchronously with acp_collect_run(). */
 struct acp_collector {
     struct acp_request *requests;
     size_t key_count;
@@ -94,8 +95,8 @@ struct acp_collector {
     int aborted;
     int inherited_group;
     int stop_early;            /* ACP_STOP_EARLY */
-    int stopped;               /* a key timed out or its child could not start */
-    int child_at_budget;       /* the running child's deadline is the budget's */
+    int failed_key;            /* a key timed out or its child could not start */
+    int child_cut_by_budget;   /* the running child's deadline is the budget's, before its own timeout */
 };
 /* Flags: ACP_STOP_EARLY asks no more keys (ACP_REASON_SKIPPED) after one
  * times out, or after a child cannot start. An ACPd that has stopped
@@ -114,8 +115,7 @@ long long acp_collect_deadline_ms(const struct acp_collector *c);
 long long acp_collect_deadline_at(const struct acp_collector *c, long long now);
 int acp_collect_pump(struct acp_collector *c);      /* 1 = finished, 0 = in progress, -1 = aborted */
 void acp_collect_cancel(struct acp_collector *c);
-int acp_collect_run(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms);
-int acp_collect_run_opts(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
-                         int flags);
+int acp_collect_run(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
+                    int flags);
 long long acp_monotonic_ms(void);
 #endif

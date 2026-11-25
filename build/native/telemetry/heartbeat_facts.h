@@ -11,12 +11,13 @@
  *
  * The owner keeps one struct for its life. Identity values are kept once
  * read: a later read can fail because fork() does (a full process table) or
- * ACPd hangs, exactly when the device is in trouble. A value never read goes
- * out empty: the router is named by its serial or hardware address, so a
- * partial identity cannot make a different router (main's fallback ID was a
- * hash of syAP, syAM and syNm, which is why it refused one). The plan is built from
- * the last validated one (device_plan_history_update, as discovery does), so
- * a collection that loses keys reports the roles it kept, with plan_error. */
+ * ACPd hangs, exactly when the device is in trouble, and acp answers a get
+ * that failed with empty output and exit 0, so an empty answer never
+ * replaces a kept value. A value never read goes out empty: the router is
+ * named by its serial or hardware address, so a missing model or name does
+ * not change which router a heartbeat is from. The plan is built from the
+ * last validated one (device_plan_history_update, as discovery does), so a
+ * collection that loses keys reports the roles it kept, with plan_error. */
 enum { TC_ID_SERIAL, TC_ID_SYAP, TC_ID_SYAM, TC_ID_SYNM, TC_ID_COUNT };
 
 /* The hardware address, sent as "mac" and as the router ID of a device with
@@ -27,7 +28,7 @@ enum { TC_ID_SERIAL, TC_ID_SYAP, TC_ID_SYAM, TC_ID_SYNM, TC_ID_COUNT };
  * The daemon's boot heartbeat waits TC_BOOT_HOLD_SECONDS (planner.h), so its
  * collection usually finds it. Until then each heartbeat sends the
  * interface table's address of the moment (one sysctl, never kept;
- * if_table_device_mac) unless it is a placeholder too, which names a router
+ * addr_device_mac) unless it is a placeholder too, which names a router
  * whose ACP never answered this process (ACPd hung, or no process to fork);
  * else none. With no serial either there is no router ID: the heartbeat
  * fails acp_unavailable and the planner's retries collect again. */
@@ -35,9 +36,17 @@ enum { TC_ID_SERIAL, TC_ID_SYAP, TC_ID_SYAM, TC_ID_SYNM, TC_ID_COUNT };
  * all-zero or multicast address, or a known boot placeholder. */
 int tc_mac_parse(const char *text, char out[18]);
 
+/* Collections that went wrong, for the heartbeat's health object. */
+struct tc_acp_counts {
+    unsigned timeouts;         /* a key timed out */
+    unsigned budget_exhausted; /* the budget ran out before every key answered */
+    unsigned empty;            /* every identity key answered with nothing: an
+                                  ACPd that cannot answer (acp prints nothing
+                                  and exits 0 for a failed get) */
+};
+
 struct tc_heartbeat_facts {
     char id[TC_ID_COUNT][HEARTBEAT_MAX_FIELD];
-    int answered[TC_ID_COUNT]; /* acp answered the key once (a value or "not set") */
     char wama[18];             /* the last usable waMA, lowercase, or empty */
     char mac[18];              /* the address this heartbeat sends, or empty */
     struct device_plan history;
@@ -45,9 +54,9 @@ struct tc_heartbeat_facts {
     struct device_plan last;   /* the last plan built, sent when nothing is collected */
     int have_last;
     long long last_ms;         /* when the last collection ran */
-    int last_complete;         /* every key of it answered: a value or "not set" */
-    unsigned acp_timeouts;     /* collections in which a key timed out */
-    unsigned acp_budget_exhausted; /* collections that ran out of budget before every key answered */
+    int last_complete;         /* every key of it answered (a value or "not set"), and a serial
+                                  if this process read one before */
+    struct tc_acp_counts acp;
 };
 
 /* What one update did. */
@@ -60,13 +69,15 @@ struct tc_facts_round {
 
 /* A heartbeat retried after a network or server failure may skip acp: the
  * last collection was complete (no key timed out, ran out of budget,
- * failed to start or was skipped) and ran less than TC_FACTS_REUSE_SECONDS
+ * failed to start or was skipped, and the serial came back if one was read
+ * before) and ran less than TC_FACTS_REUSE_SECONDS
  * before now_ms. Usually they are the facts the failed heartbeat carried;
  * an outage that outlasts the limit gets a fresh read on its next retry. */
 #ifndef TC_FACTS_REUSE_SECONDS
 #define TC_FACTS_REUSE_SECONDS 3600
 #endif
 int tc_heartbeat_facts_fresh(const struct tc_heartbeat_facts *f, long long now_ms);
-/* Reads acp when refresh is set or nothing was ever collected. */
-void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, int refresh, struct tc_facts_round *round);
+/* Reads acp as how says (enum tc_facts_read), and always when nothing was
+ * ever collected. */
+void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, enum tc_facts_read how, struct tc_facts_round *round);
 #endif

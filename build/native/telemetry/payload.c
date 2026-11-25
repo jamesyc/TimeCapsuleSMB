@@ -41,15 +41,33 @@ static void hash_text_hex(char *out, size_t out_len, const char *text) {
     bytes_to_hex(out, out_len, digest, 32);
 }
 
-static void build_heartbeat_id(char *out, size_t out_len, const char *router_id, const char *reason) {
+static void new_heartbeat_id(char *out, size_t out_len, const char *router_id, const char *reason) {
+    static unsigned made; /* two ids in one second from one process still differ */
     char input[512];
     char hash_hex[65];
     time_t now;
 
     now = time(NULL);
-    (void)snprintf(input, sizeof(input), "%s\n%s\n%ld\n%ld\n", router_id, reason, (long)now, (long)getpid());
+    (void)snprintf(input, sizeof(input), "%s\n%s\n%ld\n%ld\n%u\n", router_id, reason, (long)now, (long)getpid(),
+                   made++);
     hash_text_hex(hash_hex, sizeof(hash_hex), input);
     (void)snprintf(out, out_len, "hb1-%s", hash_hex);
+}
+
+/* The id of this heartbeat (struct tc_heartbeat_ident): the pending one
+ * while the reason and router ID match it, else a new one, kept as pending
+ * when there is somewhere to keep it. */
+static void heartbeat_id_for(char *out, size_t out_len, struct tc_heartbeat_ident *ident, const char *router_id,
+                             const char *reason) {
+    if (ident && ident->id[0] && !strcmp(ident->reason, reason) && !strcmp(ident->router_id, router_id)) {
+        (void)snprintf(out, out_len, "%s", ident->id);
+        return;
+    }
+    new_heartbeat_id(out, out_len, router_id, reason);
+    if (!ident) return;
+    (void)snprintf(ident->id, sizeof(ident->id), "%s", out);
+    (void)snprintf(ident->reason, sizeof(ident->reason), "%s", reason);
+    (void)snprintf(ident->router_id, sizeof(ident->router_id), "%s", router_id);
 }
 
 static int json_escape(char *out, size_t out_len, const char *value) {
@@ -254,7 +272,8 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
     result->failure = TC_OUTCOME_SERVER;
     ctx->health_token = 0;
     ctx->health_sent = 0;
-    tc_heartbeat_facts_update(f, ctx->refresh, &round);
+    tc_heartbeat_facts_update(f, ctx->facts_read, &round);
+    ctx->read_acp = round.collected;
     result->local_resource = round.local_resource;
     if (telemetry_stop) {
         result->failure = TC_OUTCOME_CANCELLED;
@@ -277,7 +296,7 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
     format_uptime_json(uptime_json, sizeof(uptime_json), uptime_sec, have_uptime);
     (void)read_deploy_release_tag(deploy_release_tag, sizeof(deploy_release_tag));
 
-    build_heartbeat_id(heartbeat_id, sizeof(heartbeat_id), router_id, reason);
+    heartbeat_id_for(heartbeat_id, sizeof(heartbeat_id), ctx->ident, router_id, reason);
 
     if (json_escape(esc_router_id, sizeof(esc_router_id), router_id) != 0 ||
         json_escape(esc_heartbeat_id, sizeof(esc_heartbeat_id), heartbeat_id) != 0 ||
@@ -339,9 +358,8 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
              * and its events wait for the next one. */
             unsigned token;
             int with_health;
-            tc_health_note_failures(ctx->health, f->acp_timeouts);
-            with_health = tc_health_append_json(json, cap - 3, (size_t)written, ctx->health, f->acp_timeouts,
-                                                f->acp_budget_exhausted, &token);
+            tc_health_note_failures(ctx->health, &f->acp);
+            with_health = tc_health_append_json(json, cap - 3, (size_t)written, ctx->health, &f->acp, &token);
             if (with_health >= 0) {
                 written = with_health;
                 ctx->health_token = token;

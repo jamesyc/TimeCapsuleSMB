@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from Crypto.PublicKey import ECC
 from Crypto.Signature import eddsa
+from tests.loopback import accept_loop, held_refusing_ports
 from tests.native.build import ROOT, compile_program, compile_service
 from tests.processes import kill_acp_fixture_groups, kill_group
 
@@ -37,7 +38,15 @@ def first_exec(binary, *args):
     subprocess.run([str(binary), *args], capture_output=True, env={}, timeout=HANG_TIMEOUT)
 
 @pytest.fixture(scope='module')
-def rig(tmp_path_factory):
+def probe_ports():
+    # Probe ports nothing listens on, held for the module so a connect is
+    # refused and no other worker takes them (tests/loopback.py).
+    with held_refusing_ports(2) as ports:
+        yield ports
+
+
+@pytest.fixture(scope='module')
+def rig(tmp_path_factory, probe_ports):
     root = tmp_path_factory.mktemp('telemetry-integration')
     key = ECC.construct(curve='Ed25519', seed=bytes(range(32)))
     signer = eddsa.new(key, 'rfc8032')
@@ -119,11 +128,7 @@ def rig(tmp_path_factory):
     public = key.public_key().export_key(format='raw')
     (root / 'work').mkdir()
     (root / 'work/keep.txt').write_text('unrelated runtime file')
-    closed_ports = []
-    for _ in range(2):
-        with socket.socket() as probe_port:
-            probe_port.bind(('127.0.0.1', 0))
-            closed_ports.append(probe_port.getsockname()[1])
+    closed_ports = probe_ports
     config = root / 'test_config.h'
     config.write_text('\n'.join([
         f'#define HEARTBEAT_ENDPOINT "{base}/v1/router-heartbeats"',
@@ -140,8 +145,8 @@ def rig(tmp_path_factory):
         '#ifndef TC_BOOT_HOLD_SECONDS', '#define TC_BOOT_HOLD_SECONDS 0', '#endif',
         # The loopback probes must not depend on the host's own sshd or SMB
         # server: ports nothing listens on.
-        f'#define TC_HEALTH_SSH_PORT {closed_ports[0]}',
-        f'#define TC_HEALTH_SMB_PORT {closed_ports[1]}',
+        '#ifndef TC_HEALTH_SSH_PORT', f'#define TC_HEALTH_SSH_PORT {closed_ports[0]}', '#endif',
+        '#ifndef TC_HEALTH_SMB_PORT', f'#define TC_HEALTH_SMB_PORT {closed_ports[1]}', '#endif',
         f'#define TC_ACP_PATH "{acp}"',
         f'#define TC_TELEMETRY_WORK_ROOT "{root}/work"',
         f'#define HEARTBEAT_FLASH_CONFIG_PATH "{root}/config"',
@@ -389,6 +394,77 @@ def test_a_held_boot_heartbeat_blocks_nothing_else(cycle, rig, held_collector, t
     assert len(state['calls']) == 1 and not recorded_collectors(held_calls)
 
 
+@pytest.fixture(scope='module')
+def probe_listener(rig):
+    # An sshd stand-in on a held port (refused on ::1, tests/loopback.py):
+    # it records each connection's arrival and answers with a banner. Two
+    # collectors aim their SSH probe at it: one whose boot hold outlasts any
+    # test, one held a second.
+    arrivals = []
+
+    def banner(conn):
+        arrivals.append(time.monotonic())
+        with conn:
+            try:
+                conn.sendall(b'SSH-2.0-OpenSSH_test\r\n')
+                conn.settimeout(HANG_TIMEOUT)
+                while conn.recv(4096):
+                    pass
+            except OSError:
+                pass
+    with held_refusing_ports(1) as [port]:
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(('127.0.0.1', port))
+        listener.listen(8)
+        stop = accept_loop(listener, banner)
+        define = f'-DTC_HEALTH_SSH_PORT={port}'
+        try:
+            held = collector_with(rig[0], 'service-held-probe', '-DTC_BOOT_HOLD_SECONDS=1000000', define)
+            short = collector_with(rig[0], 'service-hold1-probe', '-DTC_BOOT_HOLD_SECONDS=1', define)
+            yield held, short, arrivals
+        finally:
+            stop()
+
+
+def test_the_first_probe_round_waits_for_the_boot_hold(cycle, rig, probe_listener, tmp_path):
+    # At daemon start smbd is often not listening yet, so the first round
+    # waits out the hold the boot heartbeat waits. The loop probes before
+    # it cleans up, so once housekeeping has run the daemon would already
+    # have probed had it probed at start.
+    _, state, _, _, env = cycle
+    root, _, _ = rig
+    held, short, arrivals = probe_listener
+    env, table = health_fixtures(tmp_path, env)
+    table(40)  # a roomy table, so a round may run
+    stale = root / 'work/debug'
+    stale.write_bytes(b'stale')
+    arrivals.clear()
+    process = subprocess.Popen(telemetry_command(held, '--daemon'), env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: not stale.exists() or process.poll() is not None)
+        assert process.poll() is None and arrivals == [] and state['payloads'] == []
+    finally:
+        process.terminate()
+        process.communicate(timeout=HANG_TIMEOUT)
+    # Held a second: the round runs when the hold ends, just before the
+    # boot heartbeat, which carries its results.
+    started = time.monotonic()
+    process = subprocess.Popen(telemetry_command(short, '--daemon'), env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: state['payloads'] or process.poll() is not None)
+        assert process.poll() is None
+        [boot] = state['payloads']
+        assert boot['reason'] == 'boot' and len(arrivals) == 1 and arrivals[0] >= started
+        probes = boot['health']['probes']
+        assert probes['ssh4']['last'] == 'ok' and probes['smb4']['last'] == 'absent'
+    finally:
+        process.terminate()
+        process.communicate(timeout=HANG_TIMEOUT)
+
+
 def test_opt_out_keeps_local_cleanup_available(cycle, rig):
     _, state, _, binary, env = cycle
     root, _, _ = rig
@@ -551,11 +627,12 @@ def test_daemon_retries_an_undelivered_boot_heartbeat(cycle, acp_calls):
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         wait_until(lambda: len(state['calls']) == 2)
-        time.sleep(3)
-        assert len(state['calls']) == 2
         assert [p['reason'] for p in state['payloads']] == ['boot', 'boot']
         assert len(serial_reads(acp_calls)) == 1
         assert state['payloads'][0]['router_id'] == state['payloads'][1]['router_id'] == 'C86TEST0SN01'
+        # One heartbeat, one id: the server keeps the latest attempt, which
+        # may replace a first one it stored without the answer getting back.
+        assert state['payloads'][0]['heartbeat_id'] == state['payloads'][1]['heartbeat_id']
     finally:
         process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
 
@@ -609,6 +686,7 @@ def test_daemon_sends_one_extra_heartbeat_when_the_process_table_nears_full(cycl
         wait_until(lambda: len(state['calls']) == 2)
         extra = state['payloads'][1]
         assert extra['reason'] == 'resource_high'
+        assert extra['heartbeat_id'] != state['payloads'][0]['heartbeat_id']
         assert extra['health']['triggers'] == ['procs']
         assert extra['health']['procs_first_high']['n'] == 85
         assert extra['health']['maxproc'] == 90
@@ -624,6 +702,41 @@ def test_daemon_sends_one_extra_heartbeat_when_the_process_table_nears_full(cycl
         files = state['payloads'][2]
         assert files['reason'] == 'resource_high' and files['health']['triggers'] == ['files']
         assert 'procs' not in files['health']['news']
+    finally:
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
+
+
+def test_a_full_table_in_the_kernel_messages_alone_asks_for_a_heartbeat(cycle, tmp_path):
+    # Every sample finds the process table roomy, but the kernel logged that
+    # it filled between two samples (a burst shorter than one): that line
+    # alone asks for an extra heartbeat. Lines already in the buffer at the
+    # daemon's first read only mark at_start.
+    _, state, _, binary, env = cycle
+    env, table = health_fixtures(tmp_path, env)
+    kmsg = tmp_path / 'kmsg'
+
+    def write_kmsg(text):
+        (tmp_path / '.kmsg.new').write_text(text)
+        (tmp_path / '.kmsg.new').rename(kmsg)
+    old = 'boot\nfile: table is full\n' + 'wl0: deauth reason 2\n' * 50
+    write_kmsg(old)
+    env = {**env, 'TC_TEST_KMSG': str(kmsg)}
+    table(40)
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: len(state['calls']) == 1)
+        boot = state['payloads'][0]['health']
+        assert state['payloads'][0]['reason'] == 'boot' and boot['triggers'] == [] and boot['news'] == []
+        assert boot['kmsg']['file_full'] == {'first': None, 'last': None, 'n': 0, 'at_start': True}
+        assert boot['kmsg']['proc_full'] is None
+        write_kmsg(old + 'proc: table is full\n' + 'wl0: deauth reason 2\n' * 3)
+        wait_until(lambda: len(state['calls']) == 2)
+        extra = state['payloads'][1]
+        assert extra['reason'] == 'resource_high' and extra['health']['triggers'] == ['kmsg']
+        proc_full = extra['health']['kmsg']['proc_full']
+        assert proc_full['n'] == 1 and not proc_full['at_start'] and proc_full['first'] == proc_full['last']
+        assert extra['health']['kmsg']['file_full']['n'] == 0
+        assert extra['health']['procs']['n'] == 40 and extra['health']['procs_high_events'] == 0
     finally:
         process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
 
@@ -651,6 +764,7 @@ def test_extra_heartbeat_is_delivered_with_no_fork_once_the_table_is_full(cycle,
         wait_until(lambda: len(state['calls']) == 2)
         extra = state['payloads'][1]
         assert extra['reason'] == 'resource_high'
+        assert extra['heartbeat_id'] != state['payloads'][0]['heartbeat_id']
         assert extra['router_id'] == 'C86TEST0SN01' and extra['device_model'] == 'TimeCapsule8,119'
         assert extra['plan_error'] == boot['plan_error'] and extra['plan_age_sec'] >= 0
         assert extra['health']['fork_failures'] == {'eagain': 0, 'enomem': 0, 'other': 0}
@@ -685,6 +799,7 @@ def test_payload_survives_a_kernel_that_refuses_every_fork(cycle):
 def test_no_probe_round_within_two_of_the_process_limit(cycle, tmp_path):
     # At 88 of 90 the probe's own sshd or smbd child could take a slot a
     # client needs: the round is skipped and counted. At 85 it still runs.
+    # Without a table it is skipped too.
     _, state, _, binary, env = cycle
     env, table = health_fixtures(tmp_path, env)
     table(88)
@@ -699,6 +814,13 @@ def test_no_probe_round_within_two_of_the_process_limit(cycle, tmp_path):
                             text=True, timeout=HANG_TIMEOUT)
     health = json.loads(result.stdout)['health']
     assert health['probe_rounds_skipped'] == 0 and health['probes']['ssh4']['last'] == 'absent'
+    # A table that could not be read says nothing about room: no round.
+    unread = {k: v for k, v in env.items() if k != 'TC_TEST_PROCS'}
+    result = subprocess.run(telemetry_command(binary, '--print-payload', 'probe'), env=unread, capture_output=True,
+                            text=True, timeout=HANG_TIMEOUT)
+    health = json.loads(result.stdout)['health']
+    assert health['procs'] is None and health['probe_rounds_skipped'] == 1
+    assert all(probe['last'] == 'none' for probe in health['probes'].values())
 
 
 def test_a_table_high_from_boot_is_reported_once_the_boot_heartbeat_is_in(cycle, tmp_path):

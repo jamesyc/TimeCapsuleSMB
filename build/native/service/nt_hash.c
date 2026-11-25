@@ -259,7 +259,7 @@ int device_password(char *input, size_t capacity, size_t *length) {
     request.output = input;
     request.capacity = capacity;
     (void)acp_collect_run(&request, 1, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
-                        (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
+                        (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000, 0);
     if (request.status != ACP_OK)
         return request.status == ACP_UNAVAILABLE && request.exit_status > 0 ? request.exit_status : 1;
     len = request.length;

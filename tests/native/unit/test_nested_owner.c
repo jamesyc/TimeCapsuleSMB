@@ -49,7 +49,7 @@ static int job(void *unused) {
         request.output = result;
         request.capacity = sizeof(result);
         (void)acp_collect_run(&request, 1, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
-                              (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
+                              (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000, 0);
         rc = request.status;
         if (!strcmp(mode, "acp-descendant") || !strcmp(mode, "acp-timeout")) {
             assert(rc == ACP_ABORT);

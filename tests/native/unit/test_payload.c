@@ -60,8 +60,8 @@ int read_deploy_release_tag(char *out, size_t cap) { snprintf(out, cap, "v-test"
 int read_uptime_seconds(long *out) { *out = 123; return 0; }
 long long acp_monotonic_ms(void) { return 50000; }
 
-int acp_collect_run_opts(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
-                         int flags) {
+int acp_collect_run(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
+                    int flags) {
     size_t i, j;
     int stopped = 0;
     (void)timeout_ms; (void)budget_ms;
@@ -137,9 +137,16 @@ void device_plan_history_update(struct device_plan *history, int *have, const st
     if (current->status.validated) { *history = *current; *have = 1; }
 }
 int iflist_collect(struct if_table *table) { memset(table, 0, sizeof(*table)); return 0; }
-int if_table_device_mac(const struct if_table *table, unsigned char out[6]) {
+/* addr.c's two, as there (its own tests, through iflist_parse, cover the
+ * real list); the stubbed table refuses them the way addr.c's does. */
+int addr_mac_is_boot_placeholder(const unsigned char mac[6]) {
+    static const unsigned char netbsd6[6] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05};
+    static const unsigned char netbsd4[6] = {0x00, 0x0a, 0xaa, 0xbb, 0xcc, 0xdd};
+    return !memcmp(mac, netbsd6, 6) || !memcmp(mac, netbsd4, 6);
+}
+int addr_device_mac(const struct if_table *table, unsigned char out[6]) {
     (void)table;
-    if (!have_mac) return -1;
+    if (!have_mac || addr_mac_is_boot_placeholder(table_mac)) return -1;
     memcpy(out, table_mac, 6);
     return 0;
 }
@@ -148,17 +155,78 @@ const char *link_role_name(enum link_role value) { (void)value; assert(0); retur
 int addr_is_service_address(const struct if_addr *addr) { (void)addr; assert(0); return 0; }
 
 static const struct tc_delivery *delivery;
-static int build(struct tc_heartbeat_facts *f, int refresh, char *json, size_t cap, struct tc_payload_result *r) {
+static struct tc_heartbeat_ident *build_ident; /* the daemon's pending id, or NULL as one-shot modes */
+static const char *build_reason = "manual";
+static int last_read_acp;
+static int build(struct tc_heartbeat_facts *f, enum tc_facts_read how, char *json, size_t cap,
+                 struct tc_payload_result *r) {
     struct tc_payload_context ctx;
+    int rc;
     memset(&ctx, 0, sizeof(ctx));
     ctx.facts = f;
-    ctx.refresh = refresh;
+    ctx.facts_read = how;
     ctx.delivery = delivery;
-    return telemetry_payload(json, cap, "manual", "0123456789abcdef0123456789abcdef", &ctx, r);
+    ctx.ident = build_ident;
+    rc = telemetry_payload(json, cap, build_reason, "0123456789abcdef0123456789abcdef", &ctx, r);
+    last_read_acp = ctx.read_acp;
+    return rc;
 }
 
 /* tc_mac_parse: waMA as acp prints it, or the table's address; never a
  * boot placeholder. */
+/* The payload's heartbeat_id, copied into out. */
+static const char *heartbeat_id(const char *json, char out[80]) {
+    const char *start = strstr(json, "\"heartbeat_id\":\""), *end;
+    assert(start);
+    start += strlen("\"heartbeat_id\":\"");
+    end = strchr(start, '"');
+    assert(end && end - start < 80);
+    memcpy(out, start, (size_t)(end - start));
+    out[end - start] = 0;
+    return out;
+}
+
+/* One heartbeat keeps its id through every retry (the server keeps the
+ * latest attempt under it); another reason or router ID is another
+ * heartbeat, and a delivered one leaves none pending. */
+static void test_heartbeat_ident(void) {
+    static struct tc_heartbeat_facts f;
+    struct tc_heartbeat_ident ident;
+    struct tc_payload_result r;
+    char json[8192], first[80], again[80];
+    memset(&ident, 0, sizeof(ident));
+    build_ident = &ident;
+    /* No serial yet: the router is named by its hardware address. */
+    reset();
+    answer("sySN", ACP_OK, "", ACP_REASON_NONE, 0);
+    build_reason = "boot";
+    assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && strstr(json, "\"router_id\":\"mac-"));
+    heartbeat_id(json, first);
+    assert(!strcmp(ident.id, first) && !strcmp(ident.reason, "boot"));
+    reset();
+    answer("sySN", ACP_OK, "", ACP_REASON_NONE, 0);
+    assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && !strcmp(heartbeat_id(json, again), first));
+    /* The serial arrives on a retry: another router ID, so another id. */
+    reset();
+    assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && strstr(json, "\"router_id\":\"serial123\""));
+    assert(strcmp(heartbeat_id(json, first), again) && !strcmp(ident.id, first));
+    /* A scheduled retry that became resource_high is another heartbeat. */
+    build_reason = "resource_high";
+    reset();
+    assert(!build(&f, TC_FACTS_KEEP, json, sizeof(json), &r) && strcmp(heartbeat_id(json, again), first));
+    /* Delivered: the next heartbeat, even for the same reason, is new. */
+    tc_heartbeat_ident_clear(&ident);
+    reset();
+    assert(!build(&f, TC_FACTS_KEEP, json, sizeof(json), &r) && strcmp(heartbeat_id(json, first), again));
+    /* With nowhere to keep it (one-shot modes) each payload gets a new id. */
+    build_ident = NULL;
+    reset();
+    assert(!build(&f, TC_FACTS_KEEP, json, sizeof(json), &r) && strcmp(heartbeat_id(json, again), first));
+    reset();
+    assert(!build(&f, TC_FACTS_KEEP, json, sizeof(json), &r) && strcmp(heartbeat_id(json, first), again));
+    build_reason = "manual";
+}
+
 static void test_mac_parse(void) {
     char out[18];
     assert(!tc_mac_parse("80:EA:96:E6:58:68", out) && !strcmp(out, "80:ea:96:e6:58:68"));
@@ -188,12 +256,12 @@ static void test_facts_fresh(void) {
     /* Every key answered, "not set" included: fresh until the limit. */
     answer("waMA", ACP_OK, "", ACP_REASON_NONE, 0);
     answer("usbF", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
-    tc_heartbeat_facts_update(&f, 1, &round);
+    tc_heartbeat_facts_update(&f, TC_FACTS_READ, &round);
     assert(round.collected && f.last_complete);
     assert(tc_heartbeat_facts_fresh(&f, 50000) && tc_heartbeat_facts_fresh(&f, 50000 + limit - 1));
     assert(!tc_heartbeat_facts_fresh(&f, 50000 + limit));
     /* Reusing them reads nothing and does not make them younger. */
-    tc_heartbeat_facts_update(&f, 0, &round);
+    tc_heartbeat_facts_update(&f, TC_FACTS_KEEP, &round);
     assert(!round.collected && collections == 1 && !tc_heartbeat_facts_fresh(&f, 50000 + limit));
     /* A key that timed out, ran out of budget or never started (and every
      * key skipped after it): read again. */
@@ -201,12 +269,37 @@ static void test_facts_fresh(void) {
         reset();
         memset(&f, 0, sizeof(f));
         answer(incomplete[i].key, incomplete[i].status, "", incomplete[i].reason, incomplete[i].error);
-        tc_heartbeat_facts_update(&f, 1, &round);
+        tc_heartbeat_facts_update(&f, TC_FACTS_READ, &round);
         assert(round.collected && f.have_last && !f.last_complete && !tc_heartbeat_facts_fresh(&f, 50000));
         /* A complete collection after it is fresh again. */
         reset();
-        tc_heartbeat_facts_update(&f, 1, &round);
+        tc_heartbeat_facts_update(&f, TC_FACTS_READ, &round);
         assert(f.last_complete && tc_heartbeat_facts_fresh(&f, 50000));
+    }
+    /* READ_UNLESS_FRESH (a retry after a network failure): fresh complete
+     * facts are kept, incomplete ones read again. */
+    reset();
+    tc_heartbeat_facts_update(&f, TC_FACTS_READ_UNLESS_FRESH, &round);
+    assert(!round.collected && collections == 0);
+    answer("syNm", ACP_ABORT, "", ACP_REASON_TIMEOUT, 0);
+    tc_heartbeat_facts_update(&f, TC_FACTS_READ, &round);
+    assert(!f.last_complete);
+    reset();
+    tc_heartbeat_facts_update(&f, TC_FACTS_READ_UNLESS_FRESH, &round);
+    assert(round.collected && collections == 1 && f.last_complete);
+    /* A dead ACPd from this process's first read: every key answers empty
+     * at once. Counted, and not complete, so a retry reads acp again
+     * instead of keeping no identity for an hour. */
+    {
+        static struct tc_heartbeat_facts dead;
+        reset();
+        answer("sySN", ACP_OK, "", ACP_REASON_NONE, 0);
+        answer("syAP", ACP_OK, "", ACP_REASON_NONE, 0);
+        answer("syAM", ACP_OK, "", ACP_REASON_NONE, 0);
+        tc_heartbeat_facts_update(&dead, TC_FACTS_READ, &round);
+        assert(dead.acp.empty == 1 && !dead.last_complete && !tc_heartbeat_facts_fresh(&dead, 50000));
+        tc_heartbeat_facts_update(&dead, TC_FACTS_READ_UNLESS_FRESH, &round);
+        assert(round.collected && collections == 2 && dead.acp.empty == 2);
     }
 }
 
@@ -220,16 +313,16 @@ static void test_mac_sources(void) {
         reset();
         table_mac = other_mac;
         answer("waMA", ACP_OK, "80:EA:96:E6:58:68", ACP_REASON_NONE, 0);
-        assert(!build(&f, 1, json, sizeof(json), &r));
+        assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r));
         assert(strstr(json, "\"mac\":\"80:ea:96:e6:58:68\"") && !strcmp(f.wama, "80:ea:96:e6:58:68"));
         /* Kept through a collection that stops before waMA (syAP times out),
          * one where waMA is "not set", and one that never validates. */
         reset();
         answer("syAP", ACP_ABORT, "", ACP_REASON_TIMEOUT, 0);
-        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+        assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
         reset();
         answer("waMA", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
-        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+        assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
     }
     /* A plan that never validates still gets waMA's address. */
     {
@@ -238,7 +331,7 @@ static void test_mac_sources(void) {
         validated = 0;
         table_mac = other_mac;
         answer("waMA", ACP_OK, "80:EA:96:E6:58:68", ACP_REASON_NONE, 0);
-        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+        assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
     }
     /* Boot: both sources hold a placeholder. The serial names the router
      * and no address goes. */
@@ -247,29 +340,29 @@ static void test_mac_sources(void) {
         reset();
         table_mac = placeholder_mac;
         answer("waMA", ACP_OK, "00:01:02:03:04:05", ACP_REASON_NONE, 0);
-        assert(!build(&f, 1, json, sizeof(json), &r));
+        assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r));
         assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"mac\":null") && !f.wama[0]);
         /* The table is read again on every heartbeat until waMA answers. */
         reset();
         table_mac = other_mac;
-        assert(!build(&f, 0, json, sizeof(json), &r) && collections == 0);
+        assert(!build(&f, TC_FACTS_KEEP, json, sizeof(json), &r) && collections == 0);
         assert(strstr(json, "\"mac\":\"e8:8d:28:58:f1:5c\""));
         /* The next collection's waMA is kept, and later heartbeats send it
          * with no acp read, whatever the table holds. */
         reset();
         answer("waMA", ACP_OK, "80:EA:96:E6:58:68\n", ACP_REASON_NONE, 0);
-        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+        assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
         reset();
         table_mac = placeholder_mac;
-        assert(!build(&f, 0, json, sizeof(json), &r) && collections == 0);
+        assert(!build(&f, TC_FACTS_KEEP, json, sizeof(json), &r) && collections == 0);
         assert(strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
         /* A later placeholder leaves it; a different usable answer replaces it. */
         reset();
         answer("waMA", ACP_OK, "00:01:02:03:04:05", ACP_REASON_NONE, 0);
-        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
+        assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
         reset();
         answer("waMA", ACP_OK, "e8:8d:28:58:f1:5c", ACP_REASON_NONE, 0);
-        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"mac\":\"e8:8d:28:58:f1:5c\""));
+        assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && strstr(json, "\"mac\":\"e8:8d:28:58:f1:5c\""));
     }
     /* No serial, no waMA, a placeholder table: nothing names the router, so
      * nothing goes, never under the placeholder; once the table is real, the
@@ -280,11 +373,11 @@ static void test_mac_sources(void) {
         table_mac = placeholder_mac;
         answer("sySN", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
         answer("waMA", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
-        assert(build(&f, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE && !f.mac[0]);
+        assert(build(&f, TC_FACTS_READ, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE && !f.mac[0]);
         reset();
         answer("sySN", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
         answer("waMA", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
-        assert(!build(&f, 1, json, sizeof(json), &r) && strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\""));
+        assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\""));
     }
 }
 
@@ -297,7 +390,7 @@ int main(void) {
     /* A first heartbeat reads everything in one collection: identity first,
      * stopping at the first timeout. */
     reset();
-    assert(!build(&f, 1, json, sizeof(json), &r) && !r.local_resource);
+    assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && !r.local_resource);
     assert(collections == 1 && last_flags == ACP_STOP_EARLY);
     assert(!strcmp(keys_asked, "sySN syAP syAM raNA raDS waNM usbF laIP waIP waLL gnRo syNm waMA "));
     assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"mac\":\"80:ea:96:e6:58:68\""));
@@ -316,7 +409,7 @@ int main(void) {
         delivery = &record;
     }
     reset();
-    assert(!build(&f, 0, json, sizeof(json), &r));
+    assert(!build(&f, TC_FACTS_KEEP, json, sizeof(json), &r));
     assert(collections == 0 && plan_builds == 0);
     assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"plan_age_sec\":0"));
     assert(strstr(json, "\"delivery\":{\"failed\":3,\"since\":4000,\"classes\":{\"local_resource\":2,"
@@ -329,8 +422,9 @@ int main(void) {
      * the timeout is counted. */
     reset();
     answer("syAP", ACP_ABORT, "", ACP_REASON_TIMEOUT, 0);
-    assert(!build(&f, 1, json, sizeof(json), &r) && !r.local_resource);
-    assert(f.acp_timeouts == 1 && built_with_history == 1);
+    assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && !r.local_resource);
+    assert(f.acp.timeouts == 1 && built_with_history == 1);
+    assert(!f.acp.empty); /* a timeout is no answer, not an empty one */
     assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"device_syap\":\"106\""));
     assert(strstr(json, "\"plan_error\":\"syNm\"") && strstr(json, "\"plan_stale_sec\":7"));
     assert(!strstr(json, "plan_age_sec"));
@@ -338,8 +432,34 @@ int main(void) {
     /* A model read that fails for want of a process: the kept one goes. */
     reset();
     answer("syAM", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
-    assert(!build(&f, 1, json, sizeof(json), &r) && r.local_resource);
+    assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && r.local_resource);
     assert(strstr(json, "\"device_model\":\"TimeCapsule6,106\""));
+
+    /* An ACPd that cannot answer: acp prints nothing and exits 0 for every
+     * get, so each key reads empty at once (no timeout). The kept serial,
+     * model, model number and name still go, under the same router ID, and
+     * the collection is not complete, so a retry reads acp again. */
+    reset();
+    answer("sySN", ACP_OK, "", ACP_REASON_NONE, 0);
+    answer("syAP", ACP_OK, "", ACP_REASON_NONE, 0);
+    answer("syAM", ACP_OK, " \t", ACP_REASON_NONE, 0);
+    answer("syNm", ACP_OK, "", ACP_REASON_NONE, 0);
+    answer("waMA", ACP_OK, "", ACP_REASON_NONE, 0);
+    assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && collections == 1);
+    assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"device_syap\":\"106\""));
+    assert(strstr(json, "\"device_model\":\"TimeCapsule6,106\"") && strstr(json, "\"device_name\":\"Name\\n"));
+    assert(strstr(json, "\"mac\":\"80:ea:96:e6:58:68\"") && f.acp.timeouts == 1 && f.acp.empty == 1);
+    assert(!f.last_complete && !tc_heartbeat_facts_fresh(&f, 50000));
+    /* acp exiting nonzero ("not set") does not clear them either; a new
+     * value replaces the kept one. */
+    reset();
+    answer("sySN", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
+    answer("syAM", ACP_OK, "TimeCapsule8,119", ACP_REASON_NONE, 0);
+    assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r));
+    assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"device_model\":\"TimeCapsule8,119\""));
+    assert(!f.last_complete);
+    reset();
+    assert(!build(&f, TC_FACTS_READ, json, sizeof(json), &r) && f.last_complete && tc_heartbeat_facts_fresh(&f, 50000));
 
     /* A new process whose model read times out still reports, under its
      * serial, with the model empty: the router ID does not depend on it. */
@@ -347,10 +467,10 @@ int main(void) {
         static struct tc_heartbeat_facts fresh;
         reset();
         answer("syAM", ACP_ABORT, "", ACP_REASON_TIMEOUT, 0);
-        assert(!build(&fresh, 1, json, sizeof(json), &r));
+        assert(!build(&fresh, TC_FACTS_READ, json, sizeof(json), &r));
         assert(strstr(json, "\"router_id\":\"serial123\"") && strstr(json, "\"device_model\":\"\""));
         /* ... and the name, asked after the timeout, is empty too. */
-        assert(strstr(json, "\"device_name\":\"\"") && fresh.acp_timeouts == 1);
+        assert(strstr(json, "\"device_name\":\"\"") && fresh.acp.timeouts == 1);
     }
     /* A hung ACPd from the first read (ACPd stuck at boot, telemetry
      * restarted during the wedge): the hardware address names it. */
@@ -358,7 +478,7 @@ int main(void) {
         static struct tc_heartbeat_facts fresh;
         reset();
         answer("sySN", ACP_ABORT, "", ACP_REASON_TIMEOUT, 0);
-        assert(!build(&fresh, 1, json, sizeof(json), &r));
+        assert(!build(&fresh, TC_FACTS_READ, json, sizeof(json), &r));
         assert(strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\""));
     }
     /* A broken acp binary is worth a heartbeat too. */
@@ -369,7 +489,7 @@ int main(void) {
         answer("syAP", ACP_ABORT, "", ACP_REASON_EXEC, 0);
         answer("syAM", ACP_ABORT, "", ACP_REASON_EXEC, 0);
         answer("syNm", ACP_ABORT, "", ACP_REASON_EXEC, 0);
-        assert(!build(&fresh, 1, json, sizeof(json), &r) && !r.local_resource);
+        assert(!build(&fresh, TC_FACTS_READ, json, sizeof(json), &r) && !r.local_resource);
         assert(strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\"") && strstr(json, "\"device_syap\":\"\""));
     }
     /* A full process table at the first read is the device's trouble, not
@@ -381,7 +501,7 @@ int main(void) {
         tc_failure_counts(&before);
         reset();
         answer("sySN", ACP_ABORT, "", ACP_REASON_FORK, EAGAIN);
-        assert(!build(&fresh, 1, json, sizeof(json), &r) && r.local_resource);
+        assert(!build(&fresh, TC_FACTS_READ, json, sizeof(json), &r) && r.local_resource);
         assert(strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\"") && strstr(json, "\"device_model\":\"\""));
         tc_failure_counts(&counts);
         assert(counts.fork_eagain == before.fork_eagain + 1);
@@ -391,8 +511,18 @@ int main(void) {
         static struct tc_heartbeat_facts fresh;
         reset();
         answer("sySN", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
-        assert(!build(&fresh, 1, json, sizeof(json), &r));
+        assert(!build(&fresh, TC_FACTS_READ, json, sizeof(json), &r));
         assert(strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\""));
+        /* A unit that never gave a serial still keeps complete facts, so a
+         * retry after a network failure need not fork acp again ... */
+        assert(fresh.last_complete && tc_heartbeat_facts_fresh(&fresh, 50000) && !fresh.acp.empty);
+        /* ... and once one comes, a later empty serial makes it incomplete. */
+        reset();
+        assert(!build(&fresh, TC_FACTS_READ, json, sizeof(json), &r) && fresh.last_complete);
+        reset();
+        answer("sySN", ACP_OK, "", ACP_REASON_NONE, 0);
+        assert(!build(&fresh, TC_FACTS_READ, json, sizeof(json), &r) && !fresh.last_complete);
+        assert(strstr(json, "\"router_id\":\"serial123\""));
     }
     /* Neither a serial nor a hardware address: nothing to name it by. */
     {
@@ -400,7 +530,7 @@ int main(void) {
         reset();
         have_mac = 0;
         answer("sySN", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
-        assert(build(&fresh, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE);
+        assert(build(&fresh, TC_FACTS_READ, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE);
         assert(!fresh.mac[0]);
     }
     /* TERM during the collection. */
@@ -408,7 +538,7 @@ int main(void) {
         static struct tc_heartbeat_facts fresh;
         reset();
         telemetry_stop = 1;
-        assert(build(&fresh, 1, json, sizeof(json), &r) && r.failure == TC_OUTCOME_CANCELLED);
+        assert(build(&fresh, TC_FACTS_READ, json, sizeof(json), &r) && r.failure == TC_OUTCOME_CANCELLED);
         telemetry_stop = 0;
     }
     /* The largest delivery record fits its budget (telemetry.h). */
@@ -418,7 +548,7 @@ int main(void) {
         const char *start, *end;
         delivery = &most;
         reset();
-        assert(!build(&f, 0, json, sizeof(json), &r));
+        assert(!build(&f, TC_FACTS_KEEP, json, sizeof(json), &r));
         start = strstr(json, ",\"delivery\":");
         end = strstr(start, "}}");
         assert(start && end && (size_t)(end + 2 - start) <= TC_DELIVERY_JSON_MAX);
@@ -426,9 +556,10 @@ int main(void) {
     }
     /* Too small a buffer sends nothing. */
     reset();
-    assert(build(&f, 0, json, 12, &r) && r.failure == TC_OUTCOME_SERVER);
+    assert(build(&f, TC_FACTS_KEEP, json, 12, &r) && r.failure == TC_OUTCOME_SERVER);
     test_mac_parse();
     test_facts_fresh();
     test_mac_sources();
+    test_heartbeat_ident();
     return 0;
 }

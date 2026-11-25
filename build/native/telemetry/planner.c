@@ -13,18 +13,19 @@ int planner_armed(const struct tc_planner *p, long now) {
 }
 
 struct tc_attempt planner_next(const struct tc_planner *p, long now, int requests) {
-    struct tc_attempt a = {TC_ATTEMPT_NONE, NULL, 0, 0};
+    struct tc_attempt a = {TC_ATTEMPT_NONE, NULL, TC_FACTS_KEEP};
     int scheduled = !p->boot_sent || now >= p->next_scheduled;
     int extra = requests && p->boot_sent && now >= p->next_extra_at;
     if (now < p->retry_at || (!scheduled && !extra)) return a;
     a.kind = !p->boot_sent ? TC_ATTEMPT_BOOT : extra ? TC_ATTEMPT_EXTRA : TC_ATTEMPT_SCHEDULED;
     a.reason = a.kind == TC_ATTEMPT_BOOT ? "boot" : a.kind == TC_ATTEMPT_EXTRA ? "resource_high" : "scheduled";
-    /* An extra heartbeat must not fork, unless acp has gone unread for
-     * TC_INTERVAL_SECONDS: every delivered heartbeat restarts the schedule,
-     * so a chronic health event's extras would otherwise keep the boot-time
-     * identity and plan forever. A retry after a local failure never forks. */
-    a.refresh = (a.kind != TC_ATTEMPT_EXTRA || now >= p->next_refresh) && !p->last_local;
-    a.reuse = a.refresh && p->net_retry;
+    /* The table at the top of planner.h. */
+    if (p->last_failure == TC_OUTCOME_LOCAL_RESOURCE || (a.kind == TC_ATTEMPT_EXTRA && now < p->next_refresh))
+        a.facts = TC_FACTS_KEEP;
+    else if (p->last_failure == TC_OUTCOME_NETWORK || p->last_failure == TC_OUTCOME_SERVER)
+        a.facts = TC_FACTS_READ_UNLESS_FRESH;
+    else
+        a.facts = TC_FACTS_READ;
     return a;
 }
 
@@ -33,18 +34,18 @@ enum tc_outcome tc_setup_outcome(int error, int lock) {
     return lock ? TC_OUTCOME_BUSY : TC_OUTCOME_SERVER;
 }
 
-void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a, enum tc_outcome outcome,
+void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a, const struct tc_attempt_result *r,
                       int requests) {
+    enum tc_outcome outcome = r->outcome;
     long cap;
     switch (outcome) {
     case TC_OUTCOME_DELIVERED:
         if (a->kind == TC_ATTEMPT_BOOT) p->boot_sent = 1;
         p->next_scheduled = now + TC_INTERVAL_SECONDS;
-        if (a->refresh) p->next_refresh = now + TC_INTERVAL_SECONDS;
+        if (r->read_acp) p->next_refresh = now + TC_INTERVAL_SECONDS;
         p->retry_at = p->net_delay = 0;
         p->local_count = 0;
-        p->last_local = 0;
-        p->net_retry = 0;
+        p->last_failure = TC_OUTCOME_DELIVERED;
         p->failed = 0;
         p->failed_since = 0;
         memset(p->failed_by, 0, sizeof(p->failed_by));
@@ -68,17 +69,15 @@ void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a
     p->failed++;
     p->failed_by[outcome]++;
     if (!p->failed_since) p->failed_since = now > 0 ? now : 1;
-    p->net_retry = outcome == TC_OUTCOME_NETWORK || outcome == TC_OUTCOME_SERVER;
+    p->last_failure = outcome;
     if (outcome == TC_OUTCOME_LOCAL_RESOURCE) {
         p->local_count++;
-        p->last_local = 1;
         p->retry_at = now + (p->local_count <= TC_PLANNER_LOCAL_RETRIES ? TC_HEARTBEAT_RETRY_SECONDS
                                                                        : TC_PLANNER_LOCAL_LATER_SECONDS);
         return;
     }
     p->local_count = 0;
-    p->last_local = 0;
-    cap = requests ? p->spacing : TC_INTERVAL_SECONDS;
+    cap = requests && p->spacing < TC_PLANNER_NET_RETRY_MAX_SECONDS ? p->spacing : TC_PLANNER_NET_RETRY_MAX_SECONDS;
     p->net_delay = p->net_delay ? p->net_delay * 2 : TC_HEARTBEAT_RETRY_SECONDS;
     if (p->net_delay > cap) p->net_delay = cap;
     p->retry_at = now + p->net_delay;

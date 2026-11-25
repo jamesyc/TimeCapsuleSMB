@@ -617,15 +617,50 @@ acp collection (`heartbeat_facts.c`): `sySN`, `syAP`, `syAM`, then the plan's te
 keys (`syNm` among them), one child at a time under the 30 s budget, stopping at
 the first timeout or the first child that cannot start (a full process table stays
 full). A key stopped because the budget ran out is `BUDGET`, not a timeout, and is
-counted in `acp_budget_exhausted`. Values once read are kept for the process's life; the plan is
+counted in `acp_budget_exhausted`. Values once read are kept for the process's life, and an
+empty answer never replaces one: `acp` prints nothing and exits 0 for any failed get, so
+an ACPd that cannot answer reads as every key empty (a collection with an empty serial is
+not complete, so a retry reads acp again). The plan is
 built from the last validated one (`device_plan_history_update`, shared with
 discovery's plan loop), so a collection that loses keys reports the roles it kept,
 with `plan_error` and `plan_stale_sec`. A heartbeat that collects nothing resends
 the last plan with `plan_age_sec`; that includes a retry after a failed POST, so a
 boot heartbeat delivered on its second try carries one of about a minute. A value never read goes out empty: the router
-is named by its serial or hardware address, so a missing model or name cannot make
-a different router (`main`'s fallback ID hashed them, which is why it refused a
-partial identity).
+is named by its serial or hardware address, so a missing model or name does not
+change which router a heartbeat is from.
+
+The POST tries the server's addresses in order, IPv6 first. An attempt that ends
+before the response headers (connect error or timeout, a reset, a close or a stall)
+moves to the next address and sends the request again, so a broken IPv6 path falls
+back to IPv4; every address but the last gets 25 s of the 70 s request limit. A
+close before any byte of an answer is a network failure (a middlebox can accept and
+hang up), and a connect or send that fails for want of buffers or memory is a local
+one, which gets the local retry rules. A
+complete answer, a non-2xx one included, is never retried elsewhere, and neither is
+a close after the headers that cuts the body short; a reset or stall after the
+headers is. A heartbeat keeps one id from its first attempt until it is delivered,
+retries by the planner included, and the server keeps one row per id: a later
+attempt (higher `uptime_sec`) replaces a row whose answer never reached the device,
+so what the device noted between the attempts is not lost. A new reason or router ID
+starts a new id. The resolver asks
+each `resolv.conf` nameserver for A and AAAA (127.0.0.1 only when the file does not
+exist or names no usable server; a link-local one needs its scope, `%bridge0` or
+`%3`, mapped through the interface table), on NetBSD libc's schedule: two rounds over the
+list, 5 s per server in the first and 10 s shared among them in the second (at
+least 1 s each), the second resending under the same ids only what a server left
+unanswered. A SERVFAIL, REFUSED or truncated reply counts as that type answered
+with nothing, so once the other type is answered too it moves on without waiting
+out the server, and a server that answered both is not asked again. An answer
+whose A reply was lost waits for the A resend before it is used. One function (`judge()` in `dns.c`, with its table)
+gives each nameserver's answers a verdict. NXDOMAIN for A, or a clean reply with no
+record to both types, is final: the lookup fails without asking another nameserver
+or falling back, and the kept answer for the name is forgotten; NXDOMAIN for AAAA
+alone is AAAA answered with nothing. An answer whose A reply came back clean is
+cached for the shortest TTL among its addresses and CNAMEs (60 s to a day) and kept
+7 days as a fallback for a DNS outage (no usable answer from any nameserver). An
+answer with addresses but no clean A reply is used but not kept, and the IPv4
+addresses from the last clean answer, while it is under 7 days old, follow its own:
+a device whose IPv6 does not reach the server can still get there over IPv4.
 
 The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
 
@@ -634,7 +669,8 @@ The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
   scheduled one every 12 hours, and the extra `resource_high` one health requests (spaced 1, 2, 4, 8,
   then 12 hours, back to 1 after a quiet day). Failures back off by kind: a local
   failure (no process, descriptor or memory) retries every minute ten times, then
-  every five minutes; network, server and missing identity double from a minute.
+  every five minutes; network, server and missing identity double from a minute, up to
+  six hours.
   A retry after a network or server failure sends the facts it has, without
   forking acp, while they come from a complete collection under an hour old.
   Out of descriptors or memory while taking the workspace lock or the nonce
@@ -643,18 +679,49 @@ The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
   `planner.h` has the transition table.
 - `health.c`, `health_read.c`, `health_json.c`: readers take a sample every 15 s
   (`sysctl` only: process table, files, memory, mbufs, the kernel message buffer)
-  and a probe round every 5 minutes (loopback sshd over IPv4 and smbd over
-  IPv4 then IPv6, one probe per service at a time: sshd logs every probe and
-  ACPd keeps the line in its log, `acp -q logm`, so one family is enough;
-  skipped while the table is within 2 of
-  `kern.maxproc`, where a probe's own child could refuse a client). A refused
-  probe is a failure only from a target that answered before, of a service whose
-  listener runs; no `::1` on the kernel skips the probe. Pure detectors (`threshold`, `probe_track`,
+  and probe rounds of loopback sshd and smbd (sshd and smbd over IPv4, then
+  smbd over IPv6, one probe per service at a time): the first when the boot
+  hold ends, so the boot heartbeat carries it, then every 90 minutes. A round
+  is skipped (and retried in 5 minutes, which forks nothing) unless the last
+  sample read the table and it is more than 2 below `kern.maxproc`, where a
+  probe's own child could refuse a client. sshd logs every probe and ACPd
+  keeps the line in its log (`acp -q logm`, AirPort Utility's log view), so
+  sshd is probed over IPv4 only, which shows a wedged sshd as well as both
+  families would. sshd gets one short line that is not an SSH identification, so it
+  logs the probe by name and closes before forking a pre-auth child; both
+  servers then get a clean shutdown. A probe ends `ok`, `closed` (accepted, then
+  hung up before answering), `silent`, `refused`, `timeout` (no connect within
+  2 s: nothing accepts), `down` (another connect error) or `absent`; a connect
+  that fails for want of buffers or descriptors is skipped and counted as a
+  socket failure, and no `::1` on the kernel skips the probe. A refusal is
+  `refused` only from a target that answered before, and for smbd only while its
+  listener runs (the manager stops smbd on purpose and reports why); otherwise
+  `absent`. An sshd that answered and then died is refused, so it triggers. `closed` and `silent` always count as
+  failures (the port accepted); `refused`, `timeout` and `down` count only from a
+  target that answered before, so one that never did cannot fail every round.
+  Each target has a phase (`probe_track` in `health.c`): a counted failure below
+  the trigger makes it `confirming` and brings the next round 5 minutes later;
+  reaching the trigger reports it once (`reported`) and goes back to 90
+  minutes; `ok` or `absent` ends the episode. A skipped probe, a whole round
+  skipped near a full table, or an uncounted failure ends a confirmation and
+  clears its count, so a failure from long ago never joins a later one. A
+  lasting failure costs one or two extra rounds, not one every 5 minutes. A
+  target's result expires after 12 hours without a probe of it (rounds
+  skipped near a full table): it then goes out as `none`, so no heartbeat
+  carries a result older than the heartbeat before it. A
+  service already refusing or not accepting when telemetry starts is never
+  counted; issue 429's wedge accepts and closes, which counts. The kernel message scan keeps the
+  previous read and treats what follows the largest overlap with its end as
+  new. A count is close, not exact: new copies of a line that floods the whole
+  buffer can hide, and a ring that moved more than its size less 128 bytes
+  between reads is read as all new, so a sighting in what is left of the old
+  text counts twice. Pure detectors (`threshold`, `probe_track`,
   `kmsg_scan`) note events in a ledger, documented at each. Requesting events
   (`procs`, `files`, `kmsg` for a full process or file table, `probe`) ask for an
   extra heartbeat once armed (after the boot heartbeat, or 15 minutes of uptime);
   the rest (`kmsg_warning`, `ram`, `mbuf`, `fork`, `socket`, `acp_timeout`,
-  `kmsg_at_start`) ride along as `news`. The JSON writer returns the events it
+  `acp_empty`)
+  ride along as `news`. The JSON writer returns the events it
   wrote; only a delivered heartbeat clears them.
 
 Each heartbeat carries `delivery` (failed attempts since the last delivered one,
@@ -662,11 +729,17 @@ by kind, and when the first failed) and `health`: `procs`, `procs_peak` and
 `procs_first_high` snapshots (counts, the largest groups by name and depth, wait
 channels, largest resident sizes, most descriptors, smbd's children), files, memory,
 mbufs, `kmsg` (per pattern: first and last new sighting, count, `at_start`),
-`probes` (last result, streak, counts), `probe_rounds_skipped`, fork failures (one
+`probes` (per target: the last result, `none` if no probe of it ran yet; the
+streak of counted failures; counts per result; `first_fail_at` and
+`last_fail_at`, the first and latest counted failure of the current or last
+episode; `probed_at`, its latest real probe), `probe_rounds_skipped`, fork failures (one
 per acp collection or debug job) and socket failures, `acp_timeouts`,
-`acp_budget_exhausted`, `triggers` and `news`. Times are monotonic seconds of the telemetry process: they
-compare within one process, not across a restart. A health object that does not
-fit goes as null and its events wait.
+`acp_budget_exhausted`, `acp_empty` (collections where every identity key
+answered with nothing: an ACPd that cannot answer), `triggers` and `news`. Times are monotonic seconds since
+boot, the clock of `uptime_sec`, so they compare across telemetry restarts. A health object that does not
+fit goes as null and its events wait. `procs_peak`, `procs_first_high`, the files
+`peak` and `mem.min_free` cover the time since the last delivered heartbeat, which
+reported the ones before.
 
 `--once [reason]` performs one cycle; `--print-payload [reason]` only prints.
 `--report [reason]` posts only, without downloading or executing debug jobs.

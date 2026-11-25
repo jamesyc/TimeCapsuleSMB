@@ -17,7 +17,8 @@ static int virtual_clock(void) {
 
 /* deadline_skip is deadline_each with ACP_STOP_EARLY. */
 static int each_like(void) {
-    return !strcmp(scenario, "deadline_each") || !strcmp(scenario, "deadline_skip");
+    return !strcmp(scenario, "deadline_each") || !strcmp(scenario, "deadline_skip") ||
+           !strcmp(scenario, "deadline_edge");
 }
 
 static int once(const char *name) {
@@ -184,7 +185,10 @@ int main(int argc, char **argv) {
     /* The guard shares telemetry's group, outside the collector's group. */
     before = open_fds();
     if (each_like()) {
-        int skip = !strcmp(scenario, "deadline_skip");
+        /* deadline_edge: the budget left when the third child starts (at
+         * 24 s) is exactly its own 20 s, so it times out on its own. */
+        int edge = !strcmp(scenario, "deadline_edge");
+        int skip = edge || !strcmp(scenario, "deadline_skip");
         char values[4][256];
         struct acp_request requests[4] = {0};
         const char *keys[] = {"syAP", "syAM", "syNm", "waMA"};
@@ -197,7 +201,8 @@ int main(int argc, char **argv) {
         /* deadline_skip has budget to spare, so the third key's own 20 s
          * runs out first (at 44 s): a timeout. deadline_each's 30 s budget
          * runs out first, at 30 s, while the third child still runs. */
-        assert(acp_collect_run_opts(requests, 4, 20000, skip ? 60000 : 30000, skip ? ACP_STOP_EARLY : 0) == -1);
+        assert(acp_collect_run(requests, 4, 20000, edge ? 44000 : skip ? 60000 : 30000, skip ? ACP_STOP_EARLY : 0) ==
+               -1);
         assert(requests[0].status == ACP_OK && !strcmp(values[0], "0x77") && requests[0].reason == ACP_REASON_NONE);
         assert(requests[1].status == ACP_OK && !strcmp(values[1], "TimeCapsule8,119"));
         /* The budget stopping a running child is not that key timing out,
@@ -227,7 +232,7 @@ int main(int argc, char **argv) {
             requests[i].output = values[i];
             requests[i].capacity = sizeof(values[i]);
         }
-        assert(acp_collect_run_opts(requests, 3, 20000, 30000, ACP_STOP_EARLY) == -1);
+        assert(acp_collect_run(requests, 3, 20000, 30000, ACP_STOP_EARLY) == -1);
         assert(forks == 1 && requests[0].reason == ACP_REASON_FORK && requests[0].error == EAGAIN);
         assert(requests[1].reason == ACP_REASON_SKIPPED && requests[2].reason == ACP_REASON_SKIPPED);
         assert(open_fds() == before);
@@ -259,7 +264,7 @@ int main(int argc, char **argv) {
             request.output = output;
             request.capacity = sizeof(output);
             (void)acp_collect_run(&request, 1, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
-                                  (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
+                                  (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000, 0);
             result = request.status;
             /* Why it aborted, on the first run of the scenario. */
             if (repeat == 0) {

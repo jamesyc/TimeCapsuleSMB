@@ -286,13 +286,20 @@ def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
     import socket
 
     attempts: list[object] = []
+    # A link-local address scoped to a loopback interface (fe80::1%lo0)
+    # stays on this host too.
+    loopback_scopes = {index for index, name in socket.if_nameindex() if name.startswith("lo")}
+
+    def on_host(ip, address: object) -> bool:
+        return ip.is_loopback or (ip.is_link_local and isinstance(address, tuple) and len(address) >= 4
+                                  and address[3] in loopback_scopes)
 
     def remote(sock: socket.socket, address: object) -> bool:
         if sock.family not in (socket.AF_INET, socket.AF_INET6) or sock.type != socket.SOCK_STREAM:
             return False
         host = str(address[0]) if isinstance(address, tuple) else str(address)
         try:
-            return not ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+            return not on_host(ipaddress.ip_address(host.split("%", 1)[0]), address)
         except ValueError:
             return host != "localhost"
 
@@ -325,7 +332,7 @@ def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
                 ip = ipaddress.ip_address(str(address[0]).split("%", 1)[0])
             except ValueError:
                 ip = None
-            if ip is None or not (ip.is_loopback or ip.is_multicast):
+            if ip is None or not (on_host(ip, address) or ip.is_multicast):
                 attempts.append(address)
                 raise AssertionError(f"tests must not send a real datagram to {address}")
         return real_sendto(sock, data, *args)

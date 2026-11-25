@@ -7,6 +7,9 @@
  *   iflist_parse --bad-sockaddr  NEWADDR whose inner sockaddr claims more bytes than the message (v3)
  *   iflist_parse --bad-sockaddr6 same, RTM_VERSION 4 layout
  *   iflist_parse --version6      RTM_VERSION 4 (NetBSD 6) synthetic message pair
+ *   iflist_parse --odd-lladdr    links with no link-layer address and an 8-byte one: neither is a MAC
+ *   iflist_parse --placeholder   the lowest-index port still has NetBSD 6's boot placeholder: no device MAC
+ *   iflist_parse --placeholder4  the same with NetBSD 4's placeholder on mgi0
  *   iflist_parse --device-mac    a table whose lowest address and first row are not the
  *                                device's: the lowest-index usable address is
  * Capacity tables (RTM_VERSION 4), N given as the second argument:
@@ -37,7 +40,7 @@ static void dump(const struct if_table *t) {
                    l->lladdr[4], l->lladdr[5]);
         putchar('\n');
     }
-    if (if_table_device_mac(t, mac) == 0)
+    if (addr_device_mac(t, mac) == 0)
         printf("device mac=%02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     else
         puts("device mac=none");
@@ -49,22 +52,29 @@ static void dump(const struct if_table *t) {
 }
 
 /* if_msghdr with the given header size (if_data follows at 16; the
- * sockaddr_dl follows the header). */
-static size_t ifinfo(unsigned char *p, unsigned version, unsigned type, size_t header, unsigned index, unsigned flags,
-                     const char *name, const unsigned char *mac, int with_sdl) {
+ * sockaddr_dl follows the header), its link-layer address alen bytes long. */
+static size_t ifinfo_alen(unsigned char *p, unsigned version, unsigned type, size_t header, unsigned index,
+                          unsigned flags, const char *name, const unsigned char *lladdr, size_t alen, int with_sdl) {
     size_t nlen = strlen(name);
-    size_t sdl_len = with_sdl ? 8 + nlen + (mac ? 6 : 0) : 0;
+    size_t sdl_len = with_sdl ? 8 + nlen + alen : 0;
     size_t total = header + sdl_len;
     memset(p, 0, total);
     put_u16(p, (unsigned)total); p[2] = (unsigned char)version; p[3] = (unsigned char)type;
     put_u32(p + 4, 0x20); put_u32(p + 8, flags); put_u16(p + 12, index);
     if (with_sdl) {
         unsigned char *s = p + header;
-        s[0] = (unsigned char)sdl_len; s[1] = 18; put_u16(s + 2, index); s[4] = 6; s[5] = (unsigned char)nlen; s[6] = mac ? 6 : 0; s[7] = 0;
+        s[0] = (unsigned char)sdl_len; s[1] = 18; put_u16(s + 2, index); s[4] = 6; s[5] = (unsigned char)nlen;
+        s[6] = (unsigned char)alen; s[7] = 0;
         memcpy(s + 8, name, nlen);
-        if (mac) memcpy(s + 8 + nlen, mac, 6);
+        if (alen) memcpy(s + 8 + nlen, lladdr, alen);
     }
     return total;
+}
+
+/* The same with a 6-byte Ethernet address, or none when mac is NULL. */
+static size_t ifinfo(unsigned char *p, unsigned version, unsigned type, size_t header, unsigned index, unsigned flags,
+                     const char *name, const unsigned char *mac, int with_sdl) {
+    return ifinfo_alen(p, version, type, header, index, flags, name, mac, mac ? 6 : 0, with_sdl);
 }
 
 static size_t round_up(size_t n, size_t unit) { return n < unit ? unit : ((n + unit - 1) / unit) * unit; }
@@ -207,6 +217,33 @@ int main(int argc, char **argv) {
         /* NetBSD 6 also emits an AF_LINK RTA_IFA row per interface: not an address. */
         memset(buf + len, 0, 64); buf[len + 2] = 4; buf[len + 3] = 0xc; put_u32(buf + len + 4, (1u << 2) | (1u << 5));
         put_u16(buf + len + 16, 13); buf[len + 24] = 15; buf[len + 32] = 21; buf[len + 33] = 18; put_u16(buf + len, 64); len += 64;
+    } else if (!strcmp(argv[1], "--odd-lladdr")) {
+        /* A tunnel (no link-layer address) and an 8-byte EUI-64 at lower
+         * indexes than the port: neither is read as a 6-byte address. */
+        static const unsigned char eui64[8] = {0x02, 0x11, 0x22, 0xff, 0xfe, 0x33, 0x44, 0x55};
+        static const unsigned char port[6] = {0x80, 0xea, 0x96, 0xe6, 0x58, 0x68};
+        len += ifinfo_alen(buf + len, 3, 0xf, 152, 1, 0x8051, "gif0", NULL, 0, 1);
+        len += ifinfo_alen(buf + len, 3, 0xf, 152, 2, 0x8843, "fw0", eui64, 8, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 3, 0x8843, "bcmeth0", port, 1);
+    } else if (!strcmp(argv[1], "--placeholder")) {
+        /* Early in boot: the port, vlan0 and bridge0 still carry NetBSD 6's
+         * placeholder, and bridge1 already has its random address. The
+         * device MAC is none, not bridge1's. */
+        static const unsigned char placeholder[6] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05};
+        static const unsigned char random[6] = {0xac, 0xde, 0x48, 0x99, 0x7c, 0x35};
+        len += ifinfo(buf + len, 3, 0xf, 152, 1, 0x8843, "bcmeth0", placeholder, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 5, 0x8843, "vlan0", placeholder, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 9, 0xe043, "bridge0", placeholder, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 10, 0xe002, "bridge1", random, 1);
+    } else if (!strcmp(argv[1], "--placeholder4")) {
+        /* NetBSD 4 early in boot: mgi0, vlan0 and bridge0 still carry its
+         * placeholder; bridge1 has its random address. */
+        static const unsigned char placeholder[6] = {0x00, 0x0a, 0xaa, 0xbb, 0xcc, 0xdd};
+        static const unsigned char random[6] = {0xac, 0xde, 0x48, 0x99, 0x7c, 0x35};
+        len += ifinfo(buf + len, 3, 0xf, 152, 1, 0x8843, "mgi0", placeholder, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 5, 0x8843, "vlan0", placeholder, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 9, 0xe043, "bridge0", placeholder, 1);
+        len += ifinfo(buf + len, 3, 0xf, 152, 10, 0xe002, "bridge1", random, 1);
     } else if (!strcmp(argv[1], "--device-mac")) {
         /* NetBSD 4's base address e8:8d:28:... on the ports, vlan0 and
          * bridge0; bridge1's random ac:de:48:... sorts lower and comes first

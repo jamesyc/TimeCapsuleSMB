@@ -1,23 +1,11 @@
 #include "telemetry.h"
 #include "planner.h"
+#include "entropy.h"
 
 int telemetry_nonce(char out[33]) {
     unsigned char bytes[16];
-    size_t off = 0, i;
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd < 0) return -1;
-    while (off < sizeof(bytes)) {
-        ssize_t n = read(fd, bytes + off, sizeof(bytes) - off);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) {
-            int error = n < 0 ? errno : EIO;
-            close(fd);
-            errno = error;
-            return -1;
-        }
-        off += (size_t)n;
-    }
-    close(fd);
+    size_t i;
+    if (tc_random_bytes(bytes, sizeof(bytes))) return -1;
     for (i = 0; i < sizeof(bytes); i++) snprintf(out + 2 * i, 3, "%02x", bytes[i]);
     return 0;
 }

@@ -34,7 +34,7 @@ def device_driver(tmp_path_factory):
     'cancel_before_group', 'child_group', 'initial_clock', 'running_clock',
     'select_error', 'select_eintr', 'read_error', 'read_eintr', 'read_eagain', 'wait_eintr',
     'cancel_before_fork', 'cancel_after_fork', 'reap_stuck',
-    'deadline_success', 'deadline_timeout', 'deadline_each', 'deadline_skip', 'fork_skip',
+    'deadline_success', 'deadline_timeout', 'deadline_each', 'deadline_skip', 'deadline_edge', 'fork_skip',
 ])
 def test_collector_syscall_failures_and_retries(device_driver, tmp_path, scenario):
     calls = tmp_path / 'calls'

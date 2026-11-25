@@ -8,20 +8,50 @@
  * could not start, and a heartbeat sent then is the one that matters.
  *
  * HTTP/1.0 with Connection: close keeps responses unchunked; the body runs
- * to Content-Length or to the close. Only a 2xx status succeeds (curl -f
- * failed at 400 and the old caller also required 2xx). Each address gets
- * TC_HTTP_CONNECT_MS to connect, IPv6 and IPv4 alternating; the whole
- * request, name lookup included, has TC_HTTP_DEADLINE_MS on the monotonic
- * clock (NTP steps the wall clock right after boot, when the boot heartbeat
- * is in flight). TERM stops it within a second.
+ * to Content-Length or to the close. Only a complete 2xx answer is
+ * delivered. The whole request, name lookup included, has
+ * TC_HTTP_DEADLINE_MS on the monotonic clock (NTP steps the wall clock right
+ * after boot, when the boot heartbeat is in flight). TERM stops it within a
+ * second.
+ *
+ * The addresses are tried in turn, in tc_dns_resolve's order (IPv6 first).
+ * An exchange that ends before the server's head arrives (no connection
+ * within TC_HTTP_CONNECT_MS, a reset, a close or a stall) moves on to the next
+ * address, sending the request again (a heartbeat carries its id, which
+ * the server stores once, keeping the latest attempt). Every address but the last has at most
+ * TC_HTTP_ADDRESS_MS for its exchange, so an IPv6 path that connects and
+ * then stalls cannot use up the time IPv4 needs; the last has what is left.
+ * A complete answer, 2xx or not, is the server's and ends the request, and
+ * so does a close after the head, even one that cuts the body short
+ * (SERVER).
+ * Retrying is safe because the request is idempotent, and it is also used
+ * where an answer may have been under way:
+ *   - a reset or stall after the head moves on like any other failure, so
+ *     the server can get the request twice: a heartbeat keeps its id
+ *     (telemetry.h, struct tc_heartbeat_ident), under which the server
+ *     keeps one row, and a debug download is a GET;
+ *   - a server that answers early and closes while the request is still
+ *     being sent (a 401 or 413 before it reads the body) looks like a
+ *     reset: its answer is not read;
+ *   - TC_HTTP_ADDRESS_MS bounds the whole exchange, not idle time, so a
+ *     slow but steady debug download from an address that is not the last
+ *     is cut and started again on the next one. The server publishes no
+ *     AAAA record today, so its one address always has the full limit.
  *
  * The caller owns the buffer (TC_HTTP_BUFFER(limit) bytes), so a heartbeat
  * allocates nothing while the device is short of memory. The outcome says
- * why a request failed: the device short of sockets (LOCAL_RESOURCE), the
- * network or name lookup (NETWORK), an answer that is not a complete 2xx
- * (SERVER), or TERM (CANCELLED). */
+ * why a request failed: the device short of descriptors, buffers or memory
+ * for a socket or its traffic (LOCAL_RESOURCE, errclass.h), the network or
+ * name lookup (NETWORK, a close before any byte of an answer included), an
+ * answer that is not a complete 2xx (SERVER), or TERM (CANCELLED). Across addresses, and
+ * with a failed name lookup counted as one more failure, a server that was
+ * reached outranks the others, and otherwise the device's want of resources
+ * outranks the network (merge_failure). */
 #ifndef TC_HTTP_CONNECT_MS
 #define TC_HTTP_CONNECT_MS 10000
+#endif
+#ifndef TC_HTTP_ADDRESS_MS
+#define TC_HTTP_ADDRESS_MS 25000
 #endif
 
 static long long left_ms(long long deadline) {
@@ -90,57 +120,62 @@ static int parse_url(const char *url, char *host, size_t host_size, unsigned *po
     return 0;
 }
 
-/* A connected socket, or -1; *resource is set when a socket could not be
- * made for want of descriptors or memory. */
-static int connect_any(const char *host, unsigned port, long long deadline, int *resource) {
-    struct tc_dns_addr addrs[TC_DNS_MAX_ADDRS];
-    size_t count, i;
-    if (tc_dns_resolve(host, addrs, TC_DNS_MAX_ADDRS, &count, deadline, resource)) return -1;
-    for (i = 0; i < count && !telemetry_stop && left_ms(deadline) > 0; i++) {
-        struct sockaddr_storage ss;
-        socklen_t sslen;
-        long long until = acp_monotonic_ms() + TC_HTTP_CONNECT_MS;
-        int fd, error = 0;
-        socklen_t errlen = sizeof(error);
-        memset(&ss, 0, sizeof(ss));
-        if (addrs[i].family == AF_INET6) {
-            struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)&ss;
-            v6->sin6_family = AF_INET6;
-            v6->sin6_port = htons((unsigned short)port);
-            memcpy(&v6->sin6_addr, addrs[i].addr, 16);
-            sslen = sizeof(*v6);
-        } else {
-            struct sockaddr_in *v4 = (struct sockaddr_in *)&ss;
-            v4->sin_family = AF_INET;
-            v4->sin_port = htons((unsigned short)port);
-            memcpy(&v4->sin_addr, addrs[i].addr, 4);
-            sslen = sizeof(*v4);
-        }
-        if (until > deadline) until = deadline;
-        fd = socket(addrs[i].family, SOCK_STREAM, 0);
-        if (fd < 0) {
-            if (tc_errno_record(TC_OP_SOCKET, errno) == TC_ERR_RESOURCE) *resource = 1;
-            continue;
-        }
-        if (fd >= FD_SETSIZE) { close(fd); continue; } /* select() cannot watch it */
-        if (fcntl(fd, F_SETFL, O_NONBLOCK) || fcntl(fd, F_SETFD, FD_CLOEXEC)) { close(fd); continue; }
-        if (!connect(fd, (struct sockaddr *)&ss, sslen)) return fd;
-        if (errno == EINPROGRESS && wait_fd(fd, 1, until) == 1 &&
-            !getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &errlen) && !error)
-            return fd;
-        close(fd);
-    }
-    return -1;
+/* LOCAL_RESOURCE for a socket call that failed for want of buffers or
+ * memory (TC_OP_IO, counted), else NETWORK. */
+static enum tc_outcome io_failure(int error) {
+    return tc_errno_record(TC_OP_IO, error) == TC_ERR_RESOURCE ? TC_OUTCOME_LOCAL_RESOURCE : TC_OUTCOME_NETWORK;
 }
 
+/* A socket connected to addr by until; -1 when it did not connect, -2 when
+ * it failed for want of descriptors, buffers or memory. */
+static int connect_to(const struct tc_dns_addr *addr, unsigned port, long long until) {
+    struct sockaddr_storage ss;
+    socklen_t sslen, errlen;
+    int fd, error = 0;
+    memset(&ss, 0, sizeof(ss));
+    if (addr->family == AF_INET6) {
+        struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)&ss;
+        v6->sin6_family = AF_INET6;
+        v6->sin6_port = htons((unsigned short)port);
+        memcpy(&v6->sin6_addr, addr->addr, 16);
+        sslen = sizeof(*v6);
+    } else {
+        struct sockaddr_in *v4 = (struct sockaddr_in *)&ss;
+        v4->sin_family = AF_INET;
+        v4->sin_port = htons((unsigned short)port);
+        memcpy(&v4->sin_addr, addr->addr, 4);
+        sslen = sizeof(*v4);
+    }
+    fd = socket(addr->family, SOCK_STREAM, 0);
+    if (fd < 0) return tc_errno_record(TC_OP_SOCKET, errno) == TC_ERR_RESOURCE ? -2 : -1;
+    if (fd >= FD_SETSIZE) { close(fd); return -1; } /* select() cannot watch it */
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) || fcntl(fd, F_SETFD, FD_CLOEXEC)) { close(fd); return -1; }
+    if (acp_monotonic_ms() + TC_HTTP_CONNECT_MS < until) until = acp_monotonic_ms() + TC_HTTP_CONNECT_MS;
+    errlen = sizeof(error);
+    if (!tc_test_enobufs("connect") && !connect(fd, (struct sockaddr *)&ss, sslen)) return fd;
+    error = errno;
+    if (error == EINPROGRESS) {
+        if (wait_fd(fd, 1, until) != 1) error = 0; /* no connection by until, or TERM */
+        else if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &errlen)) error = errno;
+        else if (!error) return fd;
+    }
+    close(fd);
+    return error && io_failure(error) == TC_OUTCOME_LOCAL_RESOURCE ? -2 : -1;
+}
+
+/* 0 once all of data is sent, else why not: the errno of a failed send(),
+ * or ETIMEDOUT when deadline passed (or TERM) first. */
 static int send_all(int fd, const char *data, size_t len, long long deadline) {
     size_t sent = 0;
     while (sent < len) {
-        ssize_t n = send(fd, data + sent, len - sent, 0);
+        ssize_t n = tc_test_enobufs("send") ? -1 : send(fd, data + sent, len - sent, 0);
         if (n > 0) { sent += (size_t)n; continue; }
         if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && errno == EAGAIN && wait_fd(fd, 1, deadline) == 1) continue;
-        return -1;
+        if (n < 0 && errno == EAGAIN) {
+            if (wait_fd(fd, 1, deadline) == 1) continue;
+            return ETIMEDOUT;
+        }
+        return n < 0 ? errno : EPIPE;
     }
     return 0;
 }
@@ -174,44 +209,28 @@ static int content_length(const char *head, long long *out) {
     return found;
 }
 
-int telemetry_http(const char *url, const char *payload, unsigned char *buf, size_t cap, size_t *len,
-                   enum tc_outcome *outcome) {
-    char host[256], host_header[300], request[1024];
-    const char *path;
-    unsigned port;
-    size_t used = 0, body_at = 0, payload_len = payload ? strlen(payload) : 0, limit;
-    long long started = acp_monotonic_ms(), deadline, expected = -1;
-    int fd = -1, n, status, resource = 0;
+/* One exchange with one address by until: DELIVERED with the body at the
+ * front of buf and *len set, or why it failed. *answered says the failure
+ * is the server's complete answer (a head and the server's end of the
+ * response, or a head too long), which another address would only repeat;
+ * a reset or stall after the head is not, and moves on. */
+static enum tc_outcome exchange(const struct tc_dns_addr *addr, unsigned port, const char *request, size_t request_len,
+                                const char *payload, size_t payload_len, unsigned char *buf, size_t cap, size_t *len,
+                                long long until, int *answered) {
+    size_t used = 0, body_at = 0, limit = cap - TC_HTTP_HEADER_MAX - 1;
+    long long expected = -1;
+    int fd = connect_to(addr, port, until), status, error;
     enum tc_outcome result = TC_OUTCOME_NETWORK;
-    *len = 0;
-    *outcome = TC_OUTCOME_SERVER;
-    if (cap <= TC_HTTP_HEADER_MAX + 1 || started < 0 ||
-        parse_url(url, host, sizeof(host), &port, &path, host_header, sizeof(host_header)))
-        return -1;
-    limit = cap - TC_HTTP_HEADER_MAX - 1;
-    deadline = started + TC_HTTP_DEADLINE_MS;
-    if (payload)
-        n = snprintf(request, sizeof(request),
-                     "POST %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: timecapsulesmb-telemetry/" HEARTBEAT_AGENT_VERSION
-                     "\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %lu\r\n"
-                     "Connection: close\r\n\r\n",
-                     path, host_header, HEARTBEAT_TOKEN, (unsigned long)payload_len);
-    else
-        n = snprintf(request, sizeof(request),
-                     "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: timecapsulesmb-telemetry/" HEARTBEAT_AGENT_VERSION
-                     "\r\nConnection: close\r\n\r\n",
-                     path, host_header);
-    if (n < 0 || (size_t)n >= sizeof(request)) return -1;
-    fd = connect_any(host, port, deadline, &resource);
-    if (fd < 0) {
-        result = resource ? TC_OUTCOME_LOCAL_RESOURCE : TC_OUTCOME_NETWORK;
+    *answered = 0;
+    if (fd < 0) return fd == -2 ? TC_OUTCOME_LOCAL_RESOURCE : TC_OUTCOME_NETWORK;
+    if ((error = send_all(fd, request, request_len, until)) != 0 ||
+        (payload_len && (error = send_all(fd, payload, payload_len, until)) != 0)) {
+        result = io_failure(error);
         goto done;
     }
-    if (send_all(fd, request, (size_t)n, deadline) || (payload_len && send_all(fd, payload, payload_len, deadline)))
-        goto done;
     for (;;) {
         ssize_t got;
-        if (used == cap - 1) { result = TC_OUTCOME_SERVER; goto done; } /* headers or body too large */
+        if (used == cap - 1) { result = TC_OUTCOME_SERVER; goto done; } /* body too large */
         got = recv(fd, buf + used, cap - 1 - used, 0);
         if (got > 0) {
             used += (size_t)got;
@@ -219,7 +238,12 @@ int telemetry_http(const char *url, const char *payload, unsigned char *buf, siz
             if (!body_at) {
                 char *end = strstr((char *)buf, "\r\n\r\n");
                 if (end) body_at = (size_t)(end - (char *)buf) + 4;
-                else if (used >= TC_HTTP_HEADER_MAX) { result = TC_OUTCOME_SERVER; goto done; }
+                /* A head longer than TC_HTTP_HEADER_MAX, blank line
+                 * included, is refused however the reads split it. */
+                if (body_at > TC_HTTP_HEADER_MAX || (!body_at && used >= TC_HTTP_HEADER_MAX)) {
+                    result = TC_OUTCOME_SERVER;
+                    goto done;
+                }
             }
             if (body_at && expected == -1) {
                 char saved = (char)buf[body_at - 2];
@@ -236,10 +260,18 @@ int telemetry_http(const char *url, const char *payload, unsigned char *buf, siz
         }
         if (got == 0) break;
         if (errno == EINTR) continue;
-        if (errno == EAGAIN && wait_fd(fd, 0, deadline) == 1) continue;
+        if (errno == EAGAIN) {
+            if (wait_fd(fd, 0, until) == 1) continue;
+            goto done; /* stall or stop: NETWORK */
+        }
+        result = io_failure(errno); /* a reset is the network's */
         goto done;
     }
-    result = TC_OUTCOME_SERVER;
+    /* The server's answer, or its close after some of one. A close before
+     * any byte says nothing about the server (a middlebox that accepts and
+     * hangs up looks the same), so it is the network's. */
+    result = used ? TC_OUTCOME_SERVER : TC_OUTCOME_NETWORK;
+    if (!used) goto done;
     if (!body_at || sscanf((char *)buf, "HTTP/1.%*d %d", &status) != 1 || status < 200 || status > 299) goto done;
     if (expected >= 0 && used - body_at != (size_t)expected) goto done; /* short or extra body */
     if (used - body_at > limit) goto done;
@@ -249,7 +281,65 @@ int telemetry_http(const char *url, const char *payload, unsigned char *buf, siz
     *len = used;
     result = TC_OUTCOME_DELIVERED;
 done:
-    if (fd >= 0) close(fd);
+    close(fd);
+    *answered = result == TC_OUTCOME_SERVER && (body_at || used >= TC_HTTP_HEADER_MAX);
+    return result;
+}
+
+/* The request's failure once one more address (or the name lookup) failed
+ * with got after the earlier ones left kept: SERVER, then LOCAL_RESOURCE,
+ * then NETWORK. A server that answered at all shows the network works, and
+ * a device that ran short of sockets needs the retry rules for that,
+ * whatever the other addresses met. */
+static enum tc_outcome merge_failure(enum tc_outcome kept, enum tc_outcome got) {
+    if (kept == TC_OUTCOME_SERVER || got == TC_OUTCOME_SERVER) return TC_OUTCOME_SERVER;
+    if (kept == TC_OUTCOME_LOCAL_RESOURCE || got == TC_OUTCOME_LOCAL_RESOURCE) return TC_OUTCOME_LOCAL_RESOURCE;
+    return TC_OUTCOME_NETWORK;
+}
+#ifdef TC_NATIVE_TEST
+enum tc_outcome tc_http_merge_failure(enum tc_outcome kept, enum tc_outcome got) { return merge_failure(kept, got); }
+#endif
+
+int telemetry_http(const char *url, const char *payload, unsigned char *buf, size_t cap, size_t *len,
+                   enum tc_outcome *outcome) {
+    char host[256], host_header[300], request[1024];
+    struct tc_dns_addr addrs[TC_DNS_MAX_ADDRS];
+    const char *path;
+    unsigned port;
+    size_t payload_len = payload ? strlen(payload) : 0, count = 0, i;
+    long long started = acp_monotonic_ms(), deadline;
+    int n, resource;
+    enum tc_outcome result = TC_OUTCOME_NETWORK;
+    *len = 0;
+    *outcome = TC_OUTCOME_SERVER;
+    if (cap <= TC_HTTP_HEADER_MAX + 1 || started < 0 ||
+        parse_url(url, host, sizeof(host), &port, &path, host_header, sizeof(host_header)))
+        return -1;
+    deadline = started + TC_HTTP_DEADLINE_MS;
+    if (payload)
+        n = snprintf(request, sizeof(request),
+                     "POST %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: timecapsulesmb-telemetry/" HEARTBEAT_AGENT_VERSION
+                     "\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %lu\r\n"
+                     "Connection: close\r\n\r\n",
+                     path, host_header, HEARTBEAT_TOKEN, (unsigned long)payload_len);
+    else
+        n = snprintf(request, sizeof(request),
+                     "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: timecapsulesmb-telemetry/" HEARTBEAT_AGENT_VERSION
+                     "\r\nConnection: close\r\n\r\n",
+                     path, host_header);
+    if (n < 0 || (size_t)n >= sizeof(request)) return -1;
+    if (tc_dns_resolve(host, addrs, TC_DNS_MAX_ADDRS, &count, deadline, &resource))
+        result = merge_failure(result, resource ? TC_OUTCOME_LOCAL_RESOURCE : TC_OUTCOME_NETWORK);
+    for (i = 0; i < count && !telemetry_stop; i++) {
+        long long now = acp_monotonic_ms(), until = deadline;
+        enum tc_outcome got;
+        int answered;
+        if (now < 0 || now >= deadline) break;
+        if (i + 1 < count && now + TC_HTTP_ADDRESS_MS < deadline) until = now + TC_HTTP_ADDRESS_MS;
+        got = exchange(&addrs[i], port, request, (size_t)n, payload, payload_len, buf, cap, len, until, &answered);
+        if (got == TC_OUTCOME_DELIVERED || answered) { result = got; break; }
+        result = merge_failure(result, got);
+    }
     if (telemetry_stop && result != TC_OUTCOME_DELIVERED) result = TC_OUTCOME_CANCELLED;
     *outcome = result;
     return result == TC_OUTCOME_DELIVERED ? 0 : -1;

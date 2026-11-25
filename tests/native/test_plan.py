@@ -96,6 +96,30 @@ def test_device_mac_is_the_lowest_index_hardware_address():
     assert [f for kind, f in rows if kind == "device"] == [{"mac": "e8:8d:28:58:f1:5c"}]
 
 
+def test_only_a_six_byte_link_address_is_a_mac():
+    # A tunnel with no link-layer address and an 8-byte EUI-64 come first;
+    # neither is kept as a MAC, and the port's is the device's.
+    rows = parse_kv_lines(run_case("iflist_parse", "--odd-lladdr"))
+    links = {f["name"]: f for kind, f in rows if kind == "link"}
+    assert "mac" not in links["gif0"] and "mac" not in links["fw0"]
+    assert links["bcmeth0"]["mac"] == "80:ea:96:e6:58:68"
+    assert [f for kind, f in rows if kind == "device"] == [{"mac": "80:ea:96:e6:58:68"}]
+
+
+@pytest.mark.parametrize("case,port,placeholder", [
+    ("--placeholder", "bcmeth0", "00:01:02:03:04:05"),   # NetBSD 6
+    ("--placeholder4", "mgi0", "00:0a:aa:bb:cc:dd"),     # NetBSD 4
+])
+def test_no_device_mac_while_the_port_has_the_boot_placeholder(case, port, placeholder):
+    # The placeholder is parsed as the link's address, but it is not the
+    # device's (addr.c's own list, not a test copy), and the helper does not
+    # fall back to bridge1's random one.
+    rows = parse_kv_lines(run_case("iflist_parse", case))
+    links = {f["name"]: f for kind, f in rows if kind == "link"}
+    assert links[port]["mac"] == placeholder and links["bridge1"]["mac"] == "ac:de:48:99:7c:35"
+    assert [f for kind, f in rows if kind == "device"] == [{"mac": "none"}]
+
+
 def test_device_mac_none_without_an_ethernet_address():
     rows = parse_kv_lines(run_case("iflist_parse", "--unnamed"))
     assert [f for kind, f in rows if kind == "device"] == [{"mac": "none"}]

@@ -5,13 +5,6 @@
 #define IDENTITY_REQUESTS 3 /* sySN, syAP, syAM; syNm is one of the plan's keys */
 static const char *const identity_keys[IDENTITY_REQUESTS] = {"sySN", "syAP", "syAM"};
 
-/* The addresses Apple's NICs carry until boot sets the real one: NetBSD 6's
- * bcmeth and NetBSD 4's mgi. Every unit of a model has the same one. */
-static const unsigned char placeholders[][6] = {
-    {0x00, 0x01, 0x02, 0x03, 0x04, 0x05},
-    {0x00, 0x0a, 0xaa, 0xbb, 0xcc, 0xdd},
-};
-
 static int hex_digit(int ch) {
     if (ch >= '0' && ch <= '9') return ch - '0';
     if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
@@ -36,8 +29,7 @@ int tc_mac_parse(const char *text, char out[18]) {
     if (mac[0] & 1) return -1; /* multicast, broadcast */
     for (i = 0; i < 6 && !mac[i]; i++) {}
     if (i == 6) return -1;
-    for (i = 0; i < sizeof(placeholders) / sizeof(placeholders[0]); i++)
-        if (!memcmp(mac, placeholders[i], 6)) return -1;
+    if (addr_mac_is_boot_placeholder(mac)) return -1;
     (void)snprintf(out, 18, "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     return 0;
 }
@@ -56,15 +48,15 @@ static void note_wama(struct tc_heartbeat_facts *f, const char *text) {
 static void choose_mac(struct tc_heartbeat_facts *f) {
     static struct if_table table;
     unsigned char mac[6];
-    char text[18];
     if (f->wama[0]) {
         (void)snprintf(f->mac, sizeof(f->mac), "%s", f->wama);
         return;
     }
     f->mac[0] = '\0';
-    if (iflist_collect(&table) != 0 || if_table_device_mac(&table, mac) != 0) return;
-    (void)snprintf(text, sizeof(text), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    (void)tc_mac_parse(text, f->mac);
+    /* addr_device_mac refuses the boot placeholder itself. */
+    if (iflist_collect(&table) != 0 || addr_device_mac(&table, mac) != 0) return;
+    (void)snprintf(f->mac, sizeof(f->mac), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4],
+                   mac[5]);
 }
 
 /* A child that could not start for want of resources: counted, and the
@@ -76,27 +68,32 @@ static int start_failed_for_resources(const struct acp_request *r) {
     return 0;
 }
 
-/* Keeps a key's answer: a value, or empty for "not set". A failed read keeps
- * the cached value, or empty if there is none: with the router named by its
- * serial or hardware address, a missing model or name no longer changes who
- * the heartbeat is from. */
-static void keep(struct tc_heartbeat_facts *f, int index, int status, const char *value) {
-    if (status == ACP_OK || status == ACP_UNAVAILABLE) {
-        (void)snprintf(f->id[index], sizeof(f->id[index]), "%s", status == ACP_OK ? value : "");
-        trim_line(f->id[index]);
-        f->answered[index] = 1;
-    }
+/* Keeps a key's value. acp prints nothing and exits 0 for any failed get,
+ * an ACPd that cannot answer included (README, "Failed gets"), so an empty
+ * answer cannot tell "not set" from "no answer" and never replaces a kept
+ * value: every unit has a serial, model and name. Returns whether the
+ * answer had a value. */
+static int keep(struct tc_heartbeat_facts *f, int index, int status, const char *value) {
+    char text[HEARTBEAT_MAX_FIELD];
+    if (status != ACP_OK) return 0;
+    (void)snprintf(text, sizeof(text), "%s", value);
+    trim_line(text);
+    if (!text[0]) return 0;
+    (void)snprintf(f->id[index], sizeof(f->id[index]), "%s", text);
+    return 1;
 }
 
-void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, int refresh, struct tc_facts_round *round) {
+void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, enum tc_facts_read how, struct tc_facts_round *round) {
     /* Static: device_facts holds the interface table. */
     static struct device_facts facts;
     struct acp_request requests[IDENTITY_REQUESTS + ACP_KEY_COUNT];
     char values[IDENTITY_REQUESTS][ACP_VALUE_MAX];
     struct plan_options options;
     size_t i;
+    int empty = 1, aborted = 0, had_serial, got[IDENTITY_REQUESTS];
     memset(round, 0, sizeof(*round));
-    if (!refresh && f->have_last) {
+    if (how == TC_FACTS_READ_UNLESS_FRESH && tc_heartbeat_facts_fresh(f, acp_monotonic_ms())) how = TC_FACTS_KEEP;
+    if (how == TC_FACTS_KEEP && f->have_last) {
         choose_mac(f);
         return;
     }
@@ -109,24 +106,31 @@ void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, int refresh, struct
         requests[i].capacity = sizeof(values[i]);
     }
     device_facts_requests(requests + IDENTITY_REQUESTS, &facts);
-    (void)acp_collect_run_opts(requests, IDENTITY_REQUESTS + ACP_KEY_COUNT, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
-                               (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000,
-                               ACP_STOP_EARLY);
+    (void)acp_collect_run(requests, IDENTITY_REQUESTS + ACP_KEY_COUNT, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
+                          (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000, ACP_STOP_EARLY);
     device_facts_complete(&facts, requests + IDENTITY_REQUESTS);
     round->collected = 1;
-    f->last_complete = 1;
     for (i = 0; i < IDENTITY_REQUESTS + ACP_KEY_COUNT; i++) {
-        if (requests[i].status == ACP_ABORT) f->last_complete = 0;
+        if (requests[i].status == ACP_ABORT) aborted = 1;
         if (requests[i].status == ACP_ABORT && requests[i].reason == ACP_REASON_TIMEOUT) round->timed_out = 1;
         if (requests[i].status == ACP_ABORT && requests[i].reason == ACP_REASON_BUDGET) round->budget_spent = 1;
         if (start_failed_for_resources(&requests[i])) round->local_resource = 1;
     }
-    if (round->timed_out) f->acp_timeouts++;
-    if (round->budget_spent) f->acp_budget_exhausted++;
+    if (round->timed_out) f->acp.timeouts++;
+    if (round->budget_spent) f->acp.budget_exhausted++;
+    /* Every identity key answered, none with a value: an ACPd that cannot
+     * answer. A key that timed out or never ran is not an answer. */
+    had_serial = f->id[TC_ID_SERIAL][0] != '\0';
     for (i = 0; i < IDENTITY_REQUESTS; i++) {
-        int status = requests[i].status == ACP_OK && !requests[i].length ? ACP_UNAVAILABLE : requests[i].status;
-        keep(f, (int)i, status, values[i]);
+        got[i] = keep(f, (int)i, requests[i].status, values[i]);
+        if (got[i] || requests[i].status == ACP_ABORT) empty = 0;
     }
+    if (empty) f->acp.empty++;
+    /* Complete, so a retry may keep these facts (tc_heartbeat_facts_fresh):
+     * every key answered, not every identity key with nothing (an ACPd
+     * that cannot answer), and the serial came back if this process read
+     * one before. A unit that never gave a serial still keeps its facts. */
+    f->last_complete = !aborted && !empty && (got[TC_ID_SERIAL] || !had_serial);
     keep(f, TC_ID_SYNM, facts.acp[ACP_KEY_syNm].status, facts.acp[ACP_KEY_syNm].text);
     note_wama(f, facts.acp[ACP_KEY_waMA].status == ACP_OK ? facts.acp[ACP_KEY_waMA].text : NULL);
     choose_mac(f);

@@ -6,23 +6,11 @@
 static struct tc_failure_counts counts;
 
 enum tc_errno_class tc_errno_class(enum tc_op op, int error) {
-    if (error == EINTR) return TC_ERR_TRANSIENT;
+    if (op == TC_OP_IO) return error == ENOBUFS || error == ENOMEM ? TC_ERR_RESOURCE : TC_ERR_OTHER;
     if (error == EMFILE || error == ENFILE || error == ENOMEM) return TC_ERR_RESOURCE;
+    if (op == TC_OP_OPEN) return TC_ERR_OTHER;
     if (error == EAFNOSUPPORT || error == EPROTONOSUPPORT || error == EPFNOSUPPORT) return TC_ERR_FAMILY;
-    switch (op) {
-    case TC_OP_FORK:
-    case TC_OP_PIPE:
-    case TC_OP_SOCKET:
-        /* Creating a process, pipe or socket fails only for want of
-         * something local: EAGAIN (a full process table), ENOBUFS. */
-        return TC_ERR_RESOURCE;
-    case TC_OP_CONNECT:
-    case TC_OP_SEND:
-    case TC_OP_RECV:
-        if (error == EAGAIN || error == EWOULDBLOCK || error == EINPROGRESS) return TC_ERR_TRANSIENT;
-        return TC_ERR_NETWORK;
-    }
-    return TC_ERR_NETWORK;
+    return TC_ERR_RESOURCE;
 }
 
 enum tc_errno_class tc_errno_record(enum tc_op op, int error) {
@@ -36,6 +24,8 @@ enum tc_errno_class tc_errno_record(enum tc_op op, int error) {
         else if (error == ENFILE) counts.socket_enfile++;
         else if (error == ENOBUFS || error == ENOMEM) counts.socket_enobufs++;
         else counts.socket_other++;
+    } else if (op == TC_OP_IO && class == TC_ERR_RESOURCE) {
+        counts.socket_enobufs++;
     }
     return class;
 }
@@ -43,3 +33,16 @@ enum tc_errno_class tc_errno_record(enum tc_op op, int error) {
 void tc_failure_counts(struct tc_failure_counts *out) {
     *out = counts;
 }
+
+#ifdef TC_NATIVE_TEST
+void tc_failure_counts_set(const struct tc_failure_counts *in) {
+    counts = *in;
+}
+
+int tc_test_enobufs(const char *call) {
+    const char *which = getenv("TC_TEST_ENOBUFS");
+    if (!which || strcmp(which, call)) return 0;
+    errno = ENOBUFS;
+    return 1;
+}
+#endif
