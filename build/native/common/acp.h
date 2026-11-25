@@ -118,4 +118,10 @@ void acp_collect_cancel(struct acp_collector *c);
 int acp_collect_run(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
                     int flags);
 long long acp_monotonic_ms(void);
+/* Milliseconds from now to deadline (acp_monotonic_ms), or 0 when the
+ * clock cannot be read: no time left, so no wait runs on a bad reading. */
+static inline long long acp_ms_left(long long deadline) {
+    long long now = acp_monotonic_ms();
+    return now < 0 ? 0 : deadline - now;
+}
 #endif

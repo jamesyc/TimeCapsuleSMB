@@ -54,17 +54,12 @@
 #define TC_HTTP_ADDRESS_MS 25000
 #endif
 
-static long long left_ms(long long deadline) {
-    long long now = acp_monotonic_ms();
-    return now < 0 ? 0 : deadline - now;
-}
-
 /* Waits for fd to be readable or writable; 1 ready, 0 timeout or stop, -1 error. */
 static int wait_fd(int fd, int writing, long long deadline) {
     for (;;) {
         fd_set set;
         struct timeval timeout;
-        long long left = left_ms(deadline);
+        long long left = acp_ms_left(deadline);
         int ready;
         if (telemetry_stop || left <= 0) return 0;
         if (left > 1000) left = 1000; /* recheck the stop flag every second */
@@ -209,16 +204,44 @@ static int content_length(const char *head, long long *out) {
     return found;
 }
 
+/* What an exchange is reading, and what each event there makes of it. This
+ * table is the whole state machine; exchange() follows it and the tests in
+ * tests/native/test_telemetry_http.py name its rows.
+ *
+ *   phase          event                               result
+ *   HEAD           close, no byte                      NETWORK, next address
+ *   HEAD           close, some bytes                   SERVER, next address
+ *   HEAD           head past TC_HTTP_HEADER_MAX        SERVER, answered
+ *   HEAD           blank line, bad length or chunked   SERVER, answered
+ *   HEAD           blank line, length over limit       SERVER, answered
+ *   HEAD           blank line, Content-Length n        -> BODY_LENGTH(n)
+ *   HEAD           blank line, no length               -> BODY_TO_CLOSE
+ *   BODY_LENGTH    n bytes, 2xx                        DELIVERED
+ *   BODY_LENGTH    n bytes, other status               SERVER, answered
+ *   BODY_LENGTH    close before n bytes                SERVER, answered
+ *   BODY_TO_CLOSE  close, 2xx, body within limit       DELIVERED
+ *   BODY_TO_CLOSE  close, other status                 SERVER, answered
+ *   BODY_TO_CLOSE  body past limit, or buffer full     SERVER, answered
+ *   any            reset or stall                      NETWORK (LOCAL_RESOURCE
+ *                                                      for want of buffers),
+ *                                                      next address
+ *
+ * "answered" is the server's complete answer, which another address would
+ * only repeat; "next address" moves on (telemetry_http). BODY_LENGTH
+ * stops reading at the n-th byte and drops whatever that read brought past
+ * it, as curl does, so extra bytes count the same however the reads split
+ * them. */
+enum response_phase { RESPONSE_HEAD, RESPONSE_BODY_LENGTH, RESPONSE_BODY_TO_CLOSE };
+
 /* One exchange with one address by until: DELIVERED with the body at the
- * front of buf and *len set, or why it failed. *answered says the failure
- * is the server's complete answer (a head and the server's end of the
- * response, or a head too long), which another address would only repeat;
- * a reset or stall after the head is not, and moves on. */
+ * front of buf and *len set, or why it failed, with *answered set when the
+ * failure is the server's complete answer (the table above). */
 static enum tc_outcome exchange(const struct tc_dns_addr *addr, unsigned port, const char *request, size_t request_len,
                                 const char *payload, size_t payload_len, unsigned char *buf, size_t cap, size_t *len,
                                 long long until, int *answered) {
-    size_t used = 0, body_at = 0, limit = cap - TC_HTTP_HEADER_MAX - 1;
-    long long expected = -1;
+    size_t used = 0, body_at = 0, limit = cap - TC_HTTP_HEADER_MAX - 2;
+    long long expected = 0; /* BODY_LENGTH's n */
+    enum response_phase phase = RESPONSE_HEAD;
     int fd = connect_to(addr, port, until), status, error;
     enum tc_outcome result = TC_OUTCOME_NETWORK;
     *answered = 0;
@@ -230,59 +253,70 @@ static enum tc_outcome exchange(const struct tc_dns_addr *addr, unsigned port, c
     }
     for (;;) {
         ssize_t got;
-        if (used == cap - 1) { result = TC_OUTCOME_SERVER; goto done; } /* body too large */
+        /* Only BODY_TO_CLOSE can fill the buffer: HEAD stops at
+         * TC_HTTP_HEADER_MAX and BODY_LENGTH at n, at most limit. The
+         * buffer has a byte past the longest head and body, so full means
+         * a body past limit, even after a head of TC_HTTP_HEADER_MAX. */
+        if (used == cap - 1) goto refused;
         got = recv(fd, buf + used, cap - 1 - used, 0);
-        if (got > 0) {
-            used += (size_t)got;
-            buf[used] = 0;
-            if (!body_at) {
-                char *end = strstr((char *)buf, "\r\n\r\n");
-                if (end) body_at = (size_t)(end - (char *)buf) + 4;
-                /* A head longer than TC_HTTP_HEADER_MAX, blank line
-                 * included, is refused however the reads split it. */
-                if (body_at > TC_HTTP_HEADER_MAX || (!body_at && used >= TC_HTTP_HEADER_MAX)) {
-                    result = TC_OUTCOME_SERVER;
-                    goto done;
-                }
+        if (got == 0) break; /* the close */
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            if (errno != EAGAIN) {
+                result = io_failure(errno); /* a reset is the network's */
+                goto done;
             }
-            if (body_at && expected == -1) {
-                char saved = (char)buf[body_at - 2];
-                int found;
-                buf[body_at - 2] = 0; /* the head ends at the blank line */
-                found = content_length((char *)buf, &expected);
-                buf[body_at - 2] = (unsigned char)saved;
-                if (found < 0) { result = TC_OUTCOME_SERVER; goto done; }
-                if (!found) expected = -2; /* read to the close */
-                if (expected > (long long)limit) { result = TC_OUTCOME_SERVER; goto done; }
-            }
-            if (body_at && expected >= 0 && used - body_at >= (size_t)expected) break;
-            continue;
-        }
-        if (got == 0) break;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN) {
             if (wait_fd(fd, 0, until) == 1) continue;
             goto done; /* stall or stop: NETWORK */
         }
-        result = io_failure(errno); /* a reset is the network's */
+        used += (size_t)got;
+        buf[used] = 0;
+        if (phase == RESPONSE_HEAD) {
+            char *end = strstr((char *)buf, "\r\n\r\n"), saved;
+            int found;
+            /* A head longer than TC_HTTP_HEADER_MAX, blank line included,
+             * is refused however the reads split it. */
+            if (!end) {
+                if (used >= TC_HTTP_HEADER_MAX) goto refused;
+                continue;
+            }
+            body_at = (size_t)(end - (char *)buf) + 4;
+            if (body_at > TC_HTTP_HEADER_MAX) goto refused;
+            saved = (char)buf[body_at - 2];
+            buf[body_at - 2] = 0; /* the head ends at the blank line */
+            found = content_length((char *)buf, &expected);
+            buf[body_at - 2] = (unsigned char)saved;
+            if (found < 0 || (found && expected > (long long)limit)) goto refused;
+            phase = found ? RESPONSE_BODY_LENGTH : RESPONSE_BODY_TO_CLOSE;
+        }
+        if (phase == RESPONSE_BODY_LENGTH && used - body_at >= (size_t)expected) break;
+    }
+    /* A close in HEAD is not an answer: before any byte it says nothing
+     * about the server (a middlebox that accepts and hangs up looks the
+     * same), after some it is a server's, but not one to stop at. */
+    if (phase == RESPONSE_HEAD) {
+        result = used ? TC_OUTCOME_SERVER : TC_OUTCOME_NETWORK;
         goto done;
     }
-    /* The server's answer, or its close after some of one. A close before
-     * any byte says nothing about the server (a middlebox that accepts and
-     * hangs up looks the same), so it is the network's. */
-    result = used ? TC_OUTCOME_SERVER : TC_OUTCOME_NETWORK;
-    if (!used) goto done;
-    if (!body_at || sscanf((char *)buf, "HTTP/1.%*d %d", &status) != 1 || status < 200 || status > 299) goto done;
-    if (expected >= 0 && used - body_at != (size_t)expected) goto done; /* short or extra body */
-    if (used - body_at > limit) goto done;
+    /* The status is its first three digits, as curl reads it, so a longer
+     * number cannot overflow the parse. */
+    if (sscanf((char *)buf, "HTTP/1.%*d %3d", &status) != 1 || status < 200 || status > 299) goto refused;
+    if (phase == RESPONSE_BODY_LENGTH) {
+        if (used - body_at < (size_t)expected) goto refused; /* short */
+        used = body_at + (size_t)expected; /* what the n-th byte's read brought past it is not the body */
+    }
+    if (used - body_at > limit) goto refused;
     memmove(buf, buf + body_at, used - body_at);
     used -= body_at;
     buf[used] = 0;
     *len = used;
     result = TC_OUTCOME_DELIVERED;
+    goto done;
+refused:
+    result = TC_OUTCOME_SERVER;
+    *answered = 1;
 done:
     close(fd);
-    *answered = result == TC_OUTCOME_SERVER && (body_at || used >= TC_HTTP_HEADER_MAX);
     return result;
 }
 
@@ -312,7 +346,7 @@ int telemetry_http(const char *url, const char *payload, unsigned char *buf, siz
     enum tc_outcome result = TC_OUTCOME_NETWORK;
     *len = 0;
     *outcome = TC_OUTCOME_SERVER;
-    if (cap <= TC_HTTP_HEADER_MAX + 1 || started < 0 ||
+    if (cap <= TC_HTTP_HEADER_MAX + 2 || started < 0 ||
         parse_url(url, host, sizeof(host), &port, &path, host_header, sizeof(host_header)))
         return -1;
     deadline = started + TC_HTTP_DEADLINE_MS;

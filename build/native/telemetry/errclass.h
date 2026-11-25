@@ -37,7 +37,8 @@ void tc_failure_counts(struct tc_failure_counts *out);
 /* Host tests set the counters directly, e.g. all at their largest. */
 void tc_failure_counts_set(const struct tc_failure_counts *in);
 /* Host tests stand in for a device out of mbufs: the call named by
- * TC_TEST_ENOBUFS ("connect" or "send") fails with ENOBUFS. */
+ * TC_TEST_ENOBUFS fails with ENOBUFS: "connect" or "send" for DNS and
+ * HTTP, "probe-send" or "probe-recv" for the health probes. */
 int tc_test_enobufs(const char *call);
 #else
 #define tc_test_enobufs(call) 0

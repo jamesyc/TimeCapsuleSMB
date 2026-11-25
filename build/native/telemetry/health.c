@@ -16,7 +16,7 @@ static const unsigned kmsg_events[TC_KMSG_PATTERNS] = {TC_EV_KMSG, TC_EV_KMSG, T
 
 static void note(struct tc_health *h, unsigned bits) {
     h->news |= bits;
-    h->pending |= bits & TC_EV_REQUESTING;
+    if (h->armed) h->pending |= bits & TC_EV_REQUESTING;
 }
 
 /* ---- threshold ----
@@ -99,7 +99,16 @@ int tc_threshold_step(struct tc_threshold *t, long value, long high, long rearm,
  * probe) or streak >= TC_HEALTH_PROBE_ANY_FAILURES (an smbd parent that
  * never accepts answers nothing). Each entry to confirming is followed by
  * at most two quick rounds before the episode is reported or dropped, so
- * a lasting failure costs a few extra rounds, not one every few minutes. */
+ * a lasting failure costs a few extra rounds, not one every few minutes.
+ * A table that stays near full skips rounds and so drops every
+ * confirmation: after a counted failure the next round then waits the long
+ * interval (tc_health_next_probe_delay), so such a device runs at most one
+ * quick round per long interval, not one per retry delay. */
+static int counts_as_failure(enum tc_probe_result r, int seen_ok) {
+    if (r == TC_PROBE_CLOSED || r == TC_PROBE_SILENT) return 1;
+    return seen_ok && (r == TC_PROBE_REFUSED || r == TC_PROBE_TIMEOUT || r == TC_PROBE_DOWN);
+}
+
 /* A confirmation that nothing confirmed ends, and is forgotten. */
 static void drop_confirmation(struct tc_probe_track *p) {
     if (p->phase != TC_PROBE_CONFIRMING) return;
@@ -135,7 +144,7 @@ int tc_probe_track_step(struct tc_probe_track *p, enum tc_probe_result r, int ex
     else if (r == TC_PROBE_REFUSED) p->refused++;
     else if (r == TC_PROBE_TIMEOUT) p->timeout++;
     else p->down++;
-    if (r != TC_PROBE_CLOSED && r != TC_PROBE_SILENT && !p->seen_ok) {
+    if (!counts_as_failure(r, p->seen_ok)) {
         drop_confirmation(p);
         return 0;
     }
@@ -225,6 +234,7 @@ unsigned tc_kmsg_scan(struct tc_kmsg_state *k, const char *text, size_t len, lon
 /* ---- one sample ---- */
 void tc_health_sample(struct tc_health *h, const struct tc_reading *r, long now, int armed) {
     const struct tc_counters *c = &r->counters;
+    h->armed = armed;
     h->now = *c;
     h->current = r->snapshot;
     if (h->current.read && (!h->peak.read || h->current.procs > h->peak.procs)) h->peak = h->current;
@@ -308,7 +318,11 @@ long tc_health_next_probe_delay(const struct tc_health *h) {
     size_t i;
     for (i = 0; i < TC_PROBES; i++)
         if (h->probe[i].phase == TC_PROBE_CONFIRMING) return TC_HEALTH_PROBE_RETRY_SECONDS;
-    return tc_health_probe_allowed(h) ? TC_HEALTH_PROBE_SECONDS : TC_HEALTH_PROBE_RETRY_SECONDS;
+    if (tc_health_probe_allowed(h)) return TC_HEALTH_PROBE_SECONDS;
+    /* A skipped round leaves last as it was (until it expires). */
+    for (i = 0; i < TC_PROBES; i++)
+        if (counts_as_failure(h->probe[i].last, h->probe[i].seen_ok)) return TC_HEALTH_PROBE_SECONDS;
+    return TC_HEALTH_PROBE_RETRY_SECONDS;
 }
 
 void tc_health_probes_skipped(struct tc_health *h, long now) {

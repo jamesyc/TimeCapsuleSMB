@@ -22,7 +22,10 @@
  *
  * The ledger keeps two sets of event bits: news (everything since the last
  * delivered heartbeat) and pending (the requesting events among them, which
- * ask the planner for an extra heartbeat). The JSON writer returns the bits
+ * ask the planner for an extra heartbeat). Before arming (the planner's,
+ * as of the latest sample; a probe round follows one) an event goes into
+ * news only: nothing asks for a heartbeat then, and the boot heartbeat
+ * carries it. The JSON writer returns the bits
  * it wrote as a token, and only a delivered heartbeat clears them: a
  * heartbeat that fails leaves them for the next try. The peaks and lows
  * (the busiest table, the first crossing, the most files, the least free
@@ -225,6 +228,7 @@ struct tc_health {
     struct tc_failure_counts failures_seen;
     unsigned acp_timeouts_seen, acp_empty_seen;
     unsigned pending, news; /* the ledger */
+    int armed; /* the latest sample's: requesting events ask for nothing before */
 };
 
 void tc_health_sample(struct tc_health *h, const struct tc_reading *r, long now, int armed);
@@ -233,13 +237,17 @@ void tc_health_probes(struct tc_health *h, const struct tc_probe_round *round, l
  * is not within TC_HEALTH_PROC_FULL_MARGIN of kern.maxproc, where the
  * probe's own sshd or smbd child could be the process that refuses a
  * client. Closer than TC_HEALTH_PROC_HIGH_MARGIN the probes still run:
- * that is when they are evidence. */
+ * that is when they are evidence. The IPv6 smbd probe asks the same of the
+ * table read again after the IPv4 pair, whose children may not have exited
+ * yet (tc_health_read_probes skips it otherwise). */
 int tc_health_probe_allowed(const struct tc_health *h);
 void tc_health_probes_skipped(struct tc_health *h, long now);
 /* Seconds from the end of a probe round (run or skipped) to the next:
  * TC_HEALTH_PROBE_RETRY_SECONDS while a target is confirming a failure
- * (probe_track) or a round may not run (a skipped round forks nothing),
- * else TC_HEALTH_PROBE_SECONDS. */
+ * (probe_track), or while a round may not run (a skipped round forks
+ * nothing) and no target's latest result is a counted failure; else
+ * TC_HEALTH_PROBE_SECONDS. So a table that stays near full, which drops
+ * every confirmation, costs at most one quick round per long interval. */
 long tc_health_next_probe_delay(const struct tc_health *h);
 /* Notes fork, socket and acp-timeout failures counted since the last call. */
 struct tc_acp_counts; /* heartbeat_facts.h */

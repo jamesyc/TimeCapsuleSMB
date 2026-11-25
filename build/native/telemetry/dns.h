@@ -13,8 +13,10 @@
  * later lookup gets no answer, so a heartbeat during a DNS outage still
  * finds the server. An answer without a clean A reply is used once, not
  * kept, and followed by the IPv4 addresses of the kept answer, up to a week
- * old. NXDOMAIN for A, or no record of either type, fails the lookup and
- * forgets the kept answer for the name. There is no /etc/hosts lookup:
+ * old. NXDOMAIN for A with no AAAA record, or no record of either type,
+ * fails the lookup without asking another nameserver; the kept answer
+ * stays for a later lookup that no nameserver answers. AAAA records beside
+ * an NXDOMAIN for A are used, as libc uses them. There is no /etc/hosts lookup:
  * nothing on the device names the telemetry host there. */
 
 #ifndef TC_RESOLV_CONF
@@ -28,8 +30,9 @@
  * server getting TC_DNS_RETRANS_MS on the first and that doubled per round,
  * shared among the servers, after it, at least 1 s (RES_TIMEOUT 5 s,
  * RES_DFLRETRY 2). One server: 5 s then 10 s; three: 5 s each, then 3.3 s
- * each. A round asks a server only the queries it has not answered, and a
- * server that answered both is not asked again. */
+ * each. A round asks a server only the queries it has not answered, on the
+ * socket it was first asked on, and a server that answered both is not
+ * asked again. */
 #ifndef TC_DNS_RETRANS_MS
 #define TC_DNS_RETRANS_MS 5000
 #endif

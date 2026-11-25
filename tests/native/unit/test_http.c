@@ -151,12 +151,12 @@ static int judge_table(void) {
     static const char *const none[4][4] = {
         /*             waiting     clean       failed      no_name */
         /* waiting */ {"ask_next", "ask_next", "ask_next", "ask_next"},
-        /* clean   */ {"ask_next", "gone",     "ask_next", "ask_next"},
+        /* clean   */ {"ask_next", "no_address", "ask_next", "ask_next"},
         /* failed  */ {"ask_next", "ask_next", "ask_next", "ask_next"},
-        /* no_name */ {"gone",     "gone",     "gone",     "gone"},
+        /* no_name */ {"no_address", "no_address", "no_address", "no_address"},
     };
     /* An address in either reply: by A reply alone, whatever AAAA said. */
-    static const char *const some[4] = {"use_with_kept_ipv4", "keep", "use_with_kept_ipv4", "gone"};
+    static const char *const some[4] = {"use_with_kept_ipv4", "keep", "use_with_kept_ipv4", "use_now"};
     size_t a, aaaa, found;
     for (a = 0; a < 4; a++)
         for (aaaa = 0; aaaa < 4; aaaa++)

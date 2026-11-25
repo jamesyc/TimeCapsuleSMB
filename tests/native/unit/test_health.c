@@ -566,6 +566,35 @@ static void ledger_and_sample(void) {
         tc_health_sample(&k, &r, 30, 1);
         assert(k.kmsg.bytes == -1);
     }
+    /* Before arming, a full table in the kernel messages, and a probe
+     * episode, are news only: nothing asks for a heartbeat, and the boot
+     * heartbeat carries them. Armed, the next ones ask. */
+    {
+        struct tc_health k;
+        struct tc_probe_round round;
+        unsigned token;
+        size_t i;
+        memset(&k, 0, sizeof(k));
+        r = reading(40, 90);
+        r.kmsg = "boot\n";
+        r.kmsg_len = 5;
+        tc_health_sample(&k, &r, 10, 0);
+        r.kmsg = "boot\nproc: table is full\n";
+        r.kmsg_len = (long)strlen(r.kmsg);
+        tc_health_sample(&k, &r, 20, 0);
+        for (i = 0; i < TC_PROBES; i++) round.result[i] = TC_PROBE_OK;
+        tc_health_probes(&k, &round, 20);
+        round.result[TC_PROBE_SSH4] = TC_PROBE_CLOSED;
+        tc_health_probes(&k, &round, 21);
+        tc_health_probes(&k, &round, 22);
+        assert(k.probe[TC_PROBE_SSH4].phase == TC_PROBE_REPORTED);
+        assert(k.news == (TC_EV_KMSG | TC_EV_PROBE) && !k.pending && !tc_health_requests(&k));
+        assert(strstr(json_of(&k, &token), "\"triggers\":[],\"news\":[\"kmsg\",\"probe\"]"));
+        r.kmsg = "boot\nproc: table is full\nproc: table is full\n";
+        r.kmsg_len = (long)strlen(r.kmsg);
+        tc_health_sample(&k, &r, 30, 1);
+        assert(k.pending == TC_EV_KMSG && tc_health_requests(&k));
+    }
     /* Files at 90 %, rearming below 80 %. */
     {
         struct tc_health f;
@@ -643,6 +672,74 @@ static long week_of(struct tc_health *h, size_t target, enum tc_probe_result res
         rounds++;
     }
     return rounds;
+}
+
+/* A round that may not run waits the long interval after a counted
+ * failure, and the retry delay otherwise. */
+static void near_full_cadence(void) {
+    struct tc_health h;
+    struct tc_reading open_table = reading(40, 90), full = reading(88, 90);
+    struct tc_probe_round round;
+    long now, next, real = 0, last_real = 0, before_last = 0;
+    size_t i;
+    /* closed while allowed, then near full: the confirmation drops and the
+     * next round waits the long interval. */
+    memset(&h, 0, sizeof(h));
+    tc_health_sample(&h, &open_table, 0, 1);
+    for (i = 0; i < TC_PROBES; i++) round.result[i] = TC_PROBE_OK;
+    round.result[TC_PROBE_SSH4] = TC_PROBE_CLOSED;
+    tc_health_probes(&h, &round, 0);
+    assert(tc_health_next_probe_delay(&h) == TC_HEALTH_PROBE_RETRY_SECONDS);
+    tc_health_sample(&h, &full, 300, 1);
+    tc_health_probes_skipped(&h, 300);
+    assert(h.probe[TC_PROBE_SSH4].phase == TC_PROBE_QUIET);
+    assert(tc_health_next_probe_delay(&h) == TC_HEALTH_PROBE_SECONDS);
+    /* Near full with every latest result ok: the retry delay. */
+    memset(&h, 0, sizeof(h));
+    tc_health_sample(&h, &open_table, 0, 1);
+    for (i = 0; i < TC_PROBES; i++) round.result[i] = TC_PROBE_OK;
+    tc_health_probes(&h, &round, 0);
+    tc_health_sample(&h, &full, 10, 1);
+    assert(tc_health_next_probe_delay(&h) == TC_HEALTH_PROBE_RETRY_SECONDS);
+    /* A refusal from a target that never answered is not counted: the
+     * retry delay too. */
+    memset(&h, 0, sizeof(h));
+    tc_health_sample(&h, &open_table, 0, 1);
+    round.result[TC_PROBE_SMB6] = TC_PROBE_REFUSED;
+    tc_health_probes(&h, &round, 0);
+    assert(!h.probe[TC_PROBE_SMB6].seen_ok && h.probe[TC_PROBE_SMB6].last == TC_PROBE_REFUSED);
+    tc_health_sample(&h, &full, 10, 1);
+    assert(tc_health_next_probe_delay(&h) == TC_HEALTH_PROBE_RETRY_SECONDS);
+    /* Once it answered, the same refusal counts. */
+    round.result[TC_PROBE_SMB6] = TC_PROBE_OK;
+    tc_health_sample(&h, &open_table, 20, 1);
+    tc_health_probes(&h, &round, 20);
+    round.result[TC_PROBE_SMB6] = TC_PROBE_REFUSED;
+    tc_health_probes(&h, &round, 30);
+    tc_health_sample(&h, &full, 40, 1);
+    tc_health_probes_skipped(&h, 40);
+    assert(tc_health_next_probe_delay(&h) == TC_HEALTH_PROBE_SECONDS);
+    /* A day with sshd closing every connection and the table alternating
+     * between open and near full at each round: at most two real rounds
+     * in any long interval (one per retry delay would be 288 a day). */
+    memset(&h, 0, sizeof(h));
+    round.result[TC_PROBE_SMB6] = TC_PROBE_OK;
+    round.result[TC_PROBE_SSH4] = TC_PROBE_CLOSED;
+    for (now = 0, i = 0; now < 86400; now = next, i++) {
+        tc_health_sample(&h, i % 2 ? &full : &open_table, now, 1);
+        if (tc_health_probe_allowed(&h)) {
+            tc_health_probes(&h, &round, now);
+            /* No three real rounds within one long interval. */
+            if (real >= 2) assert(now - before_last >= TC_HEALTH_PROBE_SECONDS);
+            before_last = last_real;
+            last_real = now;
+            real++;
+        } else {
+            tc_health_probes_skipped(&h, now);
+        }
+        next = now + tc_health_next_probe_delay(&h);
+    }
+    assert(real >= 16 && real <= 2 * (86400 / TC_HEALTH_PROBE_SECONDS + 1));
 }
 
 static void probe_cadence(void) {
@@ -759,6 +856,7 @@ static void probe_cadence(void) {
         assert(week_of(&h, TC_PROBE_SMB4, TC_PROBE_SILENT, &triggers) == base + 2 && triggers == 1);
         assert(h.probe[TC_PROBE_SMB4].streak == h.probe[TC_PROBE_SMB4].silent);
     }
+    near_full_cadence();
 }
 
 static void worst(void) {
@@ -858,11 +956,20 @@ int main(int argc, char **argv) {
     }
     if (argc == 3 && !strcmp(argv[1], "probes")) {
         int rounds = atoi(argv[2]), i, j;
+        /* Every target answered before and smbd's listener runs, so each
+         * round's failures count toward a trigger (probe_event). */
+        static struct tc_health h;
+        struct tc_failure_counts c;
+        h.current.smbd_up = 1;
+        for (j = 0; j < TC_PROBES; j++) h.probe[j].seen_ok = 1;
         for (i = 0; i < rounds; i++) {
             struct tc_probe_round round;
             long long started = acp_monotonic_ms();
             tc_health_read_probes(&round);
+            tc_health_probes(&h, &round, 1000 + i);
+            tc_failure_counts(&c);
             for (j = 0; j < TC_PROBES; j++) printf("%s%s=%s", j ? " " : "", tc_probe_names[j], tc_probe_result_names[round.result[j]]);
+            printf(" enobufs=%u probe_event=%d", c.socket_enobufs, (h.pending & TC_EV_PROBE) != 0);
             printf(" elapsed_ms=%lld\n", acp_monotonic_ms() - started);
             fflush(stdout);
         }

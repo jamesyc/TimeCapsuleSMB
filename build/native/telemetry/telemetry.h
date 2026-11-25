@@ -132,8 +132,10 @@ int telemetry_authorized(const struct telemetry_response *response, const char *
 #endif
 /* The status line and headers http.c reads before the body. */
 #define TC_HTTP_HEADER_MAX 4096
-/* The buffer telemetry_http needs for a body of at most limit bytes. */
-#define TC_HTTP_BUFFER(limit) (TC_HTTP_HEADER_MAX + (limit) + 1)
+/* The buffer telemetry_http needs for a body of at most limit bytes: the
+ * head, the body, one byte more (so a full buffer is always a body past
+ * limit) and the NUL. */
+#define TC_HTTP_BUFFER(limit) (TC_HTTP_HEADER_MAX + (limit) + 2)
 /* GET (payload NULL) or POST url into buf (cap bytes: TC_HTTP_BUFFER of the
  * largest body accepted). 0 with the body at buf (NUL-terminated, *len
  * bytes), or -1; *outcome says which (http.c). */

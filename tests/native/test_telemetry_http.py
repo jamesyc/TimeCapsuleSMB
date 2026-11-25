@@ -32,6 +32,7 @@ ADDRESS_MS = 3000
 # TC_DNS_RETRANS_MS): a fake that answers at once is far inside it, and
 # moving on promptly is far from waiting a server out.
 DNS_RETRANS_MS = 1500
+AAAA_LATE_S = 0.4
 DNS_MIN_SERVER_MS = header_define("telemetry/dns.h", "TC_DNS_MIN_SERVER_MS")
 DNS_TRIES = header_define("telemetry/dns.h", "TC_DNS_TRIES")
 
@@ -96,6 +97,13 @@ def responder(state):
                     return
                 if mode == "slow_ok":
                     time.sleep(0.2)
+                if mode == "long_split":
+                    # The n-th byte in one segment, extra bytes in the next.
+                    self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    time.sleep(0.05)
+                    self.request.sendall(b"EXTRA")
+                    return
                 if mode == "trickle":
                     # One byte per segment: the head arrives split across reads.
                     self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -113,6 +121,9 @@ def responder(state):
                     "big": b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n" + b"x" * 100,
                     "big_close": b"HTTP/1.0 200 OK\r\n\r\n" + b"x" * 100,
                     "short": b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nok",
+                    # One small write, so the read that brings the second
+                    # byte brings the rest with it.
+                    "long": b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokEXTRA",
                     "chunked": b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n",
                     "early_close": b"",
                     "garbage": b"SSH-2.0-OpenSSH\r\n\r\n",
@@ -126,6 +137,8 @@ def responder(state):
                     "head_max": padded_head(HEADER_MAX) + b"ok",
                     "head_over": padded_head(HEADER_MAX + 1) + b"ok",
                     "head_max_big": padded_head(HEADER_MAX, 100) + b"x" * 100,
+                    "head_max_close": padded_head(HEADER_MAX, None) + b"x" * 100,
+                    "status_long": b"HTTP/1.1 2000000000000 OK\r\nContent-Length: 2\r\n\r\nok",
                 }[mode]
                 if reply:
                     self.request.sendall(reply)
@@ -138,8 +151,9 @@ HEADER_MAX = header_define("telemetry/telemetry.h", "TC_HTTP_HEADER_MAX")
 
 
 def padded_head(size, length=2):
-    """A 200 head of exactly size bytes, blank line included."""
-    head = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nX-Pad: " % length
+    """A 200 head of exactly size bytes, blank line included; with length
+    None, no Content-Length (the body runs to the close)."""
+    head = b"HTTP/1.1 200 OK\r\n" + (b"" if length is None else b"Content-Length: %d\r\n" % length) + b"X-Pad: "
     return head + b"p" * (size - len(head) - 4) + b"\r\n\r\n"
 
 
@@ -252,6 +266,18 @@ def dns_reply(query, mode="answer", zone=ZONE):
         answers.append(record("bogus.test", qtype, BOGUS[qtype]))
         if qtype == 1:
             answers.append(record("chaosalias.test", 1, V4["127.0.0.1"]))
+    if name == "longchain.test":
+        # Ten CNAMEs, last first: longchain.test -> chain1.test -> ... ->
+        # chain9.test -> v4only.test.
+        names = ["longchain.test"] + [f"chain{i}.test" for i in range(1, 10)] + ["v4only.test"]
+        for owner, cname in reversed(list(zip(names, names[1:]))):
+            answers.append(record(owner, 5, encode_name(cname)))
+        target = "v4only.test"
+    if name == "cnameloop.test":
+        # A CNAME loop, with an address for a name off the loop.
+        answers.append(record("cnameloop.test", 5, encode_name("cnameloop2.test")))
+        answers.append(record("cnameloop2.test", 5, encode_name("cnameloop.test")))
+        answers.append(record("elsewhere.test", qtype, BOGUS[qtype]))
     if name == "missing.test":
         rcode = 3
     if name == "packed.test":
@@ -264,7 +290,7 @@ def dns_reply(query, mode="answer", zone=ZONE):
         answers.append(record("decoy.test", 1, V4["127.0.0.1"]))
     if mode in ("servfail", "refused") or (mode == "servfail_a" and qtype == 1):
         rcode, answers = (5 if mode == "refused" else 2), []
-    if (mode in ("nxdomain_a", "nxdomain_a_aaaa_lost") and qtype == 1) or \
+    if (mode in ("nxdomain_a", "nxdomain_a_aaaa_lost", "nxdomain_a_aaaa_late") and qtype == 1) or \
             (mode in ("nxdomain_aaaa", "nxdomain_aaaa_a_lost") and qtype == 28):
         rcode, answers = 3, []
     if mode == "nodata":
@@ -331,11 +357,18 @@ class Dns:
         # The names this server answers for; a test may give one new records.
         self.zone = ZONE
         # The mode applies to the first mode_peers sockets that ask (each
-        # nameserver the resolver tries gets a socket of its own); later
-        # ones get plain answers. None: every one.
+        # nameserver a lookup asks gets a socket of its own, kept for every
+        # round); later ones get plain answers. None: every one.
         self.mode_peers = None
         self.queries = []
         self.peers = []
+
+    def send_late(self, replies, peer):
+        try:
+            for reply in replies:
+                self.sock.sendto(reply, peer)
+        except OSError:
+            pass
 
     def read(self, count, timeout=5):
         """The queries, once this thread has read at least count. A lookup
@@ -366,6 +399,19 @@ class Dns:
                 continue
             if mode == "drop_first" and data[:2] not in seen:
                 seen.add(data[:2])  # lose the first copy of each query
+                continue
+            if mode == "late_first":
+                # Answer the first copy of each query two first-round
+                # times late, in the middle of the second round; lose the
+                # resend.
+                if data[:2] not in seen:
+                    seen.add(data[:2])
+                    threading.Timer(2 * DNS_RETRANS_MS / 1000, self.send_late,
+                                    (dns_reply(data, "answer", self.zone), peer)).start()
+                continue
+            if mode == "nxdomain_a_aaaa_late" and qtype == 28:
+                # NXDOMAIN for A at once (dns_reply), the AAAA answer later.
+                threading.Timer(AAAA_LATE_S, self.send_late, (dns_reply(data, "answer", self.zone), peer)).start()
                 continue
             if (mode in ("aaaa_only", "nxdomain_aaaa_a_lost") and qtype == 1) or \
                     (mode in ("a_only", "nxdomain_a_aaaa_lost") and qtype == 28):
@@ -472,20 +518,42 @@ def test_get_sends_no_credentials_and_reads_to_the_close(http):
     assert "authorization" not in request["headers"] and request["body"] == b""
 
 
-@pytest.mark.parametrize("mode", ["status404", "status500", "redirect", "big", "big_close", "short", "chunked",
-                                  "garbage"])
+@pytest.mark.parametrize("mode", ["status404", "status500", "redirect", "big", "big_close", "short",
+                                  "chunked", "garbage"])
 def test_anything_but_a_complete_2xx_response_within_the_limit_fails(http, mode):
+    # http.c's response table, the rows ending "SERVER, answered": other
+    # status (404, 500, redirect, garbage), length over limit (big), body
+    # past limit (big_close), close before n bytes (short), chunked.
     rig, run = http
     rig["state"]["mode"] = mode
     outcome, _ = run("post", f"http://127.0.0.1:{rig['port']}/v1/router-heartbeats")
     assert outcome == "fail server"
 
 
+@pytest.mark.parametrize("mode", ["long", "long_split"])
+def test_bytes_past_content_length_are_dropped_however_they_arrive(http, mode):
+    # Response table: BODY_LENGTH, n bytes, 2xx. The body is the first n
+    # bytes, whether the extra ones come in the n-th byte's read (long) or
+    # after it (long_split), as curl -fsS kept them.
+    rig, run = http
+    rig["state"]["mode"] = mode
+    assert run("post", f"http://127.0.0.1:{rig['port']}/x")[0] == "ok ok"
+
+
 def test_a_close_with_no_answer_at_all_is_a_network_failure(http):
+    # Response table: HEAD, close, no byte.
     rig, run = http
     rig["state"]["mode"] = "early_close"
     outcome, _ = run("post", f"http://127.0.0.1:{rig['port']}/v1/router-heartbeats")
     assert outcome == "fail network"
+
+
+def test_a_status_is_read_as_three_digits(http):
+    # As curl reads it: the first three digits, so a longer number cannot
+    # overflow the parse ("2000000000000" is 200).
+    rig, run = http
+    rig["state"]["mode"] = "status_long"
+    assert run("post", f"http://127.0.0.1:{rig['port']}/x")[0] == "ok ok"
 
 
 def test_a_body_exactly_at_the_limit_is_kept(http):
@@ -542,6 +610,15 @@ def test_cname_chains_are_followed_and_other_names_ignored(http):
     assert run("post", f"http://decoy.test:{rig['port']}/x")[0] == "ok ok"
 
 
+def test_a_chain_of_ten_cnames_is_followed_and_a_loop_ends_with_no_address(http):
+    rig, run = http
+    assert run("resolve", "longchain.test")[0] == "127.0.0.1"
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    peers = len(rig["dns4"].peers)
+    assert run("resolve", "cnameloop.test")[0] == "fail"
+    assert len(rig["dns4"].peers) == peers + 1  # a clean reply with no address: final
+
+
 def test_a_reply_with_the_wrong_id_is_ignored(http):
     rig, run = http
     rig["dns4"].mode = "spoof"
@@ -595,7 +672,21 @@ def test_three_silent_nameservers_share_the_second_round(http):
     rig["resolv"].write_text("nameserver 127.0.0.1\n" * 3)
     outcome, elapsed = run("resolve", "v4only.test", binary="wide_binary")
     assert outcome == "fail" and dns_silent_ms(3) - 100 <= elapsed < dns_silent_ms(3) + 1500
-    assert len(rig["dns4"].peers) == 3 * DNS_TRIES
+    # One socket per server, kept for both rounds.
+    assert len(rig["dns4"].peers) == 3
+    assert len(rig["dns4"].queries) == 3 * 2 * DNS_TRIES
+
+
+def test_a_reply_to_the_first_round_that_comes_late_is_read_on_the_next(http):
+    # The server answers the first copies in the middle of the second round
+    # and loses the resends: the socket kept from the first round still
+    # takes the late answer, as libc's does.
+    rig, run = http
+    rig["dns4"].mode = "late_first"
+    outcome, elapsed = run("resolve", "svc.test", binary="wide_binary")
+    assert outcome == "::1 127.0.0.1"
+    assert elapsed >= 2 * DNS_RETRANS_MS - 100
+    assert len(rig["dns4"].peers) == 1 and len(rig["dns4"].queries) == 2 * DNS_TRIES
 
 
 def test_term_stops_a_lookup_without_asking_the_remaining_nameservers(http):
@@ -701,19 +792,40 @@ def test_half_an_answer_serves_the_request_but_is_not_kept(http):
     assert len(rig["dns4"].queries) - len(a_queries) == 2
 
 
-@pytest.mark.parametrize("mode", ["nxdomain_a", "nxdomain_a_aaaa_lost"])
-def test_nxdomain_for_a_fails_the_lookup_even_beside_aaaa_records(http, mode):
-    # svc.test has an AAAA record, but NXDOMAIN for A says the name does not
-    # exist: the lookup fails without asking the second nameserver, and
-    # without waiting for an AAAA reply that is lost.
+def test_nxdomain_for_a_uses_the_aaaa_records_beside_it(http):
+    # svc.test has an AAAA record, and NXDOMAIN for A: as libc does, the
+    # lookup returns the AAAA addresses, without asking the second
+    # nameserver.
     rig, run = http
-    rig["dns4"].mode = mode
+    rig["dns4"].mode = "nxdomain_a"
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    assert run("resolve", "svc.test")[0] == "::1"
+    assert len(rig["dns4"].peers) == 1 and len(rig["dns4"].read(2)) == 2
+
+
+def test_nxdomain_for_a_waits_for_a_late_aaaa_reply(http):
+    # The AAAA answer comes after the NXDOMAIN for A: the lookup waits for
+    # it, within the server's time, and uses it.
+    rig, run = http
+    rig["dns4"].mode = "nxdomain_a_aaaa_late"
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    outcome, elapsed = run("resolve", "svc.test")
+    assert outcome == "::1"
+    assert len(rig["dns4"].peers) == 1
+    assert AAAA_LATE_S * 1000 <= elapsed < DNS_RETRANS_MS
+
+
+def test_nxdomain_for_a_with_the_aaaa_reply_lost_fails_after_the_servers_time(http):
+    # The AAAA reply never comes: the lookup fails once the first server's
+    # time is out, without asking the second (libc would ask it for AAAA;
+    # dns.c's judge() says why this one does not).
+    rig, run = http
+    rig["dns4"].mode = "nxdomain_a_aaaa_lost"
     rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
     outcome, elapsed = run("resolve", "svc.test")
     assert outcome == "fail"
-    assert len(rig["dns4"].read(2)) == 2  # the first server's A and AAAA, once each
-    # Waiting for the AAAA reply would take the server's whole time.
-    assert elapsed < DNS_RETRANS_MS - 100
+    assert len(rig["dns4"].peers) == 1 and len(rig["dns4"].read(2)) == 2
+    assert elapsed >= DNS_RETRANS_MS - 100
 
 
 def test_a_cname_of_another_class_is_not_followed(http):
@@ -798,9 +910,11 @@ def test_a_response_split_into_single_bytes_is_read_whole(http):
 
 
 @pytest.mark.parametrize("mode,limit,expected", [("head_max", "64", "ok ok"), ("head_over", "64", "fail server"),
-                                                 ("head_max_big", "100", "ok " + "x" * 100)])
+                                                 ("head_max_big", "100", "ok " + "x" * 100),
+                                                 ("head_max_close", "100", "ok " + "x" * 100),
+                                                 ("head_max_close", "99", "fail server")])
 def test_a_head_longer_than_the_maximum_is_refused_even_in_one_read(http, mode, limit, expected):
-    # The whole response goes out in one write and fits the buffer, so one
+    # Response table: HEAD, head past TC_HTTP_HEADER_MAX. The whole response goes out in one write and fits the buffer, so one
     # read can bring the blank line in past the maximum.
     rig, run = http
     rig["state"]["mode"] = mode
@@ -891,7 +1005,8 @@ def test_a_scoped_link_local_nameserver_is_asked_on_its_interface(http, scope):
         dns.close()
 
 
-@pytest.mark.parametrize("entry", ["fe80::1", "fe80::1%nosuchif0", "fe80::1%"])
+@pytest.mark.parametrize("entry", ["fe80::1", "fe80::1%nosuchif0", "fe80::1%", "fe80::1%+1", "fe80::1% 1",
+                                   "fe80::1%-1"])
 def test_a_link_local_nameserver_without_a_usable_scope_is_skipped(http, entry):
     # It cannot be reached, so the file names no usable server and the local
     # one is asked, as libc does with none.
@@ -909,12 +1024,23 @@ def test_comments_and_other_lines_name_no_nameserver(http):
 
 
 @pytest.mark.skipif(not IPV6, reason="no IPv6 loopback")
+def test_the_rest_of_an_overlong_resolv_conf_line_is_not_a_line(http):
+    # A comment longer than the reader's buffer whose tail reads
+    # "nameserver ::1": that tail is part of the comment, not a nameserver.
+    rig, run = http
+    comment = "#" + "x" * 254
+    rig["resolv"].write_text(comment + "nameserver ::1\nnameserver 127.0.0.1\n")
+    assert run("resolve", "v4only.test", binary="wide_binary")[0] == "127.0.0.1"
+    assert rig["dns4"].queries and not rig["dns6"].queries
+
+
+@pytest.mark.skipif(not IPV6, reason="no IPv6 loopback")
 def test_nameservers_past_the_third_are_not_asked(http):
     rig, run = http
     rig["dns4"].mode = "silent"
     rig["resolv"].write_text("nameserver 127.0.0.1\n" * 3 + "nameserver ::1\n")
     assert run("resolve", "v4only.test", binary="wide_binary")[0] == "fail"
-    assert len(rig["dns4"].peers) == 3 * DNS_TRIES and not rig["dns6"].queries
+    assert len(rig["dns4"].peers) == 3 and not rig["dns6"].queries
 
 
 def test_a_missing_resolv_conf_asks_the_local_nameserver(http):
@@ -1059,6 +1185,33 @@ def test_an_answer_without_a_clean_a_reply_is_followed_by_the_kept_ipv4_address(
     assert a_queries(rig["dns4"]) > asked
 
 
+def test_servfail_for_a_beside_aaaa_records_asks_the_next_nameserver(script):
+    # The first nameserver fails the A query but answers AAAA: as libc
+    # takes the A query on to the next server, the second one is asked, and
+    # its whole answer is used and kept.
+    rig, start = script
+    resolve = start()
+    rig["dns4"].mode = "servfail_a"
+    rig["dns4"].mode_peers = 1
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    assert resolve("resolve svc.test") == "::1 127.0.0.1 resource=0"
+    assert len(rig["dns4"].peers) == 2
+    asked = len(rig["dns4"].queries)
+    assert resolve("resolve svc.test") == "::1 127.0.0.1 resource=0"
+    assert len(rig["dns4"].queries) == asked  # kept
+
+
+def test_servfail_for_a_on_every_nameserver_uses_the_half_answer_at_once(http):
+    # Each server fails A and answers AAAA: none is asked again in the
+    # second round, and the AAAA-only answer serves without waiting.
+    rig, run = http
+    rig["dns4"].mode = "servfail_a"
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    outcome, elapsed = run("resolve", "svc.test")
+    assert outcome == "::1" and elapsed < DNS_RETRANS_MS
+    assert len(rig["dns4"].queries) == 4
+
+
 def test_the_kept_answer_for_another_name_is_not_appended(script):
     rig, start = script
     resolve = start()
@@ -1110,35 +1263,50 @@ def test_a_cname_off_the_chain_does_not_shorten_the_ttl(script):
     assert len(rig["dns4"].queries) > asked
 
 
-@pytest.mark.parametrize("mode,aaaa", [("nxdomain_a", False), ("nxdomain_a", True), ("nodata", False)])
-def test_a_name_with_no_address_fails_and_forgets_the_kept_answer(script, mode, aaaa):
-    # v4only.test is kept with 127.0.0.1. Past its TTL, NXDOMAIN for A (with
-    # or without an AAAA record beside it) or a clean reply with no record
-    # to either type says the name has no address now: the lookup fails
-    # with neither the kept address nor the AAAA one, and without asking the
-    # second nameserver.
+@pytest.mark.parametrize("mode", ["nxdomain_a", "nodata"])
+def test_a_name_with_no_address_fails_and_leaves_the_kept_answer(script, mode):
+    # v4only.test is kept with 127.0.0.1. Past its TTL, NXDOMAIN for A, or a
+    # clean reply with no record to either type, says the name has no
+    # address now: the lookup fails without the kept address and without
+    # asking the second nameserver, as libc's does. The kept answer stays:
+    # a later lookup that no nameserver answers is served from it.
     rig, start = script
     resolve = start()
     assert resolve("resolve v4only.test") == "127.0.0.1 resource=0"
     assert resolve("advance 301") == "ok"
     rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
-    if aaaa:
-        rig["dns4"].zone = with_aaaa("v4only.test")
     rig["dns4"].mode = mode
-    asked = len(rig["dns4"].queries)
+    asked, peers = len(rig["dns4"].queries), len(rig["dns4"].peers)
     assert resolve("resolve v4only.test") == "fail resource=0"
     assert len(rig["dns4"].read(asked + 2)) == asked + 2
-    # Forgotten: with both nameservers failing, the outage fallback that
-    # would serve a kept answer has none.
+    assert len(rig["dns4"].peers) == peers + 1
     rig["dns4"].mode = "servfail"
     asked = len(rig["dns4"].queries)
-    assert resolve("resolve v4only.test") == "fail resource=0"
+    assert resolve("resolve v4only.test") == "127.0.0.1 resource=0"
     assert len(rig["dns4"].queries) == asked + 4
 
 
+def test_aaaa_records_beside_nxdomain_for_a_go_first_with_the_kept_ipv4_behind(script):
+    # v4only.test is kept with 127.0.0.1; past its TTL it gains an AAAA
+    # record and its A query gets NXDOMAIN. The AAAA address is used at
+    # once with the kept IPv4 address behind it, and is not kept: the kept
+    # answer is still the one a later outage gets.
+    rig, start = script
+    resolve = start()
+    assert resolve("resolve v4only.test") == "127.0.0.1 resource=0"
+    assert resolve("advance 301") == "ok"
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    rig["dns4"].zone = with_aaaa("v4only.test")
+    rig["dns4"].mode = "nxdomain_a"
+    peers = len(rig["dns4"].peers)
+    assert resolve("resolve v4only.test") == "::1 127.0.0.1 resource=0"
+    assert len(rig["dns4"].peers) == peers + 1
+    rig["dns4"].mode = "servfail"
+    assert resolve("resolve v4only.test") == "127.0.0.1 resource=0"
+
+
 def test_failing_nameservers_leave_the_kept_answer_to_serve(script):
-    # The outage fallback the test above finds empty: every nameserver
-    # failing is no answer, not a missing name.
+    # Every nameserver failing is no answer, not a missing name.
     rig, start = script
     resolve = start()
     assert resolve("resolve v4only.test") == "127.0.0.1 resource=0"
@@ -1260,6 +1428,10 @@ def serve(listener, behavior, log):
                     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nok")
                     while conn.recv(4096):
                         pass
+                elif behavior == "body_stall":
+                    conn.sendall(b"HTTP/1.0 200 OK\r\n\r\npart")  # read to the close, which never comes
+                    while conn.recv(4096):
+                        pass
                 elif behavior == "short_body":
                     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nok")
             except OSError:
@@ -1341,6 +1513,7 @@ def test_an_ipv6_close_without_an_answer_falls_back_to_ipv4(dual):
 
 @pytestmark_ipv6
 def test_a_complete_error_answer_is_not_retried_on_ipv4(dual):
+    # Response table: BODY_LENGTH, n bytes, other status (answered).
     setup, logs = dual
     outcome, _ = setup("status500", "ok")
     assert outcome == "fail server"
@@ -1349,6 +1522,7 @@ def test_a_complete_error_answer_is_not_retried_on_ipv4(dual):
 
 @pytestmark_ipv6
 def test_a_server_that_was_reached_outranks_a_later_network_failure(dual):
+    # Response table: HEAD, close, some bytes (SERVER, next address).
     # IPv6 sent part of an answer and closed; IPv4 refused.
     setup, logs = dual
     outcome, _ = setup("partial_head", "refused")
@@ -1358,6 +1532,7 @@ def test_a_server_that_was_reached_outranks_a_later_network_failure(dual):
 
 @pytestmark_ipv6
 def test_a_close_before_any_byte_is_the_network_not_the_server(dual):
+    # Response table: HEAD, close, no byte.
     # A middlebox that accepts and hangs up on IPv6 says nothing about the
     # server: with IPv4 refused, the request failed on the network.
     setup, logs = dual
@@ -1367,8 +1542,10 @@ def test_a_close_before_any_byte_is_the_network_not_the_server(dual):
 
 
 @pytestmark_ipv6
-@pytest.mark.parametrize("v6", ["head_reset", "head_stall"])
+@pytest.mark.parametrize("v6", ["head_reset", "head_stall", "body_stall"])
 def test_a_reset_or_stall_after_the_head_moves_on_to_the_next_address(dual, v6):
+    # Response table: any phase, reset or stall; BODY_LENGTH for head_reset
+    # and head_stall, BODY_TO_CLOSE for body_stall.
     setup, logs = dual
     outcome, _ = setup(v6, "ok")
     assert outcome == "ok ok"
@@ -1377,6 +1554,7 @@ def test_a_reset_or_stall_after_the_head_moves_on_to_the_next_address(dual, v6):
 
 @pytestmark_ipv6
 def test_a_close_that_cuts_the_body_short_is_the_servers_answer(dual):
+    # Response table: BODY_LENGTH, close before n bytes.
     # The server ended its answer: another address would only repeat it.
     setup, logs = dual
     outcome, _ = setup("short_body", "ok")

@@ -229,8 +229,11 @@ static int by_wait_count(const void *a, const void *b) {
         }                                                                                                     \
     } while (0)
 
+/* The process table, for read_snapshot and room_for_ipv6; static, as it is
+ * large, and only one of them reads it at a time. */
+static struct tc_proctable table;
+
 static void read_snapshot(struct tc_snapshot *s, long now) {
-    static struct tc_proctable table;
     static struct tc_proc_group groups[TC_PROCESS_MAX];
     static struct tc_wait_count waits[TC_PROCESS_MAX];
     size_t i, group_count = 0, wait_count = 0;
@@ -371,10 +374,16 @@ static void finish(struct probe *p, enum tc_probe_result result) {
     p->result = result;
 }
 
+/* No buffer or memory here for a connect, send or receive: the probe
+ * could not run (skipped, counted as a socket failure), which says nothing
+ * about the service. */
+static int short_of_buffers(int error) {
+    return tc_errno_record(TC_OP_IO, error) == TC_ERR_RESOURCE;
+}
+
 /* Refused: nothing listens there (absent). No such address or route on
- * this kernel (no ::1), or no buffer, memory or descriptor for it here:
- * the probe could not run (skipped), which says nothing about the
- * service. */
+ * this kernel (no ::1), or a buffer shortage: the probe could not run
+ * (skipped). */
 static enum tc_probe_result connect_failure(int error) {
     if (error == ECONNREFUSED) return TC_PROBE_ABSENT;
     /* A reset or abort this early still followed a finished handshake (a
@@ -382,7 +391,7 @@ static enum tc_probe_result connect_failure(int error) {
      * probe looked, which is closed, as when the hang-up comes later. */
     if (error == ECONNRESET || error == ECONNABORTED) return TC_PROBE_CLOSED;
     if (error == EADDRNOTAVAIL || error == ENETUNREACH) return TC_PROBE_SKIPPED;
-    return tc_errno_record(TC_OP_IO, error) == TC_ERR_RESOURCE ? TC_PROBE_SKIPPED : TC_PROBE_DOWN;
+    return short_of_buffers(error) ? TC_PROBE_SKIPPED : TC_PROBE_DOWN;
 }
 #ifdef TC_NATIVE_TEST
 enum tc_probe_result tc_health_connect_failure(int error) { return connect_failure(error); }
@@ -398,12 +407,14 @@ static void drain(struct probe *p, const struct target *t) {
 
 static void connected(struct probe *p, const struct target *t) {
     if (t->smb) {
-        ssize_t sent = send(p->fd, smb2_negotiate, sizeof(smb2_negotiate), 0);
+        ssize_t sent = tc_test_enobufs("probe-send") ? -1 : send(p->fd, smb2_negotiate, sizeof(smb2_negotiate), 0);
         if (sent != (ssize_t)sizeof(smb2_negotiate)) {
-            /* A full socket buffer this early is a server not reading; any
-             * other failure, or a short send (errno untouched), a closed
-             * connection. */
-            finish(p, sent < 0 && errno == EAGAIN ? TC_PROBE_SILENT : TC_PROBE_CLOSED);
+            /* A full socket buffer this early is a server not reading; a
+             * buffer shortage is skipped; any other failure, or a short
+             * send (errno untouched), a closed connection. */
+            if (sent < 0 && errno == EAGAIN) finish(p, TC_PROBE_SILENT);
+            else if (sent < 0 && short_of_buffers(errno)) finish(p, TC_PROBE_SKIPPED);
+            else finish(p, TC_PROBE_CLOSED);
             return;
         }
     }
@@ -477,8 +488,12 @@ static void advance(struct probe *p, const struct target *t, int ready) {
     }
     if (p->step != STEP_READING) return;
     if (ready) {
-        ssize_t n = recv(p->fd, p->reply + p->got, sizeof(p->reply) - p->got, 0);
+        ssize_t n = tc_test_enobufs("probe-recv") ? -1 : recv(p->fd, p->reply + p->got, sizeof(p->reply) - p->got, 0);
         if (n < 0 && (errno == EINTR || errno == EAGAIN)) return;
+        if (n < 0 && short_of_buffers(errno)) {
+            finish(p, TC_PROBE_SKIPPED);
+            return;
+        }
         if (n <= 0) {
             finish(p, p->got ? TC_PROBE_SILENT : TC_PROBE_CLOSED);
             return;
@@ -540,11 +555,25 @@ static void run_targets(struct probe *probes, size_t first, size_t end) {
     }
 }
 
+/* Whether the table, read now, still leaves the IPv6 smbd probe the room
+ * tc_health_probe_allowed() asked of the round (the same rule, though that
+ * probe adds one child, not two). The IPv4 pair's sshd and smbd children can
+ * outlive their sockets (smbd's child closes its socket before it exits,
+ * and an exited child holds its slot until it is reaped), so the sample
+ * from before the round does not say whether another child would fit
+ * beside them. A table that cannot be read gives none. */
+static int room_for_ipv6(void) {
+    struct tc_counters c;
+    read_counters(&c);
+    if (c.maxproc <= 0 || tc_proctable_read(&table)) return 0;
+    return (long)table.count + TC_HEALTH_PROC_FULL_MARGIN < c.maxproc;
+}
+
 void tc_health_read_probes(struct tc_probe_round *out) {
     struct probe probes[TC_PROBES];
     size_t i;
     memset(probes, 0, sizeof(probes)); /* a probe never started stays skipped */
     run_targets(probes, TC_PROBE_SSH4, TC_PROBE_SMB6);
-    if (!telemetry_stop) run_targets(probes, TC_PROBE_SMB6, TC_PROBES);
+    if (!telemetry_stop && room_for_ipv6()) run_targets(probes, TC_PROBE_SMB6, TC_PROBES);
     for (i = 0; i < TC_PROBES; i++) out->result[i] = probes[i].result;
 }
