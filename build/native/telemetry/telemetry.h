@@ -61,14 +61,22 @@ struct telemetry_response { int debug; char signature[129]; };
 extern volatile sig_atomic_t telemetry_stop;
 int telemetry_enabled(void);
 /* How a heartbeat attempt ended, for the retry rules. One attempt that meets
- * several failures reports the first in this order: delivered, cancelled,
- * busy, local_resource, acp_unavailable, network, server. */
+ * several failures (building the payload, then the request) reports the
+ * first in this order: delivered, cancelled, busy, local_resource,
+ * acp_unavailable, network, server. Within the request (telemetry_http), the
+ * failures of the name lookup and of each address rank differently: server,
+ * then local_resource, then network, since a server that answered at all
+ * shows the network works. */
 enum tc_outcome {
     TC_OUTCOME_DELIVERED, TC_OUTCOME_CANCELLED, TC_OUTCOME_BUSY, TC_OUTCOME_LOCAL_RESOURCE,
     TC_OUTCOME_ACP_UNAVAILABLE, TC_OUTCOME_NETWORK, TC_OUTCOME_SERVER
 };
 
 struct tc_heartbeat_facts;
+/* How a heartbeat gets its acp facts (heartbeat_facts.h): keep the ones it
+ * has (read only when there are none), read afresh, or read unless the last
+ * complete collection is fresh enough to keep (tc_heartbeat_facts_fresh). */
+enum tc_facts_read { TC_FACTS_KEEP, TC_FACTS_READ, TC_FACTS_READ_UNLESS_FRESH };
 /* What building a payload found: failure is why it failed (cancelled,
  * acp_unavailable when there is no identity, server when it does not fit);
  * local_resource that an acp child could not start for want of resources
@@ -78,17 +86,34 @@ struct tc_payload_result { enum tc_outcome failure; int local_resource; };
  * "delivery": how long and why a device could not report. since is a
  * monotonic time from this process, 0 for none. */
 struct tc_delivery { unsigned failed; long since; unsigned local_resource, acp_unavailable, network, server; };
-/* What a payload is built from: the facts this process keeps, whether to
- * read acp afresh (heartbeat_facts.h; otherwise acp runs only if nothing was
- * ever read), and the delivery record (NULL: none). */
+/* A heartbeat's id, kept from its first attempt until it is delivered, so
+ * every retry of one heartbeat carries one id and the server keeps the
+ * latest attempt (it may have stored an earlier one whose answer never
+ * came back). Two states: none (id empty), or pending for one reason and
+ * router ID. telemetry_payload builds an id when there is none or the
+ * reason or router ID changed (a scheduled retry that became resource_high
+ * is another heartbeat; the server ignores an id under another router);
+ * the daemon clears it once a heartbeat is delivered. */
+struct tc_heartbeat_ident {
+    char id[72];
+    char reason[64];
+    char router_id[HEARTBEAT_MAX_FIELD + 8];
+};
+static inline void tc_heartbeat_ident_clear(struct tc_heartbeat_ident *ident) { ident->id[0] = '\0'; }
+/* What a payload is built from: the facts this process keeps, how to get
+ * them (enum tc_facts_read), the delivery record (NULL: none) and the
+ * pending heartbeat id (NULL: a new id each time, as one-shot modes send). */
 struct tc_health;
 struct tc_payload_context {
     struct tc_heartbeat_facts *facts;
-    int refresh;
+    enum tc_facts_read facts_read;
     const struct tc_delivery *delivery;
+    struct tc_heartbeat_ident *ident;
     struct tc_health *health;  /* NULL: no health object */
-    /* Set by telemetry_payload: the health events the payload carried
-     * (health.h); the caller clears them once it is delivered. */
+    /* Set by telemetry_payload: whether it read acp, and the health events
+     * the payload carried (health.h; the caller clears them once it is
+     * delivered). */
+    int read_acp;
     unsigned health_token;
     int health_sent;
 };

@@ -14,6 +14,7 @@ native/telemetry/debug_job.c
 native/telemetry/errclass.c
 native/telemetry/http.c
 native/telemetry/dns.c
+native/telemetry/entropy.c
 native/telemetry/heartbeat_facts.c
 native/telemetry/health.c
 native/telemetry/health_read.c

@@ -14,6 +14,8 @@ struct telemetry_daemon {
     struct tc_planner planner;
     struct tc_heartbeat_facts facts;
     struct tc_health health;
+    struct tc_delivery delivery; /* the planner's failure record, as the next payload sends it */
+    struct tc_heartbeat_ident ident; /* the pending heartbeat's id (telemetry.h) */
     time_t next_cleanup, next_sample, next_probe;
 };
 
@@ -34,7 +36,7 @@ static void probe_round(struct telemetry_daemon *d, time_t now) {
         tc_health_read_probes(&round);
         tc_health_probes(&d->health, &round, (long)now);
     } else {
-        tc_health_probes_skipped(&d->health);
+        tc_health_probes_skipped(&d->health, (long)now);
     }
 }
 
@@ -65,19 +67,138 @@ static void delivery_record(const struct tc_planner *p, struct tc_delivery *out)
     out->server = p->failed_by[TC_OUTCOME_SERVER];
 }
 
+/* The workspace lock, or -1 with the exit status for the failure in *rc
+ * (busy for another holder) and errno kept for tc_setup_outcome. */
+static int take_lock(int *rc) {
+    int lock = telemetry_lock(), error;
+    if (lock >= 0) return lock;
+    error = errno;
+    *rc = error == EAGAIN || error == EWOULDBLOCK ? TC_EXIT_BUSY : 1;
+    if (*rc != TC_EXIT_BUSY) telemetry_workspace_error("lock", TC_TELEMETRY_WORK_ROOT);
+    errno = error;
+    return -1;
+}
+
+/* Under the workspace lock, which it releases: housekeeping, then one
+ * heartbeat for reason (NULL: housekeeping only). Returns the exit status;
+ * *done says how the heartbeat ended (busy when the workspace could not be
+ * cleaned, which holds the heartbeat back like a lock held elsewhere;
+ * cancelled when the process is stopping) and whether it read acp. */
+static int locked_cycle(struct tc_payload_context *ctx, int lock, const char *reason,
+                        struct tc_attempt_result *done) {
+    int rc = telemetry_cleanup_locked();
+    done->read_acp = 0;
+    done->outcome = rc ? TC_OUTCOME_BUSY : TC_OUTCOME_CANCELLED;
+    if (rc || !reason || telemetry_stop) {
+        close(lock);
+        return rc;
+    }
+    rc = telemetry_cycle(reason, lock, ctx, &done->outcome);
+    done->read_acp = ctx->read_acp;
+    if (done->outcome == TC_OUTCOME_DELIVERED) {
+        /* The heartbeat is in: its events are reported and its id done. */
+        if (ctx->health_sent) tc_health_delivered(ctx->health, ctx->health_token);
+        if (ctx->ident) tc_heartbeat_ident_clear(ctx->ident);
+    }
+    /* Closing this reference preserves an inherited child's lock. Never
+     * LOCK_UN a lock shared with a running job. */
+    close(lock);
+    /* Busy means a surviving worker or another cycle owns the files now.
+     * Housekeeping retries without deleting them. */
+    if (telemetry_recover() == 1) rc = 1;
+    return rc;
+}
+
+/* --once: one heartbeat with its own reason, read afresh, after one sample
+ * and probe round. */
+static int run_once(struct telemetry_daemon *d, struct tc_payload_context *ctx, const char *reason) {
+    struct tc_attempt_result done;
+    int rc = 0, lock;
+    if (!telemetry_enabled() || !tc_parent_alive(parent_fd)) return 0;
+    lock = take_lock(&rc);
+    if (lock < 0) return rc;
+    sample_once(d, monotonic_seconds());
+    ctx->facts_read = TC_FACTS_READ;
+    return locked_cycle(ctx, lock, reason, &done);
+}
+
+/* One pass of the daemon at now, each step only when it is due: a sample
+ * (a few sysctls, no fork), a probe round (at most
+ * TC_HEALTH_PROBE_ROUND_MAX_MS), then the heartbeat the planner allows or,
+ * with none, housekeeping. Sampling pauses while a heartbeat runs. The
+ * first sample comes before any heartbeat and touches the static buffers,
+ * so later reads need no new pages. Returns the exit status of the last
+ * locked step (rc when this pass took none). */
+static int daemon_pass(struct telemetry_daemon *d, struct tc_payload_context *ctx, time_t now, int rc) {
+    struct tc_attempt attempt;
+    struct tc_attempt_result done;
+    int lock;
+    if (now >= d->next_sample) {
+        struct tc_reading reading;
+        tc_health_read_sample(&reading, (long)now);
+        tc_health_sample(&d->health, &reading, (long)now, planner_armed(&d->planner, (long)now));
+        d->next_sample = now + TC_HEALTH_SAMPLE_SECONDS;
+    }
+    if (now >= d->next_probe) {
+        probe_round(d, now);
+        d->next_probe = monotonic_seconds() + tc_health_next_probe_delay(&d->health);
+    }
+    attempt = planner_next(&d->planner, (long)now, tc_health_requests(&d->health));
+    if (attempt.kind == TC_ATTEMPT_NONE && now < d->next_cleanup) return rc;
+    lock = take_lock(&rc);
+    if (lock < 0) {
+        done.outcome = tc_setup_outcome(errno, 1);
+        done.read_acp = 0;
+    } else {
+        ctx->facts_read = attempt.facts;
+        delivery_record(&d->planner, &d->delivery);
+        rc = locked_cycle(ctx, lock, attempt.kind != TC_ATTEMPT_NONE ? attempt.reason : NULL, &done);
+    }
+    if (attempt.kind != TC_ATTEMPT_NONE)
+        planner_finished(&d->planner, (long)monotonic_seconds(), &attempt, &done, tc_health_requests(&d->health));
+    d->next_cleanup = monotonic_seconds() + TC_CLEANUP_INTERVAL_SECONDS;
+    return rc;
+}
+
+/* --daemon: a pass every second until TERM, opt-out or the parent's exit.
+ * The boot heartbeat and the first probe round wait out the same hold
+ * (planner.h): at daemon start smbd is often not listening yet, and a pass
+ * probes before it plans, so the boot heartbeat carries that round. */
+static int run_daemon(struct telemetry_daemon *d, struct tc_payload_context *ctx) {
+    long hold_until = (long)monotonic_seconds() + TC_BOOT_HOLD_SECONDS;
+    int rc = 0;
+    ctx->ident = &d->ident;
+    planner_init(&d->planner, TC_ARM_AFTER_SECONDS, hold_until);
+    d->next_probe = (time_t)hold_until;
+    while (!telemetry_stop) {
+        time_t now = monotonic_seconds();
+        if (now < 0) {
+            fputs("telemetry: cannot read monotonic clock\n", stderr);
+            return 1;
+        }
+        /* Recheck while idle so a running daemon observes a manual opt-out.
+         * An active cycle still finishes its normal child/cleanup handling. */
+        if (!telemetry_enabled() || !tc_parent_alive(parent_fd)) return 0;
+        rc = daemon_pass(d, ctx, now, rc);
+        /* An unreapable ACP child stops the shared reader; do not keep
+         * scheduling collections a kernel cannot finish. */
+        if (acp_stop_requested) telemetry_stop = 1;
+        if (!telemetry_stop) sleep(1);
+    }
+    return rc;
+}
+
 int tc_telemetry_main(int argc, char **argv) {
-    int rc = 0, daemon = 0, cleanup_only = 0, report_only = 0;
+    int rc, daemon = 0, cleanup_only = 0, report_only = 0;
     const char *reason = "manual";
     struct telemetry_daemon *d = &daemon_state;
-    struct tc_delivery delivery;
     struct tc_payload_context ctx;
     enum tc_outcome outcome;
     memset(d, 0, sizeof(*d));
-    memset(&delivery, 0, sizeof(delivery));
     memset(&ctx, 0, sizeof(ctx));
     ctx.facts = &d->facts;
-    ctx.refresh = 1;
-    ctx.delivery = &delivery;
+    ctx.facts_read = TC_FACTS_READ;
+    ctx.delivery = &d->delivery;
     ctx.health = &d->health;
     signal(SIGTERM, stop); signal(SIGINT, stop); signal(SIGPIPE, SIG_IGN);
     if (argc == 2 && !strcmp(argv[1], "--version")) { puts(HEARTBEAT_AGENT_VERSION); return 0; }
@@ -99,8 +220,6 @@ int tc_telemetry_main(int argc, char **argv) {
         fputs("Usage: telemetry --daemon | --once [reason] | --report [reason] | --cleanup | --print-payload [reason] | --version\n", stderr);
         return 2;
     }
-    /* Only the daemon plans; one-shot modes go at once. */
-    planner_init(&d->planner, TC_ARM_AFTER_SECONDS, daemon ? (long)monotonic_seconds() + TC_BOOT_HOLD_SECONDS : 0);
     if (cleanup_only) {
         rc = telemetry_recover();
         if (rc == TC_EXIT_BUSY) fputs("telemetry: cleanup deferred; workspace is in use\n", stderr);
@@ -121,89 +240,5 @@ int tc_telemetry_main(int argc, char **argv) {
         sample_once(d, monotonic_seconds());
         return telemetry_cycle(reason, -1, &ctx, &outcome);
     }
-    do {
-        time_t now = monotonic_seconds();
-        struct tc_attempt attempt;
-        if (now < 0) {
-            fputs("telemetry: cannot read monotonic clock\n", stderr);
-            return 1;
-        }
-        /* Sampling is a few sysctls, no fork; a probe round at most
-         * TC_HEALTH_PROBE_ROUND_MAX_MS. The first sample runs before any
-         * heartbeat and touches the static buffers, so later reads need no
-         * new pages. Both pause while a cycle runs. */
-        if (daemon && now >= d->next_sample) {
-            struct tc_reading reading;
-            tc_health_read_sample(&reading, (long)now);
-            tc_health_sample(&d->health, &reading, (long)now, planner_armed(&d->planner, (long)now));
-            d->next_sample = now + TC_HEALTH_SAMPLE_SECONDS;
-        }
-        if (daemon && now >= d->next_probe) {
-            probe_round(d, now);
-            d->next_probe = monotonic_seconds() + TC_HEALTH_PROBE_SECONDS;
-        }
-        /* --once is one heartbeat with its own reason, read afresh. */
-        if (daemon) {
-            attempt = planner_next(&d->planner, (long)now, tc_health_requests(&d->health));
-            if (attempt.reuse && tc_heartbeat_facts_fresh(&d->facts, acp_monotonic_ms())) attempt.refresh = 0;
-        } else {
-            attempt.kind = TC_ATTEMPT_SCHEDULED;
-            attempt.reason = reason;
-            attempt.refresh = 1;
-            attempt.reuse = 0;
-        }
-        /* Recheck while idle so a running daemon observes a manual opt-out.
-         * An active cycle still finishes its normal child/cleanup handling. */
-        if (!telemetry_enabled() || !tc_parent_alive(parent_fd)) return 0;
-        if (attempt.kind != TC_ATTEMPT_NONE || now >= d->next_cleanup) {
-            int lock = telemetry_lock();
-            if (lock < 0) {
-                int lock_error = errno;
-                rc = lock_error == EAGAIN || lock_error == EWOULDBLOCK ? TC_EXIT_BUSY : 1;
-                if (rc != TC_EXIT_BUSY) {
-                    telemetry_workspace_error("lock", TC_TELEMETRY_WORK_ROOT);
-                }
-                if (!daemon) return rc;
-                if (attempt.kind != TC_ATTEMPT_NONE)
-                    planner_finished(&d->planner, (long)now, &attempt, tc_setup_outcome(lock_error, 1),
-                                     tc_health_requests(&d->health));
-                d->next_cleanup = now + TC_CLEANUP_INTERVAL_SECONDS;
-            } else {
-                rc = telemetry_cleanup_locked();
-                if (rc == 0 && attempt.kind != TC_ATTEMPT_NONE && !telemetry_stop) {
-                    int cleanup_rc;
-                    ctx.refresh = attempt.refresh;
-                    delivery_record(&d->planner, &delivery);
-                    if (!daemon) sample_once(d, now);
-                    rc = telemetry_cycle(attempt.reason, lock, &ctx, &outcome);
-                    if (outcome == TC_OUTCOME_DELIVERED && ctx.health_sent)
-                        tc_health_delivered(&d->health, ctx.health_token);
-                    if (daemon)
-                        planner_finished(&d->planner, (long)monotonic_seconds(), &attempt, outcome,
-                                         tc_health_requests(&d->health));
-                    /* Closing this reference preserves an inherited child's
-                     * lock. Never LOCK_UN a lock shared with a running job. */
-                    close(lock);
-                    cleanup_rc = telemetry_recover();
-                    if (cleanup_rc == 1) rc = 1;
-                    /* Busy means a surviving worker or another cycle owns the
-                     * files now. Housekeeping retries without deleting them. */
-                } else {
-                    /* A workspace that cannot be cleaned holds the heartbeat
-                     * back like a lock held elsewhere. */
-                    if (daemon && rc != 0 && attempt.kind != TC_ATTEMPT_NONE)
-                        planner_finished(&d->planner, (long)now, &attempt, TC_OUTCOME_BUSY,
-                                         tc_health_requests(&d->health));
-                    close(lock);
-                }
-                d->next_cleanup = monotonic_seconds() + TC_CLEANUP_INTERVAL_SECONDS;
-            }
-        }
-        if (!daemon) return rc;
-        /* An unreapable ACP child stops the shared reader; do not keep
-         * scheduling collections a kernel cannot finish. */
-        if (acp_stop_requested) telemetry_stop = 1;
-        if (!telemetry_stop) sleep(1);
-    } while (!telemetry_stop);
-    return rc;
+    return daemon ? run_daemon(d, &ctx) : run_once(d, &ctx, reason);
 }

@@ -2,10 +2,13 @@
 #include "../common/acp.h"
 #include "telemetry.h"
 #include "errclass.h"
+#include "entropy.h"
+#include "../common/iflist.h"
 
 #define TYPE_A 1
 #define TYPE_CNAME 5
 #define TYPE_AAAA 28
+#define CLASS_IN 1
 #define NAME_MAX_TEXT 256
 #define MAX_ALIASES 8
 #define TTL_MIN 60
@@ -19,20 +22,79 @@ static struct {
     long long fresh_until, stale_until;
 } cache;
 
+/* What one nameserver said to each query (done[0] A, done[1] AAAA). FAILED
+ * covers SERVFAIL, REFUSED and the like and a truncated reply; NO_NAME is
+ * NXDOMAIN. Every state but WAITING is final for that server. */
+enum { WAITING, CLEAN, FAILED, NO_NAME };
+
 struct answers {
     struct tc_dns_addr v4[TC_DNS_MAX_ADDRS], v6[TC_DNS_MAX_ADDRS];
     size_t n4, n6;
     unsigned long ttl;
-    int done[2];      /* A, AAAA answered */
-    int nxdomain;
+    int done[2];
 };
 
+/* What tc_dns_resolve does with one nameserver's answers (judge()). */
+enum verdict {
+    ASK_NEXT,           /* nothing usable yet: the next nameserver, then the kept answer */
+    GONE,               /* the name has no address: fail, keep nothing */
+    KEEP,               /* cache the answer and use it */
+    USE_WITH_KEPT_IPV4  /* use it once, then the kept answer's IPv4 addresses */
+};
+
+/* The verdict on one nameserver's answers, by its A reply, whether either
+ * reply brought an address, and its AAAA reply:
+ *
+ *   A reply          addresses  AAAA reply       verdict
+ *   NO_NAME          any        any              GONE
+ *   CLEAN            some       any              KEEP
+ *   CLEAN            none       CLEAN            GONE
+ *   CLEAN            none       not CLEAN        ASK_NEXT
+ *   WAITING, FAILED  some       any              USE_WITH_KEPT_IPV4
+ *   WAITING, FAILED  none       any              ASK_NEXT
+ *
+ * GONE: NXDOMAIN for A says the name does not exist, and a clean empty
+ * reply to both (NODATA) that it has no address; another nameserver of the
+ * same network would say the same, and the kept answer is for a name that
+ * no longer has it. NXDOMAIN for AAAA alone is only that type answered with
+ * nothing. An answer is kept only with a clean A reply: an AAAA-only answer
+ * from a server whose A reply failed or was lost would, kept, fail every
+ * request until its TTL on a device whose IPv6 does not reach the server,
+ * so it is used once with the IPv4 addresses from the last clean answer
+ * behind it. A clean A reply with no address beside AAAA records is the
+ * name's whole answer, and kept. */
+static enum verdict judge(const struct answers *a) {
+    int found = a->n4 || a->n6;
+    if (a->done[0] == NO_NAME) return GONE;
+    if (a->done[0] == CLEAN) return found ? KEEP : a->done[1] == CLEAN ? GONE : ASK_NEXT;
+    return found ? USE_WITH_KEPT_IPV4 : ASK_NEXT;
+}
+
+#ifdef TC_NATIVE_TEST
+/* judge() by state and verdict names, for the table test in test_http.c. */
+const char *tc_dns_judge(const char *a_reply, const char *aaaa_reply, size_t n4, size_t n6) {
+    static const char *const states[] = {"waiting", "clean", "failed", "no_name"};
+    static const char *const verdicts[] = {"ask_next", "gone", "keep", "use_with_kept_ipv4"};
+    struct answers a;
+    int i;
+    memset(&a, 0, sizeof(a));
+    a.done[0] = a.done[1] = -1;
+    for (i = 0; i < 4; i++) {
+        if (!strcmp(a_reply, states[i])) a.done[0] = i;
+        if (!strcmp(aaaa_reply, states[i])) a.done[1] = i;
+    }
+    if (a.done[0] < 0 || a.done[1] < 0) return "bad state";
+    a.n4 = n4;
+    a.n6 = n6;
+    return verdicts[judge(&a)];
+}
+#endif
+
+/* A query id; guessable only until the first seed read works (entropy.h),
+ * and connect() already drops replies from anyone but the nameserver. */
 static unsigned query_id(void) {
     unsigned char bytes[2];
-    int fd = open("/dev/urandom", O_RDONLY);
-    ssize_t n = fd >= 0 ? read(fd, bytes, sizeof(bytes)) : -1;
-    if (fd >= 0) close(fd);
-    if (n == (ssize_t)sizeof(bytes)) return (unsigned)bytes[0] << 8 | bytes[1];
+    if (!tc_random_bytes(bytes, sizeof(bytes))) return (unsigned)bytes[0] << 8 | bytes[1];
     return (unsigned)(acp_monotonic_ms() ^ getpid()) & 0xffff;
 }
 
@@ -93,6 +155,19 @@ static int read_name(const unsigned char *msg, size_t len, size_t *pos, char *ou
     return 0;
 }
 
+/* Appends addr to list (*n entries, at most max) unless it is there
+ * already: a repeated record, or the same address reached by two names on a
+ * CNAME chain, would give a dead address two attempts. */
+static void add_addr(struct tc_dns_addr *list, size_t *n, size_t max, int family, const unsigned char *addr) {
+    size_t i, len = family == AF_INET ? 4 : 16;
+    for (i = 0; i < *n; i++)
+        if (list[i].family == family && !memcmp(list[i].addr, addr, len)) return;
+    if (*n >= max) return;
+    list[*n].family = family;
+    memcpy(list[*n].addr, addr, len);
+    ++*n;
+}
+
 static int in_set(char set[][NAME_MAX_TEXT], size_t n, const char *name) {
     size_t i;
     for (i = 0; i < n; i++)
@@ -100,14 +175,41 @@ static int in_set(char set[][NAME_MAX_TEXT], size_t n, const char *name) {
     return 0;
 }
 
+/* One answer record: its owner (read into a caller's buffer) and fixed
+ * fields. */
+struct record {
+    unsigned type, klass, rdlen;
+    unsigned long ttl;
+    size_t rdata;
+};
+
+/* Reads the record at *pos, its owner into owner (NAME_MAX_TEXT bytes), and
+ * moves *pos past it. Returns -1 for one that runs past the reply. RFC 2181:
+ * a TTL with the top bit set means zero. */
+static int read_record(const unsigned char *msg, size_t len, size_t *pos, char *owner, struct record *r) {
+    size_t p = *pos;
+    if (read_name(msg, len, &p, owner, NAME_MAX_TEXT) || p + 10 > len) return -1;
+    r->type = (unsigned)msg[p] << 8 | msg[p + 1];
+    r->klass = (unsigned)msg[p + 2] << 8 | msg[p + 3];
+    r->ttl = (unsigned long)msg[p + 4] << 24 | (unsigned long)msg[p + 5] << 16 |
+             (unsigned long)msg[p + 6] << 8 | msg[p + 7];
+    if (r->ttl > 0x7fffffffUL) r->ttl = 0;
+    r->rdlen = (unsigned)msg[p + 8] << 8 | msg[p + 9];
+    r->rdata = p + 10;
+    if (r->rdata + r->rdlen > len) return -1;
+    *pos = r->rdata + r->rdlen;
+    return 0;
+}
+
 /* Parses one reply into part (cleared first); returns which query it
- * answers (0 A, 1 AAAA) or -1 for anything that is not a complete, valid
- * answer to one of ours. The caller merges part only on success. */
+ * answers (0 A, 1 AAAA) or -1 for anything that is not a valid reply to one
+ * of ours. The caller merges part only on success. */
 static int parse_reply(const unsigned char *msg, size_t len, const unsigned ids[2], const char *qname,
                        struct answers *part) {
     char names[MAX_ALIASES][NAME_MAX_TEXT], owner[NAME_MAX_TEXT], target[NAME_MAX_TEXT];
     size_t pos = 12, count = 1, records, i, start;
     unsigned id, rcode, which, qtype, ancount;
+    struct record r;
     int changed, pass;
     memset(part, 0, sizeof(*part));
     part->ttl = TTL_MAX;
@@ -115,66 +217,49 @@ static int parse_reply(const unsigned char *msg, size_t len, const unsigned ids[
     id = (unsigned)msg[0] << 8 | msg[1];
     if (id != ids[0] && id != ids[1]) return -1;
     which = id == ids[0] ? 0 : 1;
-    if (!(msg[2] & 0x80) || (msg[2] & 0x78) || (msg[2] & 0x02)) return -1; /* reply, QUERY, not truncated */
+    if (!(msg[2] & 0x80) || (msg[2] & 0x78)) return -1; /* a reply to a QUERY */
     if (msg[4] != 0 || msg[5] != 1) return -1;
     if (read_name(msg, len, &pos, owner, sizeof(owner)) || strcasecmp(owner, qname) || pos + 4 > len) return -1;
     qtype = (unsigned)msg[pos] << 8 | msg[pos + 1];
-    if (qtype != (which ? TYPE_AAAA : TYPE_A)) return -1;
+    if (qtype != (which ? TYPE_AAAA : TYPE_A) || msg[pos + 2] != 0 || msg[pos + 3] != CLASS_IN) return -1;
     pos += 4;
     rcode = msg[3] & 0x0f;
-    if (rcode == 3) { part->nxdomain = 1; return (int)which; }
-    if (rcode != 0) return -1;
+    if (rcode == 3) { part->done[which] = NO_NAME; return (int)which; }
+    /* SERVFAIL, REFUSED and the like, or an answer too long for UDP: this
+     * server has nothing usable of this type, and waiting will not bring
+     * it, so the type counts as answered with no records. */
+    if (rcode != 0 || (msg[2] & 0x02)) { part->done[which] = FAILED; return (int)which; }
+    part->done[which] = CLEAN;
     ancount = (unsigned)msg[6] << 8 | msg[7];
     snprintf(names[0], sizeof(names[0]), "%s", qname);
     for (i = 0; names[0][i]; i++) names[0][i] = (char)tolower((unsigned char)names[0][i]);
     start = pos;
     /* CNAMEs first, until the chain stops growing, then the addresses of
-     * every name on it. */
+     * every name on it. The answer is kept for the shortest TTL on the
+     * chain: a CNAME that expires first can point elsewhere after it. */
     for (pass = 0, changed = 1; changed && pass < MAX_ALIASES; pass++) {
         changed = 0;
         for (pos = start, records = 0; records < ancount; records++) {
-            unsigned type, rdlen;
-            size_t rdata;
-            if (read_name(msg, len, &pos, owner, sizeof(owner)) || pos + 10 > len) return -1;
-            type = (unsigned)msg[pos] << 8 | msg[pos + 1];
-            rdlen = (unsigned)msg[pos + 8] << 8 | msg[pos + 9];
-            rdata = pos + 10;
-            if (rdata + rdlen > len) return -1;
-            if (type == TYPE_CNAME && in_set(names, count, owner)) {
-                size_t t = rdata;
-                if (read_name(msg, len, &t, target, sizeof(target))) return -1;
-                if (!in_set(names, count, target) && count < MAX_ALIASES) {
-                    snprintf(names[count++], sizeof(names[0]), "%s", target);
-                    changed = 1;
-                }
+            if (read_record(msg, len, &pos, owner, &r)) return -1;
+            if (r.type != TYPE_CNAME || r.klass != CLASS_IN || !in_set(names, count, owner)) continue;
+            if (r.ttl < part->ttl) part->ttl = r.ttl;
+            if (read_name(msg, len, &r.rdata, target, sizeof(target))) return -1;
+            if (!in_set(names, count, target) && count < MAX_ALIASES) {
+                snprintf(names[count++], sizeof(names[0]), "%s", target);
+                changed = 1;
             }
-            pos = rdata + rdlen;
         }
     }
     for (pos = start, records = 0; records < ancount; records++) {
-        unsigned type, rdlen, klass;
-        unsigned long ttl;
-        size_t rdata;
-        if (read_name(msg, len, &pos, owner, sizeof(owner)) || pos + 10 > len) return -1;
-        type = (unsigned)msg[pos] << 8 | msg[pos + 1];
-        klass = (unsigned)msg[pos + 2] << 8 | msg[pos + 3];
-        ttl = (unsigned long)msg[pos + 4] << 24 | (unsigned long)msg[pos + 5] << 16 |
-              (unsigned long)msg[pos + 6] << 8 | msg[pos + 7];
-        rdlen = (unsigned)msg[pos + 8] << 8 | msg[pos + 9];
-        rdata = pos + 10;
-        if (rdata + rdlen > len) return -1;
-        pos = rdata + rdlen;
-        if (klass != 1 || !in_set(names, count, owner)) continue;
-        if (type == TYPE_A && rdlen == 4 && part->n4 < TC_DNS_MAX_ADDRS) {
-            part->v4[part->n4].family = AF_INET;
-            memcpy(part->v4[part->n4++].addr, msg + rdata, 4);
-        } else if (type == TYPE_AAAA && rdlen == 16 && part->n6 < TC_DNS_MAX_ADDRS) {
-            part->v6[part->n6].family = AF_INET6;
-            memcpy(part->v6[part->n6++].addr, msg + rdata, 16);
-        } else {
+        if (read_record(msg, len, &pos, owner, &r)) return -1;
+        if (r.klass != CLASS_IN || !in_set(names, count, owner)) continue;
+        if (r.type == TYPE_A && r.rdlen == 4)
+            add_addr(part->v4, &part->n4, TC_DNS_MAX_ADDRS, AF_INET, msg + r.rdata);
+        else if (r.type == TYPE_AAAA && r.rdlen == 16)
+            add_addr(part->v6, &part->n6, TC_DNS_MAX_ADDRS, AF_INET6, msg + r.rdata);
+        else
             continue;
-        }
-        if (ttl < part->ttl) part->ttl = ttl;
+        if (r.ttl < part->ttl) part->ttl = r.ttl;
     }
     return (int)which;
 }
@@ -182,35 +267,54 @@ static int parse_reply(const unsigned char *msg, size_t len, const unsigned ids[
 /* The first valid answer to each query counts; a repeat adds nothing. */
 static void merge(struct answers *a, const struct answers *part, int which) {
     size_t i;
-    if (a->done[which]) return;
-    a->done[which] = 1;
-    a->nxdomain |= part->nxdomain;
-    for (i = 0; i < part->n4 && a->n4 < TC_DNS_MAX_ADDRS; i++) a->v4[a->n4++] = part->v4[i];
-    for (i = 0; i < part->n6 && a->n6 < TC_DNS_MAX_ADDRS; i++) a->v6[a->n6++] = part->v6[i];
+    if (a->done[which] != WAITING) return;
+    a->done[which] = part->done[which];
+    for (i = 0; i < part->n4; i++) add_addr(a->v4, &a->n4, TC_DNS_MAX_ADDRS, AF_INET, part->v4[i].addr);
+    for (i = 0; i < part->n6; i++) add_addr(a->v6, &a->n6, TC_DNS_MAX_ADDRS, AF_INET6, part->v6[i].addr);
     if (part->ttl < a->ttl) a->ttl = part->ttl;
 }
 
+/* The interface index a nameserver's scope names (NULL: none), or 0. */
+static unsigned scope_index(const char *scope) {
+    static struct if_table table; /* static: it is large */
+    char *end;
+    unsigned long index;
+    if (!scope || !*scope) return 0;
+    index = strtoul(scope, &end, 10);
+    if (!*end) return index <= UINT_MAX ? (unsigned)index : 0;
+    return iflist_collect(&table) == 0 ? iflist_index_of(&table, scope) : 0;
+}
+
 /* Up to TC_DNS_MAX_SERVERS nameservers from resolv.conf; 127.0.0.1 when it
- * names none, as libc does. A link-local server needs a scope, and NetBSD 4
- * has no reliable if_nametoindex(); the interface table (iflist) could map
- * the name, but no device seen so far has only link-local nameservers, so
- * they are skipped until one does. */
-static size_t nameservers(struct sockaddr_storage *out) {
+ * is missing or names none, as libc does. Any other failure to open it
+ * gives none, and sets *resource when the device is short of descriptors or
+ * memory: asking 127.0.0.1 then would report the wrong failure. A
+ * link-local server needs its scope, fe80::1%bridge0 or fe80::1%3, as libc
+ * reads it; one without (or naming no interface) is skipped, since it
+ * cannot be reached. Apple's dns-update-script writes the server learned
+ * from router adverts as a comment, so these come only from a hand-edited
+ * file. */
+static size_t nameservers(struct sockaddr_storage *out, int *resource) {
     char line[256], text[64];
     size_t n = 0;
     FILE *f = fopen(TC_RESOLV_CONF, "r");
+    if (!f && errno != ENOENT) {
+        if (tc_errno_class(TC_OP_OPEN, errno) == TC_ERR_RESOURCE) *resource = 1;
+        return 0;
+    }
     while (f && n < TC_DNS_MAX_SERVERS && fgets(line, sizeof(line), f)) {
         struct sockaddr_in *v4 = (struct sockaddr_in *)&out[n];
         struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)&out[n];
         char *scope;
         if (sscanf(line, "nameserver %63s", text) != 1) continue;
-        if ((scope = strchr(text, '%'))) *scope = 0;
+        if ((scope = strchr(text, '%'))) *scope++ = 0;
         memset(&out[n], 0, sizeof(out[n]));
         if (inet_pton(AF_INET, text, &v4->sin_addr) == 1) {
             v4->sin_family = AF_INET;
             v4->sin_port = htons(TC_DNS_PORT);
             n++;
-        } else if (inet_pton(AF_INET6, text, &v6->sin6_addr) == 1 && !IN6_IS_ADDR_LINKLOCAL(&v6->sin6_addr)) {
+        } else if (inet_pton(AF_INET6, text, &v6->sin6_addr) == 1 &&
+                   (!IN6_IS_ADDR_LINKLOCAL(&v6->sin6_addr) || (v6->sin6_scope_id = scope_index(scope)) != 0)) {
             v6->sin6_family = AF_INET6;
             v6->sin6_port = htons(TC_DNS_PORT);
             n++;
@@ -228,45 +332,40 @@ static size_t nameservers(struct sockaddr_storage *out) {
     return n;
 }
 
-/* Asks one server for both records. A query still unanswered halfway
- * through the server's time is sent once more (UDP loses datagrams). Returns
- * 1 when it answered (addresses or NXDOMAIN), 0 to try the next one. */
-static int ask(const struct sockaddr_storage *server, const char *name, struct answers *a, long long deadline_ms,
-               int *resource) {
-    unsigned char query[2][300], reply[1500];
-    unsigned ids[2];
-    size_t lengths[2], i;
+/* Asks one server the queries a still waits for (both on the first round,
+ * on the next only those left unanswered, under the same ids, as libc
+ * resends a query) and collects its replies into a
+ * until each is answered, the verdict is GONE whatever the other would say,
+ * until passes, or TERM. A socket that cannot be made or used leaves them
+ * waiting, which judge() takes as nothing usable. */
+static void ask(const struct sockaddr_storage *server, const char *name, struct answers *a, const unsigned ids[2],
+                long long until, int *resource) {
+    static const unsigned types[2] = {TYPE_A, TYPE_AAAA};
+    unsigned char query[300], reply[1500];
+    size_t length, i;
     socklen_t salen = server->ss_family == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-    long long until = acp_monotonic_ms() + TC_DNS_SERVER_MS, resend_at = acp_monotonic_ms() + TC_DNS_SERVER_MS / 2;
-    int fd = socket(server->ss_family, SOCK_DGRAM, 0), result = 0, resent = 0;
-    if (until > deadline_ms) until = deadline_ms;
+    int fd = socket(server->ss_family, SOCK_DGRAM, 0);
     if (fd < 0) {
         if (tc_errno_record(TC_OP_SOCKET, errno) == TC_ERR_RESOURCE) *resource = 1;
-        return 0;
+        return;
     }
-    if (fd >= FD_SETSIZE) goto done;
-    ids[0] = query_id();
-    ids[1] = (ids[0] + 1) & 0xffff;
-    lengths[0] = build_query(query[0], sizeof(query[0]), ids[0], name, TYPE_A);
-    lengths[1] = build_query(query[1], sizeof(query[1]), ids[1], name, TYPE_AAAA);
     /* connect() makes the kernel drop datagrams from anyone else. */
-    if (!lengths[0] || !lengths[1] || connect(fd, (const struct sockaddr *)server, salen)) goto done;
-    for (i = 0; i < 2; i++)
-        if (send(fd, query[i], lengths[i], 0) != (ssize_t)lengths[i]) goto done;
-    while (!(a->done[0] && a->done[1]) && !telemetry_stop) {
+    if (fd >= FD_SETSIZE) goto done;
+    if (tc_test_enobufs("connect") || connect(fd, (const struct sockaddr *)server, salen)) goto failed;
+    for (i = 0; i < 2; i++) {
+        if (a->done[i] != WAITING) continue;
+        length = build_query(query, sizeof(query), ids[i], name, types[i]);
+        if (!length) goto done;
+        if (tc_test_enobufs("send") || send(fd, query, length, 0) != (ssize_t)length) goto failed;
+    }
+    while ((a->done[0] == WAITING || a->done[1] == WAITING) && judge(a) != GONE && !telemetry_stop) {
         fd_set reads;
         struct timeval timeout;
-        long long now = acp_monotonic_ms(), left = (resent ? until : resend_at) - now;
+        long long left = until - acp_monotonic_ms();
         struct answers part;
         int ready, which;
         ssize_t n;
-        if (now >= until) break;
-        if (!resent && left <= 0) {
-            for (i = 0; i < 2; i++)
-                if (!a->done[i]) (void)send(fd, query[i], lengths[i], 0);
-            resent = 1;
-            continue;
-        }
+        if (left <= 0) break;
         if (left > 1000) left = 1000; /* recheck the stop flag every second */
         FD_ZERO(&reads);
         FD_SET(fd, &reads);
@@ -280,12 +379,21 @@ static int ask(const struct sockaddr_storage *server, const char *name, struct a
         }
         n = recv(fd, reply, sizeof(reply), 0);
         if (n > 0 && (which = parse_reply(reply, (size_t)n, ids, name, &part)) >= 0) merge(a, &part, which);
-        else if (n < 0 && errno != EINTR && errno != EAGAIN) break; /* ICMP refused */
+        else if (n < 0 && errno != EINTR && errno != EAGAIN) goto failed; /* ICMP refused, or no buffers */
     }
-    result = a->nxdomain || a->n4 || a->n6;
+    goto done;
+failed:
+    /* Out of buffers or memory is the device's, for the retry rules. */
+    if (tc_errno_record(TC_OP_IO, errno) == TC_ERR_RESOURCE) *resource = 1;
 done:
     close(fd);
-    return result;
+}
+
+/* One server's time on round (from 0) of a list of n (dns.h). */
+static long long server_ms(unsigned round, size_t n) {
+    long long ms = (long long)TC_DNS_RETRANS_MS << round;
+    if (round) ms /= (long long)n;
+    return ms < TC_DNS_MIN_SERVER_MS ? TC_DNS_MIN_SERVER_MS : ms;
 }
 
 static size_t interleave(const struct answers *a, struct tc_dns_addr *out, size_t max) {
@@ -297,13 +405,47 @@ static size_t interleave(const struct answers *a, struct tc_dns_addr *out, size_
     return n;
 }
 
+/* Whether the kept answer is for name and the clock is short of until
+ * (cache.fresh_until or cache.stale_until). */
+static int kept(const char *name, long long until) {
+    return cache.count && !strcasecmp(cache.name, name) && acp_monotonic_ms() < until;
+}
+
+/* An answer with no clean A reply (judge's USE_WITH_KEPT_IPV4): its own
+ * addresses, then the IPv4 addresses from the last clean answer while it is
+ * within its stale window, so the request moves on to them when IPv6
+ * fails. Not kept. */
+static int use_with_kept_ipv4(const char *name, const struct answers *a, struct tc_dns_addr *out, size_t max,
+                              size_t *count) {
+    size_t k;
+    *count = interleave(a, out, max);
+    if (kept(name, cache.stale_until))
+        for (k = 0; k < cache.count; k++)
+            if (cache.addrs[k].family == AF_INET) add_addr(out, count, max, AF_INET, cache.addrs[k].addr);
+    return 0;
+}
+
+/* Keeps an answer with a clean A reply (judge's KEEP) for its TTL. */
+static void keep_answer(const char *name, const struct answers *a) {
+    long long now;
+    snprintf(cache.name, sizeof(cache.name), "%s", name);
+    cache.count = interleave(a, cache.addrs, TC_DNS_MAX_ADDRS);
+    now = acp_monotonic_ms();
+    cache.fresh_until = now + (long long)(a->ttl < TTL_MIN ? TTL_MIN : a->ttl) * 1000;
+    cache.stale_until = now + STALE_MS;
+}
+
 int tc_dns_resolve(const char *name, struct tc_dns_addr *out, size_t max, size_t *count, long long deadline_ms,
                    int *resource) {
     struct sockaddr_storage servers[TC_DNS_MAX_SERVERS];
-    struct answers a;
+    struct answers a[TC_DNS_MAX_SERVERS]; /* each server's replies, kept across rounds */
+    unsigned ids[TC_DNS_MAX_SERVERS][2];  /* each server's query ids (A, AAAA), the same every round */
     size_t n, i;
+    unsigned round;
     long long now = acp_monotonic_ms();
+    int short_of = 0;
     *count = 0;
+    *resource = 0;
     if (!max || now < 0) return -1;
     if (inet_pton(AF_INET6, name, out[0].addr) == 1) {
         out[0].family = AF_INET6;
@@ -316,30 +458,46 @@ int tc_dns_resolve(const char *name, struct tc_dns_addr *out, size_t max, size_t
         return 0;
     }
     if (strlen(name) >= NAME_MAX_TEXT - 2) return -1;
-    if (cache.count && !strcasecmp(cache.name, name) && now < cache.fresh_until) goto cached;
-    n = nameservers(servers);
-    for (i = 0; i < n && acp_monotonic_ms() < deadline_ms; i++) {
-        memset(&a, 0, sizeof(a));
-        a.ttl = TTL_MAX;
-        if (!ask(&servers[i], name, &a, deadline_ms, resource)) continue;
-        if (a.nxdomain && !a.n4 && !a.n6) break;
-        /* Half an answer (the other reply lost twice) serves this request
-         * but is not kept: an AAAA-only answer on a device whose IPv6 does
-         * not reach the server would fail every request until its TTL. */
-        if (!(a.done[0] && a.done[1])) {
-            *count = interleave(&a, out, max);
-            return 0;
-        }
-        if (a.ttl < TTL_MIN) a.ttl = TTL_MIN;
-        snprintf(cache.name, sizeof(cache.name), "%s", name);
-        cache.count = interleave(&a, cache.addrs, TC_DNS_MAX_ADDRS);
-        now = acp_monotonic_ms();
-        cache.fresh_until = now + (long long)a.ttl * 1000;
-        cache.stale_until = now + STALE_MS;
-        goto cached;
+    if (kept(name, cache.fresh_until)) goto cached;
+    n = nameservers(servers, &short_of);
+    for (i = 0; i < n; i++) {
+        memset(&a[i], 0, sizeof(a[i]));
+        a[i].ttl = TTL_MAX;
+        ids[i][0] = query_id();
+        ids[i][1] = (ids[i][0] + 1) & 0xffff;
     }
+    for (round = 0; round < TC_DNS_TRIES; round++) {
+        for (i = 0; i < n; i++) {
+            enum verdict verdict;
+            long long until;
+            now = acp_monotonic_ms();
+            if (telemetry_stop || now >= deadline_ms) goto unanswered;
+            if (a[i].done[0] != WAITING && a[i].done[1] != WAITING) continue; /* it said all it will */
+            until = now + server_ms(round, n);
+            ask(&servers[i], name, &a[i], ids[i], until < deadline_ms ? until : deadline_ms, &short_of);
+            verdict = judge(&a[i]);
+            /* Half an answer whose A reply was lost, not refused: the A
+             * query gets its resend in the next round before the half is
+             * used (it would not be kept). */
+            if (verdict == ASK_NEXT || (verdict == USE_WITH_KEPT_IPV4 && a[i].done[0] == WAITING &&
+                                        round + 1 < TC_DNS_TRIES))
+                continue;
+            if (verdict == GONE) {
+                if (kept(name, cache.stale_until)) cache.count = 0;
+                return -1;
+            }
+            if (verdict == USE_WITH_KEPT_IPV4) return use_with_kept_ipv4(name, &a[i], out, max, count);
+            keep_answer(name, &a[i]);
+            goto cached;
+        }
+    }
+unanswered:
+    /* Time ran out (or TERM) with half an answer: use it. */
+    for (i = 0; i < n; i++)
+        if (judge(&a[i]) == USE_WITH_KEPT_IPV4) return use_with_kept_ipv4(name, &a[i], out, max, count);
     /* No answer now: the last one, if it is not too old. */
-    if (cache.count && !strcasecmp(cache.name, name) && acp_monotonic_ms() < cache.stale_until) goto cached;
+    if (kept(name, cache.stale_until)) goto cached;
+    *resource = short_of;
     return -1;
 cached:
     for (i = 0; i < cache.count && i < max; i++) out[i] = cache.addrs[i];

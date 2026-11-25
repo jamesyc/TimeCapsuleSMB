@@ -23,8 +23,14 @@
  * The ledger keeps two sets of event bits: news (everything since the last
  * delivered heartbeat) and pending (the requesting events among them, which
  * ask the planner for an extra heartbeat). The JSON writer returns the bits
- * it wrote as a token; only a delivered heartbeat clears them, so an event
- * noted while a heartbeat is in flight goes in the next one.
+ * it wrote as a token, and only a delivered heartbeat clears them: a
+ * heartbeat that fails leaves them for the next try. The peaks and lows
+ * (the busiest table, the first crossing, the most files, the least free
+ * memory) cover the same window: since the last delivered heartbeat, which
+ * reported the ones before.
+ *
+ * Times are seconds of CLOCK_MONOTONIC, which counts from boot: the clock
+ * of the heartbeat's uptime_sec, comparable across telemetry restarts.
  *
  * Everything lives in the caller's struct tc_health, in process memory only:
  * the outage usually ends with an unplug that loses it, which is why the
@@ -33,9 +39,22 @@
 #ifndef TC_HEALTH_SAMPLE_SECONDS
 #define TC_HEALTH_SAMPLE_SECONDS 15
 #endif
-/* Probe rounds, in the daemon; one-shot modes run one. */
+/* Probe rounds, in the daemon (one-shot modes run one): the first when the
+ * boot heartbeat's hold ends, then every 90 minutes, and 5 minutes after a
+ * round that left a target confirming a failure or that could not run, so
+ * the failure that triggers comes minutes after the first one. */
 #ifndef TC_HEALTH_PROBE_SECONDS
-#define TC_HEALTH_PROBE_SECONDS 300
+#define TC_HEALTH_PROBE_SECONDS 5400
+#endif
+#ifndef TC_HEALTH_PROBE_RETRY_SECONDS
+#define TC_HEALTH_PROBE_RETRY_SECONDS 300
+#endif
+/* A target's last result expires after this long without a probe of it
+ * (rounds skipped near a full table, or its own probe skipped): the
+ * scheduled heartbeat interval, so no heartbeat carries a result older than
+ * the heartbeat before it. */
+#ifndef TC_HEALTH_PROBE_STALE_SECONDS
+#define TC_HEALTH_PROBE_STALE_SECONDS 43200
 #endif
 #ifndef TC_HEALTH_SSH_PORT
 #define TC_HEALTH_SSH_PORT 22
@@ -58,14 +77,16 @@
  * wedged sshd as well as two. */
 #define TC_HEALTH_PROBE_ROUND_MAX_MS (2 * (TC_HEALTH_PROBE_CONNECT_MS + TC_HEALTH_PROBE_ANSWER_MS))
 /* High at kern.maxproc - 10 processes, rearmed at kern.maxproc - 20; files
- * at 90 % and 80 % of kern.maxfiles; near full within 2 of kern.maxproc. */
+ * at 90 % of kern.maxfiles, rearmed below 80 %; no probe round within 2 of
+ * kern.maxproc. */
 #define TC_HEALTH_PROC_HIGH_MARGIN 10
 #define TC_HEALTH_PROC_REARM_MARGIN 20
 #define TC_HEALTH_PROC_FULL_MARGIN 2
 /* A crossing needs this many samples in a row past the mark. */
 #define TC_HEALTH_HIGH_SAMPLES 2
-/* A probe triggers at this many closed or down results in a row, or this
- * many failures of any kind (silent included) in a row. */
+/* A probe triggers at this many counted hard failures in a row (closed,
+ * refused, timeout, down), or this many counted failures of any kind
+ * (silent included); probe_track in health.c says which count. */
 #define TC_HEALTH_PROBE_HARD_FAILURES 2
 #define TC_HEALTH_PROBE_ANY_FAILURES 3
 /* The largest health object (test_health.c "worst"); telemetry.h budgets
@@ -75,12 +96,11 @@
 /* The events, by bit. Requesting events also ask for an extra heartbeat;
  * the rest ride along: RAM and mbufs until heartbeats show what is normal
  * for them, fork, socket and acp failures (the planner's retries handle
- * those), kernel warnings that are not a full table, and messages already
- * in the buffer when this process first read it. */
+ * those), and kernel warnings that are not a full table. */
 enum tc_health_event {
     TC_EV_PROCS = 1u << 0, TC_EV_FILES = 1u << 1, TC_EV_KMSG = 1u << 2, TC_EV_PROBE = 1u << 3,
     TC_EV_KMSG_WARNING = 1u << 4, TC_EV_RAM = 1u << 5, TC_EV_MBUF = 1u << 6, TC_EV_FORK = 1u << 7,
-    TC_EV_SOCKET = 1u << 8, TC_EV_ACP_TIMEOUT = 1u << 9, TC_EV_KMSG_AT_START = 1u << 10
+    TC_EV_SOCKET = 1u << 8, TC_EV_ACP_TIMEOUT = 1u << 9, TC_EV_ACP_EMPTY = 1u << 10
 };
 #define TC_EV_COUNT 11
 #define TC_EV_REQUESTING (TC_EV_PROCS | TC_EV_FILES | TC_EV_KMSG | TC_EV_PROBE)
@@ -95,8 +115,8 @@ enum tc_health_event {
 struct tc_counters {
     int maxproc, maxfiles, files, nmbclusters;
     int have_mem, have_mbuf;
-    long long pagesize, free, active, inactive, freetarg, anon, file, fltnoram, pdscans;
-    unsigned long mbuf_drops, mbuf_waits;
+    long long pagesize, free, active, inactive, freetarg, anon, file, fltnoram;
+    unsigned long mbuf_drops;
 };
 struct tc_proc_group { char comm[TC_PROC_COMM]; unsigned depth, count; };
 struct tc_wait_count { char wmesg[TC_PROC_WMESG]; unsigned count; };
@@ -110,8 +130,8 @@ struct tc_snapshot {
     unsigned system;   /* kernel threads (processes on NetBSD 4) */
     unsigned zombies;
     unsigned blocked;  /* uninterruptible sleep */
-    int smbd_children; /* children of smbd's listener; -1 with no smbd */
-    int sshd_up, smbd_up; /* a live listener: a daemon whose parent is not the same daemon */
+    int smbd_children; /* live children of smbd's listener; -1 with no smbd (see read_snapshot) */
+    int smbd_up;       /* smbd's listener lives: an smbd whose parent is not one */
     size_t groups, waits, largest, most_fds;
     struct tc_proc_group group[TC_TOP_GROUPS];
     struct tc_wait_count wait[TC_TOP_WAITS];
@@ -125,7 +145,14 @@ struct tc_reading {
     long kmsg_len;     /* -1 when it could not be read */
 };
 
-enum tc_probe_result { TC_PROBE_SKIPPED, TC_PROBE_OK, TC_PROBE_CLOSED, TC_PROBE_SILENT, TC_PROBE_DOWN, TC_PROBE_ABSENT };
+/* What one probe saw (the reader's table is at its code in health_read.c).
+ * absent is a refusal; the tracker makes it refused where the service is
+ * expected to listen. */
+enum tc_probe_result {
+    TC_PROBE_SKIPPED, TC_PROBE_OK, TC_PROBE_CLOSED, TC_PROBE_SILENT, TC_PROBE_REFUSED, TC_PROBE_TIMEOUT,
+    TC_PROBE_DOWN, TC_PROBE_ABSENT, TC_PROBE_RESULTS
+};
+extern const char *const tc_probe_result_names[TC_PROBE_RESULTS];
 enum { TC_PROBE_SSH4, TC_PROBE_SMB4, TC_PROBE_SMB6, TC_PROBES };
 struct tc_probe_round { enum tc_probe_result result[TC_PROBES]; };
 
@@ -138,25 +165,38 @@ struct tc_threshold { unsigned over; int high; unsigned events; };
 /* One sample: 1 when it crosses (armed, TC_HEALTH_HIGH_SAMPLES in a row at
  * or past high), after which it rearms only at or below rearm. */
 int tc_threshold_step(struct tc_threshold *t, long value, long high, long rearm, int armed);
+/* A sample that could not be read: the next readable one starts a new run. */
+void tc_threshold_unread(struct tc_threshold *t);
 
+/* A target's episode (probe_track in health.c has the table). */
+enum tc_probe_phase { TC_PROBE_QUIET, TC_PROBE_CONFIRMING, TC_PROBE_REPORTED };
 struct tc_probe_track {
     enum tc_probe_result last;
-    int seen_ok, triggered;
+    enum tc_probe_phase phase;
+    int seen_ok;
     unsigned streak, hard_streak;
-    unsigned ok, closed, silent, down;
-    long first_fail_at, last_fail_at;
+    unsigned ok, closed, silent, refused, timeout, down;
+    long first_fail_at, last_fail_at; /* the current or last episode's first and latest counted failure */
+    long probed_at;                   /* the latest result that was not a skip, or 0 */
 };
 /* One probe result: 1 when it triggers (once per episode). expected says
- * the service is running (its listener in the process table), so a refused
- * connection is a failure rather than a service that is off. */
+ * the service should be listening, so a refusal (absent) is a failure
+ * (refused) rather than a service that is off. A skipped result counts
+ * too: it ends a confirmation. */
 int tc_probe_track_step(struct tc_probe_track *p, enum tc_probe_result r, int expected, long now);
 
 #define TC_KMSG_PATTERNS 4
-#define TC_KMSG_TAIL 128
+/* NetBSD 6's message buffer is 16368 bytes, NetBSD 4's 4080. The reader
+ * reads at most this much; a larger buffer would lose its newest part (no
+ * Apple kernel has one). */
+#define TC_KMSG_MAX (16384 + 16)
+/* The least a read must share with the previous one to count as its
+ * continuation. */
+#define TC_KMSG_OVERLAP 128
 struct tc_kmsg_sighting { long first, last; unsigned n; int at_start; };
 struct tc_kmsg_state {
-    char tail[TC_KMSG_TAIL];
-    size_t tail_len;
+    char prev[TC_KMSG_MAX]; /* the previous read (its newest part, if longer) */
+    size_t prev_len;
     int baseline;   /* a buffer has been read once */
     long bytes;     /* the last read's length; -1 unreadable */
     struct tc_kmsg_sighting seen[TC_KMSG_PATTERNS];
@@ -166,42 +206,47 @@ unsigned tc_kmsg_scan(struct tc_kmsg_state *k, const char *text, size_t len, lon
 extern const char *const tc_kmsg_names[TC_KMSG_PATTERNS];
 
 struct tc_health {
-    int sampled;
     struct tc_counters now;
-    struct tc_snapshot current, peak, first_high;
+    struct tc_snapshot current;
+    /* Since the last delivered heartbeat (the ledger's window): */
+    struct tc_snapshot peak, first_high;
     int have_first_high;
-    unsigned near_full;
-    struct tc_threshold procs, files;
     int peak_files;
-    long peak_files_at;
     long long min_free;
     int have_min_free;
     long min_free_at;
+    struct tc_threshold procs, files;
     long long last_fltnoram;
     unsigned long last_mbuf_drops;
     int have_last_mem, have_last_mbuf;
     struct tc_kmsg_state kmsg;
     struct tc_probe_track probe[TC_PROBES];
-    int probed;
     unsigned probe_rounds_skipped;
     struct tc_failure_counts failures_seen;
-    unsigned acp_timeouts_seen;
+    unsigned acp_timeouts_seen, acp_empty_seen;
     unsigned pending, news; /* the ledger */
 };
 
 void tc_health_sample(struct tc_health *h, const struct tc_reading *r, long now, int armed);
 void tc_health_probes(struct tc_health *h, const struct tc_probe_round *round, long now);
-/* A probe round may run: not while the last sample shows the table within
- * TC_HEALTH_PROC_FULL_MARGIN of kern.maxproc, where the probe's own sshd
- * or smbd child could be the process that refuses a client. Closer than
- * TC_HEALTH_PROC_HIGH_MARGIN the probes still run: that is when they are
- * evidence. */
+/* A probe round may run: only when the last sample read the table and it
+ * is not within TC_HEALTH_PROC_FULL_MARGIN of kern.maxproc, where the
+ * probe's own sshd or smbd child could be the process that refuses a
+ * client. Closer than TC_HEALTH_PROC_HIGH_MARGIN the probes still run:
+ * that is when they are evidence. */
 int tc_health_probe_allowed(const struct tc_health *h);
-void tc_health_probes_skipped(struct tc_health *h);
+void tc_health_probes_skipped(struct tc_health *h, long now);
+/* Seconds from the end of a probe round (run or skipped) to the next:
+ * TC_HEALTH_PROBE_RETRY_SECONDS while a target is confirming a failure
+ * (probe_track) or a round may not run (a skipped round forks nothing),
+ * else TC_HEALTH_PROBE_SECONDS. */
+long tc_health_next_probe_delay(const struct tc_health *h);
 /* Notes fork, socket and acp-timeout failures counted since the last call. */
-void tc_health_note_failures(struct tc_health *h, unsigned acp_timeouts);
+struct tc_acp_counts; /* heartbeat_facts.h */
+void tc_health_note_failures(struct tc_health *h, const struct tc_acp_counts *acp);
 int tc_health_requests(const struct tc_health *h);
-/* A delivered heartbeat carried the bits in token. */
+/* A delivered heartbeat carried the bits in token, and the peaks and lows:
+ * clears those bits and starts the next window from the latest sample. */
 void tc_health_delivered(struct tc_health *h, unsigned token);
 extern const char *const tc_health_event_names[TC_EV_COUNT];
 extern const char *const tc_probe_names[TC_PROBES];
@@ -209,6 +254,6 @@ extern const char *const tc_probe_names[TC_PROBES];
 /* ---- JSON (health_json.c) ---- */
 /* Appends ,"health":{...} at json + used; returns the new length, with
  * *token the event bits written, or -1 when it does not fit in cap. */
-int tc_health_append_json(char *json, size_t cap, size_t used, const struct tc_health *h, unsigned acp_timeouts,
-                          unsigned acp_budget_exhausted, unsigned *token);
+int tc_health_append_json(char *json, size_t cap, size_t used, const struct tc_health *h,
+                          const struct tc_acp_counts *acp, unsigned *token);
 #endif

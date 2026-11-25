@@ -105,7 +105,21 @@ const char *addr_text(const struct if_addr *addr, char *out, size_t out_len) {
     return out;
 }
 
-int if_table_device_mac(const struct if_table *table, unsigned char out[6]) {
+/* The addresses Apple's NICs carry until boot sets the real one: NetBSD 6's
+ * bcmeth and NetBSD 4's mgi. Every unit of a model has the same one. */
+static const unsigned char boot_placeholders[][6] = {
+    {0x00, 0x01, 0x02, 0x03, 0x04, 0x05},
+    {0x00, 0x0a, 0xaa, 0xbb, 0xcc, 0xdd},
+};
+
+int addr_mac_is_boot_placeholder(const unsigned char mac[6]) {
+    size_t i;
+    for (i = 0; i < sizeof(boot_placeholders) / sizeof(boot_placeholders[0]); i++)
+        if (!memcmp(mac, boot_placeholders[i], 6)) return 1;
+    return 0;
+}
+
+int addr_device_mac(const struct if_table *table, unsigned char out[6]) {
     static const unsigned char zero[6];
     const struct if_link *best = NULL;
     size_t i;
@@ -117,7 +131,10 @@ int if_table_device_mac(const struct if_table *table, unsigned char out[6]) {
         if (!best || link->index < best->index)
             best = link;
     }
-    if (!best)
+    /* Early in boot the lowest-index port still has the placeholder, and so
+     * do vlan0 and bridge0: no address then, not the next interface's
+     * (bridge1's is random). */
+    if (!best || addr_mac_is_boot_placeholder(best->lladdr))
         return -1;
     memcpy(out, best->lladdr, 6);
     return 0;

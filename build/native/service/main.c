@@ -17,7 +17,7 @@ static int print_acp_mast(FILE *stream, long long timeout_ms) {
     request.multiline = 1;
     request.output = output;
     request.capacity = 65537;
-    (void)acp_collect_run(&request, 1, timeout_ms, timeout_ms);
+    (void)acp_collect_run(&request, 1, timeout_ms, timeout_ms, 0);
     nonempty = request.length;
     while (nonempty && output[nonempty - 1] == '\n') nonempty--;
     if (request.status == ACP_OK && nonempty) {
@@ -65,7 +65,7 @@ int tc_samba_identity_read(struct tc_samba_identity *out, const char *hostname) 
     requests[2].key = "syAM"; requests[2].output = syam.text;
     for (i = 0; i < 3; i++) { requests[i].capacity = ACP_VALUE_MAX; requests[i].trim_whitespace = 1; }
     if (acp_collect_run(requests, 3, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
-                        (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000) < 0) return 1;
+                        (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000, 0) < 0) return 1;
     facts.acp[ACP_KEY_syNm].status = requests[0].status;
     syap.status = requests[1].status; syam.status = requests[2].status;
     snprintf(facts.hostname, sizeof(facts.hostname), "%s", hostname);

@@ -12,11 +12,20 @@
  * scheduled one is due, or (after boot) while health requests one and the
  * extra spacing has passed. It is allowed once retry_at has passed. Its
  * reason is "boot" until the boot heartbeat is in, then "resource_high" when
- * the extra one is wanted, else "scheduled". Boot and scheduled heartbeats
- * read acp afresh, and so does an extra one once acp has gone unread for
- * TC_INTERVAL_SECONDS (next_refresh); none does right after a local
- * failure, and a retry after a network or server failure may keep the
- * facts it has (reuse, below).
+ * the extra one is wanted, else "scheduled". How it gets its acp facts
+ * (tc_attempt.facts) follows from last_failure, the latest counted failure
+ * since a delivery:
+ *   local_resource   KEEP: a device short of processes forks no acp child
+ *   network, server  READ_UNLESS_FRESH: acp is not what failed (the POST, the
+ *                    server's answer, the nonce or building the payload
+ *                    did), so facts from a complete collection under
+ *                    TC_FACTS_REUSE_SECONDS old serve the retry instead of
+ *                    forking acp for every retry of an outage
+ *   none, other      READ
+ * except that an extra heartbeat keeps its facts until acp has gone unread
+ * for TC_INTERVAL_SECONDS (next_refresh): every delivered heartbeat restarts
+ * the schedule, so a chronic health event's extras would otherwise keep
+ * the boot-time identity and plan forever.
  *
  * retry_at starts at hold_until: the daemon holds its boot heartbeat
  * TC_BOOT_HOLD_SECONDS from its start. Early in boot ACPd's waMA holds a
@@ -44,14 +53,11 @@
  *   acp_unavailable,
  *   network, server  back off: TC_HEARTBEAT_RETRY_SECONDS doubling, at most
  *                    the extra spacing while health requests a heartbeat,
- *                    else TC_INTERVAL_SECONDS. After network or server the
- *                    retry carries reuse: acp is not what failed (the
- *                    POST, the server's answer, the nonce or building the
- *                    payload did), so the daemon keeps facts from a
- *                    complete collection under TC_FACTS_REUSE_SECONDS old
- *                    instead of forking acp for every retry of an outage.
- *                    Any other failure, and delivery, clears it; busy and
- *                    cancelled leave it.
+ *                    and never more than TC_PLANNER_NET_RETRY_MAX_SECONDS, so
+ *                    a health event that comes during a long outage waits at
+ *                    most that long once the network is back.
+ * Every counted failure sets last_failure; delivery clears it; busy and
+ * cancelled leave it.
  * The two back-offs keep their own counters: a local failure does not reset
  * the network delay, any other failure ends the local run. Every failure but
  * busy and cancelled is counted, by kind, until a heartbeat is delivered;
@@ -60,6 +66,9 @@
  * when the server cannot be reached. */
 #define TC_PLANNER_LOCAL_RETRIES 10
 #define TC_PLANNER_LOCAL_LATER_SECONDS 300
+#ifndef TC_PLANNER_NET_RETRY_MAX_SECONDS
+#define TC_PLANNER_NET_RETRY_MAX_SECONDS 21600
+#endif
 #ifndef TC_EXTRA_SPACING_SECONDS
 #define TC_EXTRA_SPACING_SECONDS 3600
 #endif
@@ -76,15 +85,19 @@ enum tc_attempt_kind { TC_ATTEMPT_NONE, TC_ATTEMPT_BOOT, TC_ATTEMPT_SCHEDULED, T
 struct tc_attempt {
     enum tc_attempt_kind kind;
     const char *reason;
-    int refresh; /* read acp afresh */
-    int reuse;   /* a retry after a network or server failure: the daemon
-                    may keep fresh facts instead (tc_heartbeat_facts_fresh) */
+    enum tc_facts_read facts;
+};
+/* What an attempt did: how it ended, and whether it read acp (an extra
+ * heartbeat's next read counts from a real one, not from kept facts). */
+struct tc_attempt_result {
+    enum tc_outcome outcome;
+    int read_acp;
 };
 
 #define TC_OUTCOME_COUNT (TC_OUTCOME_SERVER + 1)
 struct tc_planner {
-    int boot_sent, last_local;
-    int net_retry; /* the last failure was network or server */
+    int boot_sent;
+    enum tc_outcome last_failure; /* the latest counted failure since a delivery; DELIVERED: none */
     long next_scheduled, retry_at, net_delay;
     long next_refresh; /* an extra heartbeat reads acp again from here */
     unsigned local_count;
@@ -98,10 +111,8 @@ struct tc_planner {
 /* hold_until: no attempt before it (0: none). */
 void planner_init(struct tc_planner *p, long arm_after, long hold_until);
 struct tc_attempt planner_next(const struct tc_planner *p, long now, int requests);
-/* requests: health still requests a heartbeat (it sets the back-off's cap).
- * a->refresh is what the attempt did: an extra heartbeat's next refresh
- * counts from a real read, not from reused facts. */
-void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a, enum tc_outcome outcome,
+/* requests: health still requests a heartbeat (it sets the back-off's cap). */
+void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a, const struct tc_attempt_result *r,
                       int requests);
 int planner_armed(const struct tc_planner *p, long now);
 /* The outcome of a failure before the heartbeat is built: taking the

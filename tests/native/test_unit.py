@@ -12,6 +12,16 @@ def test_unit_module(tmp_path, module):
     subprocess.run([str(output)], check=True, capture_output=True, timeout=5)
 
 
+@pytest.mark.parametrize('mode', [[], ['unseeded']])
+def test_entropy_needs_one_descriptor_only_for_its_seed(tmp_path, mode):
+    native = ROOT / 'build/native/telemetry'
+    output = tmp_path / 'entropy'
+    compile_modules(output, ('native/telemetry/entropy.c', 'native/vendor/tweetnacl.c', 'native/vendor/random.c'),
+                    flags=('-I', str(native)), extra_sources=(Path(__file__).parent / 'unit/test_entropy.c',))
+    run = subprocess.run([str(output), *mode], capture_output=True, text=True, timeout=5)
+    assert run.returncode == 0, run.stderr
+
+
 def test_payload_device_boundary(tmp_path):
     import json
     native = ROOT / 'build/native'

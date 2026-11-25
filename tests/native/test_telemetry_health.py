@@ -5,42 +5,37 @@ import re
 import signal
 import socket
 import struct
+import select
 import subprocess
 import threading
 import time
 
 import pytest
 
-from tests.loopback import has_ipv6_loopback
+from tests.loopback import accept_loop, has_ipv6_loopback, held_refusing_ports
 from tests.native.build import ROOT, compile_modules
 
 # Probe limits for the test build: long enough that a server thread's
-# reaction (well under 100 ms) never races them.
+# reaction (well under 100 ms) never races them. Servers that must not
+# answer hold their connection until the test releases them, so only the
+# product's own limits end those probes.
 CONNECT_MS = 2000
 ANSWER_MS = 2000
 # The TERM test's own build: an answer limit far past the 1 s stop-flag poll.
 LONG_ANSWER_MS = 10000
+# A hang guard for server threads, never reached when the product works.
+HOLD_S = 30
 
 
 IPV6 = has_ipv6_loopback()
 
 
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    if IPV6:
-        with socket.socket(socket.AF_INET6) as s:
-            try:
-                s.bind(("::1", port))
-            except OSError:
-                return free_port()
-    return port
-
-
 @pytest.fixture(scope="module")
 def ports():
-    return {"ssh": free_port(), "smb": free_port()}
+    # Held for the module: refused unless a test's server listens on them,
+    # and never taken by another worker.
+    with held_refusing_ports(2) as (ssh, smb):
+        yield {"ssh": ssh, "smb": smb}
 
 
 def build_health(path, ports, answer_ms):
@@ -82,7 +77,12 @@ def test_worst_case_health_fits_its_budget_and_escapes_names(binary):
     assert health["kmsg"]["proc_full"] == {"first": 2147483647, "last": 2147483647, "n": 4294967295,
                                            "at_start": True}
     assert "probe_rounds_skipped" in health and health["acp_budget_exhausted"] == 4294967295
-    assert len(health["news"]) == 11 and len(health["triggers"]) == 11
+    assert health["acp_timeouts"] == health["acp_empty"] == 4294967295
+    assert health["fork_failures"] == {"eagain": 4294967295, "enomem": 4294967295, "other": 4294967295}
+    assert set(health["socket_failures"].values()) == {4294967295}
+    assert len(health["news"]) == 11 and len(health["triggers"]) == 11 and "acp_empty" in health["news"]
+    assert health["probes"]["ssh4"]["last"] == "timeout"
+    assert {"refused", "timeout", "down"} <= set(health["probes"]["ssh4"])
 
 
 def sample(binary, tmp_path, table, counters, kmsg=None):
@@ -130,9 +130,16 @@ def test_sample_reads_the_table_counters_and_kernel_messages(binary, tmp_path):
     assert ["smbd", 3, 3] in procs["groups"] and ["sshd", 3, 1] in procs["groups"]
     assert procs["largest_kb"][:2] == [["smbd", 16000], ["smbd", 10000]]
     assert procs["most_fds"] == [["smbd", 40], ["ACPd", 25], ["sshd", 5]]
-    assert health["maxproc"] == 90 and health["files"] == {"n": 120, "max": 1000, "peak": 120, "peak_at": 42}
+    assert health["maxproc"] == 90 and health["files"] == {"n": 120, "max": 1000, "peak": 120}
     assert health["mem"]["free"] == 500 and health["mem"]["page_kb"] == 4
     assert health["kmsg"]["bytes"] == 5 and health["kmsg"]["proc_full"] is None
+
+
+def test_processes_with_no_descriptors_are_not_among_the_most(binary, tmp_path):
+    # The kernel answers an exited process's descriptor query with only its
+    # padding, as for a process with none: neither fills a most_fds slot.
+    health = sample(binary, tmp_path, TABLE, "maxproc 90\nfds.80 40\nfds.60 0\n")
+    assert health["procs"]["most_fds"] == [["smbd", 40]]
 
 
 def test_sample_without_smbd_or_a_readable_kernel_buffer(binary, tmp_path):
@@ -142,18 +149,21 @@ def test_sample_without_smbd_or_a_readable_kernel_buffer(binary, tmp_path):
     assert health["kmsg"]["bytes"] == -1 and health["mem"] is None and health["files"]["n"] is None
 
 
-def test_messages_present_at_the_first_read_are_news_not_triggers(binary, tmp_path):
+def test_messages_present_at_the_first_read_are_marked_not_triggers(binary, tmp_path):
     health = sample(binary, tmp_path, TABLE, "maxproc 90\n", kmsg="old\nproc: table is full\n")
     assert health["kmsg"]["proc_full"] == {"first": None, "last": None, "n": 0, "at_start": True}
-    assert health["news"] == ["kmsg_at_start"] and health["triggers"] == []
+    assert health["news"] == [] and health["triggers"] == []
 
 
 class ProbeServer:
     """Listens on a loopback port; the Nth connection gets behaviors[N]:
-    banner (an SSH banner), close (EOF), reset (RST), silent (nothing until
-    the probe gives up), smb (checks the SMB2 NEGOTIATE and answers it), or
-    garbage (an answer that is not SMB2). Tracks how many connections were
-    open at once."""
+    banner (an SSH banner), close (EOF), reset (RST), silent (nothing, the
+    connection held until close()), smb (checks the SMB2 NEGOTIATE and
+    answers it), or garbage (an answer that is not SMB2). After banner and
+    smb it reads what the probe sends until the probe's EOF and records it
+    with how the connection ended ("eof" or "reset") in endings. A
+    connection past the list is held silent, as one left unaccepted looks to
+    the probe. Tracks how many connections were open at once."""
 
     def __init__(self, family, port, behaviors):
         self.sock = socket.socket(family, socket.SOCK_STREAM)
@@ -162,18 +172,29 @@ class ProbeServer:
         self.sock.listen(8)
         self.behaviors = list(behaviors)
         self.requests = []
+        self.endings = []
+        self.release = threading.Event()
         self.open = self.most_open = 0
         self.lock = threading.Lock()
-        self.thread = threading.Thread(target=self.serve, daemon=True)
-        self.thread.start()
+        self.stop = accept_loop(self.sock, self.next_connection)
 
-    def serve(self):
-        for behavior in self.behaviors:
-            try:
-                conn, _ = self.sock.accept()
-            except OSError:
-                return
-            threading.Thread(target=self.handle, args=(conn, behavior), daemon=True).start()
+    def next_connection(self, conn):
+        with self.lock:
+            behavior = self.behaviors.pop(0) if self.behaviors else "silent"
+        self.handle(conn, behavior)
+
+    def read_to_end(self, conn):
+        conn.settimeout(HOLD_S)
+        data = b""
+        try:
+            while chunk := conn.recv(4096):
+                data += chunk
+            ending = "eof"
+        except ConnectionResetError:
+            ending = "reset"
+        except OSError as error:
+            ending = repr(error)
+        self.endings.append((data, ending))
 
     def handle(self, conn, behavior):
         with self.lock:
@@ -182,7 +203,7 @@ class ProbeServer:
         try:
             if behavior == "banner":
                 conn.sendall(b"SSH-2.0-OpenSSH_test\r\n")
-                time.sleep(0.3)
+                self.read_to_end(conn)
             elif behavior in ("smb", "garbage"):
                 conn.settimeout(ANSWER_MS / 1000)
                 request = b""
@@ -195,22 +216,25 @@ class ProbeServer:
                 except OSError:
                     pass
                 self.requests.append(request)
-                conn.sendall(b"HTTP/1.0 400 Bad\r\n\r\n" if behavior == "garbage"
-                             else b"\x00\x00\x00\x40\xfeSMB" + bytes(60))
-                time.sleep(0.3)
+                if behavior == "garbage":
+                    conn.sendall(b"HTTP/1.0 400 Bad\r\n\r\n")
+                    self.release.wait(HOLD_S)
+                else:
+                    # A negotiate reply's length: more than the probe reads.
+                    conn.sendall(b"\x00\x00\x00\xc0\xfeSMB" + bytes(188))
+                    self.read_to_end(conn)
             elif behavior == "reset":
                 conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
             elif behavior == "silent":
-                time.sleep(ANSWER_MS / 1000 + 0.5)
-            elif behavior == "silent_long":
-                time.sleep(LONG_ANSWER_MS / 1000 + 2)
+                self.release.wait(HOLD_S)
         finally:
             conn.close()
             with self.lock:
                 self.open -= 1
 
     def close(self):
-        self.sock.close()
+        self.release.set()
+        self.stop()
 
 
 def probe_rounds(binary, rounds=1):
@@ -250,6 +274,14 @@ def test_a_probe_round_reads_each_answer(binary, ports):
     # The probe sent the 108-byte NEGOTIATE behind its session header.
     request = made[1].requests[0]
     assert len(request) == 112 and request[:8] == b"\x00\x00\x00\x6c\xfeSMB"
+    # Once answered, the probe says goodbye: sshd gets one line naming the
+    # probe that is not an SSH identification (no "SSH-" prefix, so sshd
+    # refuses it before forking a pre-auth child), both get EOF, and the
+    # probe reads the rest of the reply instead of resetting the connection
+    # with it unread.
+    [(line, ending)] = made[0].endings
+    assert line == b"TimeCapsuleSMB health probe\r\n" and not line.startswith(b"SSH-") and ending == "eof"
+    assert made[1].endings == [(b"", "eof")]
     if IPV6:
         assert result["smb6"] == "silent"
     else:
@@ -267,6 +299,50 @@ def test_refused_and_reset_connections(binary, ports):
         for server in made:
             server.close()
     assert result["ssh4"] == "closed" and result["smb4"] == "absent"
+
+
+def fill_backlog(family, port):
+    """A listener that never accepts, its queue filled by connections of our
+    own until the kernel drops a new one's SYN (as it does for any client
+    of a daemon that stopped accepting). Returns every socket to close."""
+    listener = socket.socket(family, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    host = "127.0.0.1" if family == socket.AF_INET else "::1"
+    listener.bind((host, port))
+    listener.listen(1)
+    made = [listener]
+    for _ in range(64):
+        client = socket.socket(family, socket.SOCK_STREAM)
+        client.setblocking(False)
+        made.append(client)
+        client.connect_ex((host, port))
+        # Loopback connects complete at once; only a full queue waits.
+        _, writable, _ = select.select([], [client], [], 1.5)
+        if not writable:
+            return made
+    for sock in made:
+        sock.close()
+    pytest.fail("the listen queue never filled")
+
+
+def test_a_full_listen_queue_times_out_unlike_a_refusal(binary, ports):
+    # smbd's parent stops accepting: its queue fills and the kernel drops
+    # new SYNs, so the probe's connect never completes. That is a timeout,
+    # after the connect limit; nothing listening is an immediate refusal.
+    made = [ProbeServer(socket.AF_INET, ports["ssh"], ["banner"])]
+    full = fill_backlog(socket.AF_INET, ports["smb"])
+    try:
+        [result] = probe_rounds(binary)
+    finally:
+        for server in made:
+            server.close()
+        for sock in full:
+            sock.close()
+    assert result["ssh4"] == "ok" and result["smb4"] == "timeout"
+    elapsed = int(result["elapsed_ms"])
+    assert CONNECT_MS - 100 <= elapsed < CONNECT_MS + 1500
+    if IPV6:
+        assert result["smb6"] == "absent"
 
 
 def test_a_round_runs_one_probe_per_service_at_a_time(binary, ports):
@@ -288,7 +364,7 @@ def test_a_round_runs_one_probe_per_service_at_a_time(binary, ports):
 
 
 def test_term_skips_the_rest_of_a_round(long_binary, ports):
-    made = servers(ports, ["silent_long"], ["silent_long"], ["silent_long"])
+    made = servers(ports, ["silent"], ["silent"], ["silent"])
     try:
         process = subprocess.Popen([str(long_binary), "probes", "1"], stdout=subprocess.PIPE, text=True)
         deadline = time.monotonic() + 5

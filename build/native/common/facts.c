@@ -120,7 +120,7 @@ int collect_device_facts(struct device_facts *out) {
     memset(out, 0, sizeof(*out));
     device_facts_requests(requests, out);
     (void)acp_collect_run(requests, ACP_KEY_COUNT, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
-                          (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
+                          (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000, 0);
     device_facts_complete(out, requests);
     return 0;
 }

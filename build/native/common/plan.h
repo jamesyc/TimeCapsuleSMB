@@ -113,8 +113,12 @@ int addr_link_has_nbns_ipv4(unsigned flags, const struct if_addr *addrs, size_t 
  * the lowest address nor the sdl_type picks it: Apple's kernels call every
  * interface Ethernet, and bridge1's random ac:de:48 address sorts below
  * NetBSD 4's e8:8d:28 base (tests/native/fixtures/iflist). Returns 0 with
- * out set, or -1. */
-int if_table_device_mac(const struct if_table *table, unsigned char out[6]);
+ * out set, or -1, also while that interface still has the boot placeholder
+ * (addr_mac_is_boot_placeholder). */
+int addr_device_mac(const struct if_table *table, unsigned char out[6]);
+/* One of the addresses Apple's NICs carry early in boot, before the real
+ * one is set: the same on every unit of a model, so never a device's. */
+int addr_mac_is_boot_placeholder(const unsigned char mac[6]);
 const char *addr_text(const struct if_addr *addr, char *out, size_t out_len);
 
 /* facts.c */

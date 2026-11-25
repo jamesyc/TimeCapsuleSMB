@@ -191,7 +191,7 @@ static int advance(struct acp_collector *c) {
             finish_key(c, ACP_ABORT, ACP_REASON_CANCELLED);
             continue;
         }
-        if (c->stop_early && c->stopped) {
+        if (c->stop_early && c->failed_key) {
             finish_key(c, ACP_ABORT, ACP_REASON_SKIPPED);
             continue;
         }
@@ -211,18 +211,17 @@ static int advance(struct acp_collector *c) {
         }
         if (start_acp_child(c, value, &failure) != 0) {
             acp_log_failure(c->requests[c->next].key, failure);
-            c->stopped = 1;
-            finish_key(c, ACP_ABORT, ACP_REASON_LOCAL);
+            c->failed_key = 1;
+            /* start_acp_child recorded the reason (PIPE or FORK). */
+            finish_key(c, ACP_ABORT, ACP_REASON_NONE);
             continue;
         }
         /* Clamp before adding so even a large caller timeout cannot wrap.
-         * A child cut short by the budget did not time out on its own. */
-        c->child_deadline_ms = c->deadline_ms;
-        c->child_at_budget = 1;
-        if (c->timeout_ms < c->deadline_ms - now) {
-            c->child_deadline_ms = now + c->timeout_ms;
-            c->child_at_budget = 0;
-        }
+         * A child whose own timeout runs past what is left of the budget is
+         * cut by the budget, not timed out; one ending exactly with it timed
+         * out on its own. */
+        c->child_cut_by_budget = c->timeout_ms > c->deadline_ms - now;
+        c->child_deadline_ms = c->child_cut_by_budget ? c->deadline_ms : now + c->timeout_ms;
     }
     if (!c->active && c->next >= c->key_count) {
         c->finished = 1;
@@ -334,10 +333,10 @@ int acp_collect_pump(struct acp_collector *c) {
             abort_current_child(c, "cancelled", ACP_REASON_CANCELLED);
         } else if (now < 0) {
             abort_current_child(c, "cannot read monotonic clock", ACP_REASON_LOCAL);
-        } else if (now >= c->child_deadline_ms && c->child_at_budget) {
+        } else if (now >= c->child_deadline_ms && c->child_cut_by_budget) {
             abort_current_child(c, "collection budget exhausted", ACP_REASON_BUDGET);
         } else if (now >= c->child_deadline_ms) {
-            c->stopped = 1;
+            c->failed_key = 1;
             abort_current_child(c, "timed out", ACP_REASON_TIMEOUT);
         } else if (c->eof) {
             reap_child(c);
@@ -390,12 +389,8 @@ void acp_collect_cancel(struct acp_collector *c) {
 
 /* Synchronous driver: the daemons use the fd/pump pair; one-shot helpers
  * and telemetry use this. */
-int acp_collect_run(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms) {
-    return acp_collect_run_opts(requests, count, timeout_ms, budget_ms, 0);
-}
-
-int acp_collect_run_opts(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
-                         int flags) {
+int acp_collect_run(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms,
+                    int flags) {
     struct acp_collector c;
     int rc = acp_collect_begin(&c, requests, count, timeout_ms, budget_ms, flags);
     if (rc != 0) {
