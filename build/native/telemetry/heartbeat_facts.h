@@ -71,8 +71,9 @@ struct tc_facts_round {
 };
 
 /* Whether a heartbeat at now_ms may keep f's facts under reuse (struct
- * tc_facts_reuse): something was collected, under reuse.max_age seconds
- * before now_ms, and complete if reuse.complete_only says so (no key timed
+ * tc_facts_reuse): something was collected, under reuse.max_age whole
+ * seconds before now_ms (both clocks cut to the second, as the planner's
+ * is), and complete if reuse.complete_only says so (no key timed
  * out, ran out of budget, failed to start or was skipped, and the serial
  * came back if one was read before). A clock that went back keeps nothing. */
 int tc_heartbeat_facts_reusable(const struct tc_heartbeat_facts *f, struct tc_facts_reuse reuse, long long now_ms);

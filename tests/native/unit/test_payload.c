@@ -304,6 +304,20 @@ static void test_facts_reusable(void) {
     /* Reusing them reads nothing and does not make them younger. */
     tc_heartbeat_facts_update(&f, KEEP, &round);
     assert(!round.collected && collections == 1 && !outage_keeps(&f, 50000 + limit));
+    /* The age counts whole seconds: facts read 900 ms into a second are a
+     * second old 100 ms later and, under a one-second limit, too old 999 ms
+     * after the read, as the planner's clock sees it. */
+    {
+        const struct tc_facts_reuse one_second = {1, 0};
+        reset();
+        memset(&f, 0, sizeof(f));
+        now_ms = 50900;
+        tc_heartbeat_facts_update(&f, READ, &round);
+        now_ms = 50000;
+        assert(tc_heartbeat_facts_reusable(&f, one_second, 50999));
+        assert(!tc_heartbeat_facts_reusable(&f, one_second, 51000));
+        assert(!tc_heartbeat_facts_reusable(&f, one_second, 51899));
+    }
     /* A key that timed out, ran out of budget or never started (and every
      * key skipped after it): read again. */
     for (i = 0; i < sizeof(incomplete) / sizeof(incomplete[0]); i++) {
@@ -353,8 +367,8 @@ static void test_facts_reusable(void) {
         assert(round.collected && !g.last_complete);
         /* {0, 0} never keeps, not even facts collected this millisecond. */
         assert(!tc_heartbeat_facts_reusable(&g, READ, 50000));
-        /* Whole seconds of age against max_age: the same boundary as
-         * comparing milliseconds. */
+        /* Age is whole seconds on both clocks, as the planner's: under one
+         * second means the same second. */
         assert(tc_heartbeat_facts_reusable(&g, second, 50999) && !tc_heartbeat_facts_reusable(&g, second, 51000));
         /* Forever is forever, even 40 years on, without overflowing a
          * 32-bit long; complete_only still refuses an incomplete one. */
@@ -450,13 +464,16 @@ static void test_mac_sources(void) {
 /* The planner's choice and the facts together, by what the device sees:
  * whether a heartbeat forks acp. Each case is one row of planner.h's table;
  * the facts' clock (now_ms) follows the planner's seconds. */
+/* How far into the planner's second each attempt collects, in ms. */
+static long long into_second;
+
 static int attempt_at(struct tc_planner *p, struct tc_heartbeat_facts *f, long now, int requests,
                       enum tc_outcome outcome, int line) {
     struct tc_attempt a = planner_next(p, now, requests);
     if (a.kind == TC_ATTEMPT_NONE) fprintf(stderr, "no attempt at %ld (line %d)\n", now, line);
     struct tc_facts_round round;
     assert(a.kind != TC_ATTEMPT_NONE);
-    now_ms = now * 1000LL;
+    now_ms = now * 1000LL + into_second;
     tc_heartbeat_facts_update(f, a.facts, &round);
     planner_finished(p, now, &a, outcome, requests);
     return round.collected;
@@ -546,6 +563,29 @@ static void test_extra_age_counts_from_any_collection(void) {
     while (p.retry_at < collected + TC_INTERVAL_SECONDS)
         assert(!attempt(&p, &f, p.retry_at, 1, TC_OUTCOME_NETWORK));
     assert(attempt(&p, &f, p.retry_at, 1, TC_OUTCOME_DELIVERED) && f.last_complete);
+    now_ms = 50000;
+}
+
+/* An extra due 12 h after the collection on the planner's clock reads acp,
+ * wherever in their seconds the collection and the pass fell: collected
+ * 100 ms into a second, the extra's pass only 50 ms into its own is under
+ * 12 h on a millisecond clock, and keeping the facts there would hold them
+ * another 12 h. */
+static void test_extra_age_ignores_where_in_the_second(void) {
+    static struct tc_heartbeat_facts f;
+    struct tc_planner p;
+    long t;
+    reset(); memset(&f, 0, sizeof(f)); planner_init(&p, 900, 0);
+    into_second = 100;
+    assert(attempt(&p, &f, 1000, 1, TC_OUTCOME_DELIVERED));
+    /* Extras up to the cap keep the boot collection. */
+    into_second = 50;
+    for (t = 1001; t < 1000 + TC_INTERVAL_SECONDS; t = p.next_extra_at)
+        assert(!attempt(&p, &f, t, 1, TC_OUTCOME_DELIVERED));
+    /* The first one 12 h on reads, 50 ms into its second. */
+    p.next_extra_at = 1000 + TC_INTERVAL_SECONDS;
+    assert(attempt(&p, &f, 1000 + TC_INTERVAL_SECONDS, 1, TC_OUTCOME_DELIVERED));
+    into_second = 0;
     now_ms = 50000;
 }
 
@@ -729,6 +769,7 @@ int main(void) {
     test_facts_reusable();
     test_planned_reads();
     test_extra_age_counts_from_any_collection();
+    test_extra_age_ignores_where_in_the_second();
     test_mac_sources();
     test_heartbeat_ident();
     test_health_that_does_not_fit();

@@ -229,8 +229,11 @@ static int by_wait_count(const void *a, const void *b) {
         }                                                                                                     \
     } while (0)
 
+/* The process table, for read_snapshot and room_for_ipv6; static, as it is
+ * large, and only one of them reads it at a time. */
+static struct tc_proctable table;
+
 static void read_snapshot(struct tc_snapshot *s, long now) {
-    static struct tc_proctable table;
     static struct tc_proc_group groups[TC_PROCESS_MAX];
     static struct tc_wait_count waits[TC_PROCESS_MAX];
     size_t i, group_count = 0, wait_count = 0;
@@ -540,11 +543,25 @@ static void run_targets(struct probe *probes, size_t first, size_t end) {
     }
 }
 
+/* Whether the table, read now, still leaves the IPv6 smbd probe the room
+ * tc_health_probe_allowed() asked of the round (the same rule, though that
+ * probe adds one child, not two). The IPv4 pair's sshd and smbd children can
+ * outlive their sockets (smbd's child closes its socket before it exits,
+ * and an exited child holds its slot until it is reaped), so the sample
+ * from before the round does not say whether another child would fit
+ * beside them. A table that cannot be read gives none. */
+static int room_for_ipv6(void) {
+    struct tc_counters c;
+    read_counters(&c);
+    if (c.maxproc <= 0 || tc_proctable_read(&table)) return 0;
+    return (long)table.count + TC_HEALTH_PROC_FULL_MARGIN < c.maxproc;
+}
+
 void tc_health_read_probes(struct tc_probe_round *out) {
     struct probe probes[TC_PROBES];
     size_t i;
     memset(probes, 0, sizeof(probes)); /* a probe never started stays skipped */
     run_targets(probes, TC_PROBE_SSH4, TC_PROBE_SMB6);
-    if (!telemetry_stop) run_targets(probes, TC_PROBE_SMB6, TC_PROBES);
+    if (!telemetry_stop && room_for_ipv6()) run_targets(probes, TC_PROBE_SMB6, TC_PROBES);
     for (i = 0; i < TC_PROBES; i++) out->result[i] = probes[i].result;
 }

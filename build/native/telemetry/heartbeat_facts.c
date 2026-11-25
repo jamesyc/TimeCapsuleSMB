@@ -140,11 +140,13 @@ void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, struct tc_facts_reu
     f->have_last = 1;
 }
 
-/* The age is compared in whole seconds, never max_age scaled up to
- * milliseconds: TC_FACTS_FOREVER is LONG_MAX, and long is 32 bits on the
- * devices. floor(age_ms / 1000) < max_age exactly when age_ms < max_age *
- * 1000, so the boundary is the same. */
+/* The age is counted in whole seconds on both clocks, each cut to its
+ * second as the planner's monotonic_seconds() is: a pass 12 h on the
+ * planner's clock is 12 h old here too, wherever in its second the
+ * collection fell. It is compared in seconds, never max_age scaled up to
+ * milliseconds, because TC_FACTS_FOREVER is LONG_MAX and long is 32 bits on
+ * the devices. */
 int tc_heartbeat_facts_reusable(const struct tc_heartbeat_facts *f, struct tc_facts_reuse reuse, long long now_ms) {
     if (!f->have_last || (reuse.complete_only && !f->last_complete) || now_ms < f->last_ms) return 0;
-    return (now_ms - f->last_ms) / 1000 < (long long)reuse.max_age;
+    return now_ms / 1000 - f->last_ms / 1000 < (long long)reuse.max_age;
 }

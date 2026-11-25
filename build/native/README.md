@@ -599,6 +599,7 @@ State machines in the telemetry process, each documented beside its code:
 - health events and peaks: `health.h`
 - probe phases: `probe_track`, `health.c`
 - nameserver verdicts: `judge()`, `dns.c`
+- reading an HTTP answer: `enum response_phase`, `http.c`
 
 Schema 2 reports `debug_logging` (Samba or mDNS) and `advertise_afp`, using
 null for unreadable settings. It omits `nbns_enabled`: native NBNS is always on,
@@ -656,11 +657,14 @@ each `resolv.conf` nameserver for A and AAAA (127.0.0.1 only when the file does 
 exist or names no usable server; a link-local one needs its scope, `%bridge0` or
 `%3`, mapped through the interface table), on NetBSD libc's schedule: two rounds over the
 list, 5 s per server in the first and 10 s shared among them in the second (at
-least 1 s each), the second resending under the same ids only what a server left
-unanswered. A SERVFAIL, REFUSED or truncated reply counts as that type answered
+least 1 s each), the second resending under the same ids, on the socket each server
+was first asked on (so a late reply to the first still counts), only what a server
+left unanswered. A SERVFAIL, REFUSED or truncated reply counts as that type answered
 with nothing, so once the other type is answered too it moves on without waiting
 out the server, and a server that answered both is not asked again. An answer
-whose A reply was lost waits for the A resend before it is used. One function (`judge()` in `dns.c`, with its table)
+whose A reply failed or was lost is held while the other nameservers and the A
+resend get their turn, as libc takes its separate A query on, and a better answer
+from them wins. One function (`judge()` in `dns.c`, with its table)
 gives each nameserver's answers a verdict. NXDOMAIN for A, or a clean reply with no
 record to both types, is final: the lookup fails without asking another nameserver
 or falling back, and the kept answer for the name is forgotten; NXDOMAIN for AAAA
@@ -695,10 +699,12 @@ The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
   hold ends, so the boot heartbeat carries it, then every 90 minutes. A round
   is skipped (and retried in 5 minutes, which forks nothing) unless the last
   sample read the table and it is more than 2 below `kern.maxproc`, where a
-  probe's own child could refuse a client. sshd logs every probe and ACPd
-  keeps the line in its log (`acp -q logm`, AirPort Utility's log view), so
-  sshd is probed over IPv4 only, which shows a wedged sshd as well as both
-  families would. sshd gets one short line that is not an SSH identification, so it
+  probe's own child could refuse a client; the IPv6 probe asks the same of
+  the table read again after the IPv4 pair, whose children may not have
+  exited yet. sshd logs every probe and ACPd keeps the line in its log (`acp
+  -q logm`, AirPort Utility's log view), so sshd is probed over IPv4 only,
+  which shows a wedged sshd as well as both families would. sshd gets one
+  short line that is not an SSH identification, so it
   logs the probe by name and closes before forking a pre-auth child; both
   servers then get a clean shutdown. A probe ends `ok`, `closed` (accepted, then
   hung up before answering), `silent`, `refused`, `timeout` (no connect within

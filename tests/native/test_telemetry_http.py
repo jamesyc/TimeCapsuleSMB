@@ -96,6 +96,13 @@ def responder(state):
                     return
                 if mode == "slow_ok":
                     time.sleep(0.2)
+                if mode == "long_split":
+                    # The n-th byte in one segment, extra bytes in the next.
+                    self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    time.sleep(0.05)
+                    self.request.sendall(b"EXTRA")
+                    return
                 if mode == "trickle":
                     # One byte per segment: the head arrives split across reads.
                     self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -113,6 +120,9 @@ def responder(state):
                     "big": b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n" + b"x" * 100,
                     "big_close": b"HTTP/1.0 200 OK\r\n\r\n" + b"x" * 100,
                     "short": b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nok",
+                    # One small write, so the read that brings the second
+                    # byte brings the rest with it.
+                    "long": b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokEXTRA",
                     "chunked": b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n",
                     "early_close": b"",
                     "garbage": b"SSH-2.0-OpenSSH\r\n\r\n",
@@ -331,11 +341,18 @@ class Dns:
         # The names this server answers for; a test may give one new records.
         self.zone = ZONE
         # The mode applies to the first mode_peers sockets that ask (each
-        # nameserver the resolver tries gets a socket of its own); later
-        # ones get plain answers. None: every one.
+        # nameserver a lookup asks gets a socket of its own, kept for every
+        # round); later ones get plain answers. None: every one.
         self.mode_peers = None
         self.queries = []
         self.peers = []
+
+    def send_late(self, replies, peer):
+        try:
+            for reply in replies:
+                self.sock.sendto(reply, peer)
+        except OSError:
+            pass
 
     def read(self, count, timeout=5):
         """The queries, once this thread has read at least count. A lookup
@@ -366,6 +383,15 @@ class Dns:
                 continue
             if mode == "drop_first" and data[:2] not in seen:
                 seen.add(data[:2])  # lose the first copy of each query
+                continue
+            if mode == "late_first":
+                # Answer the first copy of each query two first-round
+                # times late, in the middle of the second round; lose the
+                # resend.
+                if data[:2] not in seen:
+                    seen.add(data[:2])
+                    threading.Timer(2 * DNS_RETRANS_MS / 1000, self.send_late,
+                                    (dns_reply(data, "answer", self.zone), peer)).start()
                 continue
             if (mode in ("aaaa_only", "nxdomain_aaaa_a_lost") and qtype == 1) or \
                     (mode in ("a_only", "nxdomain_a_aaaa_lost") and qtype == 28):
@@ -472,16 +498,30 @@ def test_get_sends_no_credentials_and_reads_to_the_close(http):
     assert "authorization" not in request["headers"] and request["body"] == b""
 
 
-@pytest.mark.parametrize("mode", ["status404", "status500", "redirect", "big", "big_close", "short", "chunked",
-                                  "garbage"])
+@pytest.mark.parametrize("mode", ["status404", "status500", "redirect", "big", "big_close", "short",
+                                  "chunked", "garbage"])
 def test_anything_but_a_complete_2xx_response_within_the_limit_fails(http, mode):
+    # http.c's response table, the rows ending "SERVER, answered": other
+    # status (404, 500, redirect, garbage), length over limit (big), body
+    # past limit (big_close), close before n bytes (short), chunked.
     rig, run = http
     rig["state"]["mode"] = mode
     outcome, _ = run("post", f"http://127.0.0.1:{rig['port']}/v1/router-heartbeats")
     assert outcome == "fail server"
 
 
+@pytest.mark.parametrize("mode", ["long", "long_split"])
+def test_bytes_past_content_length_are_dropped_however_they_arrive(http, mode):
+    # Response table: BODY_LENGTH, n bytes, 2xx. The body is the first n
+    # bytes, whether the extra ones come in the n-th byte's read (long) or
+    # after it (long_split), as curl -fsS kept them.
+    rig, run = http
+    rig["state"]["mode"] = mode
+    assert run("post", f"http://127.0.0.1:{rig['port']}/x")[0] == "ok ok"
+
+
 def test_a_close_with_no_answer_at_all_is_a_network_failure(http):
+    # Response table: HEAD, close, no byte.
     rig, run = http
     rig["state"]["mode"] = "early_close"
     outcome, _ = run("post", f"http://127.0.0.1:{rig['port']}/v1/router-heartbeats")
@@ -595,7 +635,21 @@ def test_three_silent_nameservers_share_the_second_round(http):
     rig["resolv"].write_text("nameserver 127.0.0.1\n" * 3)
     outcome, elapsed = run("resolve", "v4only.test", binary="wide_binary")
     assert outcome == "fail" and dns_silent_ms(3) - 100 <= elapsed < dns_silent_ms(3) + 1500
-    assert len(rig["dns4"].peers) == 3 * DNS_TRIES
+    # One socket per server, kept for both rounds.
+    assert len(rig["dns4"].peers) == 3
+    assert len(rig["dns4"].queries) == 3 * 2 * DNS_TRIES
+
+
+def test_a_reply_to_the_first_round_that_comes_late_is_read_on_the_next(http):
+    # The server answers the first copies in the middle of the second round
+    # and loses the resends: the socket kept from the first round still
+    # takes the late answer, as libc's does.
+    rig, run = http
+    rig["dns4"].mode = "late_first"
+    outcome, elapsed = run("resolve", "svc.test", binary="wide_binary")
+    assert outcome == "::1 127.0.0.1"
+    assert elapsed >= 2 * DNS_RETRANS_MS - 100
+    assert len(rig["dns4"].peers) == 1 and len(rig["dns4"].queries) == 2 * DNS_TRIES
 
 
 def test_term_stops_a_lookup_without_asking_the_remaining_nameservers(http):
@@ -800,7 +854,7 @@ def test_a_response_split_into_single_bytes_is_read_whole(http):
 @pytest.mark.parametrize("mode,limit,expected", [("head_max", "64", "ok ok"), ("head_over", "64", "fail server"),
                                                  ("head_max_big", "100", "ok " + "x" * 100)])
 def test_a_head_longer_than_the_maximum_is_refused_even_in_one_read(http, mode, limit, expected):
-    # The whole response goes out in one write and fits the buffer, so one
+    # Response table: HEAD, head past TC_HTTP_HEADER_MAX. The whole response goes out in one write and fits the buffer, so one
     # read can bring the blank line in past the maximum.
     rig, run = http
     rig["state"]["mode"] = mode
@@ -914,7 +968,7 @@ def test_nameservers_past_the_third_are_not_asked(http):
     rig["dns4"].mode = "silent"
     rig["resolv"].write_text("nameserver 127.0.0.1\n" * 3 + "nameserver ::1\n")
     assert run("resolve", "v4only.test", binary="wide_binary")[0] == "fail"
-    assert len(rig["dns4"].peers) == 3 * DNS_TRIES and not rig["dns6"].queries
+    assert len(rig["dns4"].peers) == 3 and not rig["dns6"].queries
 
 
 def test_a_missing_resolv_conf_asks_the_local_nameserver(http):
@@ -1057,6 +1111,33 @@ def test_an_answer_without_a_clean_a_reply_is_followed_by_the_kept_ipv4_address(
     asked = a_queries(rig["dns4"])
     assert resolve("resolve v4only.test") == "::1 127.0.0.1 resource=0"
     assert a_queries(rig["dns4"]) > asked
+
+
+def test_servfail_for_a_beside_aaaa_records_asks_the_next_nameserver(script):
+    # The first nameserver fails the A query but answers AAAA: as libc
+    # takes the A query on to the next server, the second one is asked, and
+    # its whole answer is used and kept.
+    rig, start = script
+    resolve = start()
+    rig["dns4"].mode = "servfail_a"
+    rig["dns4"].mode_peers = 1
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    assert resolve("resolve svc.test") == "::1 127.0.0.1 resource=0"
+    assert len(rig["dns4"].peers) == 2
+    asked = len(rig["dns4"].queries)
+    assert resolve("resolve svc.test") == "::1 127.0.0.1 resource=0"
+    assert len(rig["dns4"].queries) == asked  # kept
+
+
+def test_servfail_for_a_on_every_nameserver_uses_the_half_answer_at_once(http):
+    # Each server fails A and answers AAAA: none is asked again in the
+    # second round, and the AAAA-only answer serves without waiting.
+    rig, run = http
+    rig["dns4"].mode = "servfail_a"
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    outcome, elapsed = run("resolve", "svc.test")
+    assert outcome == "::1" and elapsed < DNS_RETRANS_MS
+    assert len(rig["dns4"].queries) == 4
 
 
 def test_the_kept_answer_for_another_name_is_not_appended(script):
@@ -1260,6 +1341,10 @@ def serve(listener, behavior, log):
                     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nok")
                     while conn.recv(4096):
                         pass
+                elif behavior == "body_stall":
+                    conn.sendall(b"HTTP/1.0 200 OK\r\n\r\npart")  # read to the close, which never comes
+                    while conn.recv(4096):
+                        pass
                 elif behavior == "short_body":
                     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nok")
             except OSError:
@@ -1341,6 +1426,7 @@ def test_an_ipv6_close_without_an_answer_falls_back_to_ipv4(dual):
 
 @pytestmark_ipv6
 def test_a_complete_error_answer_is_not_retried_on_ipv4(dual):
+    # Response table: BODY_LENGTH, n bytes, other status (answered).
     setup, logs = dual
     outcome, _ = setup("status500", "ok")
     assert outcome == "fail server"
@@ -1349,6 +1435,7 @@ def test_a_complete_error_answer_is_not_retried_on_ipv4(dual):
 
 @pytestmark_ipv6
 def test_a_server_that_was_reached_outranks_a_later_network_failure(dual):
+    # Response table: HEAD, close, some bytes (SERVER, next address).
     # IPv6 sent part of an answer and closed; IPv4 refused.
     setup, logs = dual
     outcome, _ = setup("partial_head", "refused")
@@ -1358,6 +1445,7 @@ def test_a_server_that_was_reached_outranks_a_later_network_failure(dual):
 
 @pytestmark_ipv6
 def test_a_close_before_any_byte_is_the_network_not_the_server(dual):
+    # Response table: HEAD, close, no byte.
     # A middlebox that accepts and hangs up on IPv6 says nothing about the
     # server: with IPv4 refused, the request failed on the network.
     setup, logs = dual
@@ -1367,8 +1455,10 @@ def test_a_close_before_any_byte_is_the_network_not_the_server(dual):
 
 
 @pytestmark_ipv6
-@pytest.mark.parametrize("v6", ["head_reset", "head_stall"])
+@pytest.mark.parametrize("v6", ["head_reset", "head_stall", "body_stall"])
 def test_a_reset_or_stall_after_the_head_moves_on_to_the_next_address(dual, v6):
+    # Response table: any phase, reset or stall; BODY_LENGTH for head_reset
+    # and head_stall, BODY_TO_CLOSE for body_stall.
     setup, logs = dual
     outcome, _ = setup(v6, "ok")
     assert outcome == "ok ok"
@@ -1377,6 +1467,7 @@ def test_a_reset_or_stall_after_the_head_moves_on_to_the_next_address(dual, v6):
 
 @pytestmark_ipv6
 def test_a_close_that_cuts_the_body_short_is_the_servers_answer(dual):
+    # Response table: BODY_LENGTH, close before n bytes.
     # The server ended its answer: another address would only repeat it.
     setup, logs = dual
     outcome, _ = setup("short_body", "ok")

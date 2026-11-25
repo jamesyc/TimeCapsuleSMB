@@ -39,7 +39,8 @@ enum verdict {
     ASK_NEXT,           /* nothing usable yet: the next nameserver, then the kept answer */
     GONE,               /* the name has no address: fail, keep nothing */
     KEEP,               /* cache the answer and use it */
-    USE_WITH_KEPT_IPV4  /* use it once, then the kept answer's IPv4 addresses */
+    USE_WITH_KEPT_IPV4  /* the next nameserver first; with no better answer, use it
+                           once, then the kept answer's IPv4 addresses */
 };
 
 /* The verdict on one nameserver's answers, by its A reply, whether either
@@ -59,9 +60,11 @@ enum verdict {
  * no longer has it. NXDOMAIN for AAAA alone is only that type answered with
  * nothing. An answer is kept only with a clean A reply: an AAAA-only answer
  * from a server whose A reply failed or was lost would, kept, fail every
- * request until its TTL on a device whose IPv6 does not reach the server,
- * so it is used once with the IPv4 addresses from the last clean answer
- * behind it. A clean A reply with no address beside AAAA records is the
+ * request until its TTL on a device whose IPv6 does not reach the server.
+ * libc sends A and AAAA as separate queries and takes a failed or lost A
+ * query to the next nameserver (and round) on its own, so such an answer
+ * waits until every server had its turn; then it is used once with the IPv4
+ * addresses from the last clean answer behind it. A clean A reply with no address beside AAAA records is the
  * name's whole answer, and kept. */
 static enum verdict judge(const struct answers *a) {
     int found = a->n4 || a->n6;
@@ -334,28 +337,36 @@ static size_t nameservers(struct sockaddr_storage *out, int *resource) {
 
 /* Asks one server the queries a still waits for (both on the first round,
  * on the next only those left unanswered, under the same ids, as libc
- * resends a query) and collects its replies into a
- * until each is answered, the verdict is GONE whatever the other would say,
- * until passes, or TERM. A socket that cannot be made or used leaves them
- * waiting, which judge() takes as nothing usable. */
-static void ask(const struct sockaddr_storage *server, const char *name, struct answers *a, const unsigned ids[2],
-                long long until, int *resource) {
+ * resends a query) and collects its replies into a until each is answered,
+ * the verdict is GONE whatever the other would say, until passes, or TERM.
+ * *fd is the server's socket for the whole lookup, made on its first round
+ * and kept, as libc keeps one per nameserver across its tries, so a reply
+ * to the first round's query that comes late is still read on the next. A
+ * socket that cannot be made or used is closed (*fd -1, made again next
+ * round) and leaves the queries waiting, which judge() takes as nothing
+ * usable. */
+static void ask(const struct sockaddr_storage *server, int *fd_kept, const char *name, struct answers *a,
+                const unsigned ids[2], long long until, int *resource) {
     static const unsigned types[2] = {TYPE_A, TYPE_AAAA};
     unsigned char query[300], reply[1500];
     size_t length, i;
     socklen_t salen = server->ss_family == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-    int fd = socket(server->ss_family, SOCK_DGRAM, 0);
+    int fd = *fd_kept;
+    if (fd >= 0) goto ready;
+    fd = socket(server->ss_family, SOCK_DGRAM, 0);
     if (fd < 0) {
         if (tc_errno_record(TC_OP_SOCKET, errno) == TC_ERR_RESOURCE) *resource = 1;
         return;
     }
     /* connect() makes the kernel drop datagrams from anyone else. */
-    if (fd >= FD_SETSIZE) goto done;
+    if (fd >= FD_SETSIZE) goto drop;
     if (tc_test_enobufs("connect") || connect(fd, (const struct sockaddr *)server, salen)) goto failed;
+    *fd_kept = fd;
+ready:
     for (i = 0; i < 2; i++) {
         if (a->done[i] != WAITING) continue;
         length = build_query(query, sizeof(query), ids[i], name, types[i]);
-        if (!length) goto done;
+        if (!length) return;
         if (tc_test_enobufs("send") || send(fd, query, length, 0) != (ssize_t)length) goto failed;
     }
     while ((a->done[0] == WAITING || a->done[1] == WAITING) && judge(a) != GONE && !telemetry_stop) {
@@ -381,12 +392,13 @@ static void ask(const struct sockaddr_storage *server, const char *name, struct 
         if (n > 0 && (which = parse_reply(reply, (size_t)n, ids, name, &part)) >= 0) merge(a, &part, which);
         else if (n < 0 && errno != EINTR && errno != EAGAIN) goto failed; /* ICMP refused, or no buffers */
     }
-    goto done;
+    return;
 failed:
     /* Out of buffers or memory is the device's, for the retry rules. */
     if (tc_errno_record(TC_OP_IO, errno) == TC_ERR_RESOURCE) *resource = 1;
-done:
+drop:
     close(fd);
+    *fd_kept = -1;
 }
 
 /* One server's time on round (from 0) of a list of n (dns.h). */
@@ -440,7 +452,9 @@ int tc_dns_resolve(const char *name, struct tc_dns_addr *out, size_t max, size_t
     struct sockaddr_storage servers[TC_DNS_MAX_SERVERS];
     struct answers a[TC_DNS_MAX_SERVERS]; /* each server's replies, kept across rounds */
     unsigned ids[TC_DNS_MAX_SERVERS][2];  /* each server's query ids (A, AAAA), the same every round */
+    int fds[TC_DNS_MAX_SERVERS];          /* each server's socket, kept across rounds (ask()) */
     size_t n, i;
+    int result; /* -1 failed, 0 out is filled, 1 the kept answer serves */
     unsigned round;
     long long now = acp_monotonic_ms();
     int short_of = 0;
@@ -465,6 +479,7 @@ int tc_dns_resolve(const char *name, struct tc_dns_addr *out, size_t max, size_t
         a[i].ttl = TTL_MAX;
         ids[i][0] = query_id();
         ids[i][1] = (ids[i][0] + 1) & 0xffff;
+        fds[i] = -1;
     }
     for (round = 0; round < TC_DNS_TRIES; round++) {
         for (i = 0; i < n; i++) {
@@ -474,31 +489,37 @@ int tc_dns_resolve(const char *name, struct tc_dns_addr *out, size_t max, size_t
             if (telemetry_stop || now >= deadline_ms) goto unanswered;
             if (a[i].done[0] != WAITING && a[i].done[1] != WAITING) continue; /* it said all it will */
             until = now + server_ms(round, n);
-            ask(&servers[i], name, &a[i], ids[i], until < deadline_ms ? until : deadline_ms, &short_of);
+            ask(&servers[i], &fds[i], name, &a[i], ids[i], until < deadline_ms ? until : deadline_ms, &short_of);
             verdict = judge(&a[i]);
-            /* Half an answer whose A reply was lost, not refused: the A
-             * query gets its resend in the next round before the half is
-             * used (it would not be kept). */
-            if (verdict == ASK_NEXT || (verdict == USE_WITH_KEPT_IPV4 && a[i].done[0] == WAITING &&
-                                        round + 1 < TC_DNS_TRIES))
-                continue;
+            /* Half an answer goes on to the next server, and its lost A
+             * query to the next round, before it is used (unanswered:). */
+            if (verdict == ASK_NEXT || verdict == USE_WITH_KEPT_IPV4) continue;
             if (verdict == GONE) {
                 if (kept(name, cache.stale_until)) cache.count = 0;
-                return -1;
+                result = -1;
+                goto close_all;
             }
-            if (verdict == USE_WITH_KEPT_IPV4) return use_with_kept_ipv4(name, &a[i], out, max, count);
             keep_answer(name, &a[i]);
-            goto cached;
+            result = 1;
+            goto close_all;
         }
     }
 unanswered:
-    /* Time ran out (or TERM) with half an answer: use it. */
+    result = -1;
+    /* Every server had its turn, or time ran out (or TERM), with half an
+     * answer: use the first. */
     for (i = 0; i < n; i++)
-        if (judge(&a[i]) == USE_WITH_KEPT_IPV4) return use_with_kept_ipv4(name, &a[i], out, max, count);
+        if (judge(&a[i]) == USE_WITH_KEPT_IPV4) {
+            result = use_with_kept_ipv4(name, &a[i], out, max, count);
+            goto close_all;
+        }
     /* No answer now: the last one, if it is not too old. */
-    if (kept(name, cache.stale_until)) goto cached;
-    *resource = short_of;
-    return -1;
+    if (kept(name, cache.stale_until)) result = 1;
+    else *resource = short_of;
+close_all:
+    for (i = 0; i < n; i++)
+        if (fds[i] >= 0) close(fds[i]);
+    if (result != 1) return result;
 cached:
     for (i = 0; i < cache.count && i < max; i++) out[i] = cache.addrs[i];
     *count = i;
