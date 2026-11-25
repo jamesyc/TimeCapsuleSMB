@@ -3,6 +3,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <sys/statfs.h>
+#include <sys/mount.h>
 #include <string.h>
 
 static int clear_directory(const char *path, unsigned depth) {
