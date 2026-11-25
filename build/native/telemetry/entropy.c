@@ -36,3 +36,23 @@ int tc_random_bytes(unsigned char *out, size_t n) {
     }
     return 0;
 }
+
+void tc_unique_bytes(unsigned char *out, size_t n) {
+    static unsigned made;
+    unsigned char digest[64];
+    char text[96];
+    struct timespec now;
+    if (!tc_random_bytes(out, n)) return;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) now.tv_sec = now.tv_nsec = 0;
+    (void)snprintf(text, sizeof(text), "%ld.%09ld %ld %ld %u", (long)now.tv_sec, (long)now.tv_nsec, (long)time(NULL),
+                   (long)getpid(), made++);
+    crypto_hash(digest, (const unsigned char *)text, (unsigned long long)strlen(text));
+    memcpy(out, digest, n);
+}
+
+#ifdef TC_NATIVE_TEST
+void tc_entropy_restart(void) {
+    memset(seed, 0, sizeof(seed));
+    seeded = 0;
+}
+#endif

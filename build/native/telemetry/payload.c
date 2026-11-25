@@ -1,6 +1,7 @@
 #include "device.h"
 #include "heartbeat_facts.h"
 #include "health.h"
+#include "entropy.h"
 #include "../common/plan.h"
 #include <sys/utsname.h>
 #if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__)
@@ -41,15 +42,25 @@ static void hash_text_hex(char *out, size_t out_len, const char *text) {
     bytes_to_hex(out, out_len, digest, 32);
 }
 
-static void new_heartbeat_id(char *out, size_t out_len, const char *router_id, const char *reason) {
-    static unsigned made; /* two ids in one second from one process still differ */
+/* A new id; with token (the manager's, one per report), the same one for
+ * every process that sends that report under this router ID, whatever its
+ * reason: a buffer-stall retry carries the episodes merged into it since
+ * its first try, and still replaces that try's row. */
+static void new_heartbeat_id(char *out, size_t out_len, const char *router_id, const char *reason, const char *token) {
     char input[512];
     char hash_hex[65];
-    time_t now;
 
-    now = time(NULL);
-    (void)snprintf(input, sizeof(input), "%s\n%s\n%ld\n%ld\n%u\n", router_id, reason, (long)now, (long)getpid(),
-                   made++);
+    if (token) {
+        (void)snprintf(input, sizeof(input), "%s\nreport %s\n", router_id, token);
+    } else {
+        /* Unique bytes, not the time and pid: those repeat across boots, and
+         * the server would take a repeated id's row for this one's. */
+        unsigned char unique[16];
+        char unique_hex[33];
+        tc_unique_bytes(unique, sizeof(unique));
+        bytes_to_hex(unique_hex, sizeof(unique_hex), unique, sizeof(unique));
+        (void)snprintf(input, sizeof(input), "%s\n%s\n%s\n", router_id, reason, unique_hex);
+    }
     hash_text_hex(hash_hex, sizeof(hash_hex), input);
     (void)snprintf(out, out_len, "hb1-%s", hash_hex);
 }
@@ -57,13 +68,13 @@ static void new_heartbeat_id(char *out, size_t out_len, const char *router_id, c
 /* The id of this heartbeat (struct tc_heartbeat_ident): the pending one
  * while the reason and router ID match it, else a new one, kept as pending
  * when there is somewhere to keep it. */
-static void heartbeat_id_for(char *out, size_t out_len, struct tc_heartbeat_ident *ident, const char *router_id,
-                             const char *reason) {
+static void heartbeat_id_for(char *out, size_t out_len, struct tc_heartbeat_ident *ident, const char *token,
+                             const char *router_id, const char *reason) {
     if (ident && ident->id[0] && !strcmp(ident->reason, reason) && !strcmp(ident->router_id, router_id)) {
         (void)snprintf(out, out_len, "%s", ident->id);
         return;
     }
-    new_heartbeat_id(out, out_len, router_id, reason);
+    new_heartbeat_id(out, out_len, router_id, reason, token);
     if (!ident) return;
     (void)snprintf(ident->id, sizeof(ident->id), "%s", out);
     (void)snprintf(ident->reason, sizeof(ident->reason), "%s", reason);
@@ -287,7 +298,7 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
     format_uptime_json(uptime_json, sizeof(uptime_json), uptime_sec, have_uptime);
     (void)read_deploy_release_tag(deploy_release_tag, sizeof(deploy_release_tag));
 
-    heartbeat_id_for(heartbeat_id, sizeof(heartbeat_id), ctx->ident, router_id, reason);
+    heartbeat_id_for(heartbeat_id, sizeof(heartbeat_id), ctx->ident, ctx->report_token, router_id, reason);
 
     if (json_escape(esc_router_id, sizeof(esc_router_id), router_id) != 0 ||
         json_escape(esc_heartbeat_id, sizeof(esc_heartbeat_id), heartbeat_id) != 0 ||

@@ -650,10 +650,12 @@ one, which gets the local retry rules. A
 complete answer, a non-2xx one included, is never retried elsewhere, and neither is
 a close after the headers that cuts the body short; a reset or stall after the
 headers is. A heartbeat keeps one id from its first attempt until it is delivered,
-retries by the planner included, and the server keeps one row per id: a later
+retries by the planner included (the manager's reports, a new process each try,
+pass a token per report that the id is made from), and the server keeps one row per id: a later
 attempt (higher `uptime_sec`) replaces a row whose answer never reached the device,
 so what the device noted between the attempts is not lost. A new reason or router ID
-starts a new id. The resolver asks
+starts a new id, except that a report with a token keeps its id under a new reason: a
+buffer-stall report that failed carries the episodes that ended before its retry. The resolver asks
 each `resolv.conf` nameserver for A and AAAA (127.0.0.1 only when the file does not
 exist or names no usable server; a link-local one needs its scope, `%bridge0` or
 `%3`, mapped through the interface table), on NetBSD libc's schedule: two rounds over the
@@ -767,7 +769,8 @@ fit goes as null and its events wait. `procs_peak`, `procs_first_high`, the file
 reported the ones before.
 
 `--once [reason]` performs one cycle; `--print-payload [reason]` only prints.
-`--report [reason]` posts only, without downloading or executing debug jobs.
+`--report [reason [token]]` posts only, without downloading or executing debug jobs;
+with the manager's token, every attempt of one report sends the same heartbeat id.
 One-shot modes take one sample and one probe round first. A device build checks
 at compile time that a one-shot heartbeat's worst case (acp budget, probe round,
 HTTP deadline, 30 s spare) fits the manager's report limit

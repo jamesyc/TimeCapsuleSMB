@@ -15,6 +15,7 @@
 #include "proctable.h"
 #include "stuck.h"
 #include "service.h"
+#include "../telemetry/entropy.h"
 #include <sys/file.h>
 #include <sys/stat.h>
 
@@ -307,6 +308,11 @@ struct manager {
     /* The in-flight snapshot is separate from episodes ending during it. */
     enum tc_bufstall_outcome report_inflight_outcome;
     long long report_inflight_longest;
+    /* The pending buffer-stall report's token (pump_reports). */
+    char bufstall_token[17];
+    /* Report starts that failed in a row: the first and the start that ends
+     * the run are logged, not every retry. */
+    unsigned report_exec_failures;
     /* Processes stuck in the kernel (stuck.h); process-local by design. */
     struct tc_stuck stuck;
     int stuck_truncated_logged;
@@ -322,6 +328,9 @@ struct manager {
     char once_delivered[ONCE_REPORTS][64];
     size_t once_count;
     int once_full_logged;
+    /* The token of the queue's front report, in flight or waiting
+     * (pump_reports). */
+    char queue_token[17];
 };
 
 static void report_once(struct manager *m, const char *reason);
@@ -1265,18 +1274,56 @@ static void report_verdicts(struct manager *m) {
         if (m->units[i]->slow_copy[0])
             report_once(m, m->units[i]->slow_copy);
 }
-/* Buffer-stall and stuck-process heartbeats share one report job, the one
- * step here that starts a process, so never while stopping and never during a
- * buffer stall, when the new process could itself wait for a buffer, hold the
- * report slot and keep the manager from stopping. A stuck-process report goes
- * out while the process is still stuck (that stall may end only with a power
- * cycle), unless a buffer stall is in progress. */
+/* A new report's token: 16 hex digits (tc_unique_bytes), so no report of
+ * another boot or manager has it (the server would take that one's row for
+ * a replay). */
+static void new_report_token(char *out) {
+    unsigned char bytes[8];
+    size_t i;
+    tc_unique_bytes(bytes, sizeof(bytes));
+    for (i = 0; i < sizeof(bytes); i++) snprintf(out + 2 * i, 3, "%02x", bytes[i]);
+}
+
+/* Buffer-stall and queued (stuck-process, once) heartbeats share one report
+ * job, the one step here that starts a process, so never while stopping and
+ * never during a buffer stall, when the new process could itself wait for a
+ * buffer, hold the report slot and keep the manager from stopping. A
+ * stuck-process report goes out while the process is still stuck (that stall
+ * may end only with a power cycle), unless a buffer stall is in progress.
+ *
+ * The two sources, the queue's front report and the buffer-stall report
+ * (report_outcome, merged from ended episodes), go through the same states.
+ * Each has a token, telemetry --report's last argument, so every try of one
+ * report sends one heartbeat id and the server keeps one row for it:
+ *
+ *   none       -> pending    queued, or an episode ended; no token yet
+ *   pending    -> in flight  due, job free, exec works; token made if empty
+ *   pending    -> pending    due, exec fails; token made if empty and kept,
+ *                            retry after RETRY_MS (the first failure of a
+ *                            run is logged, and the start that ends it)
+ *   in flight  -> none       delivered; token cleared (bufstall: the next
+ *                            report no sooner than REPORT_MS)
+ *   in flight  -> pending    failed, timed out or stopped; token kept (queue:
+ *                            back at the front; bufstall: merged with the
+ *                            episodes that ended meanwhile)
+ *   pending    -> none       telemetry off (bufstall: once due); token cleared
+ *
+ * Only a delivery or telemetry off ends a report: the queue's front is
+ * never dropped (a full queue loses its newest), so a token cannot outlive
+ * its report or pass to another. Telemetry off is seen only with the job
+ * free. Episodes that end while a buffer-stall report is in flight join it
+ * if it fails, or make the next report, under a new token, if it is
+ * delivered. */
 static void pump_reports(struct manager *m, long long now) {
-    char reason[64];
-    char *argv[] = {TC_SERVICE_BIN, "telemetry", "--report", reason, NULL};
+    char reason[64], *token;
+    char *argv[] = {TC_SERVICE_BIN, "telemetry", "--report", reason, NULL, NULL};
     int bufstall_due;
     if (m->report_job.group && tc_child_poll(&m->report_job, now)) {
         int delivered = tc_child_ok(&m->report_job) && !m->report_job.stopping;
+        /* A delivered report's token ends with it; a failed one keeps its
+         * token, so its retry is the same heartbeat. */
+        if (delivered && m->queue_inflight[0]) m->queue_token[0] = 0;
+        else if (delivered) m->bufstall_token[0] = 0;
         if (m->queue_inflight[0]) {
             if (!delivered) {
                 /* Back to the front: reports go out in order. A queue that
@@ -1311,8 +1358,10 @@ static void pump_reports(struct manager *m, long long now) {
         if (bufstall_due) {
             m->report_outcome = TC_BUFSTALL_NO_EPISODE;
             m->report_longest = 0;
+            m->bufstall_token[0] = 0;
         }
         m->queue_count = 0;
+        m->queue_token[0] = 0;
         return;
     }
     if (bufstall_due)
@@ -1322,9 +1371,16 @@ static void pump_reports(struct manager *m, long long now) {
         snprintf(reason, sizeof(reason), "%s", m->queue[0]);
     else
         return;
+    token = bufstall_due ? m->bufstall_token : m->queue_token;
+    if (!token[0]) new_report_token(token);
+    argv[4] = token;
     /* --report never starts signed jobs, so its whole group may be killed
      * after its deadline or at stop without interrupting a debug program. */
     if (!tc_child_exec(&m->report_job, argv, TC_RAM_ROOT "/var/telemetry.log")) {
+        if (m->report_exec_failures)
+            timestamped_fprintf(stderr, "manager: telemetry report started after %u failed tries\n",
+                                m->report_exec_failures);
+        m->report_exec_failures = 0;
         m->report_job.deadline = now + TC_BUFSTALL_REPORT_TIMEOUT_MS;
         if (bufstall_due) {
             m->report_inflight_outcome = m->report_outcome;
@@ -1335,10 +1391,11 @@ static void pump_reports(struct manager *m, long long now) {
             memcpy(m->queue_inflight, reason, sizeof(m->queue_inflight));
             pop_report(m);
         }
-    } else if (bufstall_due) {
-        m->report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
     } else {
-        m->queue_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
+        if (!m->report_exec_failures++)
+            timestamped_fprintf(stderr, "manager: telemetry report cannot start: %s\n", strerror(errno));
+        if (bufstall_due) m->report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
+        else m->queue_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
     }
 }
 static const char *group_role(const struct manager *m, pid_t group) {

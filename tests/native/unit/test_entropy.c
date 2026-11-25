@@ -31,6 +31,11 @@ int main(int argc, char **argv) {
         no_descriptors();
         errno = 0;
         assert(tc_random_bytes(none, sizeof(none)) == -1 && errno == EMFILE);
+        /* Unique bytes still come, from the clock, pid and counter, and
+         * two calls in the same instant differ. */
+        tc_unique_bytes(a, 16);
+        tc_unique_bytes(b, 16);
+        assert(memcmp(a, b, 16));
         descriptors_back();
         return 0;
     }
@@ -41,6 +46,16 @@ int main(int argc, char **argv) {
     assert(!tc_random_bytes(b, sizeof(b)));
     for (i = 0; i < sizeof(a); i++) same += a[i] == b[i];
     assert(same < 8 && memcmp(a, a + 32, 16) && memcmp(b, b + 32, 16));
+    /* Seeded, unique bytes are random bytes, with no descriptor either. */
+    tc_unique_bytes(a, 16);
+    tc_unique_bytes(b, 16);
+    assert(memcmp(a, b, 16));
     descriptors_back();
+    /* A new process reads a new seed: its bytes differ from the last one's,
+     * whatever its clock and pid. */
+    memcpy(b, a, 16);
+    tc_entropy_restart();
+    tc_unique_bytes(a, 16);
+    assert(memcmp(a, b, 16));
     return 0;
 }

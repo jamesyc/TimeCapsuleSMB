@@ -30,7 +30,7 @@ def test_payload_device_boundary(tmp_path):
     # test_payload.c; the payload, its heartbeat facts and the planner are the
     # shipped code.
     compile_modules(output, ('native/telemetry/payload.c', 'native/telemetry/heartbeat_facts.c',
-                             'native/telemetry/planner.c',
+                             'native/telemetry/planner.c', 'native/telemetry/entropy.c',
                              'native/telemetry/errclass.c', 'native/telemetry/health.c', 'native/telemetry/health_json.c',
                              'native/vendor/tweetnacl.c', 'native/vendor/random.c'),
                     flags=('-I', str(native / 'telemetry'), '-I', str(native / 'common')),

@@ -1677,6 +1677,66 @@ def test_a_payload_verdict_is_reported_once_per_manager(manager,monkeypatch,faul
     assert verdict_reports(events)==[reason]
 
 
+def test_a_report_that_cannot_start_keeps_its_token(manager,monkeypatch):
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root,rsync=True)
+    (root/'config').write_text('TELEMETRY=1\nRSYNC_ENABLED=1\n')
+    (root/'report-exit').write_text('1')
+    monkeypatch.setenv('TC_TEST_EIO',str(root/'dk2/.samba4/rsync'))
+    # The first try is held in flight until fork fails, so no retry can
+    # start before (it comes a second after the first try fails).
+    (root/'report-hold').touch()
+    start()
+    wait(lambda rows:verdict_reports(events),30)
+    # The retries cannot start: fork fails until the file goes.
+    (root/'fork-fail').touch()
+    (root/'report-hold').unlink()
+    wait(lambda rows:verdict_outcomes(events)==[1],30)
+    (root/'report-exit').unlink()
+    tries=len(reports(events))
+    # A retry that cannot start is logged once, not at every retry.
+    wait_log(root,'manager: telemetry report cannot start: ')
+    (root/'fork-fail').unlink()
+    wait(lambda rows:0 in verdict_outcomes(events),30)
+    assert len(reports(events))>tries
+    log=runtime_log(root)
+    assert log.count('telemetry report cannot start')==1
+    started=re.search(r'telemetry report started after (\d+) failed tries',log)
+    assert started and int(started.group(1))>=1
+    # Nothing went out while fork failed, so the try that did is the same
+    # heartbeat as the failed one.
+    tokens=[t for reason,t in zip(reports(events),report_tokens(events)) if reason=='rsync:unreadable']
+    assert len(tokens)>=2 and len(set(tokens))==1
+
+
+def test_telemetry_off_ends_a_waiting_report_and_its_token(manager,monkeypatch):
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root,rsync=True)
+    (root/'config').write_text('TELEMETRY=1\nRSYNC_ENABLED=1\n')
+    (root/'report-exit').write_text('1')
+    monkeypatch.setenv('TC_TEST_EIO',str(root/'dk2/.samba4/rsync'))
+    # The first try is held in flight while telemetry goes off, so its retry,
+    # a second after it fails, cannot start before the manager has the
+    # setting (the manager lets a running report finish).
+    (root/'report-hold').touch()
+    process=start()
+    wait(lambda rows:verdict_reports(events),30)
+    first=report_tokens(events)[0]
+    # Off before the retry: the report is dropped with its token.
+    (root/'config').write_text('TELEMETRY=0\nRSYNC_ENABLED=1\n');process.send_signal(signal.SIGHUP)
+    wait(lambda rows:any(e['role']=='telemetry' and e['kind']=='stop' for e in rows))
+    (root/'report-hold').unlink()
+    wait(lambda rows:verdict_outcomes(events)==[1],30)
+    time.sleep(3*TIMINGS['TC_BUFSTALL_REPORT_RETRY_MS']/1000)
+    assert len(reports(events))==1
+    # On again: the verdict, never delivered, is a new report.
+    (root/'report-exit').unlink()
+    (root/'config').write_text('TELEMETRY=1\nRSYNC_ENABLED=1\n');process.send_signal(signal.SIGHUP)
+    wait(lambda rows:0 in verdict_outcomes(events),30)
+    assert verdict_reports(events)==['rsync:unreadable']*2
+    assert report_tokens(events)[1]!=first
+
+
 def test_a_failed_verdict_report_is_sent_again_until_delivered(manager,monkeypatch):
     root,start,events,wait,_,_=manager
     deploy_checksum(root,rsync=True)
@@ -1689,6 +1749,8 @@ def test_a_failed_verdict_report_is_sent_again_until_delivered(manager,monkeypat
     assert set(verdict_reports(events))=={'rsync:unreadable'}
     (root/'report-exit').unlink()
     wait(lambda rows:0 in verdict_outcomes(events),30)
+    # Every try, the delivered one too, is one heartbeat: one token.
+    assert len({t for reason,t in zip(reports(events),report_tokens(events)) if reason=='rsync:unreadable'})==1
     # Delivered: never sent again, though the verdict stays in the title.
     time.sleep(5*TIMINGS['TC_BUFSTALL_REPORT_RETRY_MS']/1000)
     outcomes=verdict_outcomes(events)
@@ -3080,6 +3142,11 @@ def reports(events):
     return [e['args'][2] for e in events() if e['role']=='telemetry' and e['kind']=='start' and '--report' in e['args']]
 
 
+def report_tokens(events):
+    """Each report start's token (telemetry --report REASON TOKEN)."""
+    return [e['args'][3] for e in events() if e['role']=='telemetry' and e['kind']=='start' and '--report' in e['args']]
+
+
 def report_matches(events,outcome):
     return lambda rows:len(reports(events))==1 and re.fullmatch(rf'bufstall:{outcome}:\d+',reports(events)[0])
 
@@ -3201,12 +3268,18 @@ def test_report_completion_preserves_new_episodes_and_retries_failed_snapshot(ma
     sent=[e for e in events() if e['kind']=='start' and '--report' in e['args']]
     done=next(e for e in events() if e['kind']=='report-done')
     delay=sent[1]['at']-done['at']
+    tokens=report_tokens(events)
     if status==0:
+        # Delivered: the episode that ended meanwhile is a report of its own.
         assert reports(events)[1].startswith('bufstall:resolved:')
+        assert tokens[1]!=tokens[0]
         assert delay>=TIMINGS['TC_BUFSTALL_REPORT_MS']/1000
     else:
+        # Failed: the retry carries the merged episodes as the same report,
+        # one token, so the same heartbeat id whatever its reason became.
         assert reports(events)[1].startswith('bufstall:capped:')
         assert int(reports(events)[1].split(':')[-1])>=int(first.split(':')[-1])
+        assert tokens[1]==tokens[0]
         assert delay>=TIMINGS['TC_BUFSTALL_REPORT_RETRY_MS']/1000
         assert delay<TIMINGS['TC_BUFSTALL_REPORT_MS']/1000
 
@@ -3230,6 +3303,9 @@ def test_timed_out_report_is_retried_without_another_episode(manager):
         TIMINGS['TC_BUFSTALL_REPORT_TIMEOUT_MS'],TIMINGS['TC_CHILD_GRACE_MS'],1000,
         TIMINGS['TC_BUFSTALL_REPORT_RETRY_MS'],TIMINGS['TC_MANAGER_PASS_MS'],600))
     assert reports(events)[0]==reports(events)[1]
+    # The same report, so the same heartbeat: one token for both tries.
+    tokens=report_tokens(events)
+    assert tokens[0]==tokens[1] and re.fullmatch(r'[0-9a-f]{16}',tokens[0])
     with pytest.raises(ProcessLookupError):os.kill(first['pid'],0)
     second=[e for e in events() if e['kind']=='start' and '--report' in e['args']][1]
     assert second['at']-first['at']>=TIMINGS['TC_BUFSTALL_REPORT_TIMEOUT_MS']/1000
@@ -3513,6 +3589,10 @@ def test_failed_stuck_report_is_retried_and_keeps_its_order(manager):
     first_cleared=next(i for i,reason in enumerate(sent) if reason.startswith('stuck-cleared'))
     assert all(reason.startswith('stuck:smbd:biowait:') for reason in sent[:first_cleared])
     assert first_cleared>=2
+    # Every try of the stuck report carries its token; the cleared one is a
+    # report of its own.
+    tokens=[t for reason,t in zip(reports(events),report_tokens(events)) if reason.startswith('stuck')]
+    assert len(set(tokens[:first_cleared]))==1 and tokens[first_cleared] not in tokens[:first_cleared]
 
 
 def test_buffer_stall_and_stuck_reports_share_the_report_job(manager):
@@ -3532,6 +3612,32 @@ def test_buffer_stall_and_stuck_reports_share_the_report_job(manager):
     # One at a time: each report finished before the next started.
     for later,earlier in zip(starts[1:],dones):
         assert later['at']>=earlier['at']
+
+
+def test_failing_buffer_stall_and_stuck_reports_each_keep_their_token(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    (root/'report-exit').write_text('1')
+    kernel(root)
+    start();wait(started('smbd'))
+    sleepers(root,(4242,4242,0,LSSLEEP,0,400,0,'getnewbu','smbd'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    kernel(root,lowater=RAISED_LOWATER)
+    sleepers(root)
+    # Both fail and take turns on the report job, each retried as itself:
+    # the stuck report waits at the queue's front while the buffer-stall
+    # report goes between its tries.
+    wait(lambda rows:sum(r.startswith('bufstall:') for r in reports(events))>=2 and
+                     sum(r.startswith('stuck:') for r in reports(events))>=2,30)
+    (root/'report-exit').unlink()
+    delivered=lambda prefix,rows:any(e['kind']=='report-done' and e['status']==0 and e['args'][2].startswith(prefix)
+                                     for e in rows)
+    wait(lambda rows:delivered('bufstall:',rows) and delivered('stuck:',rows),30)
+    sent=list(zip(reports(events),report_tokens(events)))
+    bufstall={t for reason,t in sent if reason.startswith('bufstall:')}
+    stuck={t for reason,t in sent if reason.startswith('stuck:')}
+    assert len({reason for reason,_ in sent if reason.startswith('bufstall:')})==1
+    assert len(bufstall)==1 and len(stuck)==1 and bufstall!=stuck
 
 
 
