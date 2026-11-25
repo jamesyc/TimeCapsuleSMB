@@ -48,8 +48,8 @@
 #define TC_DEBUG_MAX 1048576
 #define TC_SIGNATURE_MAX 512
 #define TC_INTERVAL_SECONDS 43200
-/* An undelivered heartbeat (usually DNS not ready yet right after boot)
- * retries after this delay, doubling up to TC_INTERVAL_SECONDS. */
+/* The first retry of an undelivered heartbeat (usually DNS not ready yet
+ * right after boot); planner.h has how later ones back off and their caps. */
 #ifndef TC_HEARTBEAT_RETRY_SECONDS
 #define TC_HEARTBEAT_RETRY_SECONDS 60
 #endif
@@ -73,10 +73,14 @@ enum tc_outcome {
 };
 
 struct tc_heartbeat_facts;
-/* How a heartbeat gets its acp facts (heartbeat_facts.h): keep the ones it
- * has (read only when there are none), read afresh, or read unless the last
- * complete collection is fresh enough to keep (tc_heartbeat_facts_fresh). */
-enum tc_facts_read { TC_FACTS_KEEP, TC_FACTS_READ, TC_FACTS_READ_UNLESS_FRESH };
+/* Which acp facts a heartbeat may keep instead of reading acp
+ * (tc_heartbeat_facts_reusable): ones under max_age seconds old and, with
+ * complete_only, from a complete collection. A zeroed one ({0, 0}) always
+ * reads, as one-shot modes do; TC_FACTS_FOREVER keeps any it has. With
+ * nothing collected yet a heartbeat reads whatever this says. The planner
+ * picks one per attempt (planner.h's table). */
+struct tc_facts_reuse { long max_age; int complete_only; };
+#define TC_FACTS_FOREVER LONG_MAX
 /* What building a payload found: failure is why it failed (cancelled,
  * acp_unavailable when there is no identity, server when it does not fit);
  * local_resource that an acp child could not start for want of resources
@@ -100,22 +104,22 @@ struct tc_heartbeat_ident {
     char router_id[HEARTBEAT_MAX_FIELD + 8];
 };
 static inline void tc_heartbeat_ident_clear(struct tc_heartbeat_ident *ident) { ident->id[0] = '\0'; }
-/* What a payload is built from: the facts this process keeps, how to get
- * them (enum tc_facts_read), the delivery record (NULL: none) and the
+/* What a payload is built from: the facts this process keeps, which of them
+ * it may keep (struct tc_facts_reuse), the delivery record (NULL: none) and the
  * pending heartbeat id (NULL: a new id each time, as one-shot modes send). */
 struct tc_health;
 struct tc_payload_context {
     struct tc_heartbeat_facts *facts;
-    enum tc_facts_read facts_read;
+    struct tc_facts_reuse reuse;
     const struct tc_delivery *delivery;
     struct tc_heartbeat_ident *ident;
     struct tc_health *health;  /* NULL: no health object */
-    /* Set by telemetry_payload: whether it read acp, and the health events
-     * the payload carried (health.h; the caller clears them once it is
-     * delivered). */
-    int read_acp;
-    unsigned health_token;
-    int health_sent;
+    /* The attempt record: what this attempt's payload carried, the health
+     * events among them (health.h), which the daemon marks reported once
+     * the heartbeat is delivered. telemetry_payload clears it and fills it
+     * in; the daemon clears it when it plans an attempt, so an attempt that
+     * never builds a payload (workspace busy, no nonce) carries nothing. */
+    struct tc_payload_sent { int health; unsigned health_token; } sent;
 };
 int telemetry_payload(char *json, size_t cap, const char *reason, const char *nonce,
                       struct tc_payload_context *ctx, struct tc_payload_result *result);

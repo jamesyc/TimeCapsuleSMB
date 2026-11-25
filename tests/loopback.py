@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import select
 import socket
 import threading
 from typing import Callable
@@ -71,6 +72,30 @@ def held_refusing_ports(count: int):
     finally:
         for sock in held + list(helpers.values()):
             sock.close()
+
+
+def fill_listen_queue(listener: socket.socket) -> list[socket.socket]:
+    """Makes a bound listener that never accepts look like a daemon that
+    stopped accepting: its queue filled by connections of our own until the
+    kernel drops a new one's SYN, so a client's connect gets no answer at
+    all. Returns the filling sockets, for the caller to close.
+
+    Loopback connects complete at once; only a full queue leaves one
+    waiting, and 1.5 s is far past what a loaded host takes."""
+    listener.listen(1)
+    address = listener.getsockname()[:2]
+    made: list[socket.socket] = []
+    for _ in range(64):
+        client = socket.socket(listener.family, socket.SOCK_STREAM)
+        client.setblocking(False)
+        made.append(client)
+        client.connect_ex(address)
+        _, writable, _ = select.select([], [client], [], 1.5)
+        if not writable:
+            return made
+    for sock in made:
+        sock.close()
+    raise AssertionError("the listen queue never filled")
 
 
 def accept_loop(listener: socket.socket, handle: Callable[[socket.socket], None]) -> Callable[[], None]:

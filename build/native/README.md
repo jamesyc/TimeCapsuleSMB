@@ -591,6 +591,15 @@ failed wait, stall precedence and the reason timer.
 
 ## Telemetry protocol
 
+State machines in the telemetry process, each documented beside its code:
+
+- heartbeat planning and which acp facts a heartbeat keeps: the top of `planner.h`
+- one attempt, from planned to finished: `heartbeat_finished`, `main.c`
+- the pending heartbeat id: `struct tc_heartbeat_ident`, `telemetry.h`
+- health events and peaks: `health.h`
+- probe phases: `probe_track`, `health.c`
+- nameserver verdicts: `judge()`, `dns.c`
+
 Schema 2 reports `debug_logging` (Samba or mDNS) and `advertise_afp`, using
 null for unreadable settings. It omits `nbns_enabled`: native NBNS is always on,
 and the server treats that field as optional. `plan_error` contains a
@@ -671,12 +680,14 @@ The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
   failure (no process, descriptor or memory) retries every minute ten times, then
   every five minutes; network, server and missing identity double from a minute, up to
   six hours.
-  A retry after a network or server failure sends the facts it has, without
-  forking acp, while they come from a complete collection under an hour old.
-  Out of descriptors or memory while taking the workspace lock or the nonce
-  counts as local. Any delivered heartbeat restarts the 12-hour schedule, and an
-  extra one reads acp afresh once acp has gone 12 hours unread. The top of
-  `planner.h` has the transition table.
+  A boot or scheduled retry after a network or server failure sends the facts
+  it has, without forking acp, while they come from a complete collection
+  under an hour old; an extra one keeps any facts under 12 hours old, counted
+  from the last collection, so a chronic health event still reads acp twice a
+  day; a local failure keeps whatever it has; a missing identity always reads
+  again. Out of descriptors or memory while taking the workspace lock or the
+  nonce counts as local. Any delivered heartbeat restarts the 12-hour schedule.
+  The top of `planner.h` has the transition table and the facts table.
 - `health.c`, `health_read.c`, `health_json.c`: readers take a sample every 15 s
   (`sysctl` only: process table, files, memory, mbufs, the kernel message buffer)
   and probe rounds of loopback sshd and smbd (sshd and smbd over IPv4, then

@@ -1,5 +1,11 @@
 #include "planner.h"
 
+/* The rows of planner.h's facts table. */
+static const struct tc_facts_reuse reuse_read = {0, 0};
+static const struct tc_facts_reuse reuse_outage = {TC_FACTS_REUSE_SECONDS, 1};
+static const struct tc_facts_reuse reuse_extra = {TC_INTERVAL_SECONDS, 0};
+static const struct tc_facts_reuse reuse_any = {TC_FACTS_FOREVER, 0};
+
 void planner_init(struct tc_planner *p, long arm_after, long hold_until) {
     memset(p, 0, sizeof(*p));
     p->retry_at = hold_until;
@@ -13,19 +19,28 @@ int planner_armed(const struct tc_planner *p, long now) {
 }
 
 struct tc_attempt planner_next(const struct tc_planner *p, long now, int requests) {
-    struct tc_attempt a = {TC_ATTEMPT_NONE, NULL, TC_FACTS_KEEP};
+    struct tc_attempt a = {TC_ATTEMPT_NONE, NULL, {0, 0}};
     int scheduled = !p->boot_sent || now >= p->next_scheduled;
     int extra = requests && p->boot_sent && now >= p->next_extra_at;
     if (now < p->retry_at || (!scheduled && !extra)) return a;
     a.kind = !p->boot_sent ? TC_ATTEMPT_BOOT : extra ? TC_ATTEMPT_EXTRA : TC_ATTEMPT_SCHEDULED;
     a.reason = a.kind == TC_ATTEMPT_BOOT ? "boot" : a.kind == TC_ATTEMPT_EXTRA ? "resource_high" : "scheduled";
-    /* The table at the top of planner.h. */
-    if (p->last_failure == TC_OUTCOME_LOCAL_RESOURCE || (a.kind == TC_ATTEMPT_EXTRA && now < p->next_refresh))
-        a.facts = TC_FACTS_KEEP;
-    else if (p->last_failure == TC_OUTCOME_NETWORK || p->last_failure == TC_OUTCOME_SERVER)
-        a.facts = TC_FACTS_READ_UNLESS_FRESH;
-    else
-        a.facts = TC_FACTS_READ;
+    /* planner.h's facts table, row by row. */
+    switch (p->last_failure) {
+    case TC_OUTCOME_LOCAL_RESOURCE:
+        a.facts = reuse_any;
+        break;
+    case TC_OUTCOME_ACP_UNAVAILABLE:
+        a.facts = reuse_read;
+        break;
+    case TC_OUTCOME_NETWORK:
+    case TC_OUTCOME_SERVER:
+        a.facts = a.kind == TC_ATTEMPT_EXTRA ? reuse_extra : reuse_outage;
+        break;
+    default: /* none: delivered, or nothing sent yet */
+        a.facts = a.kind == TC_ATTEMPT_EXTRA ? reuse_extra : reuse_read;
+        break;
+    }
     return a;
 }
 
@@ -34,21 +49,28 @@ enum tc_outcome tc_setup_outcome(int error, int lock) {
     return lock ? TC_OUTCOME_BUSY : TC_OUTCOME_SERVER;
 }
 
-void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a, const struct tc_attempt_result *r,
+/* One more counted failure in the delivery record. since is 0 for none, so
+ * a failure at monotonic 0 records 1. */
+static void count_failure(struct tc_delivery *d, enum tc_outcome outcome, long now) {
+    d->failed++;
+    if (!d->since) d->since = now > 0 ? now : 1;
+    if (outcome == TC_OUTCOME_LOCAL_RESOURCE) d->local_resource++;
+    else if (outcome == TC_OUTCOME_ACP_UNAVAILABLE) d->acp_unavailable++;
+    else if (outcome == TC_OUTCOME_NETWORK) d->network++;
+    else d->server++;
+}
+
+void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a, enum tc_outcome outcome,
                       int requests) {
-    enum tc_outcome outcome = r->outcome;
     long cap;
     switch (outcome) {
     case TC_OUTCOME_DELIVERED:
         if (a->kind == TC_ATTEMPT_BOOT) p->boot_sent = 1;
         p->next_scheduled = now + TC_INTERVAL_SECONDS;
-        if (r->read_acp) p->next_refresh = now + TC_INTERVAL_SECONDS;
         p->retry_at = p->net_delay = 0;
         p->local_count = 0;
         p->last_failure = TC_OUTCOME_DELIVERED;
-        p->failed = 0;
-        p->failed_since = 0;
-        memset(p->failed_by, 0, sizeof(p->failed_by));
+        memset(&p->delivery, 0, sizeof(p->delivery));
         if (a->kind == TC_ATTEMPT_EXTRA) {
             if (p->last_extra_at >= 0 && now - p->last_extra_at >= TC_EXTRA_QUIET_SECONDS)
                 p->spacing = TC_EXTRA_SPACING_SECONDS;
@@ -66,9 +88,7 @@ void planner_finished(struct tc_planner *p, long now, const struct tc_attempt *a
     default:
         break;
     }
-    p->failed++;
-    p->failed_by[outcome]++;
-    if (!p->failed_since) p->failed_since = now > 0 ? now : 1;
+    count_failure(&p->delivery, outcome, now);
     p->last_failure = outcome;
     if (outcome == TC_OUTCOME_LOCAL_RESOURCE) {
         p->local_count++;

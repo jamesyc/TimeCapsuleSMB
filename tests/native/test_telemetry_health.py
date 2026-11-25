@@ -1,19 +1,17 @@
 """Heartbeat resource health (telemetry/health*.c): detectors, the reader on
 host fixtures, the worst-case object, and probe rounds against servers."""
 import json
-import re
 import signal
 import socket
 import struct
-import select
 import subprocess
 import threading
 import time
 
 import pytest
 
-from tests.loopback import accept_loop, has_ipv6_loopback, held_refusing_ports
-from tests.native.build import ROOT, compile_modules
+from tests.loopback import accept_loop, fill_listen_queue, has_ipv6_loopback, held_refusing_ports
+from tests.native.build import ROOT, compile_modules, header_define
 
 # Probe limits for the test build: long enough that a server thread's
 # reaction (well under 100 ms) never races them. Servers that must not
@@ -69,14 +67,13 @@ def test_worst_case_health_fits_its_budget_and_escapes_names(binary):
     run = subprocess.run([str(binary), "worst"], capture_output=True, text=True, timeout=10)
     assert run.returncode == 0, run.stderr
     size, text = run.stdout.split(" ", 1)
-    limit = int(re.search(r"#define TC_HEALTH_JSON_MAX (\d+)", (ROOT / "build/native/telemetry/health.h").read_text())[1])
-    assert int(size) <= limit
+    assert int(size) <= header_define("telemetry/health.h", "TC_HEALTH_JSON_MAX")
     health = json.loads(text)["health"]
     # Process and wait names are kernel text: quotes and backslashes become ?.
     assert health["procs"]["groups"][0][0] == "?" * 16 and health["procs"]["waits"][0][0] == "?" * 8
     assert health["kmsg"]["proc_full"] == {"first": 2147483647, "last": 2147483647, "n": 4294967295,
                                            "at_start": True}
-    assert "probe_rounds_skipped" in health and health["acp_budget_exhausted"] == 4294967295
+    assert health["probe_rounds_skipped"] == 4294967295 and health["acp_budget_exhausted"] == 4294967295
     assert health["acp_timeouts"] == health["acp_empty"] == 4294967295
     assert health["fork_failures"] == {"eagain": 4294967295, "enomem": 4294967295, "other": 4294967295}
     assert set(health["socket_failures"].values()) == {4294967295}
@@ -159,7 +156,9 @@ class ProbeServer:
     """Listens on a loopback port; the Nth connection gets behaviors[N]:
     banner (an SSH banner), close (EOF), reset (RST), silent (nothing, the
     connection held until close()), smb (checks the SMB2 NEGOTIATE and
-    answers it), or garbage (an answer that is not SMB2). After banner and
+    answers it), smb_partial (four bytes of an answer, then EOF), garbage
+    (an answer that is not SMB2), or banner_hold (a banner, then the
+    probe's line read and the connection held, setting answered). After banner and
     smb it reads what the probe sends until the probe's EOF and records it
     with how the connection ended ("eof" or "reset") in endings. A
     connection past the list is held silent, as one left unaccepted looks to
@@ -174,6 +173,7 @@ class ProbeServer:
         self.requests = []
         self.endings = []
         self.release = threading.Event()
+        self.answered = threading.Event()
         self.open = self.most_open = 0
         self.lock = threading.Lock()
         self.stop = accept_loop(self.sock, self.next_connection)
@@ -204,7 +204,15 @@ class ProbeServer:
             if behavior == "banner":
                 conn.sendall(b"SSH-2.0-OpenSSH_test\r\n")
                 self.read_to_end(conn)
-            elif behavior in ("smb", "garbage"):
+            elif behavior == "banner_hold":
+                conn.sendall(b"SSH-2.0-OpenSSH_test\r\n")
+                conn.settimeout(HOLD_S)
+                line = b""
+                while not line.endswith(b"\n") and (chunk := conn.recv(1)):
+                    line += chunk
+                self.answered.set()  # the probe has its answer and is saying goodbye
+                self.release.wait(HOLD_S)
+            elif behavior in ("smb", "garbage", "smb_partial"):
                 conn.settimeout(ANSWER_MS / 1000)
                 request = b""
                 try:
@@ -219,6 +227,8 @@ class ProbeServer:
                 if behavior == "garbage":
                     conn.sendall(b"HTTP/1.0 400 Bad\r\n\r\n")
                     self.release.wait(HOLD_S)
+                elif behavior == "smb_partial":
+                    conn.sendall(b"\x00\x00\x00\xc0")
                 else:
                     # A negotiate reply's length: more than the probe reads.
                     conn.sendall(b"\x00\x00\x00\xc0\xfeSMB" + bytes(188))
@@ -290,47 +300,57 @@ def test_a_probe_round_reads_each_answer(binary, ports):
     assert_no_ipv6_ssh_probe(made, result)
 
 
-def test_refused_and_reset_connections(binary, ports):
-    # Nothing listens on IPv4 smb; ssh4 resets.
-    made = [ProbeServer(socket.AF_INET, ports["ssh"], ["reset"])]
+@pytest.mark.skipif(not IPV6, reason="no IPv6 loopback")
+def test_ipv6_probes_read_answers_like_ipv4(binary, ports):
+    made = servers(ports, ["close"], ["smb_partial"], ["smb"])
     try:
         [result] = probe_rounds(binary)
     finally:
         for server in made:
             server.close()
-    assert result["ssh4"] == "closed" and result["smb4"] == "absent"
+    assert result["smb6"] == "ok"
+    # Part of an SMB2 answer and then EOF is not an answer: silent.
+    assert result["ssh4"] == "closed" and result["smb4"] == "silent"
+    # An sshd listening on ::1 too, answering, is still not asked there.
+    assert_no_ipv6_ssh_probe(made, result)
+
+
+@pytest.mark.parametrize("family, service", [(socket.AF_INET, "ssh"), (socket.AF_INET, "smb"),
+                                             (socket.AF_INET6, "smb")])
+def test_refused_and_reset_connections(binary, ports, family, service):
+    # One service resets; nothing else of that family listens.
+    if family == socket.AF_INET6 and not IPV6:
+        pytest.skip("no IPv6 loopback")
+    made = [ProbeServer(family, ports[service], ["reset"])]
+    try:
+        [result] = probe_rounds(binary)
+    finally:
+        for server in made:
+            server.close()
+    v = "4" if family == socket.AF_INET else "6"
+    assert result[f"{service}{v}"] == "closed"
+    assert all(result[name] == "absent" for name in ("ssh4", "smb4", "smb6")
+               if name.endswith(v) and name != f"{service}{v}")
 
 
 def fill_backlog(family, port):
-    """A listener that never accepts, its queue filled by connections of our
-    own until the kernel drops a new one's SYN (as it does for any client
-    of a daemon that stopped accepting). Returns every socket to close."""
+    """A listener at port that never accepts, its queue full
+    (tests/loopback.py). Returns every socket to close."""
     listener = socket.socket(family, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    host = "127.0.0.1" if family == socket.AF_INET else "::1"
-    listener.bind((host, port))
-    listener.listen(1)
-    made = [listener]
-    for _ in range(64):
-        client = socket.socket(family, socket.SOCK_STREAM)
-        client.setblocking(False)
-        made.append(client)
-        client.connect_ex((host, port))
-        # Loopback connects complete at once; only a full queue waits.
-        _, writable, _ = select.select([], [client], [], 1.5)
-        if not writable:
-            return made
-    for sock in made:
-        sock.close()
-    pytest.fail("the listen queue never filled")
+    listener.bind(("127.0.0.1" if family == socket.AF_INET else "::1", port))
+    return [listener, *fill_listen_queue(listener)]
 
 
-def test_a_full_listen_queue_times_out_unlike_a_refusal(binary, ports):
+@pytest.mark.parametrize("family", [socket.AF_INET, socket.AF_INET6])
+def test_a_full_listen_queue_times_out_unlike_a_refusal(binary, ports, family):
     # smbd's parent stops accepting: its queue fills and the kernel drops
     # new SYNs, so the probe's connect never completes. That is a timeout,
     # after the connect limit; nothing listening is an immediate refusal.
+    if family == socket.AF_INET6 and not IPV6:
+        pytest.skip("no IPv6 loopback")
     made = [ProbeServer(socket.AF_INET, ports["ssh"], ["banner"])]
-    full = fill_backlog(socket.AF_INET, ports["smb"])
+    full = fill_backlog(family, ports["smb"])
     try:
         [result] = probe_rounds(binary)
     finally:
@@ -338,11 +358,12 @@ def test_a_full_listen_queue_times_out_unlike_a_refusal(binary, ports):
             server.close()
         for sock in full:
             sock.close()
-    assert result["ssh4"] == "ok" and result["smb4"] == "timeout"
+    v, other = ("4", "6") if family == socket.AF_INET else ("6", "4")
+    assert result["ssh4"] == "ok" and result[f"smb{v}"] == "timeout"
     elapsed = int(result["elapsed_ms"])
     assert CONNECT_MS - 100 <= elapsed < CONNECT_MS + 1500
-    if IPV6:
-        assert result["smb6"] == "absent"
+    if IPV6 or other == "4":
+        assert result[f"smb{other}"] == "absent"
 
 
 def test_a_round_runs_one_probe_per_service_at_a_time(binary, ports):
@@ -370,6 +391,7 @@ def test_term_skips_the_rest_of_a_round(long_binary, ports):
         deadline = time.monotonic() + 5
         while made[0].open == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
+        assert made[0].open, "the probe never connected"
         started = time.monotonic()
         process.send_signal(signal.SIGTERM)
         out, _ = process.communicate(timeout=60)
@@ -379,9 +401,28 @@ def test_term_skips_the_rest_of_a_round(long_binary, ports):
     # The stop flag is checked every second; without it the round would
     # wait out two 10 s answer limits.
     assert time.monotonic() - started < LONG_ANSWER_MS / 1250
+    assert process.returncode == 0
     fields = dict(item.split("=") for item in out.split())
     assert fields["ssh4"] == fields["smb4"] == fields["smb6"] == "none"
     assert_no_ipv6_ssh_probe(made, fields)
+
+
+def test_term_keeps_an_answer_already_in(long_binary, ports):
+    # sshd answered and the probe is saying goodbye when TERM comes: its
+    # result is in and stays ok; smbd, still silent, is skipped.
+    made = [ProbeServer(socket.AF_INET, ports["ssh"], ["banner_hold"]),
+            ProbeServer(socket.AF_INET, ports["smb"], ["silent"])]
+    try:
+        process = subprocess.Popen([str(long_binary), "probes", "1"], stdout=subprocess.PIPE, text=True)
+        assert made[0].answered.wait(10), "the probe never answered"
+        process.send_signal(signal.SIGTERM)
+        out, _ = process.communicate(timeout=60)
+    finally:
+        for server in made:
+            server.close()
+    assert process.returncode == 0
+    fields = dict(item.split("=") for item in out.split())
+    assert fields["ssh4"] == "ok" and fields["smb4"] == "none"
 
 
 def test_an_smbd_that_does_not_answer_negotiate_is_silent_not_ok(binary, ports):
