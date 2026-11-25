@@ -28,6 +28,13 @@ int telemetry_cycle(const char *reason, int lock_fd, struct tc_payload_context *
         *outcome = built.failure;
     } else if (telemetry_stop) {
         *outcome = TC_OUTCOME_CANCELLED;
+    } else if (!telemetry_enabled()) {
+        /* Turned off while the payload was built (an acp collection can
+         * take a minute): the last moment before anything leaves the
+         * device. The daemon then exits at its next check, and a report
+         * fails, as one started with telemetry off does. */
+        fputs("telemetry: turned off; heartbeat not sent\n", stderr);
+        *outcome = TC_OUTCOME_CANCELLED;
     } else if (telemetry_http(HEARTBEAT_ENDPOINT, payload, body, sizeof(body), &len, &posted)) {
         *outcome = posted;
         fputs("telemetry: POST failed\n", stderr);

@@ -370,6 +370,18 @@ static void ledger_and_sample(void) {
     assert(strstr(json_of(&h, &token), "\"triggers\":[\"procs\"],\"news\":[\"procs\"]"));
     assert(token == TC_EV_PROCS && tc_health_requests(&h));
     assert(strstr(json_of(&h, &token), "\"triggers\":[\"procs\"]") && token == TC_EV_PROCS);
+    /* An event noted after the heartbeat was built (here a file table
+     * crossing) was not in it: delivery clears only the token's bits. */
+    {
+        struct tc_reading files = r;
+        files.counters.files = 950;
+        tc_health_sample(&h, &files, 41, 1);
+        tc_health_sample(&h, &files, 42, 1);
+        assert(h.pending == (TC_EV_PROCS | TC_EV_FILES));
+    }
+    tc_health_delivered(&h, token);
+    assert(h.pending == TC_EV_FILES && h.news == TC_EV_FILES && tc_health_requests(&h));
+    assert(strstr(json_of(&h, &token), "\"triggers\":[\"files\"],\"news\":[\"files\"]") && token == TC_EV_FILES);
     tc_health_delivered(&h, token);
     assert(!h.pending && !h.news && !tc_health_requests(&h));
     assert(strstr(json_of(&h, &token), "\"triggers\":[],\"news\":[]") && !token);

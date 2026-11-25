@@ -31,7 +31,7 @@ static int once(const char *name) {
 
 int test_pipe(int fds[2]) {
     pipe_calls++;
-    if (once("pipe")) { errno = EMFILE; return -1; }
+    if (once("pipe") || once("pipe_skip")) { errno = EMFILE; return -1; }
     return pipe(fds);
 }
 
@@ -220,9 +220,11 @@ int main(int argc, char **argv) {
         assert(waitpid(guard, &status, 0) == guard);
         return 0;
     }
-    if (!strcmp(scenario, "fork_skip")) {
-        /* A full process table: after the first fork fails, nothing more
-         * is forked in an ACP_STOP_EARLY collection. */
+    if (!strcmp(scenario, "fork_skip") || !strcmp(scenario, "pipe_skip")) {
+        /* A full process table (fork) or file table (pipe): after the first
+         * child fails to start, nothing more is tried in an ACP_STOP_EARLY
+         * collection. */
+        int pipe_failed = !strcmp(scenario, "pipe_skip");
         char values[3][256];
         struct acp_request requests[3] = {0};
         const char *keys[] = {"syAP", "syAM", "syNm"};
@@ -233,7 +235,10 @@ int main(int argc, char **argv) {
             requests[i].capacity = sizeof(values[i]);
         }
         assert(acp_collect_run(requests, 3, 20000, 30000, ACP_STOP_EARLY) == -1);
-        assert(forks == 1 && requests[0].reason == ACP_REASON_FORK && requests[0].error == EAGAIN);
+        if (pipe_failed)
+            assert(pipe_calls == 1 && forks == 0 && requests[0].reason == ACP_REASON_PIPE && requests[0].error == EMFILE);
+        else
+            assert(forks == 1 && requests[0].reason == ACP_REASON_FORK && requests[0].error == EAGAIN);
         assert(requests[1].reason == ACP_REASON_SKIPPED && requests[2].reason == ACP_REASON_SKIPPED);
         assert(open_fds() == before);
         kill(guard, SIGKILL);

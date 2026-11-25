@@ -211,20 +211,8 @@ static int append_v2_fields(char *json, size_t cap, size_t used, const struct de
     return (int)used;
 }
 
-/* The router ID is the serial (ACP sySN) once read. A device whose ACP never
- * gave one sends "mac-" and its hardware address, so it still reports;
- * every heartbeat also carries "mac", which joins the two IDs. */
-static int build_router_id(char *out, size_t out_len, const struct tc_heartbeat_facts *f) {
-    if (f->id[TC_ID_SERIAL][0]) {
-        (void)snprintf(out, out_len, "%s", f->id[TC_ID_SERIAL]);
-        return 0;
-    }
-    if (f->mac[0]) {
-        (void)snprintf(out, out_len, "mac-%s", f->mac);
-        return 0;
-    }
-    return 1;
-}
+/* Room for n bytes that each escape to two (a quote or backslash). */
+#define ESCAPED(n) (2 * (n) + 1)
 
 /* The largest payload fits its buffer, with room for the closing brace. */
 typedef char tc_payload_fits[(TC_PAYLOAD_BASE_MAX + TC_DELIVERY_JSON_MAX + TC_HEALTH_JSON_MAX + 3 <= HEARTBEAT_MAX_JSON)
@@ -255,12 +243,17 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
     char deploy_release_tag[HEARTBEAT_MAX_FIELD] = "";
     char router_id[HEARTBEAT_MAX_FIELD + 8];
     char heartbeat_id[96];
-    char esc_router_id[192];
+    /* An ACP value or the router ID at its longest, every byte a quote or
+     * backslash, fits its escape buffer, and TC_PAYLOAD_BASE_MAX counts
+     * them. A control character escapes to six bytes and can still
+     * overflow one: that heartbeat then fails, as an over-long field
+     * always has. */
+    char esc_router_id[ESCAPED(sizeof(router_id) - 1)];
     char esc_heartbeat_id[192];
     char esc_reason[192];
-    char esc_syam[512];
-    char esc_synm[512];
-    char esc_syap[128];
+    char esc_syam[ESCAPED(HEARTBEAT_MAX_FIELD - 1)];
+    char esc_synm[ESCAPED(HEARTBEAT_MAX_FIELD - 1)];
+    char esc_syap[ESCAPED(HEARTBEAT_MAX_FIELD - 1)];
     char esc_os[512];
     char esc_deploy_release_tag[HEARTBEAT_MAX_FIELD * 6 + 1];
     char uptime_json[32], mac_json[24];
@@ -270,16 +263,14 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
 
     memset(result, 0, sizeof(*result));
     result->failure = TC_OUTCOME_SERVER;
-    ctx->health_token = 0;
-    ctx->health_sent = 0;
-    tc_heartbeat_facts_update(f, ctx->facts_read, &round);
-    ctx->read_acp = round.collected;
+    memset(&ctx->sent, 0, sizeof(ctx->sent));
+    tc_heartbeat_facts_update(f, ctx->reuse, &round);
     result->local_resource = round.local_resource;
     if (telemetry_stop) {
         result->failure = TC_OUTCOME_CANCELLED;
         return 1;
     }
-    if (build_router_id(router_id, sizeof(router_id), f)) {
+    if (tc_heartbeat_facts_router_id(f, router_id, sizeof(router_id))) {
         fputs("telemetry: no router serial or hardware address\n", stderr);
         result->failure = TC_OUTCOME_ACP_UNAVAILABLE;
         return 1;
@@ -362,8 +353,8 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
             with_health = tc_health_append_json(json, cap - 3, (size_t)written, ctx->health, &f->acp, &token);
             if (with_health >= 0) {
                 written = with_health;
-                ctx->health_token = token;
-                ctx->health_sent = 1;
+                ctx->sent.health_token = token;
+                ctx->sent.health = 1;
             } else {
                 int n = snprintf(json + written, cap - (size_t)written, ",\"health\":null");
                 written = n < 0 || (size_t)n >= cap - (size_t)written ? -1 : written + n;

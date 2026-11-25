@@ -68,6 +68,10 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "ignore_term")) signal(SIGTERM, SIG_IGN);
     record(argv[2], "parent");
     if (!strcmp(mode, "crash")) { kill(getpid(), SIGKILL); return 93; }
+    /* Answers normally once the file named by TC_TEST_ACP_HOLD is gone, so a
+     * test can act while a collection is under way. */
+    if (!strcmp(mode, "hold"))
+        while (!access(getenv("TC_TEST_ACP_HOLD"), F_OK)) usleep(10000);
     if (!strcmp(mode, "inspect_fds")) {
         for (i = 3; i < 64; i++) if (fcntl(i, F_GETFD) >= 0) return 94;
     }

@@ -591,6 +591,15 @@ failed wait, stall precedence and the reason timer.
 
 ## Telemetry protocol
 
+State machines in the telemetry process, each documented beside its code:
+
+- heartbeat planning and which acp facts a heartbeat keeps: the top of `planner.h`
+- one attempt, from planned to finished: `heartbeat_finished`, `main.c`
+- the pending heartbeat id: `struct tc_heartbeat_ident`, `telemetry.h`
+- health events and peaks: `health.h`
+- probe phases: `probe_track`, `health.c`
+- nameserver verdicts: `judge()`, `dns.c`
+
 Schema 2 reports `debug_logging` (Samba or mDNS) and `advertise_afp`, using
 null for unreadable settings. It omits `nbns_enabled`: native NBNS is always on,
 and the server treats that field as optional. `plan_error` contains a
@@ -619,8 +628,9 @@ the first timeout or the first child that cannot start (a full process table sta
 full). A key stopped because the budget ran out is `BUDGET`, not a timeout, and is
 counted in `acp_budget_exhausted`. Values once read are kept for the process's life, and an
 empty answer never replaces one: `acp` prints nothing and exits 0 for any failed get, so
-an ACPd that cannot answer reads as every key empty (a collection with an empty serial is
-not complete, so a retry reads acp again). The plan is
+an ACPd that cannot answer reads as every key empty (a collection that loses the serial
+this process read before is not complete, so a retry reads acp again; a unit that never
+gave a serial keeps its facts). The plan is
 built from the last validated one (`device_plan_history_update`, shared with
 discovery's plan loop), so a collection that loses keys reports the roles it kept,
 with `plan_error` and `plan_stale_sec`. A heartbeat that collects nothing resends
@@ -671,12 +681,14 @@ The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
   failure (no process, descriptor or memory) retries every minute ten times, then
   every five minutes; network, server and missing identity double from a minute, up to
   six hours.
-  A retry after a network or server failure sends the facts it has, without
-  forking acp, while they come from a complete collection under an hour old.
-  Out of descriptors or memory while taking the workspace lock or the nonce
-  counts as local. Any delivered heartbeat restarts the 12-hour schedule, and an
-  extra one reads acp afresh once acp has gone 12 hours unread. The top of
-  `planner.h` has the transition table.
+  A boot or scheduled retry after a network or server failure sends the facts
+  it has, without forking acp, while they come from a complete collection
+  under an hour old; an extra one keeps any facts under 12 hours old, counted
+  from the last collection, so a chronic health event still reads acp twice a
+  day; a local failure keeps whatever it has; a missing identity always reads
+  again. Out of descriptors or memory while taking the workspace lock or the
+  nonce counts as local. Any delivered heartbeat restarts the 12-hour schedule.
+  The top of `planner.h` has the transition table and the facts table.
 - `health.c`, `health_read.c`, `health_json.c`: readers take a sample every 15 s
   (`sysctl` only: process table, files, memory, mbufs, the kernel message buffer)
   and probe rounds of loopback sshd and smbd (sshd and smbd over IPv4, then
@@ -748,7 +760,9 @@ at compile time that a one-shot heartbeat's worst case (acp budget, probe round,
 HTTP deadline, 30 s spare) fits the manager's report limit
 (`common/report_deadline.h`). `--report` neither locks nor cleans the debug
 workspace, so a running signed job does not block it. Exit zero acknowledges a
-successful POST; opt-out, cancellation and transport failure return nonzero. The
+successful POST; opt-out, cancellation and transport failure return nonzero.
+Opt-out is read again just before the POST, so turning telemetry off while an
+attempt collects sends nothing (the daemon then exits). The
 bounded HTTP response is discarded, including any debug request. Managed reports
 keep their collectors in their own process group so timeout or shutdown can stop
 the whole report safely. `--cleanup` removes stale debug files without collecting

@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from tests.loopback import accept_loop, has_ipv6_loopback, held_refusing_ports
+from tests.loopback import accept_loop, fill_listen_queue, has_ipv6_loopback, held_refusing_ports
 from tests.native.build import ROOT, compile_modules, header_define
 
 DEADLINE_MS = 3000
@@ -1285,17 +1285,7 @@ def dual(http):
             if behavior == "blackhole":
                 # A full accept queue: the kernel drops further SYNs, so a
                 # connect gets no answer at all.
-                sock.listen(1)
-                for _ in range(8):
-                    filler = socket.socket(family)
-                    filler.settimeout(0.3)
-                    sockets.append(filler)
-                    try:
-                        filler.connect(sock.getsockname()[:2])
-                    except OSError:
-                        break
-                else:
-                    pytest.skip("the kernel accepts past a full queue")
+                sockets.extend(fill_listen_queue(sock))
             else:
                 stops.append(serve(sock, behavior, log))
         return run("post", f"http://svc.test:{port}/v1/router-heartbeats", binary="wide_binary")
