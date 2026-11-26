@@ -111,6 +111,23 @@ def tcp_connect_error(host: str, port: int, timeout: float = 2.0) -> str | None:
     if None in errors:
         return None
     messages = list(dict.fromkeys(error for error in errors if error))
+    if messages:
+        # macOS raw-socket connects can fail (for example EHOSTUNREACH) on an
+        # address that is still reachable; fall back to nc's own probe before
+        # reporting the connection as failed.
+        nc = find_command("nc")
+        if nc:
+            try:
+                result = run_process(
+                    [nc, "-z", "-w", str(max(1, int(timeout))), host, str(port)],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=max(5.0, timeout + 2.0),
+                )
+                if result.returncode == 0:
+                    return None
+            except (OSError, subprocess.SubprocessError):
+                pass
     return "; ".join(messages) if messages else "connection failed"
 
 
