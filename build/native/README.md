@@ -775,7 +775,9 @@ at compile time that a one-shot heartbeat's worst case (acp budget, probe round,
 HTTP deadline, 30 s spare) fits the manager's report limit
 (`common/report_deadline.h`). `--report` neither locks nor cleans the debug
 workspace, so a running signed job does not block it. Exit zero acknowledges a
-successful POST; opt-out, cancellation and transport failure return nonzero. The
+successful POST; opt-out, cancellation and transport failure return nonzero.
+Opt-out is read again just before the POST, so turning telemetry off while an
+attempt collects sends nothing (the daemon then exits). The
 bounded HTTP response is discarded, including any debug request. Managed reports
 keep their collectors in their own process group so timeout or shutdown can stop
 the whole report safely. `--cleanup` removes stale debug files without collecting

@@ -364,6 +364,31 @@ def test_idle_daemon_exits_when_device_config_disables_telemetry(cycle, rig):
         process.communicate(timeout=HANG_TIMEOUT)
 
 
+@pytest.mark.parametrize('args,expected', [(['--daemon'], 0), (['--report', 'stuck:smbd:biowait:400'], 1)])
+def test_an_opt_out_during_a_collection_sends_nothing(cycle, rig, acp_calls, tmp_path, args, expected):
+    # Telemetry is turned off while the attempt's acp collection runs: the
+    # heartbeat is not sent. The daemon exits 0 at its next check; a report
+    # fails, as one started with telemetry off does.
+    _, state, _, binary, env = cycle
+    root, _, _ = rig
+    hold = tmp_path / 'hold'
+    hold.touch()
+    env = {**env, 'TC_TEST_ACP_CALLS': str(acp_calls), 'TC_TEST_ACP_KEY': 'syAP', 'TC_TEST_ACP_MODE': 'hold',
+           'TC_TEST_ACP_HOLD': str(hold)}
+    process = subprocess.Popen(telemetry_command(binary, *args), env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True)
+    try:
+        wait_until(lambda: any(line.split()[0] == 'syAP' for line in recorded_collectors(acp_calls)))
+        (root / 'config').write_text('TELEMETRY=false\n')
+        hold.unlink()
+        assert process.wait(timeout=HANG_TIMEOUT) == expected
+    finally:
+        if process.poll() is None: process.terminate()
+        _, stderr = process.communicate(timeout=HANG_TIMEOUT)
+    assert state['calls'] == []
+    assert 'telemetry: turned off; heartbeat not sent' in stderr
+
+
 @pytest.fixture(scope='module')
 def held_collector(rig):
     # A boot hold that outlasts any test.
