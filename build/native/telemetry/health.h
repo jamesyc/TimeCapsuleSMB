@@ -240,8 +240,10 @@ int tc_health_probe_allowed(const struct tc_health *h);
 void tc_health_probes_skipped(struct tc_health *h, long now);
 /* Seconds from the end of a probe round (run or skipped) to the next:
  * TC_HEALTH_PROBE_RETRY_SECONDS while a target is confirming a failure
- * (probe_track) or a round may not run (a skipped round forks nothing),
- * else TC_HEALTH_PROBE_SECONDS. */
+ * (probe_track), or while a round may not run (a skipped round forks
+ * nothing) and no target's latest result is a counted failure; else
+ * TC_HEALTH_PROBE_SECONDS. So a table that stays near full, which drops
+ * every confirmation, costs at most one quick round per long interval. */
 long tc_health_next_probe_delay(const struct tc_health *h);
 /* Notes fork, socket and acp-timeout failures counted since the last call. */
 struct tc_acp_counts; /* heartbeat_facts.h */

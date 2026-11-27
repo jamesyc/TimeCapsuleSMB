@@ -724,7 +724,10 @@ The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
   minutes; `ok` or `absent` ends the episode. A skipped probe, a whole round
   skipped near a full table, or an uncounted failure ends a confirmation and
   clears its count, so a failure from long ago never joins a later one. A
-  lasting failure costs one or two extra rounds, not one every 5 minutes. A
+  lasting failure costs one or two extra rounds, not one every 5 minutes; a
+  round skipped near a full table is retried after 5 minutes, or after 90 when
+  a target's latest result was a counted failure, so a table that stays near
+  full costs at most one extra round per 90 minutes. A
   target's result expires after 12 hours without a probe of it (rounds
   skipped near a full table): it then goes out as `none`, so no heartbeat
   carries a result older than the heartbeat before it. A
