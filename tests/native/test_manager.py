@@ -126,6 +126,9 @@ own=Path(os.environ['TC_TEST_ROOT'])/f'{role}-exit-status'
 if own.exists():
     status=int(own.read_text());own.unlink();event('start');sys.exit(status)
 event('start')
+# A diskd that dies before it is listed, so no probe can answer it and
+# reset the manager's backoff.
+if role=='diskd' and (Path(os.environ['TC_TEST_ROOT'])/'diskd-fail').exists():sys.exit(7)
 if role=='diskd':
     # The process table the manager reads in place of the kernel's
     # (proctable.h); dropped once this PID is gone.
@@ -141,7 +144,6 @@ if role=='telemetry' and '--report' in sys.argv and not stuck:
     status=int((root/'report-exit').read_text()) if (root/'report-exit').exists() else 0
     event('report-done',status=status)
     sys.exit(status)
-if role=='diskd' and (Path(os.environ['TC_TEST_ROOT'])/'diskd-fail').exists():sys.exit(7)
 if role=='diskd':
     root=Path(os.environ['TC_TEST_ROOT'])
     if (root/'mounts-after-diskd').exists():
