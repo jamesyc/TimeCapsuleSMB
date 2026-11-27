@@ -137,6 +137,8 @@ def responder(state):
                     "head_max": padded_head(HEADER_MAX) + b"ok",
                     "head_over": padded_head(HEADER_MAX + 1) + b"ok",
                     "head_max_big": padded_head(HEADER_MAX, 100) + b"x" * 100,
+                    "head_max_close": padded_head(HEADER_MAX, None) + b"x" * 100,
+                    "status_long": b"HTTP/1.1 2000000000000 OK\r\nContent-Length: 2\r\n\r\nok",
                 }[mode]
                 if reply:
                     self.request.sendall(reply)
@@ -149,8 +151,9 @@ HEADER_MAX = header_define("telemetry/telemetry.h", "TC_HTTP_HEADER_MAX")
 
 
 def padded_head(size, length=2):
-    """A 200 head of exactly size bytes, blank line included."""
-    head = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nX-Pad: " % length
+    """A 200 head of exactly size bytes, blank line included; with length
+    None, no Content-Length (the body runs to the close)."""
+    head = b"HTTP/1.1 200 OK\r\n" + (b"" if length is None else b"Content-Length: %d\r\n" % length) + b"X-Pad: "
     return head + b"p" * (size - len(head) - 4) + b"\r\n\r\n"
 
 
@@ -545,6 +548,14 @@ def test_a_close_with_no_answer_at_all_is_a_network_failure(http):
     assert outcome == "fail network"
 
 
+def test_a_status_is_read_as_three_digits(http):
+    # As curl reads it: the first three digits, so a longer number cannot
+    # overflow the parse ("2000000000000" is 200).
+    rig, run = http
+    rig["state"]["mode"] = "status_long"
+    assert run("post", f"http://127.0.0.1:{rig['port']}/x")[0] == "ok ok"
+
+
 def test_a_body_exactly_at_the_limit_is_kept(http):
     rig, run = http
     rig["state"]["mode"] = "big"
@@ -899,7 +910,9 @@ def test_a_response_split_into_single_bytes_is_read_whole(http):
 
 
 @pytest.mark.parametrize("mode,limit,expected", [("head_max", "64", "ok ok"), ("head_over", "64", "fail server"),
-                                                 ("head_max_big", "100", "ok " + "x" * 100)])
+                                                 ("head_max_big", "100", "ok " + "x" * 100),
+                                                 ("head_max_close", "100", "ok " + "x" * 100),
+                                                 ("head_max_close", "99", "fail server")])
 def test_a_head_longer_than_the_maximum_is_refused_even_in_one_read(http, mode, limit, expected):
     # Response table: HEAD, head past TC_HTTP_HEADER_MAX. The whole response goes out in one write and fits the buffer, so one
     # read can bring the blank line in past the maximum.
@@ -992,7 +1005,8 @@ def test_a_scoped_link_local_nameserver_is_asked_on_its_interface(http, scope):
         dns.close()
 
 
-@pytest.mark.parametrize("entry", ["fe80::1", "fe80::1%nosuchif0", "fe80::1%"])
+@pytest.mark.parametrize("entry", ["fe80::1", "fe80::1%nosuchif0", "fe80::1%", "fe80::1%+1", "fe80::1% 1",
+                                   "fe80::1%-1"])
 def test_a_link_local_nameserver_without_a_usable_scope_is_skipped(http, entry):
     # It cannot be reached, so the file names no usable server and the local
     # one is asked, as libc does with none.

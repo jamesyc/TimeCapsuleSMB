@@ -290,8 +290,12 @@ static unsigned scope_index(const char *scope) {
     char *end;
     unsigned long index;
     if (!scope || !*scope) return 0;
-    index = strtoul(scope, &end, 10);
-    if (!*end) return index <= UINT_MAX ? (unsigned)index : 0;
+    /* A number only when it starts with a digit: strtoul also takes a sign
+     * or spaces, and "-1" would be UINT_MAX on a 32-bit long. */
+    if (isdigit((unsigned char)*scope)) {
+        index = strtoul(scope, &end, 10);
+        if (!*end) return index <= UINT_MAX ? (unsigned)index : 0;
+    }
     return iflist_collect(&table) == 0 ? iflist_index_of(&table, scope) : 0;
 }
 

@@ -239,7 +239,7 @@ enum response_phase { RESPONSE_HEAD, RESPONSE_BODY_LENGTH, RESPONSE_BODY_TO_CLOS
 static enum tc_outcome exchange(const struct tc_dns_addr *addr, unsigned port, const char *request, size_t request_len,
                                 const char *payload, size_t payload_len, unsigned char *buf, size_t cap, size_t *len,
                                 long long until, int *answered) {
-    size_t used = 0, body_at = 0, limit = cap - TC_HTTP_HEADER_MAX - 1;
+    size_t used = 0, body_at = 0, limit = cap - TC_HTTP_HEADER_MAX - 2;
     long long expected = 0; /* BODY_LENGTH's n */
     enum response_phase phase = RESPONSE_HEAD;
     int fd = connect_to(addr, port, until), status, error;
@@ -254,7 +254,9 @@ static enum tc_outcome exchange(const struct tc_dns_addr *addr, unsigned port, c
     for (;;) {
         ssize_t got;
         /* Only BODY_TO_CLOSE can fill the buffer: HEAD stops at
-         * TC_HTTP_HEADER_MAX and BODY_LENGTH at n, at most limit. */
+         * TC_HTTP_HEADER_MAX and BODY_LENGTH at n, at most limit. The
+         * buffer has a byte past the longest head and body, so full means
+         * a body past limit, even after a head of TC_HTTP_HEADER_MAX. */
         if (used == cap - 1) goto refused;
         got = recv(fd, buf + used, cap - 1 - used, 0);
         if (got == 0) break; /* the close */
@@ -296,7 +298,9 @@ static enum tc_outcome exchange(const struct tc_dns_addr *addr, unsigned port, c
         result = used ? TC_OUTCOME_SERVER : TC_OUTCOME_NETWORK;
         goto done;
     }
-    if (sscanf((char *)buf, "HTTP/1.%*d %d", &status) != 1 || status < 200 || status > 299) goto refused;
+    /* The status is its first three digits, as curl reads it, so a longer
+     * number cannot overflow the parse. */
+    if (sscanf((char *)buf, "HTTP/1.%*d %3d", &status) != 1 || status < 200 || status > 299) goto refused;
     if (phase == RESPONSE_BODY_LENGTH) {
         if (used - body_at < (size_t)expected) goto refused; /* short */
         used = body_at + (size_t)expected; /* what the n-th byte's read brought past it is not the body */
@@ -342,7 +346,7 @@ int telemetry_http(const char *url, const char *payload, unsigned char *buf, siz
     enum tc_outcome result = TC_OUTCOME_NETWORK;
     *len = 0;
     *outcome = TC_OUTCOME_SERVER;
-    if (cap <= TC_HTTP_HEADER_MAX + 1 || started < 0 ||
+    if (cap <= TC_HTTP_HEADER_MAX + 2 || started < 0 ||
         parse_url(url, host, sizeof(host), &port, &path, host_header, sizeof(host_header)))
         return -1;
     deadline = started + TC_HTTP_DEADLINE_MS;
