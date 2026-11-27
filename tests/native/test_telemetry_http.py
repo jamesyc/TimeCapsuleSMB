@@ -263,6 +263,18 @@ def dns_reply(query, mode="answer", zone=ZONE):
         answers.append(record("bogus.test", qtype, BOGUS[qtype]))
         if qtype == 1:
             answers.append(record("chaosalias.test", 1, V4["127.0.0.1"]))
+    if name == "longchain.test":
+        # Ten CNAMEs, last first: longchain.test -> chain1.test -> ... ->
+        # chain9.test -> v4only.test.
+        names = ["longchain.test"] + [f"chain{i}.test" for i in range(1, 10)] + ["v4only.test"]
+        for owner, cname in reversed(list(zip(names, names[1:]))):
+            answers.append(record(owner, 5, encode_name(cname)))
+        target = "v4only.test"
+    if name == "cnameloop.test":
+        # A CNAME loop, with an address for a name off the loop.
+        answers.append(record("cnameloop.test", 5, encode_name("cnameloop2.test")))
+        answers.append(record("cnameloop2.test", 5, encode_name("cnameloop.test")))
+        answers.append(record("elsewhere.test", qtype, BOGUS[qtype]))
     if name == "missing.test":
         rcode = 3
     if name == "packed.test":
@@ -585,6 +597,15 @@ def test_cname_chains_are_followed_and_other_names_ignored(http):
     rig, run = http
     assert run("post", f"http://alias.test:{rig['port']}/x")[0] == "ok ok"
     assert run("post", f"http://decoy.test:{rig['port']}/x")[0] == "ok ok"
+
+
+def test_a_chain_of_ten_cnames_is_followed_and_a_loop_ends_with_no_address(http):
+    rig, run = http
+    assert run("resolve", "longchain.test")[0] == "127.0.0.1"
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    peers = len(rig["dns4"].peers)
+    assert run("resolve", "cnameloop.test")[0] == "fail"
+    assert len(rig["dns4"].peers) == peers + 1  # a clean reply with no address: final
 
 
 def test_a_reply_with_the_wrong_id_is_ignored(http):
@@ -986,6 +1007,17 @@ def test_comments_and_other_lines_name_no_nameserver(http):
     rig["resolv"].write_text("# dns-update-script -M rtsold 2001:db8::53\nsearch example\n;nameserver 10.9.9.9\n")
     assert run("resolve", "v4only.test")[0] == "127.0.0.1"
     assert rig["dns4"].queries
+
+
+@pytest.mark.skipif(not IPV6, reason="no IPv6 loopback")
+def test_the_rest_of_an_overlong_resolv_conf_line_is_not_a_line(http):
+    # A comment longer than the reader's buffer whose tail reads
+    # "nameserver ::1": that tail is part of the comment, not a nameserver.
+    rig, run = http
+    comment = "#" + "x" * 254
+    rig["resolv"].write_text(comment + "nameserver ::1\nnameserver 127.0.0.1\n")
+    assert run("resolve", "v4only.test", binary="wide_binary")[0] == "127.0.0.1"
+    assert rig["dns4"].queries and not rig["dns6"].queries
 
 
 @pytest.mark.skipif(not IPV6, reason="no IPv6 loopback")

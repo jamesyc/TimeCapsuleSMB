@@ -54,17 +54,12 @@
 #define TC_HTTP_ADDRESS_MS 25000
 #endif
 
-static long long left_ms(long long deadline) {
-    long long now = acp_monotonic_ms();
-    return now < 0 ? 0 : deadline - now;
-}
-
 /* Waits for fd to be readable or writable; 1 ready, 0 timeout or stop, -1 error. */
 static int wait_fd(int fd, int writing, long long deadline) {
     for (;;) {
         fd_set set;
         struct timeval timeout;
-        long long left = left_ms(deadline);
+        long long left = acp_ms_left(deadline);
         int ready;
         if (telemetry_stop || left <= 0) return 0;
         if (left > 1000) left = 1000; /* recheck the stop flag every second */
