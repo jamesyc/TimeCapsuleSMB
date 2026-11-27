@@ -710,9 +710,9 @@ The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
   logs the probe by name and closes before forking a pre-auth child; both
   servers then get a clean shutdown. A probe ends `ok`, `closed` (accepted, then
   hung up before answering), `silent`, `refused`, `timeout` (no connect within
-  2 s: nothing accepts), `down` (another connect error) or `absent`; a connect
-  that fails for want of buffers or descriptors is skipped and counted as a
-  socket failure, and no `::1` on the kernel skips the probe. A refusal is
+  2 s: nothing accepts), `down` (another connect error) or `absent`; a connect,
+  send or receive that fails for want of buffers or descriptors is skipped and
+  counted as a socket failure, and no `::1` on the kernel skips the probe. A refusal is
   `refused` only from a target that answered before, and for smbd only while its
   listener runs (the manager stops smbd on purpose and reports why); otherwise
   `absent`. An sshd that answered and then died is refused, so it triggers. `closed` and `silent` always count as

@@ -927,11 +927,20 @@ int main(int argc, char **argv) {
     }
     if (argc == 3 && !strcmp(argv[1], "probes")) {
         int rounds = atoi(argv[2]), i, j;
+        /* Every target answered before and smbd's listener runs, so each
+         * round's failures count toward a trigger (probe_event). */
+        static struct tc_health h;
+        struct tc_failure_counts c;
+        h.current.smbd_up = 1;
+        for (j = 0; j < TC_PROBES; j++) h.probe[j].seen_ok = 1;
         for (i = 0; i < rounds; i++) {
             struct tc_probe_round round;
             long long started = acp_monotonic_ms();
             tc_health_read_probes(&round);
+            tc_health_probes(&h, &round, 1000 + i);
+            tc_failure_counts(&c);
             for (j = 0; j < TC_PROBES; j++) printf("%s%s=%s", j ? " " : "", tc_probe_names[j], tc_probe_result_names[round.result[j]]);
+            printf(" enobufs=%u probe_event=%d", c.socket_enobufs, (h.pending & TC_EV_PROBE) != 0);
             printf(" elapsed_ms=%lld\n", acp_monotonic_ms() - started);
             fflush(stdout);
         }

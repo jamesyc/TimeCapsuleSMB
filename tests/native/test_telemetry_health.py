@@ -359,6 +359,30 @@ def fill_backlog(family, port):
     return [listener, *fill_listen_queue(listener)]
 
 
+@pytest.mark.parametrize("call", ["probe-send", "probe-recv"])
+def test_a_buffer_shortage_after_connecting_skips_the_probe(binary, ports, room, call):
+    # A send or receive that fails for want of mbufs says nothing about the
+    # service: skipped (none) and counted as a socket failure, so two such
+    # rounds from targets that answered before trigger nothing, where two
+    # closed would.
+    made = servers(ports, ["banner", "banner"], ["smb", "smb"], ["smb", "smb"])
+    try:
+        rounds = probe_rounds(binary, {**room, "TC_TEST_ENOBUFS": call}, rounds=2)
+    finally:
+        for server in made:
+            server.close()
+    smb = ["smb4", "smb6"] if IPV6 else ["smb4"]
+    # The sshd probe sends nothing before its answer, so only a receive
+    # shortage reaches it.
+    skipped = smb + (["ssh4"] if call == "probe-recv" else [])
+    for index, result in enumerate(rounds):
+        assert all(result[name] == "none" for name in skipped), result
+        assert int(result["enobufs"]) == len(skipped) * (index + 1)
+        assert result["probe_event"] == "0"
+    if call == "probe-send":
+        assert all(result["ssh4"] == "ok" for result in rounds)
+
+
 @pytest.mark.parametrize("family", [socket.AF_INET, socket.AF_INET6])
 def test_a_full_listen_queue_times_out_unlike_a_refusal(binary, ports, family, room):
     # smbd's parent stops accepting: its queue fills and the kernel drops

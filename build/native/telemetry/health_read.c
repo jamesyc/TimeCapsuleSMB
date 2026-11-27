@@ -374,10 +374,16 @@ static void finish(struct probe *p, enum tc_probe_result result) {
     p->result = result;
 }
 
+/* No buffer or memory here for a connect, send or receive: the probe
+ * could not run (skipped, counted as a socket failure), which says nothing
+ * about the service. */
+static int short_of_buffers(int error) {
+    return tc_errno_record(TC_OP_IO, error) == TC_ERR_RESOURCE;
+}
+
 /* Refused: nothing listens there (absent). No such address or route on
- * this kernel (no ::1), or no buffer, memory or descriptor for it here:
- * the probe could not run (skipped), which says nothing about the
- * service. */
+ * this kernel (no ::1), or a buffer shortage: the probe could not run
+ * (skipped). */
 static enum tc_probe_result connect_failure(int error) {
     if (error == ECONNREFUSED) return TC_PROBE_ABSENT;
     /* A reset or abort this early still followed a finished handshake (a
@@ -385,7 +391,7 @@ static enum tc_probe_result connect_failure(int error) {
      * probe looked, which is closed, as when the hang-up comes later. */
     if (error == ECONNRESET || error == ECONNABORTED) return TC_PROBE_CLOSED;
     if (error == EADDRNOTAVAIL || error == ENETUNREACH) return TC_PROBE_SKIPPED;
-    return tc_errno_record(TC_OP_IO, error) == TC_ERR_RESOURCE ? TC_PROBE_SKIPPED : TC_PROBE_DOWN;
+    return short_of_buffers(error) ? TC_PROBE_SKIPPED : TC_PROBE_DOWN;
 }
 #ifdef TC_NATIVE_TEST
 enum tc_probe_result tc_health_connect_failure(int error) { return connect_failure(error); }
@@ -401,12 +407,14 @@ static void drain(struct probe *p, const struct target *t) {
 
 static void connected(struct probe *p, const struct target *t) {
     if (t->smb) {
-        ssize_t sent = send(p->fd, smb2_negotiate, sizeof(smb2_negotiate), 0);
+        ssize_t sent = tc_test_enobufs("probe-send") ? -1 : send(p->fd, smb2_negotiate, sizeof(smb2_negotiate), 0);
         if (sent != (ssize_t)sizeof(smb2_negotiate)) {
-            /* A full socket buffer this early is a server not reading; any
-             * other failure, or a short send (errno untouched), a closed
-             * connection. */
-            finish(p, sent < 0 && errno == EAGAIN ? TC_PROBE_SILENT : TC_PROBE_CLOSED);
+            /* A full socket buffer this early is a server not reading; a
+             * buffer shortage is skipped; any other failure, or a short
+             * send (errno untouched), a closed connection. */
+            if (sent < 0 && errno == EAGAIN) finish(p, TC_PROBE_SILENT);
+            else if (sent < 0 && short_of_buffers(errno)) finish(p, TC_PROBE_SKIPPED);
+            else finish(p, TC_PROBE_CLOSED);
             return;
         }
     }
@@ -480,8 +488,12 @@ static void advance(struct probe *p, const struct target *t, int ready) {
     }
     if (p->step != STEP_READING) return;
     if (ready) {
-        ssize_t n = recv(p->fd, p->reply + p->got, sizeof(p->reply) - p->got, 0);
+        ssize_t n = tc_test_enobufs("probe-recv") ? -1 : recv(p->fd, p->reply + p->got, sizeof(p->reply) - p->got, 0);
         if (n < 0 && (errno == EINTR || errno == EAGAIN)) return;
+        if (n < 0 && short_of_buffers(errno)) {
+            finish(p, TC_PROBE_SKIPPED);
+            return;
+        }
         if (n <= 0) {
             finish(p, p->got ? TC_PROBE_SILENT : TC_PROBE_CLOSED);
             return;
