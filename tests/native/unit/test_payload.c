@@ -8,6 +8,7 @@
 #include "planner.h"
 #include "health.h"
 #include "errclass.h"
+#include "entropy.h"
 #include "plan.h"
 #include <assert.h>
 #include <sys/utsname.h>
@@ -53,6 +54,19 @@ void trim_line(char *v) {
     memmove(v, start, strlen(start) + 1);
     n = strlen(v);
     while (n && (v[n - 1] == ' ' || v[n - 1] == '\t' || v[n - 1] == '\r' || v[n - 1] == '\n')) v[--n] = 0;
+}
+/* Nonzero: time() returns it, as two boots at the same clock would see. */
+static time_t fixed_time;
+time_t time(time_t *out) {
+    struct timeval now;
+    time_t t;
+    if (fixed_time) t = fixed_time;
+    else {
+        (void)gettimeofday(&now, NULL);
+        t = now.tv_sec;
+    }
+    if (out) *out = t;
+    return t;
 }
 int uname(struct utsname *name) {
     memset(name, 0, sizeof(*name));
@@ -239,6 +253,18 @@ static void test_heartbeat_ident(void) {
     assert(!build(&f, KEEP, json, sizeof(json), &r) && strcmp(heartbeat_id(json, again), first));
     reset();
     assert(!build(&f, KEEP, json, sizeof(json), &r) && strcmp(heartbeat_id(json, first), again));
+    /* Two boots of the same router whose daemons get the same pid and
+     * clock still send different ids: they come from each process's own
+     * entropy, not from the time and pid. */
+    fixed_time = 1700000000;
+    tc_entropy_restart();
+    reset();
+    assert(!build(&f, KEEP, json, sizeof(json), &r));
+    heartbeat_id(json, first);
+    tc_entropy_restart();
+    reset();
+    assert(!build(&f, KEEP, json, sizeof(json), &r) && strcmp(heartbeat_id(json, again), first));
+    fixed_time = 0;
     build_reason = "manual";
 }
 

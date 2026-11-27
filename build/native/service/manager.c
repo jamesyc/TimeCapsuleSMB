@@ -1271,18 +1271,13 @@ static void report_verdicts(struct manager *m) {
         if (m->units[i]->slow_copy[0])
             report_once(m, m->units[i]->slow_copy);
 }
-/* A new report's token: 16 hex digits, random, so no report of another boot
- * or manager has it (the server would take that one's row for a replay);
- * the clock and pid while no random seed can be read. */
+/* A new report's token: 16 hex digits (tc_unique_bytes), so no report of
+ * another boot or manager has it (the server would take that one's row for
+ * a replay). */
 static void new_report_token(char *out) {
     unsigned char bytes[8];
-    static unsigned made;
     size_t i;
-    if (tc_random_bytes(bytes, sizeof(bytes))) {
-        unsigned long long mix = (unsigned long long)acp_monotonic_ms() ^ (unsigned long long)time(NULL) << 20 ^
-                                 (unsigned long long)getpid() << 44 ^ made++;
-        for (i = 0; i < sizeof(bytes); i++) bytes[i] = (unsigned char)(mix >> (8 * i));
-    }
+    tc_unique_bytes(bytes, sizeof(bytes));
     for (i = 0; i < sizeof(bytes); i++) snprintf(out + 2 * i, 3, "%02x", bytes[i]);
 }
 

@@ -1,6 +1,7 @@
 #include "device.h"
 #include "heartbeat_facts.h"
 #include "health.h"
+#include "entropy.h"
 #include "../common/plan.h"
 #include <sys/utsname.h>
 #if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__)
@@ -46,17 +47,20 @@ static void hash_text_hex(char *out, size_t out_len, const char *text) {
  * reason: a buffer-stall retry carries the episodes merged into it since
  * its first try, and still replaces that try's row. */
 static void new_heartbeat_id(char *out, size_t out_len, const char *router_id, const char *reason, const char *token) {
-    static unsigned made; /* two ids in one second from one process still differ */
     char input[512];
     char hash_hex[65];
-    time_t now;
 
-    now = time(NULL);
-    if (token)
+    if (token) {
         (void)snprintf(input, sizeof(input), "%s\nreport %s\n", router_id, token);
-    else
-        (void)snprintf(input, sizeof(input), "%s\n%s\n%ld\n%ld\n%u\n", router_id, reason, (long)now, (long)getpid(),
-                       made++);
+    } else {
+        /* Unique bytes, not the time and pid: those repeat across boots, and
+         * the server would take a repeated id's row for this one's. */
+        unsigned char unique[16];
+        char unique_hex[33];
+        tc_unique_bytes(unique, sizeof(unique));
+        bytes_to_hex(unique_hex, sizeof(unique_hex), unique, sizeof(unique));
+        (void)snprintf(input, sizeof(input), "%s\n%s\n%s\n", router_id, reason, unique_hex);
+    }
     hash_text_hex(hash_hex, sizeof(hash_hex), input);
     (void)snprintf(out, out_len, "hb1-%s", hash_hex);
 }
