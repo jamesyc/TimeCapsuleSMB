@@ -310,6 +310,9 @@ struct manager {
     long long report_inflight_longest;
     /* The pending buffer-stall report's token (pump_reports). */
     char bufstall_token[17];
+    /* Report starts that failed in a row: the first and the start that ends
+     * the run are logged, not every retry. */
+    unsigned report_exec_failures;
     /* Processes stuck in the kernel (stuck.h); process-local by design. */
     struct tc_stuck stuck;
     int stuck_truncated_logged;
@@ -1295,7 +1298,9 @@ static void new_report_token(char *out) {
  *
  *   none       -> pending    queued, or an episode ended; no token yet
  *   pending    -> in flight  due, job free, exec works; token made if empty
- *   pending    -> pending    due, exec fails; retry after RETRY_MS, token kept
+ *   pending    -> pending    due, exec fails; token made if empty and kept,
+ *                            retry after RETRY_MS (the first failure of a
+ *                            run is logged, and the start that ends it)
  *   in flight  -> none       delivered; token cleared (bufstall: the next
  *                            report no sooner than REPORT_MS)
  *   in flight  -> pending    failed, timed out or stopped; token kept (queue:
@@ -1372,6 +1377,10 @@ static void pump_reports(struct manager *m, long long now) {
     /* --report never starts signed jobs, so its whole group may be killed
      * after its deadline or at stop without interrupting a debug program. */
     if (!tc_child_exec(&m->report_job, argv, TC_RAM_ROOT "/var/telemetry.log")) {
+        if (m->report_exec_failures)
+            timestamped_fprintf(stderr, "manager: telemetry report started after %u failed tries\n",
+                                m->report_exec_failures);
+        m->report_exec_failures = 0;
         m->report_job.deadline = now + TC_BUFSTALL_REPORT_TIMEOUT_MS;
         if (bufstall_due) {
             m->report_inflight_outcome = m->report_outcome;
@@ -1383,6 +1392,8 @@ static void pump_reports(struct manager *m, long long now) {
             pop_report(m);
         }
     } else {
+        if (!m->report_exec_failures++)
+            timestamped_fprintf(stderr, "manager: telemetry report cannot start: %s\n", strerror(errno));
         if (bufstall_due) m->report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
         else m->queue_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
     }

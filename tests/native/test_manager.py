@@ -1696,10 +1696,15 @@ def test_a_report_that_cannot_start_keeps_its_token(manager,monkeypatch):
     wait(lambda rows:verdict_outcomes(events)==[1],30)
     (root/'report-exit').unlink()
     tries=len(reports(events))
-    time.sleep(3*TIMINGS['TC_BUFSTALL_REPORT_RETRY_MS']/1000)
+    # A retry that cannot start is logged once, not at every retry.
+    wait_log(root,'manager: telemetry report cannot start: ')
     (root/'fork-fail').unlink()
     wait(lambda rows:0 in verdict_outcomes(events),30)
     assert len(reports(events))>tries
+    log=runtime_log(root)
+    assert log.count('telemetry report cannot start')==1
+    started=re.search(r'telemetry report started after (\d+) failed tries',log)
+    assert started and int(started.group(1))>=1
     # Nothing went out while fork failed, so the try that did is the same
     # heartbeat as the failed one.
     tokens=[t for reason,t in zip(reports(events),report_tokens(events)) if reason=='rsync:unreadable']
