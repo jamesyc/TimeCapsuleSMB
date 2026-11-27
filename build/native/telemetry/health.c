@@ -16,7 +16,7 @@ static const unsigned kmsg_events[TC_KMSG_PATTERNS] = {TC_EV_KMSG, TC_EV_KMSG, T
 
 static void note(struct tc_health *h, unsigned bits) {
     h->news |= bits;
-    h->pending |= bits & TC_EV_REQUESTING;
+    if (h->armed) h->pending |= bits & TC_EV_REQUESTING;
 }
 
 /* ---- threshold ----
@@ -234,6 +234,7 @@ unsigned tc_kmsg_scan(struct tc_kmsg_state *k, const char *text, size_t len, lon
 /* ---- one sample ---- */
 void tc_health_sample(struct tc_health *h, const struct tc_reading *r, long now, int armed) {
     const struct tc_counters *c = &r->counters;
+    h->armed = armed;
     h->now = *c;
     h->current = r->snapshot;
     if (h->current.read && (!h->peak.read || h->current.procs > h->peak.procs)) h->peak = h->current;

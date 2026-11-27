@@ -566,6 +566,35 @@ static void ledger_and_sample(void) {
         tc_health_sample(&k, &r, 30, 1);
         assert(k.kmsg.bytes == -1);
     }
+    /* Before arming, a full table in the kernel messages, and a probe
+     * episode, are news only: nothing asks for a heartbeat, and the boot
+     * heartbeat carries them. Armed, the next ones ask. */
+    {
+        struct tc_health k;
+        struct tc_probe_round round;
+        unsigned token;
+        size_t i;
+        memset(&k, 0, sizeof(k));
+        r = reading(40, 90);
+        r.kmsg = "boot\n";
+        r.kmsg_len = 5;
+        tc_health_sample(&k, &r, 10, 0);
+        r.kmsg = "boot\nproc: table is full\n";
+        r.kmsg_len = (long)strlen(r.kmsg);
+        tc_health_sample(&k, &r, 20, 0);
+        for (i = 0; i < TC_PROBES; i++) round.result[i] = TC_PROBE_OK;
+        tc_health_probes(&k, &round, 20);
+        round.result[TC_PROBE_SSH4] = TC_PROBE_CLOSED;
+        tc_health_probes(&k, &round, 21);
+        tc_health_probes(&k, &round, 22);
+        assert(k.probe[TC_PROBE_SSH4].phase == TC_PROBE_REPORTED);
+        assert(k.news == (TC_EV_KMSG | TC_EV_PROBE) && !k.pending && !tc_health_requests(&k));
+        assert(strstr(json_of(&k, &token), "\"triggers\":[],\"news\":[\"kmsg\",\"probe\"]"));
+        r.kmsg = "boot\nproc: table is full\nproc: table is full\n";
+        r.kmsg_len = (long)strlen(r.kmsg);
+        tc_health_sample(&k, &r, 30, 1);
+        assert(k.pending == TC_EV_KMSG && tc_health_requests(&k));
+    }
     /* Files at 90 %, rearming below 80 %. */
     {
         struct tc_health f;

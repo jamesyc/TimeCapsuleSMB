@@ -745,8 +745,8 @@ The daemon keeps every decision in one `struct telemetry_daemon` (`main.c`):
   text counts twice. Pure detectors (`threshold`, `probe_track`,
   `kmsg_scan`) note events in a ledger, documented at each. Requesting events
   (`procs`, `files`, `kmsg` for a full process or file table, `probe`) ask for an
-  extra heartbeat once armed (after the boot heartbeat, or 15 minutes of uptime);
-  the rest (`kmsg_warning`, `ram`, `mbuf`, `fork`, `socket`, `acp_timeout`,
+  extra heartbeat once armed (after the boot heartbeat, or 15 minutes of uptime;
+  before that they go out only as `news`, with the boot heartbeat); the rest (`kmsg_warning`, `ram`, `mbuf`, `fork`, `socket`, `acp_timeout`,
   `acp_empty`)
   ride along as `news`. The JSON writer returns the events it
   wrote; only a delivered heartbeat clears them.

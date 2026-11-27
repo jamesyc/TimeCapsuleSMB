@@ -22,7 +22,10 @@
  *
  * The ledger keeps two sets of event bits: news (everything since the last
  * delivered heartbeat) and pending (the requesting events among them, which
- * ask the planner for an extra heartbeat). The JSON writer returns the bits
+ * ask the planner for an extra heartbeat). Before arming (the planner's,
+ * as of the latest sample; a probe round follows one) an event goes into
+ * news only: nothing asks for a heartbeat then, and the boot heartbeat
+ * carries it. The JSON writer returns the bits
  * it wrote as a token, and only a delivered heartbeat clears them: a
  * heartbeat that fails leaves them for the next try. The peaks and lows
  * (the busiest table, the first crossing, the most files, the least free
@@ -225,6 +228,7 @@ struct tc_health {
     struct tc_failure_counts failures_seen;
     unsigned acp_timeouts_seen, acp_empty_seen;
     unsigned pending, news; /* the ledger */
+    int armed; /* the latest sample's: requesting events ask for nothing before */
 };
 
 void tc_health_sample(struct tc_health *h, const struct tc_reading *r, long now, int armed);
