@@ -459,6 +459,42 @@ static void test_mac_sources(void) {
         answer("waMA", ACP_UNAVAILABLE, "", ACP_REASON_NONE, 0);
         assert(!build(&f, READ, json, sizeof(json), &r) && strstr(json, "\"router_id\":\"mac-80:ea:96:e6:58:68\""));
     }
+    /* A complete collection that names no router (no serial, waMA not set,
+     * a placeholder table) is never kept, under any row: each retry reads
+     * acp again instead of failing acp_unavailable on kept facts. */
+    {
+        static struct tc_heartbeat_facts f, g;
+        const struct tc_facts_reuse extra = {TC_INTERVAL_SECONDS, 0};
+        char id[64];
+        reset();
+        table_mac = placeholder_mac;
+        answer("sySN", ACP_OK, "", ACP_REASON_NONE, 0);
+        answer("waMA", ACP_OK, "", ACP_REASON_NONE, 0);
+        assert(build(&f, READ, json, sizeof(json), &r) && r.failure == TC_OUTCOME_ACP_UNAVAILABLE);
+        assert(f.have_last && f.last_complete && tc_heartbeat_facts_router_id(&f, id, sizeof(id)) && !id[0]);
+        assert(!tc_heartbeat_facts_reusable(&f, KEEP, 50000) && !tc_heartbeat_facts_reusable(&f, OUTAGE, 50000) &&
+               !tc_heartbeat_facts_reusable(&f, extra, 50000));
+        reset();
+        table_mac = placeholder_mac;
+        answer("sySN", ACP_OK, "", ACP_REASON_NONE, 0);
+        answer("waMA", ACP_OK, "", ACP_REASON_NONE, 0);
+        assert(build(&f, KEEP, json, sizeof(json), &r) && collections == 1);
+        /* An address from the table names it: kept again. */
+        reset();
+        answer("sySN", ACP_OK, "", ACP_REASON_NONE, 0);
+        answer("waMA", ACP_OK, "", ACP_REASON_NONE, 0);
+        assert(!build(&f, READ, json, sizeof(json), &r));
+        assert(!tc_heartbeat_facts_router_id(&f, id, sizeof(id)) && !strcmp(id, "mac-80:ea:96:e6:58:68"));
+        assert(tc_heartbeat_facts_reusable(&f, KEEP, 50000) && tc_heartbeat_facts_reusable(&f, OUTAGE, 50000) &&
+               tc_heartbeat_facts_reusable(&f, extra, 50000));
+        /* So does a serial with no address at all. */
+        reset();
+        table_mac = placeholder_mac;
+        answer("waMA", ACP_OK, "", ACP_REASON_NONE, 0);
+        assert(!build(&g, READ, json, sizeof(json), &r) && !g.mac[0]);
+        assert(!tc_heartbeat_facts_router_id(&g, id, sizeof(id)) && !strcmp(id, "serial123"));
+        assert(tc_heartbeat_facts_reusable(&g, KEEP, 50000) && tc_heartbeat_facts_reusable(&g, extra, 50000));
+    }
 }
 
 /* The planner's choice and the facts together, by what the device sees:

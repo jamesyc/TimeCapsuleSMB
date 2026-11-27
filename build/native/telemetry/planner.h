@@ -42,8 +42,8 @@
  *                    event's extras would keep the boot-time identity and
  *                    plan forever.
  *   any              {TC_FACTS_FOREVER, 0}: a device short of processes
- *                    forks no acp child while it has facts at all; with
- *                    none it still tries once per retry.
+ *                    forks no acp child while it has facts that name a
+ *                    router; with none it still tries once per retry.
  * Ages count from the last collection, whichever attempt made it, so the
  * planner keeps no clock of its own for them.
  *
@@ -76,6 +76,11 @@
  *                    and never more than TC_PLANNER_NET_RETRY_MAX_SECONDS, so
  *                    a health event that comes during a long outage waits at
  *                    most that long once the network is back.
+ * Facts that name no router are never kept, whatever the row says
+ * (tc_heartbeat_facts_reusable), so every attempt after one reads acp
+ * again: a device short of processes whose last read lost its identity
+ * stays local_resource and on the local schedule, instead of failing
+ * acp_unavailable on kept facts and growing the network back-off.
  * Every counted failure sets last_failure; delivery clears it; busy and
  * cancelled leave it.
  * The two back-offs keep their own counters: a local failure does not reset

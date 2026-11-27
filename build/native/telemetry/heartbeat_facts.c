@@ -148,5 +148,19 @@ void tc_heartbeat_facts_update(struct tc_heartbeat_facts *f, struct tc_facts_reu
  * the devices. */
 int tc_heartbeat_facts_reusable(const struct tc_heartbeat_facts *f, struct tc_facts_reuse reuse, long long now_ms) {
     if (!f->have_last || (reuse.complete_only && !f->last_complete) || now_ms < f->last_ms) return 0;
+    if (tc_heartbeat_facts_router_id(f, NULL, 0)) return 0;
     return now_ms / 1000 - f->last_ms / 1000 < (long long)reuse.max_age;
+}
+
+int tc_heartbeat_facts_router_id(const struct tc_heartbeat_facts *f, char *out, size_t len) {
+    if (f->id[TC_ID_SERIAL][0]) {
+        (void)snprintf(out, len, "%s", f->id[TC_ID_SERIAL]);
+        return 0;
+    }
+    if (f->mac[0]) {
+        (void)snprintf(out, len, "mac-%s", f->mac);
+        return 0;
+    }
+    if (len) out[0] = '\0';
+    return -1;
 }

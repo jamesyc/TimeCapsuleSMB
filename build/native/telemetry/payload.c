@@ -221,18 +221,6 @@ static int append_v2_fields(char *json, size_t cap, size_t used, const struct de
 /* The router ID is the serial (ACP sySN) once read. A device whose ACP never
  * gave one sends "mac-" and its hardware address, so it still reports;
  * every heartbeat also carries "mac", which joins the two IDs. */
-static int build_router_id(char *out, size_t out_len, const struct tc_heartbeat_facts *f) {
-    if (f->id[TC_ID_SERIAL][0]) {
-        (void)snprintf(out, out_len, "%s", f->id[TC_ID_SERIAL]);
-        return 0;
-    }
-    if (f->mac[0]) {
-        (void)snprintf(out, out_len, "mac-%s", f->mac);
-        return 0;
-    }
-    return 1;
-}
-
 /* The largest payload fits its buffer, with room for the closing brace. */
 typedef char tc_payload_fits[(TC_PAYLOAD_BASE_MAX + TC_DELIVERY_JSON_MAX + TC_HEALTH_JSON_MAX + 3 <= HEARTBEAT_MAX_JSON)
                              ? 1 : -1];
@@ -284,7 +272,7 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
         result->failure = TC_OUTCOME_CANCELLED;
         return 1;
     }
-    if (build_router_id(router_id, sizeof(router_id), f)) {
+    if (tc_heartbeat_facts_router_id(f, router_id, sizeof(router_id))) {
         fputs("telemetry: no router serial or hardware address\n", stderr);
         result->failure = TC_OUTCOME_ACP_UNAVAILABLE;
         return 1;

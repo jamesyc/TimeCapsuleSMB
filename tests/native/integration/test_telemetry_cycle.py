@@ -1343,6 +1343,40 @@ def test_daemon_without_a_serial_retries_until_wama_is_real(cycle, acp_calls, tm
     assert f'hardware address {REAL_MAC} from ACP waMA' in stderr
 
 
+def test_a_device_short_of_processes_with_no_identity_stays_on_the_local_schedule(cycle, acp_calls, tmp_path):
+    # No serial and a placeholder table, and every fork refused from the
+    # start: no acp read works, so nothing names the router. Facts that name
+    # no router are never kept, so every retry tries acp again and fails for
+    # want of processes (local_resource), never acp_unavailable on kept
+    # facts, which would grow the network back-off. Once forks work, the
+    # retry reads acp and goes out under waMA.
+    _, state, _, binary, env = cycle
+    iflist = tmp_path / 'mac'
+    iflist.write_text(PLACEHOLDER + '\n')
+    fork_fail = tmp_path / 'fork-fail'
+    fork_fail.touch()
+    log = tmp_path / 'stderr'
+    env = {**env, 'TC_TEST_ACP_CALLS': str(acp_calls), 'TC_TEST_ACP_NO_SERIAL': '1', 'TC_TEST_ACP_KEY': 'waMA',
+           'TC_TEST_ACP_MODE': 'value', 'TC_TEST_ACP_VALUE': '80:EA:96:E6:58:68', 'TC_TEST_IFLIST': 'mac_file',
+           'TC_TEST_IFLIST_MAC': str(iflist), 'TC_TEST_FORK_FAIL': str(fork_fail)}
+    with open(log, 'w') as stderr:
+        process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE,
+                                   stderr=stderr)
+    try:
+        wait_until(lambda: log.read_text().count('no router serial or hardware address') >= 3)
+        assert state['calls'] == [] and recorded_collectors(acp_calls) == []
+        fork_fail.unlink()
+        wait_until(lambda: len(state['calls']) == 1)
+        boot = state['payloads'][0]
+        assert boot['reason'] == 'boot' and boot['router_id'] == f'mac-{REAL_MAC}'
+        classes = boot['delivery']['classes']
+        assert boot['delivery']['failed'] >= 3 and classes['local_resource'] == boot['delivery']['failed']
+        assert classes['acp_unavailable'] == 0
+        assert wama_reads(acp_calls)
+    finally:
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
+
+
 def test_daemon_without_a_serial_waits_for_a_real_table_address(cycle, acp_calls, tmp_path):
     # No serial and no waMA: the boot heartbeat retries while the table holds
     # the placeholder, and goes under the real address once boot sets it.

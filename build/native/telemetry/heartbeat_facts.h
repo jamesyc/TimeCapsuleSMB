@@ -70,12 +70,18 @@ struct tc_facts_round {
     int local_resource; /* a child could not start for want of processes, descriptors or memory */
 };
 
+/* The router ID a heartbeat names: the serial, else "mac-" and the address
+ * this heartbeat sends. 0 with it in out, or -1 with out empty when there
+ * is neither. out may be NULL with len 0 to ask only. */
+int tc_heartbeat_facts_router_id(const struct tc_heartbeat_facts *f, char *out, size_t len);
 /* Whether a heartbeat at now_ms may keep f's facts under reuse (struct
  * tc_facts_reuse): something was collected, under reuse.max_age whole
  * seconds before now_ms (both clocks cut to the second, as the planner's
  * is), and complete if reuse.complete_only says so (no key timed
  * out, ran out of budget, failed to start or was skipped, and the serial
- * came back if one was read before). A clock that went back keeps nothing. */
+ * came back if one was read before). Facts that name no router
+ * (tc_heartbeat_facts_router_id) cannot build a payload and are never
+ * kept, under any reuse. A clock that went back keeps nothing. */
 int tc_heartbeat_facts_reusable(const struct tc_heartbeat_facts *f, struct tc_facts_reuse reuse, long long now_ms);
 /* Keeps the facts when tc_heartbeat_facts_reusable allows, else reads acp
  * once; round says which. The address sent (mac) is chosen again either
