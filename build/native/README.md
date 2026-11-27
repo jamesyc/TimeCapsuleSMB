@@ -669,8 +669,12 @@ resend get their turn, as libc takes its separate A query on, and a better answe
 from them wins. One function (`judge()` in `dns.c`, with its table)
 gives each nameserver's answers a verdict. NXDOMAIN for A, or a clean reply with no
 record to both types, is final: the lookup fails without asking another nameserver
-or falling back, and the kept answer for the name is forgotten; NXDOMAIN for AAAA
-alone is AAAA answered with nothing. An answer whose A reply came back clean is
+or falling back, as libc's does, but the kept answer for the name stays for a later
+lookup that no nameserver answers. AAAA records beside an NXDOMAIN for A are used
+at once (not kept), as libc uses them; the AAAA reply is waited for within the
+server's time, and if it does not come the lookup fails (libc would ask the next
+nameserver for AAAA; a server that answers A and loses AAAA is broken). NXDOMAIN
+for AAAA alone is AAAA answered with nothing. An answer whose A reply came back clean is
 cached for the shortest TTL among its addresses and CNAMEs (60 s to a day) and kept
 7 days as a fallback for a DNS outage (no usable answer from any nameserver). An
 answer with addresses but no clean A reply is used but not kept, and the IPv4

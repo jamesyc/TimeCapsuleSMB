@@ -37,39 +37,49 @@ struct answers {
 /* What tc_dns_resolve does with one nameserver's answers (judge()). */
 enum verdict {
     ASK_NEXT,           /* nothing usable yet: the next nameserver, then the kept answer */
-    GONE,               /* the name has no address: fail, keep nothing */
+    NO_ADDRESS,         /* the name has no address: fail this lookup, ask no one else */
     KEEP,               /* cache the answer and use it */
-    USE_WITH_KEPT_IPV4  /* the next nameserver first; with no better answer, use it
+    USE_WITH_KEPT_IPV4, /* the next nameserver first; with no better answer, use it
                            once, then the kept answer's IPv4 addresses */
+    USE_NOW             /* as USE_WITH_KEPT_IPV4, but at once: no one else is asked */
 };
 
-/* The verdict on one nameserver's answers, by its A reply, whether either
- * reply brought an address, and its AAAA reply:
+/* The verdict on one nameserver's answers once ask() is done with it, by
+ * its A reply, whether either reply brought an address, and its AAAA reply:
  *
  *   A reply          addresses  AAAA reply       verdict
- *   NO_NAME          any        any              GONE
+ *   NO_NAME          some       any              USE_NOW
+ *   NO_NAME          none       any              NO_ADDRESS
  *   CLEAN            some       any              KEEP
- *   CLEAN            none       CLEAN            GONE
+ *   CLEAN            none       CLEAN            NO_ADDRESS
  *   CLEAN            none       not CLEAN        ASK_NEXT
  *   WAITING, FAILED  some       any              USE_WITH_KEPT_IPV4
  *   WAITING, FAILED  none       any              ASK_NEXT
  *
- * GONE: NXDOMAIN for A says the name does not exist, and a clean empty
- * reply to both (NODATA) that it has no address; another nameserver of the
- * same network would say the same, and the kept answer is for a name that
- * no longer has it. NXDOMAIN for AAAA alone is only that type answered with
- * nothing. An answer is kept only with a clean A reply: an AAAA-only answer
+ * NXDOMAIN for A, or a clean empty reply to both (NODATA), fails the
+ * lookup as libc's does: libc answers from every query that brought
+ * records, so the AAAA records beside an NXDOMAIN for A are used (USE_NOW),
+ * and with none the lookup fails without asking another nameserver of the
+ * same network, which would say the same. The kept answer stays for a
+ * later lookup that no nameserver answers: one wrong reply must not cost
+ * the outage fallback. ask() waits for the AAAA reply after an NXDOMAIN
+ * for A; if this server's time ends first, the lookup fails (NO_ADDRESS),
+ * where libc would send that AAAA query to the next nameserver: a server
+ * that answers A at once and loses AAAA is broken, and asking the others
+ * for AAAA alone after a definite NXDOMAIN would take far more code.
+ * NXDOMAIN for AAAA alone is only that type answered with nothing.
+ * An answer is kept only with a clean A reply: an AAAA-only answer
  * from a server whose A reply failed or was lost would, kept, fail every
  * request until its TTL on a device whose IPv6 does not reach the server.
  * libc sends A and AAAA as separate queries and takes a failed or lost A
  * query to the next nameserver (and round) on its own, so such an answer
  * waits until every server had its turn; then it is used once with the IPv4
- * addresses from the last clean answer behind it. A clean A reply with no address beside AAAA records is the
- * name's whole answer, and kept. */
+ * addresses from the last clean answer behind it. A clean A reply with no
+ * address beside AAAA records is the name's whole answer, and kept. */
 static enum verdict judge(const struct answers *a) {
     int found = a->n4 || a->n6;
-    if (a->done[0] == NO_NAME) return GONE;
-    if (a->done[0] == CLEAN) return found ? KEEP : a->done[1] == CLEAN ? GONE : ASK_NEXT;
+    if (a->done[0] == NO_NAME) return found ? USE_NOW : NO_ADDRESS;
+    if (a->done[0] == CLEAN) return found ? KEEP : a->done[1] == CLEAN ? NO_ADDRESS : ASK_NEXT;
     return found ? USE_WITH_KEPT_IPV4 : ASK_NEXT;
 }
 
@@ -77,7 +87,7 @@ static enum verdict judge(const struct answers *a) {
 /* judge() by state and verdict names, for the table test in test_http.c. */
 const char *tc_dns_judge(const char *a_reply, const char *aaaa_reply, size_t n4, size_t n6) {
     static const char *const states[] = {"waiting", "clean", "failed", "no_name"};
-    static const char *const verdicts[] = {"ask_next", "gone", "keep", "use_with_kept_ipv4"};
+    static const char *const verdicts[] = {"ask_next", "no_address", "keep", "use_with_kept_ipv4", "use_now"};
     struct answers a;
     int i;
     memset(&a, 0, sizeof(a));
@@ -338,7 +348,7 @@ static size_t nameservers(struct sockaddr_storage *out, int *resource) {
 /* Asks one server the queries a still waits for (both on the first round,
  * on the next only those left unanswered, under the same ids, as libc
  * resends a query) and collects its replies into a until each is answered,
- * the verdict is GONE whatever the other would say, until passes, or TERM.
+ * until passes, or TERM.
  * *fd is the server's socket for the whole lookup, made on its first round
  * and kept, as libc keeps one per nameserver across its tries, so a reply
  * to the first round's query that comes late is still read on the next. A
@@ -369,7 +379,7 @@ ready:
         if (!length) return;
         if (tc_test_enobufs("send") || send(fd, query, length, 0) != (ssize_t)length) goto failed;
     }
-    while ((a->done[0] == WAITING || a->done[1] == WAITING) && judge(a) != GONE && !telemetry_stop) {
+    while ((a->done[0] == WAITING || a->done[1] == WAITING) && !telemetry_stop) {
         fd_set reads;
         struct timeval timeout;
         long long left = until - acp_monotonic_ms();
@@ -423,7 +433,7 @@ static int kept(const char *name, long long until) {
     return cache.count && !strcasecmp(cache.name, name) && acp_monotonic_ms() < until;
 }
 
-/* An answer with no clean A reply (judge's USE_WITH_KEPT_IPV4): its own
+/* An answer with no clean A reply (judge's USE_WITH_KEPT_IPV4, USE_NOW): its own
  * addresses, then the IPv4 addresses from the last clean answer while it is
  * within its stale window, so the request moves on to them when IPv6
  * fails. Not kept. */
@@ -494,9 +504,12 @@ int tc_dns_resolve(const char *name, struct tc_dns_addr *out, size_t max, size_t
             /* Half an answer goes on to the next server, and its lost A
              * query to the next round, before it is used (unanswered:). */
             if (verdict == ASK_NEXT || verdict == USE_WITH_KEPT_IPV4) continue;
-            if (verdict == GONE) {
-                if (kept(name, cache.stale_until)) cache.count = 0;
+            if (verdict == NO_ADDRESS) {
                 result = -1;
+                goto close_all;
+            }
+            if (verdict == USE_NOW) {
+                result = use_with_kept_ipv4(name, &a[i], out, max, count);
                 goto close_all;
             }
             keep_answer(name, &a[i]);

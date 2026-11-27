@@ -13,8 +13,10 @@
  * later lookup gets no answer, so a heartbeat during a DNS outage still
  * finds the server. An answer without a clean A reply is used once, not
  * kept, and followed by the IPv4 addresses of the kept answer, up to a week
- * old. NXDOMAIN for A, or no record of either type, fails the lookup and
- * forgets the kept answer for the name. There is no /etc/hosts lookup:
+ * old. NXDOMAIN for A with no AAAA record, or no record of either type,
+ * fails the lookup without asking another nameserver; the kept answer
+ * stays for a later lookup that no nameserver answers. AAAA records beside
+ * an NXDOMAIN for A are used, as libc uses them. There is no /etc/hosts lookup:
  * nothing on the device names the telemetry host there. */
 
 #ifndef TC_RESOLV_CONF

@@ -32,6 +32,7 @@ ADDRESS_MS = 3000
 # TC_DNS_RETRANS_MS): a fake that answers at once is far inside it, and
 # moving on promptly is far from waiting a server out.
 DNS_RETRANS_MS = 1500
+AAAA_LATE_S = 0.4
 DNS_MIN_SERVER_MS = header_define("telemetry/dns.h", "TC_DNS_MIN_SERVER_MS")
 DNS_TRIES = header_define("telemetry/dns.h", "TC_DNS_TRIES")
 
@@ -274,7 +275,7 @@ def dns_reply(query, mode="answer", zone=ZONE):
         answers.append(record("decoy.test", 1, V4["127.0.0.1"]))
     if mode in ("servfail", "refused") or (mode == "servfail_a" and qtype == 1):
         rcode, answers = (5 if mode == "refused" else 2), []
-    if (mode in ("nxdomain_a", "nxdomain_a_aaaa_lost") and qtype == 1) or \
+    if (mode in ("nxdomain_a", "nxdomain_a_aaaa_lost", "nxdomain_a_aaaa_late") and qtype == 1) or \
             (mode in ("nxdomain_aaaa", "nxdomain_aaaa_a_lost") and qtype == 28):
         rcode, answers = 3, []
     if mode == "nodata":
@@ -392,6 +393,10 @@ class Dns:
                     seen.add(data[:2])
                     threading.Timer(2 * DNS_RETRANS_MS / 1000, self.send_late,
                                     (dns_reply(data, "answer", self.zone), peer)).start()
+                continue
+            if mode == "nxdomain_a_aaaa_late" and qtype == 28:
+                # NXDOMAIN for A at once (dns_reply), the AAAA answer later.
+                threading.Timer(AAAA_LATE_S, self.send_late, (dns_reply(data, "answer", self.zone), peer)).start()
                 continue
             if (mode in ("aaaa_only", "nxdomain_aaaa_a_lost") and qtype == 1) or \
                     (mode in ("a_only", "nxdomain_a_aaaa_lost") and qtype == 28):
@@ -755,19 +760,40 @@ def test_half_an_answer_serves_the_request_but_is_not_kept(http):
     assert len(rig["dns4"].queries) - len(a_queries) == 2
 
 
-@pytest.mark.parametrize("mode", ["nxdomain_a", "nxdomain_a_aaaa_lost"])
-def test_nxdomain_for_a_fails_the_lookup_even_beside_aaaa_records(http, mode):
-    # svc.test has an AAAA record, but NXDOMAIN for A says the name does not
-    # exist: the lookup fails without asking the second nameserver, and
-    # without waiting for an AAAA reply that is lost.
+def test_nxdomain_for_a_uses_the_aaaa_records_beside_it(http):
+    # svc.test has an AAAA record, and NXDOMAIN for A: as libc does, the
+    # lookup returns the AAAA addresses, without asking the second
+    # nameserver.
     rig, run = http
-    rig["dns4"].mode = mode
+    rig["dns4"].mode = "nxdomain_a"
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    assert run("resolve", "svc.test")[0] == "::1"
+    assert len(rig["dns4"].peers) == 1 and len(rig["dns4"].read(2)) == 2
+
+
+def test_nxdomain_for_a_waits_for_a_late_aaaa_reply(http):
+    # The AAAA answer comes after the NXDOMAIN for A: the lookup waits for
+    # it, within the server's time, and uses it.
+    rig, run = http
+    rig["dns4"].mode = "nxdomain_a_aaaa_late"
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    outcome, elapsed = run("resolve", "svc.test")
+    assert outcome == "::1"
+    assert len(rig["dns4"].peers) == 1
+    assert AAAA_LATE_S * 1000 <= elapsed < DNS_RETRANS_MS
+
+
+def test_nxdomain_for_a_with_the_aaaa_reply_lost_fails_after_the_servers_time(http):
+    # The AAAA reply never comes: the lookup fails once the first server's
+    # time is out, without asking the second (libc would ask it for AAAA;
+    # dns.c's judge() says why this one does not).
+    rig, run = http
+    rig["dns4"].mode = "nxdomain_a_aaaa_lost"
     rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
     outcome, elapsed = run("resolve", "svc.test")
     assert outcome == "fail"
-    assert len(rig["dns4"].read(2)) == 2  # the first server's A and AAAA, once each
-    # Waiting for the AAAA reply would take the server's whole time.
-    assert elapsed < DNS_RETRANS_MS - 100
+    assert len(rig["dns4"].peers) == 1 and len(rig["dns4"].read(2)) == 2
+    assert elapsed >= DNS_RETRANS_MS - 100
 
 
 def test_a_cname_of_another_class_is_not_followed(http):
@@ -1191,35 +1217,50 @@ def test_a_cname_off_the_chain_does_not_shorten_the_ttl(script):
     assert len(rig["dns4"].queries) > asked
 
 
-@pytest.mark.parametrize("mode,aaaa", [("nxdomain_a", False), ("nxdomain_a", True), ("nodata", False)])
-def test_a_name_with_no_address_fails_and_forgets_the_kept_answer(script, mode, aaaa):
-    # v4only.test is kept with 127.0.0.1. Past its TTL, NXDOMAIN for A (with
-    # or without an AAAA record beside it) or a clean reply with no record
-    # to either type says the name has no address now: the lookup fails
-    # with neither the kept address nor the AAAA one, and without asking the
-    # second nameserver.
+@pytest.mark.parametrize("mode", ["nxdomain_a", "nodata"])
+def test_a_name_with_no_address_fails_and_leaves_the_kept_answer(script, mode):
+    # v4only.test is kept with 127.0.0.1. Past its TTL, NXDOMAIN for A, or a
+    # clean reply with no record to either type, says the name has no
+    # address now: the lookup fails without the kept address and without
+    # asking the second nameserver, as libc's does. The kept answer stays:
+    # a later lookup that no nameserver answers is served from it.
     rig, start = script
     resolve = start()
     assert resolve("resolve v4only.test") == "127.0.0.1 resource=0"
     assert resolve("advance 301") == "ok"
     rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
-    if aaaa:
-        rig["dns4"].zone = with_aaaa("v4only.test")
     rig["dns4"].mode = mode
-    asked = len(rig["dns4"].queries)
+    asked, peers = len(rig["dns4"].queries), len(rig["dns4"].peers)
     assert resolve("resolve v4only.test") == "fail resource=0"
     assert len(rig["dns4"].read(asked + 2)) == asked + 2
-    # Forgotten: with both nameservers failing, the outage fallback that
-    # would serve a kept answer has none.
+    assert len(rig["dns4"].peers) == peers + 1
     rig["dns4"].mode = "servfail"
     asked = len(rig["dns4"].queries)
-    assert resolve("resolve v4only.test") == "fail resource=0"
+    assert resolve("resolve v4only.test") == "127.0.0.1 resource=0"
     assert len(rig["dns4"].queries) == asked + 4
 
 
+def test_aaaa_records_beside_nxdomain_for_a_go_first_with_the_kept_ipv4_behind(script):
+    # v4only.test is kept with 127.0.0.1; past its TTL it gains an AAAA
+    # record and its A query gets NXDOMAIN. The AAAA address is used at
+    # once with the kept IPv4 address behind it, and is not kept: the kept
+    # answer is still the one a later outage gets.
+    rig, start = script
+    resolve = start()
+    assert resolve("resolve v4only.test") == "127.0.0.1 resource=0"
+    assert resolve("advance 301") == "ok"
+    rig["resolv"].write_text("nameserver 127.0.0.1\nnameserver 127.0.0.1\n")
+    rig["dns4"].zone = with_aaaa("v4only.test")
+    rig["dns4"].mode = "nxdomain_a"
+    peers = len(rig["dns4"].peers)
+    assert resolve("resolve v4only.test") == "::1 127.0.0.1 resource=0"
+    assert len(rig["dns4"].peers) == peers + 1
+    rig["dns4"].mode = "servfail"
+    assert resolve("resolve v4only.test") == "127.0.0.1 resource=0"
+
+
 def test_failing_nameservers_leave_the_kept_answer_to_serve(script):
-    # The outage fallback the test above finds empty: every nameserver
-    # failing is no answer, not a missing name.
+    # Every nameserver failing is no answer, not a missing name.
     rig, start = script
     resolve = start()
     assert resolve("resolve v4only.test") == "127.0.0.1 resource=0"
