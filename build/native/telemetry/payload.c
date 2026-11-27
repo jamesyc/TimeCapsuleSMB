@@ -222,9 +222,9 @@ static int append_v2_fields(char *json, size_t cap, size_t used, const struct de
     return (int)used;
 }
 
-/* The router ID is the serial (ACP sySN) once read. A device whose ACP never
- * gave one sends "mac-" and its hardware address, so it still reports;
- * every heartbeat also carries "mac", which joins the two IDs. */
+/* Room for n bytes that each escape to two (a quote or backslash). */
+#define ESCAPED(n) (2 * (n) + 1)
+
 /* The largest payload fits its buffer, with room for the closing brace. */
 typedef char tc_payload_fits[(TC_PAYLOAD_BASE_MAX + TC_DELIVERY_JSON_MAX + TC_HEALTH_JSON_MAX + 3 <= HEARTBEAT_MAX_JSON)
                              ? 1 : -1];
@@ -254,12 +254,17 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
     char deploy_release_tag[HEARTBEAT_MAX_FIELD] = "";
     char router_id[HEARTBEAT_MAX_FIELD + 8];
     char heartbeat_id[96];
-    char esc_router_id[192];
+    /* An ACP value or the router ID at its longest, every byte a quote or
+     * backslash, fits its escape buffer, and TC_PAYLOAD_BASE_MAX counts
+     * them. A control character escapes to six bytes and can still
+     * overflow one: that heartbeat then fails, as an over-long field
+     * always has. */
+    char esc_router_id[ESCAPED(sizeof(router_id) - 1)];
     char esc_heartbeat_id[192];
     char esc_reason[192];
-    char esc_syam[512];
-    char esc_synm[512];
-    char esc_syap[128];
+    char esc_syam[ESCAPED(HEARTBEAT_MAX_FIELD - 1)];
+    char esc_synm[ESCAPED(HEARTBEAT_MAX_FIELD - 1)];
+    char esc_syap[ESCAPED(HEARTBEAT_MAX_FIELD - 1)];
     char esc_os[512];
     char esc_deploy_release_tag[HEARTBEAT_MAX_FIELD * 6 + 1];
     char uptime_json[32], mac_json[24];

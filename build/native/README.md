@@ -629,8 +629,9 @@ the first timeout or the first child that cannot start (a full process table sta
 full). A key stopped because the budget ran out is `BUDGET`, not a timeout, and is
 counted in `acp_budget_exhausted`. Values once read are kept for the process's life, and an
 empty answer never replaces one: `acp` prints nothing and exits 0 for any failed get, so
-an ACPd that cannot answer reads as every key empty (a collection with an empty serial is
-not complete, so a retry reads acp again). The plan is
+an ACPd that cannot answer reads as every key empty (a collection that loses the serial
+this process read before is not complete, so a retry reads acp again; a unit that never
+gave a serial keeps its facts). The plan is
 built from the last validated one (`device_plan_history_update`, shared with
 discovery's plan loop), so a collection that loses keys reports the roles it kept,
 with `plan_error` and `plan_stale_sec`. A heartbeat that collects nothing resends

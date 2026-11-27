@@ -12,7 +12,7 @@
 #define HEARTBEAT_MAX_FIELD 256
 /* json_escape refuses a field longer than its buffer in payload.c, so those
  * buffers bound the payload before the delivery record and health: about
- * 4 KB of fields at their limits, ~0.4 KB of v2 fields and TC_MAX_LINKS
+ * 5 KB of fields at their limits, ~0.4 KB of v2 fields and TC_MAX_LINKS
  * links of up to ~160 bytes with fully escaped names, at most
  * TC_PAYLOAD_BASE_MAX (test_largest_possible_heartbeat_still_fits). The
  * delivery record adds at most TC_DELIVERY_JSON_MAX and the health object

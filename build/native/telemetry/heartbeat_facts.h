@@ -70,8 +70,10 @@ struct tc_facts_round {
     int local_resource; /* a child could not start for want of processes, descriptors or memory */
 };
 
-/* The router ID a heartbeat names: the serial, else "mac-" and the address
- * this heartbeat sends. 0 with it in out, or -1 with out empty when there
+/* The router ID a heartbeat names: the serial (ACP sySN) once read, else
+ * "mac-" and the address this heartbeat sends, so a device whose ACP never
+ * gave a serial still reports; every heartbeat also carries "mac", which
+ * joins the two IDs. 0 with it in out, or -1 with out empty when there
  * is neither. out may be NULL with len 0 to ask only. */
 int tc_heartbeat_facts_router_id(const struct tc_heartbeat_facts *f, char *out, size_t len);
 /* Whether a heartbeat at now_ms may keep f's facts under reuse (struct

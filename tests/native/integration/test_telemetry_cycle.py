@@ -1519,25 +1519,27 @@ def test_heartbeat_reports_only_links_with_a_role_or_service_address(cycle):
 
 def test_largest_possible_heartbeat_still_fits(cycle, rig):
     """Every field the device can make long, at the limit of its escape
-    buffer in payload.c, at once: model and name (255 bytes that escape to
-    510), the release tag likewise, plan_error with ten-digit kernel totals,
+    buffer in payload.c, at once: serial (the router ID), model, name and
+    syAP (255 bytes that escape to 510), the release tag likewise,
+    plan_error with ten-digit kernel totals,
     and TC_MAX_LINKS links whose 15-byte names escape byte for byte. Sizes are
     the bytes that went over the wire. An oversized payload sends nothing."""
     run, state, *_ = cycle
     root, *_ = rig
     (root / 'config').write_text("TC_DEPLOY_RELEASE_TAG='" + '\\' * 255 + "'\n")
     result = run('false', TC_TEST_PLAN_MODE='bridge', TC_TEST_IFLIST='worst', TC_TEST_ACP_MODE='value',
-                 TC_TEST_ACP_KEY='syAM,syNm', TC_TEST_ACP_VALUE='"' * 255)
+                 TC_TEST_ACP_KEY='sySN,syAM,syNm,syAP', TC_TEST_ACP_VALUE='"' * 255)
     assert result.returncode == 0, result.stderr
     payload, raw = state['payloads'][-1], state['raw'][-1]
     assert payload['device_model'] == payload['device_name'] == '"' * 255
+    assert payload['router_id'] == payload['device_syap'] == '"' * 255
     assert payload['deploy_release_tag'] == '\\' * 255
     assert payload['plan_error'] == 'iflist-links'
     assert payload['iflist_links'] == payload['iflist_addrs'] == 4294967295
     assert [link['name'] for link in payload['links']] == ['\x01' * 15] * 32
     assert all(link['families'] == ['ipv4'] for link in payload['links'])
     # The old 4096-byte buffer could not have held it; the new one has room.
-    assert 4096 < len(raw) < 16384 // 2
+    assert 4096 < len(raw) < header_define('telemetry/telemetry.h', 'HEARTBEAT_MAX_JSON')
     # Everything before the delivery record and health stays within the
     # budget payload.c checks at compile time.
     base_max = header_define('telemetry/telemetry.h', 'TC_PAYLOAD_BASE_MAX')
